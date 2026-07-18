@@ -16,7 +16,7 @@ Turn Claude Code into a coordinated **team of agents** that builds, automates, r
 
 <br>
 
-**[Quickstart](#-quickstart-60-second-setup)**  ·  **[Features](docs/FEATURES.md)**  ·  **[Agents](AGENTS.md)**  ·  **[Commands](COMMANDS-QUICK-REF.md)**  ·  **[Troubleshooting](TROUBLESHOOTING.md)**  ·  **[Contributing](CONTRIBUTING.md)**
+**[How it works](docs/HOW-IT-WORKS.md)**  ·  **[Quickstart](#-quickstart-60-second-setup)**  ·  **[Features](docs/FEATURES.md)**  ·  **[Agents](AGENTS.md)**  ·  **[Cost](docs/TOKEN-USAGE.md)**  ·  **[Commands](COMMANDS-QUICK-REF.md)**  ·  **[Troubleshooting](TROUBLESHOOTING.md)**
 
 </div>
 
@@ -155,19 +155,40 @@ Honest and non-adversarial — only rows that actually ship.
 
 ## ⚙️ How it works
 
+Normally Claude Code is **one assistant**. Forge turns it into a **coordinated team**: you give one instruction, Forge picks the right-sized team, does the work in parallel, checks its own work, and reports back — honestly.
+
 ```
-You (the orchestrator)
-        │  /forge <task>
-        ▼
-  forge-router  ──►  dynamic agent pool  ──►  per-task specialists
-                                                     │
-                                          optional Codex review
-                                                     │
-                                                     ▼
-                                          honest forge-report + dashboard
+You:  /forge build me a landing page for my bakery
+          │
+          ▼
+  1. Classify   →  what kind of job is this?               (forge-router)
+  2. Size team  →  the smallest team that fits (1–12+)      (fan-out L1–L4)
+  3. Plan       →  split into exact work packages           (Boss → Head Chef)
+  4. Build      →  specialists do the work, in parallel     (Build / UI / SEO / … Bosses)
+  5. Check      →  real tests + review against YOUR goal    (Test Boss → Review Boss)
+  6. Fix-loop   →  fail → report → fix → re-test (bounded)
+          │
+          ▼
+You get:  the finished result + an honest report of what actually ran + a live dashboard.
 ```
 
-Forge classifies your task, assembles the **smallest relevant** team, runs it **in your project folder only**, optionally adds an independent review, and writes a truthful report. **Project-isolated. Zero dependencies.**
+**Nothing is called "done" until it's proven** — Forge never fabricates a passing test, a fake "done", or an agent that didn't run. Every run is **project-isolated** (only your target folder) and **zero-dependency**.
+
+📖 **Want the full picture?** [**How Forge works — the complete walkthrough →**](docs/HOW-IT-WORKS.md) — a real bakery-landing-page example, the QA loop step by step, and exactly what you see.
+
+---
+
+## 💸 What does it cost?
+
+Honest answer: **a team of agents uses more tokens than a single chat** — that's the price of a coordinated, self-checking team. Forge's job is to spend them **well**:
+
+- **Tiered models** — Opus only for the hard/critical work, **Sonnet** for most of it, **Haiku** for trivial steps, and pure mechanical edits use **no model at all**.
+- **Right-sized teams** — a one-line fix doesn't summon a swarm; over-spawning is treated as waste, not a feature.
+- **Real cost visibility** — a live dashboard cost meter, plus a usage guard that reads the official `/usage` endpoint and **pauses at 95%** of your window, then resumes after the reset.
+
+You pay through your existing Claude Code plan (no separate billing), and Forge **never invents a "savings" number**.
+
+💸 **[Full token & cost guide →](docs/TOKEN-USAGE.md)**
 
 ---
 
@@ -268,6 +289,8 @@ If Forge saves you time, a star helps others find it.
 
 | Doc | What's in it |
 |---|---|
+| [**docs/HOW-IT-WORKS.md**](docs/HOW-IT-WORKS.md) | **Start here.** Plain-language walkthrough of a task from your sentence to a checked result, with a real example and the QA loop. |
+| [**docs/TOKEN-USAGE.md**](docs/TOKEN-USAGE.md) | Honest token & cost guide — model tiering, right-sized teams, the usage guard, and how to keep it cheap. |
 | [**docs/FEATURES.md**](docs/FEATURES.md) | The complete catalogue — every skill, playbook, tool and guarantee, explained in depth. |
 | [**AGENTS.md**](AGENTS.md) | All 18 agents (12 permanent Bosses + 6 specialists) — role, when-used, tools, and the QA fix-loop. |
 | [**COMMANDS-QUICK-REF.md**](COMMANDS-QUICK-REF.md) | Every command and terminal tool with examples (namespaced plugin vs bare installer forms). |
