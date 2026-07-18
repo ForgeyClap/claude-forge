@@ -1,0 +1,1739 @@
+{
+  "_doc": "Forge Prompt Master intake question bank (subagent-brainstormed 2026-07-13). Read by forge-bin/forge-intake.cjs. universal[] applies to any project (asked first); byType[<slug>] adds domain-specific questions. Each question: {dimension, question, why, options[], tier(required|recommended)}. Owner-editable; extend byType for new project types.",
+  "version": "2026-07-13",
+  "universal": [
+    {
+      "dimension": "goal",
+      "question": "In one sentence, what should this project accomplish, and for whom?",
+      "why": "The primary job anchors structure, team size, and the success metric before any build starts.",
+      "options": [
+        "Generate leads / conversions",
+        "Inform or answer questions",
+        "Automate a manual process",
+        "Sell products / make money",
+        "Provide a tool or utility people use",
+        "Something else — I'll describe it"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "audience",
+      "question": "Who is the primary audience or user, and how technical are they?",
+      "why": "Audience sets tone, UX depth, language, and how much hand-holding the output needs.",
+      "options": [
+        "Me / internal only",
+        "Non-technical clients or customers",
+        "Business / professional users",
+        "Technical / power users",
+        "Mixed public audience"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "success",
+      "question": "What defines 'done' — the concrete proof you need before handoff?",
+      "why": "Definition-of-done sets the acceptance bar and whether we stop at a preview or go live.",
+      "options": [
+        "A reviewable preview / demo",
+        "Passes tests / validation",
+        "Live and working in production",
+        "Verified end-to-end with real data",
+        "Owner sign-off after review"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "scope",
+      "question": "What are the must-have features or deliverables for this first pass?",
+      "why": "Must-haves size the team (L1–L4) and separate the essential from the nice-to-have.",
+      "options": [
+        "Smallest viable version (MVP)",
+        "Core features only",
+        "Full-featured build",
+        "I'll list the must-haves",
+        "Unsure — recommend a scope"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "non-goals",
+      "question": "What is explicitly OUT of scope, so we don't over-build?",
+      "why": "Named non-goals prevent scope creep and over-spawning agents on features you don't want.",
+      "options": [
+        "MVP only — smallest viable",
+        "No auth / accounts",
+        "No admin panel",
+        "No extra integrations",
+        "I'll specify the exclusions",
+        "Everything discussed is in scope"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "existing-state",
+      "question": "Is this a brand-new build or work on an existing project?",
+      "why": "Existing code forces read-first and idiom-matching; greenfield lets us scaffold fresh.",
+      "options": [
+        "Greenfield / new build",
+        "Extend an existing codebase (I'll point to it)",
+        "Refactor / clean up existing work",
+        "Replace / rewrite something legacy",
+        "Fix / debug an existing issue"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "inputs",
+      "question": "What content, data, or assets will you provide versus us produce?",
+      "why": "Provided vs produced inputs change timeline, fidelity, and the honesty of any placeholder data.",
+      "options": [
+        "I'll provide everything (copy, data, assets)",
+        "Some provided, fill gaps with realistic drafts",
+        "You generate realistic content (no placeholders)",
+        "Structure / wireframe only for now",
+        "I'll share a sample to match"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "references",
+      "question": "Any references, examples, or competitors — to emulate or to avoid?",
+      "why": "Concrete references anchor the quality bar better than adjectives and cut revision rounds.",
+      "options": [
+        "Here are 1–3 I like",
+        "Match a competitor's quality",
+        "Avoid this specific approach",
+        "None — use your judgment"
+      ],
+      "tier": "recommended"
+    },
+    {
+      "dimension": "constraints",
+      "question": "Any deadline, budget, or hard constraints we must work within?",
+      "why": "Timeline and constraints decide team size, parallelization, and scope trade-offs.",
+      "options": [
+        "ASAP / urgent",
+        "Specific deadline (I'll give a date)",
+        "No rush — quality first",
+        "Budget-limited (keep it lean)",
+        "Must use specific tools / stack"
+      ],
+      "tier": "required"
+    },
+    {
+      "dimension": "tech",
+      "question": "Any required platform, stack, or hosting — or should Forge pick a sensible default?",
+      "why": "Stack constraints shape file layout, tooling, and whether we scaffold or extend.",
+      "options": [
+        "I have a required stack (I'll name it)",
+        "Extend my existing setup",
+        "No preference — you choose",
+        "Keep it simple / zero-dependency",
+        "Match what I already use"
+      ],
+      "tier": "recommended"
+    },
+    {
+      "dimension": "deploy",
+      "question": "Where will this run or go live, and do you want a preview first?",
+      "why": "Deploy target affects build output, env/config, and whether we stop at a preview gate.",
+      "options": [
+        "Preview / demo only for now",
+        "Deploy to a host I'll name",
+        "Hand off files, I'll deploy",
+        "Live to production (I approve)",
+        "Local-only"
+      ],
+      "tier": "recommended"
+    },
+    {
+      "dimension": "load-bearing",
+      "question": "What is the ONE thing that, if we get it wrong, makes the whole result wrong?",
+      "why": "Surfacing the highest-stakes requirement focuses the team on what actually matters most.",
+      "options": [
+        "The core goal / outcome",
+        "The look and feel",
+        "The data being real and correct",
+        "A specific integration working",
+        "Meeting the deadline",
+        "I'll describe it"
+      ],
+      "tier": "required"
+    }
+  ],
+  "byType": {
+    "website": [
+      {
+        "dimension": "goal",
+        "question": "What is the site's primary job?",
+        "why": "Job decides structure, routing, page count, and whether backend/state is needed vs a static build.",
+        "options": [
+          "Lead-gen landing page (one conversion)",
+          "Multi-page marketing / brand site",
+          "Interactive SPA / web app",
+          "Portfolio / personal site",
+          "Docs / content site"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "design",
+        "question": "What visual direction and brand tone should it follow?",
+        "why": "Style direction drives palette, type, layout, and motion — the whole look; avoids generic template output.",
+        "options": [
+          "Match existing brand (share colors/logo/fonts)",
+          "Editorial / luxury minimal",
+          "Bold / neo-brutalist",
+          "Clean SaaS / tech",
+          "You propose a direction"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "success",
+        "question": "What single visitor action defines success — the primary call-to-action?",
+        "why": "The primary CTA sets hero intent, the funnel, tracking, and the site's acceptance bar.",
+        "options": [
+          "Form submit / lead captured",
+          "Book a call / appointment",
+          "Click through to buy or sign up",
+          "Read / engage with content",
+          "Newsletter signup"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Which interactive features are needed (each adds backend/state)?",
+        "why": "Forms/search/booking need loading+empty+error states and a backend; 'static only' keeps it front-end only.",
+        "options": [
+          "Contact / lead form",
+          "Search / filtering",
+          "Booking / scheduling",
+          "Newsletter signup",
+          "None — static only"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "audience",
+        "question": "On what device do visitors mostly arrive, and is multi-language needed?",
+        "why": "Device priority and locale set breakpoint focus, copy tone, and whether i18n is in scope.",
+        "options": [
+          "Mobile-first consumers",
+          "B2B / desktop professionals",
+          "Mixed — must nail all breakpoints",
+          "Local / regional customers",
+          "International / multi-language"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "Roughly how many pages/sections, and what are the must-haves?",
+        "why": "Page count sizes the team, nav pattern, and effort; drives a sitemap before the build.",
+        "options": [
+          "Single long landing page",
+          "3–5 core pages",
+          "6–12 pages",
+          "12+ / templated",
+          "Unsure — recommend a sitemap"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "tech",
+        "question": "Any framework/stack preference or existing codebase to extend?",
+        "why": "Stack choice changes file layout, build tooling, deploy target, and whether we scaffold or extend.",
+        "options": [
+          "Plain HTML/CSS/JS (zero-dep)",
+          "Next.js / React",
+          "Astro (content-focused)",
+          "Extend my existing repo",
+          "You choose the best fit"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "tech",
+        "question": "Which third-party services/keys should be wired (or stubbed)?",
+        "why": "Integrations need keys and env handling; missing keys means we stub honestly instead of faking it.",
+        "options": [
+          "Analytics (GA / Plausible)",
+          "Form / email backend (Formspree / Resend)",
+          "Calendar / booking (Cal / Calendly)",
+          "Chat / CRM widget",
+          "None"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "Which of these should we explicitly NOT build?",
+        "why": "Naming website-specific exclusions prevents scope creep on features you don't want.",
+        "options": [
+          "No CMS / admin",
+          "No user auth / accounts",
+          "No blog",
+          "No e-commerce",
+          "Everything above is in scope"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "ecommerce": [
+      {
+        "dimension": "goal",
+        "question": "What are you selling, and in what model?",
+        "why": "Product type decides fulfillment, inventory, tax/shipping, and checkout — the whole architecture.",
+        "options": [
+          "Physical products (shipped)",
+          "Digital downloads / licenses",
+          "Subscriptions / recurring",
+          "Services / bookings",
+          "Single hero product"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "Where does product/catalog data come from?",
+        "why": "Catalog source sets the data layer, import path, and whether we seed honest sample data vs live sync.",
+        "options": [
+          "Shopify store (connect API)",
+          "CSV / spreadsheet I provide",
+          "Manual entry (few products)",
+          "Headless CMS",
+          "None yet — need sample catalog"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "What platform/stack should the store run on?",
+        "why": "Platform dictates checkout, admin, hosting, and effort more than any other single decision.",
+        "options": [
+          "Shopify (theme / storefront)",
+          "Custom Next.js + Stripe",
+          "WooCommerce / WordPress",
+          "Static site + Snipcart / Lemon Squeezy",
+          "You recommend"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "Which payment provider, and do we have live keys yet?",
+        "why": "Payments gate go-live; without keys we build test/mock checkout and never fake real transactions.",
+        "options": [
+          "Stripe — keys ready",
+          "Stripe — test mode only for now",
+          "PayPal",
+          "Shopify native checkout",
+          "None yet — build UI, gate payments"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "How should checkout work?",
+        "why": "Checkout model sets cart state, payment flow, order handling, and how much backend is required.",
+        "options": [
+          "Full on-site cart + checkout",
+          "Cart then redirect to Stripe / Shopify Checkout",
+          "Buy-now single item",
+          "Inquiry / quote (no online pay)",
+          "Undecided"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "Do you need real inventory/stock tracking?",
+        "why": "Inventory adds stock fields, out-of-stock UI, and honest empty states vs a simpler unlimited catalog.",
+        "options": [
+          "Real-time stock + low/out-of-stock states",
+          "Made-to-order / unlimited",
+          "Manual stock counts",
+          "Digital — infinite stock",
+          "Not now"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "What markets, currency, and shipping/tax rules apply?",
+        "why": "Currency, tax, and shipping zones change pricing display, checkout fields, and compliance scope.",
+        "options": [
+          "Single country + currency",
+          "Multi-currency / international",
+          "EU VAT / regional tax",
+          "Digital — no shipping",
+          "Handle later"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "Guest checkout, user accounts, or both?",
+        "why": "Accounts add auth, a DB, and order history; guest-only stays lighter and faster to ship.",
+        "options": [
+          "Guest checkout only",
+          "Accounts + order history",
+          "Both (guest + optional account)",
+          "Accounts required (subscriptions)",
+          "Undecided"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "deploy",
+        "question": "What happens after an order (confirmation and fulfillment)?",
+        "why": "Post-order flow needs email/webhooks + idempotency so notifications aren't duplicated or faked.",
+        "options": [
+          "Email confirmation to customer",
+          "Admin / owner notification",
+          "Sync to fulfillment / shipping tool",
+          "Digital delivery (auto file / license)",
+          "Just record the order"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "design",
+        "question": "What brand direction and trust cues should the store convey?",
+        "why": "Store aesthetic plus trust signals (reviews, badges, returns) drive conversion and the visual system.",
+        "options": [
+          "Match existing brand assets",
+          "Premium / luxury",
+          "Playful DTC",
+          "Minimal / product-forward",
+          "You propose"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "Which store features are explicitly out of scope?",
+        "why": "Naming exclusions keeps the catalog+checkout core tight and avoids over-building unrequested features.",
+        "options": [
+          "No blog / content marketing",
+          "No reviews / ratings",
+          "No wishlist / accounts",
+          "No multi-vendor",
+          "All in scope"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "fullstack": [
+      {
+        "dimension": "tech",
+        "question": "What authentication model does the app need, and must it be enforced server-side on every protected route?",
+        "why": "Auth model drives session handling, route guards, and middleware on every protected endpoint.",
+        "options": [
+          "No auth (internal tool / prototype)",
+          "Email + password sessions (server-side)",
+          "OAuth / social (Google, GitHub)",
+          "Managed provider (Clerk, Auth0, Supabase Auth)",
+          "Enterprise SSO / SAML"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Is this single-user, multi-user shared, or multi-tenant with org/workspace isolation and roles?",
+        "why": "Tenant isolation and RBAC change the schema, every query filter, and authorization checks.",
+        "options": [
+          "Single-user",
+          "Multi-user, per-user data",
+          "Multi-tenant orgs / workspaces (isolated)",
+          "RBAC with roles (admin / member / viewer)"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "What is the primary datastore, and is there an existing schema or data we must migrate/extend?",
+        "why": "Existing schema constrains everything; migrations must be reviewed and reversible.",
+        "options": [
+          "Fresh Postgres",
+          "Existing DB to extend (I'll provide schema)",
+          "MySQL / MariaDB",
+          "SQLite (small / local)",
+          "Supabase / Firebase / Mongo"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Which stack/framework should we use, or should Forge pick a sensible default?",
+        "why": "Framework decides routing, boundary validation, server/client split, and idioms to match.",
+        "options": [
+          "Next.js (full-stack)",
+          "React + separate Node/Express API",
+          "tRPC / T3 or Remix",
+          "Django / Rails / Laravel",
+          "You choose the best fit"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "success",
+        "question": "What proof of 'done' do you require before handoff — how deep should testing go?",
+        "why": "DoD sets the integration gate: e2e on the assembled app, not just green unit tests.",
+        "options": [
+          "Manual smoke test only",
+          "Unit tests",
+          "Unit + integration (API / DB)",
+          "Full e2e green (Playwright)",
+          "CI green + preview deploy"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "audience",
+        "question": "Who are the user roles, and what is the ONE critical flow that must work end-to-end?",
+        "why": "Roles + the primary flow define protected routes and the e2e happy path we gate on.",
+        "options": [
+          "Single admin only",
+          "End-users + admin",
+          "Two-sided (e.g. buyer / seller)",
+          "Describe roles + top flow (free-text)"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "Which external services/keys will it use, and are those keys available now or gated?",
+        "why": "Secrets go in env + .env.example; connectors stay stubbed/gated until keys or approval exist.",
+        "options": [
+          "None yet",
+          "Payments (Stripe)",
+          "Email (Resend / SendGrid)",
+          "Storage (S3 / R2)",
+          "Third-party API (specify)"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "tech",
+        "question": "Does it need real-time, inbound webhooks, or scheduled/background jobs?",
+        "why": "Sockets, queues, and cron add infra and change the architecture beyond request/response.",
+        "options": [
+          "Request/response only",
+          "Real-time (websockets / live updates)",
+          "Inbound webhooks",
+          "Scheduled / background jobs",
+          "Several of these"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "Does the app handle file uploads or user-generated media, and of what type/size?",
+        "why": "Uploads add storage, size/type validation, and a real security and cost surface.",
+        "options": [
+          "No uploads",
+          "Images (avatars / thumbnails)",
+          "Documents (PDF / CSV)",
+          "Large media (video / audio)",
+          "Arbitrary user content"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "What is explicitly OUT of scope for this build so we don't over-engineer?",
+        "why": "Named non-goals prevent scope creep and keep the first pass shippable.",
+        "options": [
+          "No payments yet",
+          "No admin panel",
+          "No i18n / multi-language",
+          "No mobile app",
+          "MVP only — smallest viable"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "electron": [
+      {
+        "dimension": "deploy",
+        "question": "Which OS(es) must it run on, and what installer format do you need to ship?",
+        "why": "Target OS + installer decide build tooling and signing; the installer must actually open there.",
+        "options": [
+          "Windows (.exe / NSIS / MSI)",
+          "macOS (.dmg, notarized)",
+          "Linux (AppImage / deb / rpm)",
+          "All three cross-platform",
+          "Windows-only for now"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Must the app work fully offline, or does it require connectivity?",
+        "why": "Offline-first (as promised) changes storage, sync, and every network failure path.",
+        "options": [
+          "Fully offline",
+          "Offline-first with cloud sync",
+          "Requires internet",
+          "Offline core + optional cloud"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "Where does app data live locally, and does any of it need encryption at rest?",
+        "why": "Local persistence choice + encryption for sensitive data drives the whole data layer.",
+        "options": [
+          "SQLite (better-sqlite3)",
+          "Local JSON / flat files",
+          "IndexedDB / renderer store",
+          "Embedded DB (specify)",
+          "Encrypted local store"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Electron with which UI stack — or would Tauri (lighter, Rust) fit better?",
+        "why": "Electron vs Tauri and the UI choice set the IPC bridge, bundle size, and build tooling.",
+        "options": [
+          "Electron + React",
+          "Electron + Vue",
+          "Electron + vanilla / Svelte",
+          "Tauri (lighter / Rust) instead",
+          "You choose the best fit"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "success",
+        "question": "What proof of done do you need — is a packaged installer that opens on a clean machine required?",
+        "why": "DoD is a real installer that launches on the target OS, not just dev-mode running from source.",
+        "options": [
+          "Runs from source (dev)",
+          "Packaged installer that opens on target OS",
+          "Signed + notarized build",
+          "Smoke-tested on a clean VM",
+          "Full e2e (Playwright / Spectron)"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Which native OS capabilities does it need (each expands the IPC/permission surface)?",
+        "why": "Every native feature adds IPC handlers and permissions that need safe context isolation.",
+        "options": [
+          "None (pure UI)",
+          "File system read/write",
+          "System tray + notifications",
+          "Auto-launch on boot",
+          "Hardware (USB / serial / camera / print)"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "Does it handle sensitive local data (credentials, financial, client PII)?",
+        "why": "Sensitive data makes context isolation, safe IPC, encryption, and no-secrets-in-bundle mandatory.",
+        "options": [
+          "No sensitive data",
+          "App credentials / tokens",
+          "Financial / accounting data",
+          "Client PII",
+          "Everything encrypted at rest"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "What data ships inside the installer, and what should first-run look like?",
+        "why": "No test/demo/mock data may ship in the .exe; first-run must be an honest empty state.",
+        "options": [
+          "Empty first-run state",
+          "Seed / sample data the user can clear",
+          "Bundled read-only reference data",
+          "Nothing — connects to user's own data"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "deploy",
+        "question": "Does it need auto-updates, and via what channel?",
+        "why": "Auto-update requires signed builds, an update feed, and version/rollback handling.",
+        "options": [
+          "No auto-update (manual reinstall)",
+          "electron-updater + hosted feed",
+          "GitHub Releases feed",
+          "Enterprise-managed rollout"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "deploy",
+        "question": "How is it distributed and code-signed (impacts install warnings, CI, and cost)?",
+        "why": "Signing/notarization decide whether users can install cleanly and what the build pipeline needs.",
+        "options": [
+          "Unsigned (internal only)",
+          "Self-signed",
+          "EV/OV cert (Windows)",
+          "Apple Developer notarized (macOS)",
+          "App store (MS Store / Mac App Store)"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "n8n": [
+      {
+        "dimension": "tech",
+        "question": "What kicks off this workflow?",
+        "why": "Trigger type dictates node topology, auth surface, and idempotency needs.",
+        "options": [
+          "Inbound webhook (HTTP)",
+          "Schedule / cron",
+          "App poll (Gmail, Sheets, etc.)",
+          "Manual or called by another workflow"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "Which apps does it connect, and whose accounts/credentials do we use?",
+        "why": "Sets credential ownership, OAuth setup, and who must approve live access.",
+        "options": [
+          "My own accounts",
+          "The client's accounts",
+          "Mix of mine + client",
+          "Not decided yet"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "When a step fails, what should happen?",
+        "why": "Defines the error branch, retry config, and failure notifications built.",
+        "options": [
+          "Error workflow + notify me",
+          "Retry N times then dead-letter",
+          "Stop and log only",
+          "Best-effort, keep going"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "How do we stop duplicate processing or double-sends on retries/replays?",
+        "why": "Without it, retries double-send emails or records — a real prod hazard.",
+        "options": [
+          "Dedupe key per record",
+          "Upsert by unique ID",
+          "Idempotency store / flag",
+          "Not needed here"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "deploy",
+        "question": "Should this import inactive and stay test-only until you approve go-live?",
+        "why": "Controls activation state and whether real traffic flows before sign-off.",
+        "options": [
+          "Import inactive (default)",
+          "Separate test workflow first",
+          "Activate after my review",
+          "Go live now (I approve)"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "If it uses an inbound webhook, how should we authenticate/validate it?",
+        "why": "Unauthenticated webhooks are the top n8n security hole; changes node design.",
+        "options": [
+          "HMAC signature check",
+          "Header / API key",
+          "IP allowlist",
+          "None — public endpoint"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "Expected run volume and any API rate or cost limits to respect?",
+        "why": "Sets batch size, rate limiting, and cost guards to avoid quota bans.",
+        "options": [
+          "Low (<100/day)",
+          "Medium (100–10k/day)",
+          "High (>10k/day)",
+          "Bursty / unknown"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "Does it send emails/messages, and should they be draft-only at first?",
+        "why": "Draft-only prevents accidental customer sends; changes the send nodes.",
+        "options": [
+          "Draft-only until I approve",
+          "Send to me only",
+          "Send live to customers (I approve)",
+          "No outreach"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "What's the input payload shape and the target output you want?",
+        "why": "Schema drives Set/Code node mapping and boundary validation.",
+        "options": [
+          "I'll paste a sample JSON",
+          "Map fields A→B",
+          "Aggregate / summarize",
+          "Pass-through unchanged"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "goal",
+        "question": "Where does the final processed data land?",
+        "why": "Destination determines final nodes, auth, and how success is verified.",
+        "options": [
+          "CRM / database",
+          "Sheet / Airtable",
+          "Email / Slack",
+          "Another webhook / API"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "tech",
+        "question": "Which n8n are we targeting?",
+        "why": "Version and node availability differ per host and affect credential setup.",
+        "options": [
+          "n8n Cloud",
+          "Self-hosted",
+          "Local / desktop",
+          "Don't have one yet"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "success",
+        "question": "How should we prove it works before handoff?",
+        "why": "Sets the honest verification bar and the proof you receive.",
+        "options": [
+          "validate_workflow passes",
+          "Test run with sample data",
+          "Live test with 1 real record",
+          "Execution screenshot / log"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "integration": [
+      {
+        "dimension": "goal",
+        "question": "Which systems are we connecting, and which way does data flow?",
+        "why": "Direction defines sync logic, conflict handling, and the source of truth.",
+        "options": [
+          "A → B one-way",
+          "Two-way sync",
+          "Hub to many spokes",
+          "One-time migration"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "How does each service authenticate, and whose credentials do we use?",
+        "why": "Auth model drives token storage, refresh, scopes, and setup steps.",
+        "options": [
+          "OAuth2 (my / client app)",
+          "API key / token",
+          "Service account",
+          "Basic / none"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Is the integration event-driven, polling, scheduled, or on-demand?",
+        "why": "Webhook vs poll changes architecture, latency, and rate-limit exposure.",
+        "options": [
+          "Inbound webhook (event)",
+          "Poll every N minutes",
+          "Cron schedule",
+          "Manual / API call"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "When a downstream call fails or times out, what happens?",
+        "why": "Defines resilience, dead-letter handling, and whether events get lost.",
+        "options": [
+          "Retry w/ backoff then dead-letter",
+          "Alert + manual replay",
+          "Drop the event",
+          "Queue / block until healthy"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Does it write to external systems or send messages — draft-only first?",
+        "why": "Gates irreversible external side effects behind explicit approval.",
+        "options": [
+          "Draft-only until approved",
+          "Write to sandbox first",
+          "Live writes (I approve)",
+          "Read-only"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "For inbound webhooks, how do we verify they're authentic?",
+        "why": "Unverified webhooks let anyone inject events; a core security control.",
+        "options": [
+          "HMAC / signature header",
+          "Shared secret token",
+          "IP allowlist",
+          "None"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "How do we avoid duplicate side effects from retried or replayed events?",
+        "why": "Prevents double charges/sends/records under at-least-once delivery.",
+        "options": [
+          "Idempotency key",
+          "Dedupe by event ID",
+          "Upsert semantics",
+          "Not needed"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "What's the minimum access each integration truly needs?",
+        "why": "Over-broad scopes are a liability; narrows the permissions requested.",
+        "options": [
+          "Read-only",
+          "Read + write specific resources",
+          "Full account",
+          "Admin"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "What API rate limits or spend caps must we respect?",
+        "why": "Sets throttling/backoff and batch sizing to avoid bans or overspend.",
+        "options": [
+          "Known limits (I'll specify)",
+          "Unknown — be conservative",
+          "High-volume, batch it",
+          "Paid-per-call, cap spend"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "Which fields map between systems, and which side wins on conflict?",
+        "why": "Mapping + conflict rule is the heart of any sync integration.",
+        "options": [
+          "I'll give a field map",
+          "System A is truth",
+          "System B is truth",
+          "Last-write-wins"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "Any PII or secrets flowing through, and what may be logged?",
+        "why": "Safe logging prevents token/PII leaks in traces and error output.",
+        "options": [
+          "PII present — mask logs",
+          "Tokens only — never log",
+          "Non-sensitive",
+          "Redact specific fields"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "success",
+        "question": "How do we prove the integration works end-to-end before handoff?",
+        "why": "Sets honest verification and the proof delivered at handoff.",
+        "options": [
+          "Live test with a real call",
+          "Sandbox / test-mode run",
+          "Replay a sample event",
+          "Health check + monitoring"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "rag": [
+      {
+        "dimension": "goal",
+        "question": "What is the chatbot's primary job — the one thing it must do well?",
+        "why": "Q&A vs lead-gen vs task-agent reshapes retrieval, flow, and the success metric.",
+        "options": [
+          "Answer questions from our docs / knowledge base",
+          "Qualify and capture leads",
+          "Deflect customer-support tickets",
+          "Internal employee / staff assistant",
+          "Guided product or booking assistant"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "Which exact sources should it ground answers on, and are you permitted to use them?",
+        "why": "Source set + usage rights define the ingestion pipeline and grounding scope.",
+        "options": [
+          "Public website pages",
+          "Internal PDFs / docs",
+          "Help center / Notion / Confluence",
+          "Database or CRM records",
+          "Product / pricing catalog"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "How must it behave when retrieval is empty or low-confidence?",
+        "why": "Fallback is the #1 anti-hallucination gate; must be explicit before build.",
+        "options": [
+          "Say 'I don't know' + offer human handoff",
+          "Ask a clarifying question",
+          "Escalate to email / ticket",
+          "General answer with a clear disclaimer",
+          "Refuse and show contact info"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "Should the bot capture leads, and under what consent rule?",
+        "why": "Lead capture + consent changes flow, data storage, CRM wiring, and privacy.",
+        "options": [
+          "No lead capture",
+          "Name+email with explicit opt-in",
+          "Only when the user asks to be contacted",
+          "Qualify then push to CRM",
+          "Book a meeting on the calendar"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "success",
+        "question": "How will we prove it's good enough to ship?",
+        "why": "An eval set defines 'done' and guards against hallucination regressions.",
+        "options": [
+          "Passes a set of known Q/A pairs",
+          "Answer-accuracy % target",
+          "Zero invented facts in the eval set",
+          "Human review of ~20 real chats",
+          "Support-deflection rate target"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "Must every answer show its sources/citations?",
+        "why": "Citation requirement changes the retrieval return shape and the answer UI.",
+        "options": [
+          "Yes — always cite with links",
+          "Cite only when the user asks",
+          "Sources in a collapsible panel",
+          "No citations, just grounded answers"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "How often does the source content change, and how should ingestion stay fresh?",
+        "why": "Freshness need drives idempotent ingestion cadence + re-index architecture.",
+        "options": [
+          "Static one-time load",
+          "Manual re-index on demand",
+          "Nightly / scheduled sync",
+          "Real-time on source update",
+          "Webhook-triggered re-index"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "When and how should a human take over from the bot?",
+        "why": "Handoff path defines escalation triggers and the integration surface.",
+        "options": [
+          "No handoff needed",
+          "Email / ticket on escalation",
+          "Live chat (Slack / Intercom)",
+          "Book a callback",
+          "Only during business hours"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "audience",
+        "question": "Who uses it, and in which language(s)?",
+        "why": "Audience + language set tone, model choice, and localization of answers.",
+        "options": [
+          "Public visitors (English)",
+          "Dutch-first customers",
+          "Multilingual (auto-detect)",
+          "Internal staff only",
+          "B2B buyers"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "deploy",
+        "question": "Where does it get embedded/deployed, and any stack constraints?",
+        "why": "Surface + stack determine the serving layer, auth, and embed work.",
+        "options": [
+          "Website widget",
+          "Slack / Teams",
+          "WhatsApp / Telegram",
+          "Standalone web app",
+          "API only",
+          "Existing React/Next site"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "What PII or sensitive data is involved, and any privacy rules?",
+        "why": "PII class sets storage, logging, redaction, and compliance constraints.",
+        "options": [
+          "None / public only",
+          "Customer PII (GDPR)",
+          "Health or financial (regulated)",
+          "Internal confidential docs",
+          "Redact / anonymize all logs"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "What must the bot never do or answer?",
+        "why": "Explicit non-goals bound scope + safety and stop off-mission answers.",
+        "options": [
+          "No medical / legal / financial advice",
+          "No pricing commitments",
+          "No competitor comparisons",
+          "Stay strictly on-topic",
+          "No account / transaction actions"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "voice": [
+      {
+        "dimension": "goal",
+        "question": "What is the call's single objective?",
+        "why": "The call goal defines the entire conversation flow and success metric.",
+        "options": [
+          "Book / reschedule appointments",
+          "Qualify and capture leads",
+          "Answer FAQs / info line",
+          "Take a message or callback request",
+          "Order / reservation intake"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Inbound, outbound, or both?",
+        "why": "Outbound needs explicit approval + consent; inbound-only changes the build.",
+        "options": [
+          "Inbound only",
+          "Outbound campaign",
+          "Both",
+          "Callback (customer requests, agent calls back)"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "audience",
+        "question": "Primary language and voice persona?",
+        "why": "Language + voice is core to the script, TTS choice, and caller experience.",
+        "options": [
+          "Dutch-first (female voice)",
+          "Dutch + English fallback",
+          "English only",
+          "Multilingual auto-detect",
+          "Other"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Telephony + voice stack and where the phone number comes from?",
+        "why": "Provider determines integration, number provisioning, latency, and cost.",
+        "options": [
+          "Twilio",
+          "Vonage",
+          "Telnyx",
+          "Existing PBX / SIP",
+          "VAPI / Retell / ElevenLabs",
+          "You choose"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "What should a successful call produce downstream?",
+        "why": "Output action (max one email/call, idempotent) drives integrations + dedupe.",
+        "options": [
+          "Email summary to the business",
+          "CRM / calendar entry",
+          "Ticket or lead record",
+          "Slack / Teams notification",
+          "Nothing beyond the call"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "How should the agent pace and end the call?",
+        "why": "One-question-at-a-time, short-call discipline is a Forge voice hard rule.",
+        "options": [
+          "One question at a time, short call",
+          "Polite closing then hang up",
+          "Max one email per call",
+          "Hard time cap (e.g. 3 min)",
+          "No endless loops — bail to human"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "When does it hand off to a human, and is live transfer allowed?",
+        "why": "Handoff path defines transfer integration and escalation triggers.",
+        "options": [
+          "No transfer (message only)",
+          "Warm transfer to a person",
+          "Transfer only in business hours",
+          "Escalate via email / ticket",
+          "Voicemail fallback"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "Is SMS or any outbound messaging allowed?",
+        "why": "SMS/outbound is gated — needs explicit approval; changes notification design.",
+        "options": [
+          "No SMS at all",
+          "SMS confirmation only, with approval",
+          "Email only",
+          "WhatsApp allowed",
+          "Owner approves per case"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "Call recording and consent requirements?",
+        "why": "Recording/consent sets legal disclosure, storage, and transcription handling.",
+        "options": [
+          "No recording",
+          "Record with spoken consent",
+          "Transcribe only (no audio)",
+          "GDPR disclosure required",
+          "Owner will advise"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "When is the agent available to take/make calls?",
+        "why": "Coverage window shapes routing, fallback, and human-handoff timing.",
+        "options": [
+          "24/7",
+          "Business hours only",
+          "After-hours overflow only",
+          "Overflow when staff are busy",
+          "Specific schedule"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "What info must it collect and confirm before acting?",
+        "why": "Required fields + confirmation drive slot-filling and idempotency checks.",
+        "options": [
+          "Name + phone",
+          "Preferred date/time",
+          "Address / service type",
+          "Confirm spelling of email",
+          "Reason for call"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "success",
+        "question": "When is it ready for real customer traffic?",
+        "why": "Go-live gate — no live customer calls without owner approval; defines 'done'.",
+        "options": [
+          "Passes scripted test calls",
+          "Owner-approved go-live",
+          "Handles top 10 scenarios",
+          "Booking flow verified end-to-end",
+          "No traffic until sign-off"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "prediction": [
+      {
+        "dimension": "goal",
+        "question": "What exactly are you predicting, and for what decision?",
+        "why": "The prediction target + decision defines the model, features, and metrics.",
+        "options": [
+          "Sports outcomes / value bets",
+          "Price or market forecast",
+          "Demand / sales forecast",
+          "Risk / churn scoring",
+          "Custom statistical model"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "data",
+        "question": "What data sources feed the model, and are they verified/licensed?",
+        "why": "Source quality + licensing is the foundation; bad data invalidates output.",
+        "options": [
+          "Official API (odds / stats)",
+          "Public dataset / CSV",
+          "Scraped public site",
+          "Internal historical DB",
+          "Third-party paid feed"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "success",
+        "question": "What accuracy or edge target defines success, and against what baseline?",
+        "why": "A measurable target + baseline defines 'done' and blocks cherry-picking.",
+        "options": [
+          "Beat a naive baseline",
+          "Positive ROI in backtest",
+          "Hit-rate % target",
+          "Calibration / Brier score",
+          "Owner judges qualitatively"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "How must uncertainty/confidence be labeled on every output?",
+        "why": "Every output must carry a risk/confidence label — a prediction hard rule.",
+        "options": [
+          "Confidence % per prediction",
+          "Low / Med / High risk band",
+          "Probability + implied odds",
+          "Confidence interval",
+          "Suggested stake (never auto-bet)"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "What backtest window and sample size will prove the model?",
+        "why": "Backtest period + sample size decide whether results are trustworthy.",
+        "options": [
+          "Last season / 1 year",
+          "Multi-year",
+          "Walk-forward / rolling",
+          "Held-out test set",
+          "Owner will specify"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "Confirm: no automatic real-money betting or auto-staking?",
+        "why": "No auto-stake code path is mandatory; confirm the guardrail before build.",
+        "options": [
+          "Correct — analysis / tips only",
+          "Suggest stakes but never place",
+          "Manual placement only",
+          "Owner decides later"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "deploy",
+        "question": "How and where are predictions delivered?",
+        "why": "Delivery channel (esp. Telegram format) drives formatting + integration.",
+        "options": [
+          "Telegram bot / channel",
+          "Email digest",
+          "Dashboard / web",
+          "CSV / API",
+          "Spreadsheet"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "How fresh must the data be, and how often does the model run?",
+        "why": "Freshness + run cadence set the ingestion schedule and staleness guards.",
+        "options": [
+          "Real-time / pre-event",
+          "Daily batch",
+          "Hourly",
+          "On-demand",
+          "Scheduled before fixtures"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "How should missing or bad data be handled (not silently zeroed)?",
+        "why": "Data gaps that look like clean zeros silently corrupt predictions.",
+        "options": [
+          "Skip and flag the row",
+          "Fail loud",
+          "Impute with a note",
+          "Exclude from output",
+          "Owner review queue"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "Which assumptions/factors must be documented per prediction?",
+        "why": "Documented assumptions make outputs auditable and prevent overtrust.",
+        "options": [
+          "Key features used",
+          "Data date / source",
+          "Model version",
+          "Known limitations",
+          "None needed"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "tech",
+        "question": "Any modeling method or stack preference/constraint?",
+        "why": "Method preference + existing assets shape architecture and effort.",
+        "options": [
+          "Simple stats / regression",
+          "ML (sklearn / XGBoost)",
+          "Poisson / Elo (sports)",
+          "No preference",
+          "Reuse an existing model"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "scraping": [
+      {
+        "dimension": "data",
+        "question": "Which exact sites or sources should we scrape? Paste the URLs or name the platforms.",
+        "why": "Target sources decide the whole scraper: page structure, anti-bot, legality, and feasibility.",
+        "options": [
+          "Specific URLs I'll paste",
+          "A public directory / marketplace listing",
+          "Government / official open-data portal",
+          "A few company sites for lead data",
+          "Not sure yet — help me pick"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "non-goals",
+        "question": "Are all sources public with no login or paywall, and should we respect robots.txt and rate limits?",
+        "why": "Forge won't bypass logins, paywalls, or robots; this sets the legal/ethical boundary up front.",
+        "options": [
+          "Public only, respect robots + rate limits",
+          "Public but ignore robots (I own/permit the site)",
+          "Some pages need my login (I authorize it)",
+          "Unsure — advise me on what's allowed"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "Exactly which fields do you need from each item or page?",
+        "why": "Field list defines selectors, schema, and effort; vague scope causes rework and missed data.",
+        "options": [
+          "Name, price, URL, image",
+          "Contact: name, email, phone, company",
+          "Full article text + metadata",
+          "Listing details + specs table",
+          "I'll provide a field list"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "What output format and destination do you want?",
+        "why": "Format/destination changes storage, schema, and delivery code — CSV vs DB vs Sheets vs API differ a lot.",
+        "options": [
+          "CSV / Excel file",
+          "JSON file",
+          "Google Sheets",
+          "Database (Postgres / SQLite)",
+          "Pushed to an API / webhook"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Is this a one-time pull or a recurring/scheduled scrape? How often?",
+        "why": "One-off vs scheduled changes architecture: dedup, change-tracking, cron/hosting, and idempotency.",
+        "options": [
+          "One-time snapshot",
+          "Daily",
+          "Weekly",
+          "On-demand when I run it",
+          "Continuous / near-real-time"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Are the pages static HTML or JavaScript-rendered (content loads after the page loads)?",
+        "why": "JS-heavy sites need a headless browser; static sites use fast HTTP+parse — very different builds.",
+        "options": [
+          "Static HTML",
+          "JS-rendered (needs headless browser)",
+          "Mixed",
+          "Not sure — detect for me"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "Roughly how many items/pages total, and any per-run cap?",
+        "why": "Volume drives politeness delays, pagination, batching, proxy needs, and runtime expectations.",
+        "options": [
+          "Under 100",
+          "Hundreds",
+          "Thousands",
+          "Tens of thousands+",
+          "Unknown — start small"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "On repeat runs, should we dedupe and track changes, or overwrite fresh each time?",
+        "why": "Determines whether we keep history, detect new/changed rows, and add stable IDs — affects schema.",
+        "options": [
+          "Overwrite fresh each run",
+          "Dedupe, append only new items",
+          "Track changes / price history over time",
+          "Not applicable (one-time)"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "goal",
+        "question": "What happens with the data afterward — and if it's outreach, should messages stay draft-only?",
+        "why": "Downstream use shapes format; any outreach stays drafted-only, never auto-sent without approval.",
+        "options": [
+          "Just the dataset, nothing else",
+          "Feed into analysis / dashboard",
+          "Lead list — draft outreach only (no auto-send)",
+          "Enrich then export to CRM",
+          "Monitoring / alerts on changes"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "tech",
+        "question": "How should we handle blocks or rate limiting if a site pushes back?",
+        "why": "Sets politeness vs aggressiveness; Forge favors backoff over evasion or ToS-breaking tricks.",
+        "options": [
+          "Go slow and polite, stop if blocked",
+          "Add delays + retries, stay within limits",
+          "Skip and log failures",
+          "I'll provide access / permission if needed"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "data",
+        "question": "Will the data include personal info (names, emails, phones), and any privacy constraints?",
+        "why": "PII presence triggers safe handling, no secrets in files, and consent-aware outreach limits.",
+        "options": [
+          "No personal data",
+          "Business contact data only",
+          "Personal data — handle carefully",
+          "Unsure — flag PII for me"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "success",
+        "question": "What does 'done' look like — a sample row/page and the accuracy bar we should hit?",
+        "why": "A concrete example + accuracy target lets us validate coverage and correctness, not guess.",
+        "options": [
+          "I'll paste one example row",
+          "Match this reference page's fields",
+          "95%+ rows complete & correct",
+          "Best-effort, get most of it",
+          "Let's define it together"
+        ],
+        "tier": "recommended"
+      }
+    ],
+    "dashboard": [
+      {
+        "dimension": "data",
+        "question": "Where does the real data come from, and how do we access it?",
+        "why": "The live data source is the backbone; without it a dashboard is fake. Access method drives the build.",
+        "options": [
+          "Database (Postgres / MySQL / etc.)",
+          "REST / GraphQL API",
+          "CSV / Excel / Sheets export",
+          "Third-party SaaS (Stripe, GA, etc.)",
+          "No source yet — mock, clearly labeled"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "content",
+        "question": "Which specific metrics/KPIs must it show, and how is each one defined?",
+        "why": "Exact KPIs + definitions decide queries, calculations, and layout; vague 'stats' yields wrong numbers.",
+        "options": [
+          "Revenue, orders, conversion, AOV",
+          "Users, signups, active, churn",
+          "Ops / pipeline status & counts",
+          "Traffic & engagement metrics",
+          "I'll list the exact metrics"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "audience",
+        "question": "Who uses this, and what top decisions or questions should it answer at a glance?",
+        "why": "Audience + key questions set hierarchy, defaults, and depth — exec view differs from ops console.",
+        "options": [
+          "Me / owner — quick health check",
+          "Team / ops — daily operational view",
+          "Clients — polished reporting",
+          "Execs — high-level KPIs",
+          "Mixed audiences"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "How fresh must the data be — real-time, periodic refresh, or a static snapshot?",
+        "why": "Freshness dictates architecture: websockets/polling vs cron refresh vs one-off — different cost.",
+        "options": [
+          "Real-time / live",
+          "Auto-refresh every few minutes",
+          "Hourly / daily refresh",
+          "Static snapshot on load",
+          "On manual refresh"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "scope",
+        "question": "Read-only view, or interactive with filters, drill-down, and date ranges?",
+        "why": "Interactivity scope changes state, queries, and effort far more than the visual layer.",
+        "options": [
+          "Read-only display",
+          "Filters + date range",
+          "Drill-down into details",
+          "Filters + drill-down + export",
+          "Includes actions (edit / trigger)"
+        ],
+        "tier": "required"
+      },
+      {
+        "dimension": "tech",
+        "question": "Any required tech stack or hosting for the dashboard?",
+        "why": "Framework/host constraints (existing app, no-build, static) shape all implementation choices.",
+        "options": [
+          "React / Next.js",
+          "Plain HTML/JS, no build",
+          "Embed in my existing app",
+          "Python (Streamlit / Dash)",
+          "No preference — you pick"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "design",
+        "question": "What visual direction and branding — theme, colors, and tone?",
+        "why": "Design direction prevents a generic template; brand tokens make it feel intentional.",
+        "options": [
+          "Dark command-center",
+          "Light, clean business",
+          "Match my brand (I'll share colors/logo)",
+          "Editorial / data-viz forward",
+          "You choose something intentional"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "scope",
+        "question": "Does it need auth or access control, or is it open/local-only?",
+        "why": "Auth adds login, roles, and per-user data scoping — a big build difference vs an open page.",
+        "options": [
+          "Local / private, no auth",
+          "Single shared password",
+          "Per-user login + roles",
+          "Public, read-only",
+          "Behind existing app auth"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "content",
+        "question": "What time ranges and historical depth should it cover?",
+        "why": "History depth drives storage, aggregation, and trend charts; 7 days vs all-time differ a lot.",
+        "options": [
+          "Live / today only",
+          "Last 7/30 days",
+          "Selectable ranges",
+          "Full history + trends",
+          "Compare periods (WoW / MoM)"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "success",
+        "question": "How should it behave when data is missing, loading, or errors — and can it ever show placeholder numbers?",
+        "why": "Honest empty/loading/error states are required; the view must mirror reality, never fake metrics.",
+        "options": [
+          "Clear empty/loading/error states, never fake numbers",
+          "Show last-known with a timestamp",
+          "Hide widgets with no data",
+          "Placeholder OK only if labeled sample",
+          "Advise best practice"
+        ],
+        "tier": "recommended"
+      },
+      {
+        "dimension": "design",
+        "question": "Which devices matter, and are accessibility standards required?",
+        "why": "Responsive targets + a11y (contrast, keyboard, labels) change layout and component choices.",
+        "options": [
+          "Desktop only",
+          "Desktop + tablet + mobile",
+          "Big wall / TV display",
+          "Mobile-first",
+          "Responsive + WCAG AA"
+        ],
+        "tier": "recommended"
+      }
+    ]
+  }
+}

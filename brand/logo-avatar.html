@@ -1,0 +1,82 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0}#stage{width:1024px;height:1024px}
+</style></head><body><div id="stage">
+<svg width="1024" height="1024" viewBox="100 168 700 700" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="44%" r="72%">
+      <stop offset="0%" stop-color="#16161c"/><stop offset="55%" stop-color="#0a0a0e"/><stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FBFCFE"/><stop offset="26%" stop-color="#DBE0EA"/>
+      <stop offset="60%" stop-color="#AEB6C6"/><stop offset="100%" stop-color="#6B7385"/>
+    </linearGradient>
+    <linearGradient id="metalMid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#CDD3DF"/><stop offset="100%" stop-color="#565E70"/>
+    </linearGradient>
+    <linearGradient id="metalDark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9AA2B2"/><stop offset="100%" stop-color="#3E4557"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFB255"/><stop offset="100%" stop-color="#FF7A18" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="ember" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF"/><stop offset="16%" stop-color="#FFF0C6"/>
+      <stop offset="40%" stop-color="#FFC13A"/><stop offset="72%" stop-color="#FF7A18"/>
+      <stop offset="100%" stop-color="#FF6A16" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FF8A2A" stop-opacity="0.5"/><stop offset="100%" stop-color="#FF6A16" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="9"/></filter>
+    <filter id="big" x="-90%" y="-90%" width="280%" height="280%"><feGaussianBlur stdDeviation="40"/></filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="512" cy="500" r="360" fill="url(#glow)" filter="url(#big)"/>
+
+  <g transform="translate(0,6)">
+    <!-- ground shadow -->
+    <ellipse cx="512" cy="726" rx="234" ry="24" fill="#000" opacity="0.6" filter="url(#soft)"/>
+
+    <!-- BASE -->
+    <path d="M356 662 L668 662 L712 712 L312 712 Z" fill="url(#metal)"/>
+    <path d="M312 712 L380 712 L372 748 L318 748 Z" fill="url(#metalDark)"/>
+    <path d="M644 712 L712 712 L706 748 L636 748 Z" fill="url(#metalDark)"/>
+    <path d="M356 662 L668 662 L668 674 L356 674 Z" fill="#FFFFFF" opacity="0.5"/>
+
+    <!-- WAIST -->
+    <path d="M436 520 L588 520 L604 662 L420 662 Z" fill="url(#metalMid)"/>
+    <path d="M436 520 L470 520 L458 662 L420 662 Z" fill="url(#metalDark)" opacity="0.6"/>
+
+    <!-- FACE SLAB with horn + heel -->
+    <path d="M296 452 L724 452 L724 526 L296 526 Z" fill="url(#metal)"/>
+    <!-- horn -->
+    <path d="M296 460 L150 502 L296 520 Z" fill="url(#metal)"/>
+    <!-- heel (square right end, slightly taller) -->
+    <path d="M700 444 L748 444 L748 534 L700 534 Z" fill="url(#metal)"/>
+    <!-- under-face step shadow -->
+    <path d="M320 526 L700 526 L680 556 L360 556 Z" fill="url(#metalDark)"/>
+
+    <!-- bevels / highlights -->
+    <path d="M296 452 L724 452 L748 444 L748 452 L296 462 Z" fill="#FFFFFF" opacity="0.9"/>
+    <path d="M296 462 L150 502 L296 500 Z" fill="#FFFFFF" opacity="0.55"/>
+    <!-- warm rim-light: ember reflecting on the top face -->
+    <path d="M360 452 L664 452 L664 468 L360 468 Z" fill="url(#rim)" opacity="0.85"/>
+    <ellipse cx="512" cy="452" rx="150" ry="20" fill="#FFB255" opacity="0.5" filter="url(#soft)"/>
+  </g>
+
+  <!-- EMBER SPARK (molten, struck on the face) -->
+  <g transform="translate(0,6)">
+    <circle cx="512" cy="392" r="112" fill="url(#ember)" filter="url(#soft)"/>
+    <circle cx="512" cy="392" r="26" fill="#FFFFFF"/>
+    <!-- crisp 4-point star, thin/sharp -->
+    <path d="M512 300 L523 392 L512 484 L501 392 Z" fill="#FFF3D0"/>
+    <path d="M420 392 L512 381 L604 392 L512 403 Z" fill="#FFF3D0"/>
+    <!-- rising sparks (arc up-right) -->
+    <circle cx="606" cy="322" r="8" fill="#FFC13A"/>
+    <circle cx="648" cy="284" r="5" fill="#FF9A3A"/>
+    <circle cx="430" cy="344" r="6" fill="#FF8A2A"/>
+    <circle cx="566" cy="286" r="4" fill="#FFE9B0"/>
+  </g>
+</svg>
+</div></body></html>

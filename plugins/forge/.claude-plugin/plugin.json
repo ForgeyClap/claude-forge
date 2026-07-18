@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "forge",
+  "displayName": "Forge V2",
+  "version": "2.0.0",
+  "description": "Zero-dependency multi-agent build, automation, review & delivery system that layers on Claude Code.",
+  "author": {
+    "name": "ForgeyClap",
+    "url": "https://github.com/ForgeyClap"
+  },
+  "homepage": "https://github.com/ForgeyClap/claude-forge#readme",
+  "repository": "https://github.com/ForgeyClap/claude-forge",
+  "license": "MIT",
+  "keywords": [
+    "multi-agent",
+    "orchestration",
+    "automation",
+    "code-review",
+    "build",
+    "scraping",
+    "rag",
+    "dashboard"
+  ]
+}

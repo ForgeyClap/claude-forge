@@ -1,0 +1,9 @@
+{
+  "mode": "off",
+  "since": "",
+  "last_activity": "",
+  "project_isolation": "on",
+  "ecc_normal_mode": "on",
+  "ecc_full_test_mode": "off",
+  "notes": "Forge Session Mode (project-local). Set mode to 'on' when the user runs /forge or says 'gebruik Forge'."
+}

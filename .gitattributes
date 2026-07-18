@@ -1,0 +1,26 @@
+# Normalize line endings across platforms — text as LF, Windows scripts as CRLF, binaries untouched.
+* text=auto eol=lf
+
+# Windows-native scripts expect CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Zero-dependency Node + shell tooling
+*.cjs text eol=lf
+*.js  text eol=lf
+*.sh  text eol=lf
+
+# Binary assets (never diff / never touch line endings)
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.ico  binary
+*.webp binary
+
+# Keep docs/brand assets from skewing GitHub's language stats
+*.md        linguist-documentation
+brand/*     linguist-documentation
+screenshots/* linguist-documentation

@@ -1,0 +1,138 @@
+{
+  "_doc": "WP2 (2026-07-14) — the SOURCE OF TRUTH for least-privilege tool grants across all 18 Forge agent-md files (`.claude/agents/*.md`). This file is not documentation-only: `forge-doctor.cjs`'s `agents` check loads it and mechanically compares it against every agent-md's real frontmatter `tools:` line via `forge-policy.cjs`'s `toolPolicyCheck()`. Any drift (an agent gaining a tool not listed here, an agent missing from this file, a policy entry with no matching agent-md, or a class's own forbidden tool showing up in an agent's allowed list) fails forge-doctor and forge-bench. Change tool grants HERE first, keep them in sync with the real agent-md, then re-run forge-doctor.",
+  "bash_is_a_write_primitive": true,
+  "bash_is_a_write_primitive_note": "Bash is a write-AND-execute primitive, not a read primitive. An agent holding Bash can create, overwrite, or delete any file it can reach (`echo >`, `rm`, a redirect), run `git`/`npm`/`curl`, and invoke arbitrary other programs — REGARDLESS of whether that same agent also has the Write/Edit tool grant. Consequently: (1) an agent with Bash is NEVER meaningfully read-only, even if Write/Edit are absent from its `tools:` line — do not 'harden' an agent by deleting Write/Edit while leaving Bash in place, that removes a convenience API but leaves the exact same blast radius reachable through the shell; (2) the only class in this policy that grants Bash without Write/Edit is `exec-reviewer` (codex-reviewer), and it is explicitly documented below as a deliberate, narrow, non-read-only exception, never treated as read-only in any report or dashboard panel.",
+  "classes": {
+    "read-only-audit": {
+      "tools_base": ["Read", "Grep", "Glob"],
+      "may_add": ["WebSearch", "WebFetch"],
+      "forbidden": ["Write", "Edit", "Bash"],
+      "description": "Read/search/fetch only. Mechanically cannot change a single file or execute any command — the entire value of these roles is an independent, untamperable view of the real repo (and, for research roles, the public web). Used for: review-boss, security-boss, search-boss, seo-boss."
+    },
+    "write-no-exec": {
+      "tools": ["Read", "Write", "Edit", "Grep", "Glob"],
+      "forbidden": ["Bash"],
+      "description": "Can read and write/edit files (plans, work packages, docs, JSON registries) but cannot run any command — no git, npm, curl, rm, or ad-hoc node scripts. Used for coordination/writing roles whose output is an artifact for another agent (Build Boss, Test Boss, etc.) to actually execute or ship, never something this role executes itself. Used for: boss, head-chef, docs-boss, skill-boss."
+    },
+    "full-build": {
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "forbidden": [],
+      "description": "Full read/write/execute power — the largest blast radius in the roster. Reserved for roles whose actual job is impossible without running a build, test runner, installer, or other shell tooling. Used for: build-boss, test-boss, ui-boss, integration-boss, data-scientist, electron-pro, mcp-developer, ml-engineer, payment-integration."
+    },
+    "exec-reviewer": {
+      "tools": ["Bash", "Read", "Grep", "Glob"],
+      "forbidden": ["Write", "Edit"],
+      "description": "Has Bash but not Write/Edit. IMPORTANT: this is NOT a read-only class (see bash_is_a_write_primitive_note above) — it is a deliberate, narrow exception for a role whose only actual need is invoking an external CLI/slash-command (the Codex plugin) via Bash, with no first-party need to edit repository files through the Write/Edit tool APIs itself. Used for: codex-reviewer only."
+    }
+  },
+  "agents": {
+    "boss": {
+      "class": "write-no-exec",
+      "tools": ["Read", "Write", "Edit", "Grep", "Glob"],
+      "model": "opus",
+      "rationale": "Lead agent: splits the mission into work packages, tracks progress, and receives QA-failure reports — all written to project markdown/JSON (memory, task history, agent ledger). Never itself needs to run a build/test/git command; Build Boss/Test Boss/Integration Boss execute, Boss coordinates and writes plans. No Bash needed or granted."
+    },
+    "head-chef": {
+      "class": "write-no-exec",
+      "tools": ["Read", "Write", "Edit", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Converts Boss's mission into exact work packages and verifies subagent completion by reading diffs/reports and writing the work-package docs themselves. No step in its role requires executing a shell command — dispatch and verification are read/write-only. No Bash needed or granted."
+    },
+    "review-boss": {
+      "class": "read-only-audit",
+      "tools": ["Read", "Grep", "Glob"],
+      "model": "opus",
+      "rationale": "Final QA gate: reviews finished work against the user's goal (design, code quality, logic, security, tests, UX, edge cases). Its entire value depends on being unable to alter what it is reviewing — a reviewer that could also write/execute could silently 'fix' the very evidence it is supposed to judge. Read/Grep/Glob only; no Write/Edit/Bash."
+    },
+    "test-boss": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Runs real automated tests (Playwright e2e, or the correct strategy per project type) and must write test files/fixtures. Running a real test suite is impossible without Bash (spawning the test runner). Full-build is the minimum viable grant for this role."
+    },
+    "ui-boss": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Builds and fixes UI/UX, runs real screenshot loops across mobile/tablet/desktop, and needs to launch dev servers/screenshot tooling — none of which is reachable without Bash. Full-build is the minimum viable grant."
+    },
+    "seo-boss": {
+      "class": "read-only-audit",
+      "tools": ["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
+      "model": "sonnet",
+      "rationale": "Checks metadata, structure, performance, accessibility, schema, and indexability and reports real findings — an audit/reporting role, not an implementer (fixes go back to Build/UI Boss). WebSearch/WebFetch are needed for CWV/SEO reference lookups. No Write/Edit/Bash — cannot silently 'fix' its own findings."
+    },
+    "security-boss": {
+      "class": "read-only-audit",
+      "tools": ["Read", "Grep", "Glob"],
+      "model": "opus",
+      "rationale": "Explicitly a read-only audit of keys, env vars, auth, webhooks, input validation, and exposed secrets. A security auditor that could also write/execute would be able to alter the evidence of its own findings and would defeat the entire point of an independent audit. Read/Grep/Glob only."
+    },
+    "skill-boss": {
+      "class": "write-no-exec",
+      "tools": ["Read", "Write", "Edit", "Grep", "Glob"],
+      "model": "haiku",
+      "rationale": "Maintains the global skill registry and agent-skill bundles by reading/writing JSON config (config/skills/global-skills.json, agent-skill-map.json). Its own body describes only read/validate/write steps (registry checks, bundle attachment, fallback reporting) — no step requires running a shell command. Bash removed 2026-07-14 (was present in frontmatter but unused by the role; write-no-exec is the correct minimum)."
+    },
+    "search-boss": {
+      "class": "read-only-audit",
+      "tools": ["Read", "Grep", "Glob", "WebSearch", "WebFetch"],
+      "model": "sonnet",
+      "rationale": "Research/current-information role: uses approved search/fetch tools to find sourced facts, never edits the codebase itself. WebSearch/WebFetch are its core function; Write/Edit/Bash would let it silently fabricate 'sourced' content into files instead of reporting findings for another Boss to act on."
+    },
+    "build-boss": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Implementation/coding Boss: writes the actual code changes and must run the project's real build/lint/typecheck/test commands to self-review before handoff (per its own checklist). Bash is core to the role, not incidental."
+    },
+    "integration-boss": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Wires APIs, n8n, webhooks, databases, and NVIDIA-as-tool integrations — needs to run install/validate commands (e.g. n8n `validate_workflow`, package installs, curl-based smoke tests) that only Bash provides."
+    },
+    "docs-boss": {
+      "class": "write-no-exec",
+      "tools": ["Read", "Write", "Edit", "Grep", "Glob"],
+      "model": "haiku",
+      "rationale": "Writes docs, setup instructions, and final reports in simple language with exact commands — a pure documentation/handoff role. Its own body (When invoked / checklists) never runs a command itself; it documents commands that Build Boss/Test Boss already ran and verified. Bash removed 2026-07-14 (frontmatter carried it, but nothing in the role needs to execute anything) — cheap haiku model + write-no-exec matches the role's real scope."
+    },
+    "data-scientist": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "EDA-to-model work requires running real analysis/training scripts and validation harnesses — Bash is required to execute them, not just author code."
+    },
+    "electron-pro": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Builds/hardens an Electron desktop app and must produce a real signed installer/build — packaging tooling only runs through Bash."
+    },
+    "mcp-developer": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Builds/debugs MCP servers/clients and must actually run them (JSON-RPC compliance checks, local server smoke tests) — Bash is required to execute a server process, not optional."
+    },
+    "ml-engineer": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Training-to-serving ML pipelines require running real training/eval/deploy scripts to verify reproducibility and drift monitoring — Bash is core to the role."
+    },
+    "payment-integration": {
+      "class": "full-build",
+      "tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+      "model": "sonnet",
+      "rationale": "Stripe/gateway integration work needs to run webhook verification tooling and local test-mode charge/refund smoke tests — Bash is required to execute those checks, not just to author the integration code."
+    },
+    "codex-reviewer": {
+      "class": "exec-reviewer",
+      "tools": ["Bash", "Read", "Grep", "Glob"],
+      "model": "claude-opus-4-8",
+      "rationale": "Optional independent code-quality reviewer. Needs Bash solely to invoke the Codex CLI/slash-commands (`/codex:review`, `/codex:adversarial-review`) and to run `git diff`. Deliberately has NO Write/Edit — it must never directly edit the code it is reviewing. Per bash_is_a_write_primitive, this agent is NOT read-only despite lacking Write/Edit; it is classified exec-reviewer, a distinct, narrower-than-full-build class than a coder role, not a security-equivalent to review-boss/security-boss."
+    }
+  }
+}

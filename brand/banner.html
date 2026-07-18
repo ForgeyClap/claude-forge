@@ -1,0 +1,97 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0}
+  #stage{width:1280px;height:640px;background:#000;position:relative;overflow:hidden;
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;}
+  .glow{position:absolute;inset:0}
+  .content{position:absolute;inset:0;display:flex;align-items:center;gap:8px;padding:0 76px;box-sizing:border-box}
+  .mark{flex:0 0 360px;height:360px}
+  .txt{flex:1;color:#fff}
+  .word{font-weight:800;font-size:96px;letter-spacing:-3px;line-height:1;margin:0}
+  .word .c{color:#E8ECF4}
+  .word .f{background:linear-gradient(180deg,#FFD27A 0%,#FF8A1E 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .tag{font-size:31px;color:#AEB6C6;margin:22px 0 0;font-weight:500;letter-spacing:.2px}
+  .stats{display:flex;gap:12px;margin-top:34px;flex-wrap:wrap}
+  .chip{font-size:23px;color:#D7DCE6;font-weight:600;display:flex;align-items:center;gap:9px}
+  .dot{width:9px;height:9px;border-radius:50%;background:#FF8A1E;box-shadow:0 0 10px #FF8A1E}
+  .cmd{margin-top:30px;font-family:"Cascadia Code","Consolas",monospace;font-size:22px;color:#8B93A6}
+  .cmd b{color:#FFB255;font-weight:600}
+  .spark{position:absolute;border-radius:50%}
+</style></head><body>
+<div id="stage">
+  <div class="glow">
+    <svg width="1280" height="640" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="bgw" cx="24%" cy="46%" r="60%">
+          <stop offset="0%" stop-color="#1a140f"/><stop offset="45%" stop-color="#0c0a0a"/><stop offset="100%" stop-color="#000"/>
+        </radialGradient>
+        <radialGradient id="gw" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#FF8A2A" stop-opacity="0.42"/><stop offset="100%" stop-color="#FF6A16" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="bb" x="-90%" y="-90%" width="280%" height="280%"><feGaussianBlur stdDeviation="46"/></filter>
+      </defs>
+      <rect width="1280" height="640" fill="url(#bgw)"/>
+      <circle cx="256" cy="320" r="230" fill="url(#gw)" filter="url(#bb)"/>
+      <!-- hairline bottom rule -->
+      <rect x="76" y="566" width="1128" height="1" fill="#ffffff" opacity="0.08"/>
+    </svg>
+  </div>
+
+  <div class="content">
+    <div class="mark">
+      <!-- anvil+ember mark (from the locked logo, fit to 360) -->
+      <svg width="360" height="360" viewBox="120 120 800 800" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FBFCFE"/><stop offset="26%" stop-color="#DBE0EA"/><stop offset="60%" stop-color="#AEB6C6"/><stop offset="100%" stop-color="#6B7385"/></linearGradient>
+          <linearGradient id="metalMid" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#CDD3DF"/><stop offset="100%" stop-color="#565E70"/></linearGradient>
+          <linearGradient id="metalDark" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#9AA2B2"/><stop offset="100%" stop-color="#3E4557"/></linearGradient>
+          <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFB255"/><stop offset="100%" stop-color="#FF7A18" stop-opacity="0"/></linearGradient>
+          <radialGradient id="ember" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#FFFFFF"/><stop offset="16%" stop-color="#FFF0C6"/><stop offset="40%" stop-color="#FFC13A"/><stop offset="72%" stop-color="#FF7A18"/><stop offset="100%" stop-color="#FF6A16" stop-opacity="0"/></radialGradient>
+          <filter id="s2" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="9"/></filter>
+        </defs>
+        <g transform="translate(0,6)">
+          <ellipse cx="512" cy="726" rx="234" ry="24" fill="#000" opacity="0.55" filter="url(#s2)"/>
+          <path d="M356 662 L668 662 L712 712 L312 712 Z" fill="url(#metal)"/>
+          <path d="M312 712 L380 712 L372 748 L318 748 Z" fill="url(#metalDark)"/>
+          <path d="M644 712 L712 712 L706 748 L636 748 Z" fill="url(#metalDark)"/>
+          <path d="M436 520 L588 520 L604 662 L420 662 Z" fill="url(#metalMid)"/>
+          <path d="M436 520 L470 520 L458 662 L420 662 Z" fill="url(#metalDark)" opacity="0.6"/>
+          <path d="M296 452 L724 452 L724 526 L296 526 Z" fill="url(#metal)"/>
+          <path d="M296 460 L150 502 L296 520 Z" fill="url(#metal)"/>
+          <path d="M700 444 L748 444 L748 534 L700 534 Z" fill="url(#metal)"/>
+          <path d="M320 526 L700 526 L680 556 L360 556 Z" fill="url(#metalDark)"/>
+          <path d="M296 452 L724 452 L748 444 L748 452 L296 462 Z" fill="#FFFFFF" opacity="0.9"/>
+          <path d="M296 462 L150 502 L296 500 Z" fill="#FFFFFF" opacity="0.55"/>
+          <path d="M360 452 L664 452 L664 468 L360 468 Z" fill="url(#rim)" opacity="0.85"/>
+          <ellipse cx="512" cy="452" rx="150" ry="20" fill="#FFB255" opacity="0.5" filter="url(#s2)"/>
+        </g>
+        <g transform="translate(0,6)">
+          <circle cx="512" cy="392" r="112" fill="url(#ember)" filter="url(#s2)"/>
+          <circle cx="512" cy="392" r="26" fill="#FFFFFF"/>
+          <path d="M512 300 L523 392 L512 484 L501 392 Z" fill="#FFF3D0"/>
+          <path d="M420 392 L512 381 L604 392 L512 403 Z" fill="#FFF3D0"/>
+          <circle cx="606" cy="322" r="8" fill="#FFC13A"/><circle cx="648" cy="284" r="5" fill="#FF9A3A"/>
+          <circle cx="430" cy="344" r="6" fill="#FF8A2A"/><circle cx="566" cy="286" r="4" fill="#FFE9B0"/>
+        </g>
+      </svg>
+    </div>
+
+    <div class="txt">
+      <p class="word"><span class="c">claude-</span><span class="f">forge</span></p>
+      <p class="tag">A zero-dependency, multi-agent build system for Claude Code.</p>
+      <div class="stats">
+        <span class="chip"><span class="dot"></span>18 agents</span>
+        <span class="chip"><span class="dot"></span>23 skills</span>
+        <span class="chip"><span class="dot"></span>live dashboard</span>
+        <span class="chip"><span class="dot"></span>zero deps</span>
+        <span class="chip"><span class="dot"></span>MIT</span>
+      </div>
+      <p class="cmd">/plugin install <b>forge@claude-forge</b> &nbsp;·&nbsp; then <b>/setup-forge</b></p>
+    </div>
+  </div>
+
+  <!-- ambient sparks -->
+  <div class="spark" style="left:360px;top:150px;width:5px;height:5px;background:#FFB255;box-shadow:0 0 8px #FF8A1E"></div>
+  <div class="spark" style="left:300px;top:430px;width:4px;height:4px;background:#FF8A2A;box-shadow:0 0 7px #FF6A16"></div>
+  <div class="spark" style="left:150px;top:250px;width:3px;height:3px;background:#FFD27A"></div>
+</div>
+</body></html>

@@ -1,0 +1,47 @@
+# Secrets — never commit real env files (placeholders live in .env.example)
+.env
+.env.*
+!.env.example
+
+# Dependencies / build
+node_modules/
+dist/
+build/
+.cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+
+# Forge run/event logs (local only). NOTE: ignore the run-dir CONTENTS, not the directory itself —
+# git cannot re-include a keeper (below) if its parent dir is excluded (fix 2026-07-09 checkup).
+.claude/forge-runs/*/*
+.claude/forge-dashboard/PORT
+.claude/forge-dashboard/DASHBOARD_STATE.json
+
+# Generated tool state / caches (deep-scan hygiene 2026-07-07)
+.claude-flow/
+graphify-out/
+.claude/graphify-out/
+*.mp4
+
+# Forge run keepers — explicit exceptions to the local-only rule above
+!.claude/forge-runs/*/run.json
+!.claude/forge-runs/*/final-report.md
+!.claude/forge-runs/*/mission-blueprint.md
+
+# leaked/copied Claude system prompt — never commit, never load globally
+claude-fable-5.md
+
+# ChatGPT research PDF (keep local)
+NVIDIA Build and NIM Model Mapping for Permanent Forge Agent Roles.pdf
+
+# Editor/checkup backups + local guard ack state (never commit — fix 2026-07-09 checkup)
+*.bak-*
+.claude/FORGE_USAGE_GUARD_ACK.json
+# Forge onboarding — temp key fill-file + runtime markers (never commit)
+.env.forge-setup
+.env.forge-tmp
+.claude/.forge-setup.json
+.forge-global.json

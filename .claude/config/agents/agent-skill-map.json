@@ -1,0 +1,19 @@
+{
+  "_doc": "Per-agent CORE skills (permanent, every project, auto-attached) — the project-type bundle from config/skills/global-skills.json comes ON TOP. Skill Boss validates before dispatch: an agent may not start without its core skills resolvable (real skill, playbook, ECC agent, or documented method) — missing → report + labeled safe fallback.",
+  "agents": {
+    "boss":             ["forge-router", "make-plan", "brainstorming", "forge-report"],
+    "head-chef":        ["make-plan", "writing-plans", "dispatching-parallel-agents", "subagent-driven-development"],
+    "review-boss":      ["code-review-excellence", "verification-before-completion", "design-is", "requesting-code-review"],
+    "test-boss":        ["test-driven-development", "verification-before-completion", "e2e-runner (ECC agent)", "systematic-debugging"],
+    "ui-boss":          ["frontend-design (ECC/plugin)", "design-is", "dataviz", "browser", "screenshot-loop (method)"],
+    "seo-boss":         ["seo-specialist (ECC agent)", "forge-website (SEO/perf sections)", "performance-optimizer (ECC agent)"],
+    "security-boss":    ["security-reviewer (ECC agent)", "security-review", "verification-before-completion"],
+    "skill-boss":       ["skill-builder", "using-superpowers", "global-skills registry (config/skills/global-skills.json)"],
+    "search-boss":      ["deep-research", "WebSearch/WebFetch (tools)", "docs-lookup (ECC agent)"],
+    "build-boss":       ["test-driven-development", "systematic-debugging", "code-review-excellence", "using-git-worktrees"],
+    "integration-boss": ["forge-integration", "n8n-mcp-tools-expert", "claude-api", "nvidia-provider (forge-bin/nvidia-provider.cjs)"],
+    "docs-boss":        ["forge-report", "writing-plans", "update-docs (ECC command)"]
+  },
+  "autoAttach": "At team-build time the Lead (Boss) reads this map + the project-type bundle and embeds the skill list in each subagent's prompt (skills load via the Skill tool inside the subagent). No manual per-project reconnection.",
+  "honesty": "Entries marked (ECC agent)/(method)/(tools) are agents, procedures, or tools — not SKILL.md files; they are invoked as what they are. Never claim a skill loaded that didn't."
+}

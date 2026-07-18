@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & discussion
+    url: https://github.com/ForgeyClap/claude-forge/discussions
+    about: Ask questions, share ideas, or get help using Forge — for anything that isn't a concrete bug or feature request.
+  - name: Documentation & README
+    url: https://github.com/ForgeyClap/claude-forge#readme
+    about: Install methods, quickstart, and how Forge works. Please skim this before opening an issue.

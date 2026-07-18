@@ -1,0 +1,23 @@
+{
+  "_doc": "Forge orchestration DAG (2026-07-11, LATER tier). Encodes the Boss loop as an executable graph so control is deterministic + resumable (resume at a failed node, not a whole-WP redo). nodes = Bosses/gates + a 'done' terminal; edges carry an 'on' condition (pass|fail) and optional kind (rework). forge-graph.cjs runs it; the Lead may still deviate when a task genuinely needs it (this is guidance-as-graph, not a cage).",
+  "start": "boss",
+  "nodes": [
+    { "id": "boss", "type": "boss", "agent": "Boss", "timeout_min": 0 },
+    { "id": "head-chef", "type": "boss", "agent": "Head Chef" },
+    { "id": "build-boss", "type": "boss", "agent": "Build Boss" },
+    { "id": "test-boss", "type": "gate", "agent": "Test Boss" },
+    { "id": "review-boss", "type": "gate", "agent": "Review Boss" },
+    { "id": "docs-boss", "type": "boss", "agent": "Docs Boss" },
+    { "id": "done", "type": "terminal" }
+  ],
+  "edges": [
+    { "from": "boss", "to": "head-chef", "on": "pass" },
+    { "from": "head-chef", "to": "build-boss", "on": "pass" },
+    { "from": "build-boss", "to": "test-boss", "on": "pass" },
+    { "from": "test-boss", "to": "review-boss", "on": "pass" },
+    { "from": "test-boss", "to": "build-boss", "on": "fail", "kind": "rework" },
+    { "from": "review-boss", "to": "docs-boss", "on": "pass" },
+    { "from": "review-boss", "to": "head-chef", "on": "fail", "kind": "rework" },
+    { "from": "docs-boss", "to": "done", "on": "pass" }
+  ]
+}

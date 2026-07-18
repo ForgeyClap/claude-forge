@@ -1,0 +1,8 @@
+{
+  "ecc_normal_mode": "on",
+  "ecc_full_test_mode": "off",
+  "project_isolation": "on",
+  "heavy_security_gates": "off",
+  "global_unblock": "off",
+  "notes": "Forge is ECC-based. ECC Normal Mode (default ON) prefers real ECC agents/skills, makes work packages, logs ECC activity, and reports honestly (native only as a labeled fallback). It still respects project isolation + approval gates (active folder only; no other projects; no global Claude/ECC config; no credential/live-workflow/production/external writes without explicit approval). ECC Full Test Mode (broad inventory / unblock-diagnose / permission test / sandbox stress-test) is OPT-IN ONLY: set ecc_full_test_mode to 'on' (or create .claude/ECC_TEST_MODE.md) after the user says 'enable ECC test mode for this project'. New projects never get Full Test automatically."
+}

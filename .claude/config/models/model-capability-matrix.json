@@ -1,0 +1,57 @@
+{
+  "_doc": "NVIDIA Build/NIM capability matrix. Method: LIVE single-shot probes on our own API key (not model-card theory) with per-model timeout. RE-VALIDATED 2026-07-17 (10 days after the 2026-07-07 baseline) — the endpoint drifted HARD: 4 of 6 role-models broke. kimi-k2.6 -> HTTP 404 (gone), mistral-large-3-675b -> HANGS >22s, gpt-oss-120b -> EMPTY content via our text adapter, llama-4-maverick -> HANGS >22s. Only minimax-m3 (default) and nemotron-3-nano (fast) survived. Replacements were found by probing the live 119-model catalog with a real coding prompt: nemotron-3-super-120b-a12b (coding), deepseek-v4-flash (reasoning; it ERRORED on 07-07 but RECOVERED), mistral-small-4-119b-2603 (review). deepseek-v4-PRO still HANGS — only FLASH is safe. NVIDIA is called SINGLE-SHOT as a tool (not the agent runtime), so raw quality + a non-hanging clean response is what counts. Lead/Boss ALWAYS runs on Claude Opus 4.8. RE-PROBE before trusting after ~1 week: models come and go on this endpoint.",
+  "provider": {
+    "name": "nvidia-build-nim",
+    "baseUrlEnv": "NVIDIA_BASE_URL",
+    "baseUrlDefault": "https://integrate.api.nvidia.com/v1",
+    "apiKeyEnv": "NVIDIA_API_KEY",
+    "keyPrefix": "nvapi-",
+    "keyPortal": "https://build.nvidia.com/settings/api-keys",
+    "rateLimitPerMin": 40
+  },
+  "roles": {
+    "default":   { "model": "minimaxai/minimax-m3",                        "envOverride": "NVIDIA_DEFAULT_MODEL",     "why": "Live-reprobed 2026-07-17: WORKING (1074ms, clean concise). General in-task drafting/summaries/classification." },
+    "fast":      { "model": "nvidia/nemotron-3-nano-30b-a3b",              "envOverride": "NVIDIA_FAST_MODEL",        "why": "Live 2026-07-17: WORKING (526ms), 1M ctx, cheap. Routing/formatting/bulk/first-pass. Verbose (shows reasoning)." },
+    "reasoning": { "model": "deepseek-ai/deepseek-v4-flash",               "envOverride": "NVIDIA_REASONING_MODEL",   "why": "REPLACES kimi-k2.6 (now HTTP 404). Live 2026-07-17: WORKING (2477ms, clean). Note: this ERRORED on 07-07 but RECOVERED. deepseek-v4-PRO still HANGS >22s — use FLASH only." },
+    "review":    { "model": "mistralai/mistral-small-4-119b-2603",         "envOverride": "NVIDIA_REVIEW_MODEL",      "why": "REPLACES mistral-large-3-675b (now HANGS >22s). Live 2026-07-17: WORKING (690ms, clean). Diverse Mistral family for an independent code/QA second-opinion. Final verdict still stays Claude." },
+    "coding":    { "model": "nvidia/nemotron-3-super-120b-a12b",           "envOverride": "NVIDIA_CODING_MODEL",      "why": "REPLACES gpt-oss-120b (now EMPTY content via our text adapter). Live 2026-07-17: WORKING (827ms, clean 'def add'). 120B, strong+fast; also good reasoning/long-context." },
+    "coding-fast":{ "model": "nvidia/nemotron-3-nano-30b-a3b",             "envOverride": "NVIDIA_CODING_FAST_MODEL", "why": "Cheap coding/bulk test-case expansion; live 2026-07-17 WORKING (526ms)." },
+    "vision":    { "model": "meta/llama-4-maverick-17b-128e-instruct",     "envOverride": "NVIDIA_VISION_MODEL",      "why": "Live 2026-07-17: now HANGS >22s AND our adapter is TEXT-ONLY anyway -> real screenshot analysis runs on UI Boss's CLAUDE runtime. Do NOT route vision to NVIDIA; kept only as the intended id if the adapter later gains image-block support AND the model recovers." }
+  },
+  "catalog": [
+    { "id": "minimaxai/minimax-m3",                 "caps": ["general", "reasoning"], "ctx": 196608, "tier": "strong",   "probe": "WORKING (1074ms, clean 'PIPELINE OK')", "verified": "live-probe-2026-07-17" },
+    { "id": "nvidia/nemotron-3-nano-30b-a3b",       "caps": ["general", "coding", "fast", "long-context"], "ctx": 1000000, "tier": "cheap", "probe": "WORKING (526ms, verbose shows reasoning)", "verified": "live-probe-2026-07-17" },
+    { "id": "nvidia/nemotron-3-super-120b-a12b",    "caps": ["coding", "reasoning", "review", "general", "long-context"], "ctx": 1000000, "tier": "flagship", "probe": "WORKING (827ms, clean code) — now the coder", "verified": "live-probe-2026-07-17" },
+    { "id": "deepseek-ai/deepseek-v4-flash",        "caps": ["reasoning", "coding", "fast"], "ctx": 128000, "tier": "strong", "probe": "WORKING (2477ms, clean) — RECOVERED since 07-07; now the reasoner", "verified": "live-probe-2026-07-17" },
+    { "id": "mistralai/mistral-small-4-119b-2603",  "caps": ["review", "general", "coding"], "ctx": 128000, "tier": "strong", "probe": "WORKING (690ms, clean) — now the reviewer", "verified": "live-probe-2026-07-17" },
+    { "id": "mistralai/mistral-nemotron",           "caps": ["general", "coding"], "ctx": 128000, "tier": "strong", "probe": "WORKING (579ms, clean) — fast clean general alt", "verified": "live-probe-2026-07-17" },
+    { "id": "thinkingmachines/inkling",             "caps": ["general", "coding", "reasoning"], "ctx": 128000, "tier": "strong", "probe": "WORKING (587ms, clean 'def add') — promising", "verified": "live-probe-2026-07-17" },
+    { "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "caps": ["reasoning", "general"], "ctx": 128000, "tier": "cheap", "probe": "WORKING (2879ms, clean) — cheap reasoning alt", "verified": "live-probe-2026-07-17" },
+    { "id": "mistralai/mistral-medium-3.5-128b",    "caps": ["general", "review"], "ctx": 128000, "tier": "strong", "probe": "WORKING but SLOW (11013ms)", "verified": "live-probe-2026-07-17" },
+    { "id": "meta/llama-4-maverick-17b-128e-instruct", "caps": ["vision", "general"], "ctx": 1000000, "tier": "avoid", "probe": "HANGS >22s (2026-07-17) + adapter text-only -> real vision runs on Claude UI Boss; kept as the intended vision id (avoid-tier)", "verified": "live-probe-2026-07-17" },
+    { "id": "deepseek-ai/deepseek-v4-pro",          "caps": ["coding", "reasoning"], "ctx": 128000, "tier": "avoid", "probe": "HANGS >22s (2026-07-17) — DO NOT USE; use deepseek-v4-flash instead", "verified": "live-probe-2026-07-17" }
+  ],
+  "notAvailableOrBroken": {
+    "_note": "Live-probed 2026-07-17 and found UNUSABLE on our key/adapter — kept here so we never re-add them blindly. Re-probe before ever restoring one.",
+    "moonshotai/kimi-k2.6": "HTTP 404 on chat (listed in catalog but not served) — was the 07-07 reasoner, GONE 07-17",
+    "mistralai/mistral-large-3-675b-instruct-2512": "HANGS >22s (07-17) — was the 07-07 reviewer at 347ms",
+    "openai/gpt-oss-120b": "EMPTY content via our text adapter (07-17) — was the 07-07 coder",
+    "meta/llama-4-maverick-17b-128e-instruct": "HANGS >22s (07-17) + adapter text-only anyway",
+    "deepseek-ai/deepseek-v4-pro": "HANGS >22s (still)",
+    "minimaxai/minimax-m2.7": "HANGS >22s",
+    "z-ai/glm-5.2": "HANGS >16s",
+    "bytedance/seed-oss-36b-instruct": "HANGS >16s",
+    "stepfun-ai/step-3.7-flash": "EMPTY content", "stepfun-ai/step-3.5-flash": "EMPTY content",
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1": "HTTP 404", "nvidia/nemotron-nano-3-30b-a3b": "HTTP 404 (model not found)",
+    "nvidia/nemotron-4-340b-instruct": "HTTP 404", "writer/palmyra-creative-122b": "HTTP 404",
+    "mistralai/mistral-large": "HTTP 404", "mistralai/mistral-large-2-instruct": "HTTP 404", "nvidia/cosmos-reason2-8b": "HTTP 404",
+    "qwen/qwen3-coder-480b-a35b-instruct": "NOT in live catalog", "qwen/qwen3-next-80b-a3b-instruct": "hangs", "qwen/qwen3.5-122b-a10b": "hangs", "qwen/qwen3.5-397b-a17b": "hangs/adapter text-only",
+    "mistralai/codestral-22b-instruct-v0.1": "listed but 404-history", "meta/codellama-70b": "listed but 404-history", "ibm/granite-34b-code-instruct": "404-history", "deepseek-ai/deepseek-coder-6.7b-instruct": "404-history"
+  },
+  "premiumFallback": {
+    "provider": "anthropic (Claude Code runtime)",
+    "models": { "premium": "opus (Opus 4.8)", "balanced": "sonnet (Sonnet 5)", "trivial": "haiku (Haiku 4.5)" },
+    "when": "Lead/Boss ALWAYS Opus 4.8. High-risk reasoning, architecture, deep code review, final QA, security, complex planning, AND all real vision/screenshot analysis (adapter is text-only) -> Claude. Sonnet 5 is the price/performance fallback; Opus 4.8 is accuracy-first. NVIDIA reduces cost on bulk in-task work; it never replaces a premium assignment and never handles the final verdict."
+  },
+  "honesty": "Every model here carries a LIVE-probe result from 2026-07-17 on our own key (per-model timeout). The 2026-07-07 matrix was 4/6 stale within 10 days — model cards and benchmarks did NOT predict which models hang, 404, or return empty on this endpoint. Re-probe with a real chat call (see .claude/forge-bin/nvidia-provider.cjs) after ~1 week before trusting any entry."
+}

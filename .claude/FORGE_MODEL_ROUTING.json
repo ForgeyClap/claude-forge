@@ -1,0 +1,65 @@
+{
+  "_doc": "Forge model routing / quota tiering (user decisions 2026-07-03). Lead (main session) stays on Opus (owner-set; 'opusplan' recommended = Opus plans, Sonnet executes). Subagents default to the tier here; the Lead may ESCALATE a specific subagent to opus when it is the highest-stakes on THIS task, or DROP a truly-trivial one to haiku. Route by ALIAS (opus/sonnet/haiku/fable) via the Agent-tool `model` param (or subagent frontmatter `model:`, or CLAUDE_CODE_SUBAGENT_MODEL). Forge logs the ACTUAL model used in FORGE_AGENT_LEDGER.md + a dashboard event. Guidance only — never overrides governance, security, QA, or TOKEN_EFFICIENCY_GLOBAL_POLICY. Forge cannot auto-switch the session model; it may only recommend.",
+  "precedence": "hardTasksAlwaysOpus and neverHaiku OVERRIDE every role default below. A role's 'mayEscalateTo' is discretionary ONLY for work that is NOT on those lists. If the task matches hardTasksAlwaysOpus it MUST run on opus regardless of the role default; if it matches neverHaiku it must NOT run on haiku.",
+  "session": {
+    "lead": {
+      "model": "opus",
+      "recommendedAlias": "opusplan",
+      "note": "Owner keeps the main session on Opus (or 'opusplan' = Opus plans, Sonnet executes). Forge cannot auto-switch the session model; it may recommend the owner run /model opus or /model opusplan."
+    }
+  },
+  "fable": {
+    "model": "fable",
+    "use": "Opt-in only, owner-invoked (/model fable) for long-horizon single-sitting-plus work; heaviest quota, slowest; NEVER a Forge default."
+  },
+  "defaults": {
+    "subagent": "sonnet",
+    "cheapWhenTrivial": "haiku",
+    "escalateHardTo": "opus",
+    "mechanicalUseEditNoAgent": true
+  },
+  "roles": {
+    "architect":         { "default": "opus",   "note": "System design / contract-first — advanced reasoning." },
+    "planner":           { "default": "opus",   "note": "Plan / master-prompt — the best use of Opus quota." },
+    "security-reviewer": { "default": "opus",   "note": "Auth / secrets / payments — never downgrade." },
+    "codex-reviewer":    { "default": "opus",   "note": "High-stakes independent review." },
+    "engineer":          { "default": "sonnet", "mayEscalateTo": "opus", "escalateWhen": "multi-file / unfamiliar codebase / hard debug after a Sonnet attempt (discretionary)", "note": "Versatile default for implementation." },
+    "coder":             { "default": "sonnet", "mayEscalateTo": "opus", "escalateWhen": "same as engineer (discretionary)" },
+    "frontend-agent":    { "default": "sonnet" },
+    "backend-dev":       { "default": "sonnet", "mustEscalateTo": "opus", "escalateWhen": "auth / data-model / migration work — matches hardTasksAlwaysOpus, so escalation is MANDATORY not discretionary" },
+    "designer":          { "default": "sonnet" },
+    "reviewer":          { "default": "sonnet", "mustEscalateTo": "opus", "escalateWhen": "security- or architecture-critical diff — matches hardTasksAlwaysOpus, so escalation is MANDATORY not discretionary" },
+    "tester":            { "default": "sonnet" },
+    "qa":                { "default": "sonnet", "mayDropTo": "haiku", "dropWhen": "pure screenshot / proof logging with no judgement" },
+    "researcher":        { "default": "sonnet", "mayDropTo": "haiku", "dropWhen": "simple fact lookup / single doc fetch" },
+    "classifier":        { "default": "haiku",  "note": "Task classify / route — simplest tier." },
+    "summarizer":        { "default": "haiku",  "note": "Short summaries, log->dashboard-event text." },
+    "memory-writer":     { "default": "haiku",  "note": "Ledger / memory / dashboard-event writes." },
+    "formatter":         { "default": "haiku",  "note": "Mechanical formatting / rename descriptions." }
+  },
+  "hardTasksAlwaysOpus": [
+    "architecture", "contract-first design", "security / auth", "database migrations",
+    "final integration verdict", "adversarial review", "production gate",
+    "hard debug after a first Sonnet attempt"
+  ],
+  "neverHaiku": [
+    "multi-file implementation", "security", "architecture", "migrations",
+    "final verdict", "any high-risk work"
+  ],
+  "effort": {
+    "default": "high",
+    "mechanical": "low",
+    "hardest": "xhigh",
+    "note": "sonnet / Opus 4.8 / Fable 5 support low|medium|high|xhigh|max (default high). Tuning effort is often a better lever than switching model. Where a Workflow runtime is available, agent() also takes opts.effort; separately, add 'ultrathink' in a prompt to raise the thinking budget for a one-off deep pass without changing session effort."
+  },
+  "quotaHygiene": [
+    "/clear between unrelated tasks",
+    "reference files by path (don't paste full content)",
+    "targeted reads/diffs, not whole-repo dumps",
+    "don't re-read a just-edited file",
+    "summarize logs to a path pointer",
+    "smallest team that fits (over-spawning is the #1 waste)",
+    "compact internal output; full only for deliverables"
+  ],
+  "honesty": "Log the ACTUAL model each subagent ran on. Never claim a model that wasn't used. Never fabricate quota 'savings' numbers — real savings need real measurement."
+}

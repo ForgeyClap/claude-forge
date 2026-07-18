@@ -1,0 +1,33 @@
+{
+  "score": 1,
+  "passed": 25,
+  "total": 25,
+  "cases": [
+    "honesty.canonical-name",
+    "honesty.reject-fake-pass",
+    "chain.tamper-evident",
+    "security.rebind-guard",
+    "mcp.tool-surface",
+    "mcp.reject-traversal",
+    "mcp.no-dangling-resources",
+    "otel.exact-nanos",
+    "otel.otlp-shape",
+    "resume.unfinished-detect",
+    "learning.distill-evidence-required",
+    "learning.evals-deterministic",
+    "learning.reflect-evidence-required",
+    "learning.evals-compare-baseline",
+    "intake.bank-list-shaped",
+    "promptmaster.dispatch-lint",
+    "learning.cost-capture-parse",
+    "learning.federated-readonly-isolation",
+    "learning.stats-readonly-projector",
+    "reliability.sync-rollback-proven",
+    "security.agent-least-privilege",
+    "honesty.certify-fail-closed",
+    "reliability.chaos-detects-break",
+    "reliability.checkpoint-idempotent",
+    "reliability.doctor-tally-anchored"
+  ],
+  "note": "ForgeBench capability baseline — regenerate with --baseline after intentional capability changes"
+}

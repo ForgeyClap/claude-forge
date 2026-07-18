@@ -1,0 +1,92 @@
+{
+  "_doc": "PERMANENT Forge agent registry (user decision 2026-07-05). These names are FIXED across every project — never invent new/random agent names for work these roles cover. Extra agents are allowed ONLY with: permanent standardized name + clear role + default skill bundle + suitable model assignment + self-review duty + a place in the Boss→Head Chef→QA loop (add them HERE, template-first, then sync). Runtime note (honest): agents run as Claude Code subagents (Agent tool); 'claudeTier' is the runtime model. NVIDIA models are called AS TOOLS by agents via forge-bin/nvidia-provider.cjs per agent-model-map.json.",
+  "loop": "User → Boss (mission) → Head Chef (exact work packages) → Skill Boss (skills attached) + model routing check → subagents (each self-reviews before done) → Test Boss (automated tests) → UI Boss (visual, when relevant) → SEO Boss (perf/site, when relevant) → Security Boss → Review Boss (final QA) → fail? structured failure report → Boss → Head Chef assigns fixes → re-test → Review Boss again → repeat until genuine pass or truthful blocker.",
+  "agents": {
+    "boss": {
+      "name": "Boss",
+      "role": "Lead Agent / orchestrator",
+      "responsibilities": "Owns the mission: split into tasks, assign, track, receive QA failure reports, decide fix strategy, reassign until pass; decides when premium fallback (Opus/Sonnet) replaces a cheaper model; final owner of quality.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/boss.md"
+    },
+    "head-chef": {
+      "name": "Head Chef",
+      "role": "Execution controller / task planner",
+      "responsibilities": "Convert Boss instructions into exact step-by-step work packages; verify every subagent completed its goal; prevent random/duplicate work; ensure each task has the correct agent + skill bundle + model; send unclear/failed work back to Boss.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/head-chef.md"
+    },
+    "review-boss": {
+      "name": "Review Boss",
+      "role": "Final QA reviewer",
+      "responsibilities": "End-of-project review vs the user goal: design, code quality, logic, security, tests, UX, edge cases, missing features; structured failure report to Boss; never approve until genuinely good; strong review model required.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/review-boss.md"
+    },
+    "test-boss": {
+      "name": "Test Boss",
+      "role": "Automated testing",
+      "responsibilities": "Websites/apps: Playwright — buttons, forms, links, menus, modals, filters, flows, mobile nav, keyboard/loading/error states, many interaction checks (not one happy path). Other project types: the correct automated test strategy. Produce real test proof + failures.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/test-boss.md"
+    },
+    "ui-boss": {
+      "name": "UI Boss",
+      "role": "UI/UX & frontend quality",
+      "responsibilities": "Premium, professional, unique, responsive, modern interfaces; purposeful animation; mobile/tablet/desktop; screenshot loops for visual verification; fix oversized text, spacing, contrast, weak layout.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/ui-boss.md"
+    },
+    "seo-boss": {
+      "name": "SEO Boss",
+      "role": "SEO / performance / site quality",
+      "responsibilities": "Websites: metadata, structure, headings, performance, accessibility, image optimization, CWV-style issues, schema, indexability. Non-web: performance, discoverability, documentation clarity, runtime efficiency.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/seo-boss.md"
+    },
+    "security-boss": {
+      "name": "Security Boss",
+      "role": "Security & secrets",
+      "responsibilities": "Keys/env vars/auth/webhooks/input validation/injection/unsafe logs/exposed secrets/production safety; no key ever committed; .gitignore + .env.example hygiene; strong reasoning model — high risk.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/security-boss.md"
+    },
+    "skill-boss": {
+      "name": "Skill Boss",
+      "role": "Global skills manager",
+      "responsibilities": "Maintain the global skill registry; attach default skills to agents permanently; project-type bundles auto-attach; report missing skills + safe fallback; validate skill bundle + model match the agent's real task.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/skill-boss.md"
+    },
+    "search-boss": {
+      "name": "Search Boss",
+      "role": "Research / current information",
+      "responsibilities": "Approved search/research tools for current info; facts + sources + references; no hallucination; competitor/design/SEO/market research on request; source-grounded model.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/search-boss.md"
+    },
+    "build-boss": {
+      "name": "Build Boss",
+      "role": "Implementation / coding",
+      "responsibilities": "Implement the actual code changes; follow architecture; clean, maintainable, tested code; never bypass QA/tests; coding-capable model only.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/build-boss.md"
+    },
+    "integration-boss": {
+      "name": "Integration Boss",
+      "role": "APIs / automation / external systems",
+      "responsibilities": "NVIDIA Build/NIM, n8n, webhooks, Gmail, calendars, databases, payments; retries, timeouts, clear errors, fallbacks; clean documented config.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/integration-boss.md"
+    },
+    "docs-boss": {
+      "name": "Docs Boss",
+      "role": "Documentation & handoff",
+      "responsibilities": "Docs, setup instructions, architecture notes, env-var guides, final reports; simple language; exact commands; cheap/fast model unless complex architecture/security content.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/docs-boss.md"
+    }
+  },
+  "extensionRule": "New agent? Only with permanent name + role + skill bundle + model mapping + self-review + loop position, added to this file (template) and synced. Never spawn ad-hoc differently-named agents for work an existing Boss covers.",
+  "_agentFilesNote": "Each Boss has a real agent-definition file (agentFile) with frontmatter (name/description/tools/model/memory:project) + body; the Lead dispatches Agent({subagent_type:<kebab>, model:<claudeTier>}). Files are template-owned + synced."
+}

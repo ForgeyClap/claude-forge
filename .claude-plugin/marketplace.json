@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "claude-forge",
+  "description": "Forge V2 — a zero-dependency multi-agent build, automation, review & delivery system for Claude Code.",
+  "owner": {
+    "name": "ForgeyClap",
+    "url": "https://github.com/ForgeyClap"
+  },
+  "metadata": {
+    "version": "2.0.0"
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "source": "./plugins/forge",
+      "description": "Multi-agent orchestrator: /forge:forge build command, forge-core skill, 18 Boss agents, curated skills, and the /forge:setup-forge onboarding wizard.",
+      "author": {
+        "name": "ForgeyClap"
+      },
+      "homepage": "https://github.com/ForgeyClap/claude-forge",
+      "repository": "https://github.com/ForgeyClap/claude-forge",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "multi-agent",
+        "orchestration",
+        "automation",
+        "build",
+        "code-review",
+        "scraping",
+        "rag",
+        "dashboard"
+      ]
+    }
+  ]
+}

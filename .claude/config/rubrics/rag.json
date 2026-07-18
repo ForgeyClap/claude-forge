@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for RAG/answer-quality tasks (scout #7, 2026-07-13). Owner-editable. Used by the forge-graded-verify skill: review-boss scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions. ADAPT per project; do not drop-in blindly.",
+  "domain": "rag",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "source_grounding",
+      "descriptor": "1=claims unsupported/invented; 2=some claims traceable to sources; 3=most claims cite the right source; 4=every non-trivial claim grounded in a cited source with correct attribution",
+      "raise": "add explicit citations to the retrieved passages for each factual claim; drop or flag anything not in the sources"
+    },
+    {
+      "id": "reasoning_soundness",
+      "descriptor": "1=logic broken/contradictory; 2=mostly follows but gaps; 3=sound with minor leaps; 4=each step follows and is justified",
+      "raise": "make the reasoning steps explicit and check each conclusion against the cited evidence"
+    },
+    {
+      "id": "coverage",
+      "descriptor": "1=ignores most of the question; 2=answers part; 3=answers the core; 4=fully addresses every part of the question",
+      "raise": "enumerate the sub-questions and confirm each is answered"
+    },
+    {
+      "id": "answer_correctness",
+      "descriptor": "1=wrong; 2=partly right; 3=right on the main point; 4=fully correct incl. edge cases",
+      "raise": "verify the answer against the sources and re-check any figures/dates/names"
+    },
+    {
+      "id": "honest_fallback",
+      "descriptor": "1=hallucinates when unsure; 2=hedges vaguely; 3=flags uncertainty; 4=clearly says what it cannot answer from the sources and offers a safe next step",
+      "raise": "when the sources do not support an answer, say so explicitly instead of guessing"
+    }
+  ]
+}

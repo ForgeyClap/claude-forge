@@ -1,0 +1,18 @@
+{
+  "_doc": "OPT-IN model-tier enforcement template (scout find #3, 2026-07-13). Copy the keys you want into .claude/settings.json to enforce them. NOT auto-applied by Forge — enabling it is an owner decision because it changes real harness behavior. See forge-core 'MODEL-TIER ENFORCEMENT (opt-in)' for the caveats.",
+  "_safe_option_availableModels": "Constrains which Claude models any dispatch may use to the approved tier set. Non-breaking as long as EVERY model actually in use (including your current session model) is listed. enforceAvailableModels drops anything outside the list. Include fable-5 if you run sessions on Fable, or it may block your own session.",
+  "availableModels": [
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001",
+    "claude-fable-5"
+  ],
+  "enforceAvailableModels": true,
+  "_opt_fallbackModel": "scout #9 — single-turn 529/overload resilience on long Opus sessions (reverts next turn). NARROW scope: overload/unavailable/non-retryable server errors ONLY (NOT 429 rate-limit/billing/size). If you enable it, log any turn that completed on a fallback in FORGE_AGENT_LEDGER so a silent Opus→Sonnet/Haiku degradation on a quality-critical Boss is never hidden. For Security/Review/Head Chef prefer NO fallback (fail-and-retry).",
+  "fallbackModel": [
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001"
+  ],
+  "_UNSAFE_do_not_blanket_deny": "Do NOT add permissions.deny/ask ['Agent(model:opus)'] — review-boss/security-boss/boss are deliberately Opus, so a blanket Opus deny would BLOCK dispatching them, and in Forge's non-interactive background dispatch an 'ask' rule is converted to a hard DENY. Per-role model tiers are already pinned in each .claude/agents/<boss>.md frontmatter + agent-model-map.json; that is the correct place for 'Lead=Opus, most subagents=Sonnet/Haiku'.",
+  "_requires": "Dispatch Bosses with model ALIASES (opus|sonnet|haiku|fable), not pinned IDs, so alias→ID resolution stays consistent (one Boss file currently pins claude-opus-4-8 — normalize to 'opus' if you enable strict matching). NVIDIA offload is NOT governed here (it runs through nvidia-provider.cjs / usage-guard, never the Agent tool)."
+}

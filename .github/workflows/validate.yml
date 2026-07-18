@@ -1,0 +1,122 @@
+name: validate
+
+# Zero-dependency CI. Everything below runs with only Node.js + coreutils that
+# ship on a fresh ubuntu-latest runner. No npm install, no external actions beyond
+# the two official first-party ones (checkout, setup-node).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: syntax • tests • doctor • manifests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Report Node version
+        run: node --version
+
+      # 1) Syntax-check every .cjs source in the terminal command pack.
+      - name: node --check all .cjs in .claude/forge-bin
+        run: |
+          set -e
+          fail=0
+          count=0
+          for f in .claude/forge-bin/*.cjs; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            if ! node --check "$f"; then
+              echo "::error file=$f::node --check failed"
+              fail=1
+            fi
+          done
+          echo "checked $count .cjs files"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no .cjs files found in .claude/forge-bin"
+            exit 1
+          fi
+          exit $fail
+
+      # 2) Run the Forge test suites. Each *.test.cjs is a self-contained runner
+      #    that exits non-zero on failure. We run them all and fail the job if any do.
+      - name: Run Forge test suites
+        run: |
+          set -e
+          fail=0
+          count=0
+          for t in .claude/forge-bin/*.test.cjs; do
+            [ -e "$t" ] || continue
+            count=$((count + 1))
+            echo "----- $t -----"
+            if ! node "$t"; then
+              echo "::error file=$t::test suite failed"
+              fail=1
+            fi
+          done
+          echo "ran $count test suites"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no *.test.cjs suites found in .claude/forge-bin"
+            exit 1
+          fi
+          exit $fail
+
+      # 3) Run forge-doctor. It self-tests, checks the SPA/agents/chain, and runs a
+      #    secret leak-scan over git-tracked files (the checkout provides a real .git,
+      #    so leakScan uses `git ls-files`). It exits 0 only when ALL GREEN.
+      - name: Run forge-doctor
+        if: ${{ hashFiles('.claude/forge-bin/forge-doctor.cjs') != '' }}
+        run: node .claude/forge-bin/forge-doctor.cjs --root .
+
+      # 4) Validate the Claude Code plugin manifests. The `claude` CLI is not present
+      #    on CI, so instead of `claude plugin validate`, assert the manifests are
+      #    parseable JSON with the required fields — the same fields the CLI requires.
+      - name: Validate plugin manifests (JSON + required fields)
+        run: |
+          node -e '
+            const fs = require("fs");
+            let bad = 0;
+            const readJson = (p) => {
+              if (!fs.existsSync(p)) { console.error("::error::missing manifest " + p); bad = 1; return null; }
+              try { return JSON.parse(fs.readFileSync(p, "utf8")); }
+              catch (e) { console.error("::error file=" + p + "::invalid JSON: " + e.message); bad = 1; return null; }
+            };
+            const need = (obj, keys, label) => {
+              if (!obj) return;
+              for (const k of keys) {
+                if (obj[k] === undefined || obj[k] === null || obj[k] === "") {
+                  console.error("::error::" + label + " missing required field: " + k);
+                  bad = 1;
+                }
+              }
+            };
+            const mkt = readJson(".claude-plugin/marketplace.json");
+            need(mkt, ["name", "owner", "plugins"], "marketplace.json");
+            if (mkt && !Array.isArray(mkt.plugins)) { console.error("::error::marketplace.json plugins must be an array"); bad = 1; }
+            if (mkt && Array.isArray(mkt.plugins)) {
+              mkt.plugins.forEach((p, i) => need(p, ["name", "source"], "marketplace.json plugins[" + i + "]"));
+              // Every referenced plugin source must have its own plugin.json manifest.
+              mkt.plugins.forEach((p) => {
+                if (p && p.source) {
+                  const pj = (p.source.replace(/^\.\/?/, "").replace(/\/$/, "")) + "/.claude-plugin/plugin.json";
+                  const man = readJson(pj);
+                  need(man, ["name", "version", "description"], pj);
+                }
+              });
+            }
+            if (bad) { console.error("Manifest validation FAILED"); process.exit(1); }
+            console.log("All plugin manifests are valid JSON with required fields.");
+          '
