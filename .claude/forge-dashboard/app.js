@@ -32,6 +32,12 @@ const STATE = { meta: { name: '—', port: '' }, run: {}, events: [], report: nu
   artifacts: [], // stored artifact METADATA only (.claude/forge-artifacts/, forge-bin/forge-artifact.cjs) — WP5 Vault
   doctor: null, // newest run's forge-doctor.cjs self-test result (.claude/forge-runs/<id>/doctor.json) — WP7 Doctor
   bossAgents: [], // the 12 Boss agent-files + memory lesson counts (server.cjs's readBossAgents()) — WP8 Bosses panel
+  // V9-INTEGRATE (2026-07-22) — Capabilities & Enforcement panel. Both are lazy-loaded ONLY when the
+  // 'capabilities' dock tab is opened (see graph.js dock-tabs click handler) via GET /api/capabilities /
+  // GET /api/runcontract?run=<id> — never polled on the fast SSE/250ms tick, since a full capability
+  // inventory/usage scan is a real filesystem walk, not a cheap read. null = not loaded yet (honest empty
+  // state in panels.js renderCapabilities()); {ok:false,...} = the tool degraded (see server.cjs handlers).
+  capabilities: null, runcontract: null, stats: null,
   replay: { active: false, playing: false, cursor: 0, speed: 1 },
   ui: { insTab: 'summary', actFilter: 'all', dockTab: 'log', collapsed: new Set() } };
 // Live vs Replay: visibleEvents() drives the whole model. Live = all events. Replay = slice up to cursor (animates WAITING→RUNNING→COMPLETED in event order).
@@ -41,6 +47,9 @@ let selectedKey = null, selRef = { refKey: null, refEvIdx: null }, CURRENT_MODEL
 
 const SYNTH = { run_started: 'orchestrator', run_completed: 'orchestrator', agent_selected: 'forge-router',
   project_scanned: 'project-scan', profile_loaded: 'project-scan', memory_loaded: 'memory-loader', memory_updated: 'memory-loader',
+  // OWNER GOVERNANCE (WAVE B / B4, 2026-07-18): the applied-prefs ECHO (forge-bin/forge-echo.cjs), logged
+  // before intake — mirrors profile_loaded's synthetic node so it renders even when no `agent` field is set.
+  owner_prefs_loaded: 'project-scan',
   decision_logged: 'memory-loader', skill_loaded: 'skill-runner', command_run: 'command-runner', file_read: 'file-reader', file_changed: 'file-writer',
   check_started: 'reviewer', check_passed: 'reviewer', check_failed: 'reviewer', report_generated: 'report-writer',
   mission_packet_created: 'orchestrator', mission_blueprint_created: 'orchestrator', role_map_created: 'orchestrator', agent_work_package_created: 'orchestrator',
@@ -62,7 +71,66 @@ const SYNTH = { run_started: 'orchestrator', run_completed: 'orchestrator', agen
   // MISSION CONTROL PHASE 2 (WP1 — flat-file stores: tickets/artifacts/prd/mindmaps, forge-bin/forge-store.cjs)
   prd_generated: 'orchestrator', mindmap_generated: 'orchestrator', deep_learn_started: 'project-scan', deep_learn_completed: 'project-scan',
   doctor_run: 'reviewer', registry_scanned: 'orchestrator', cost_sampled: 'orchestrator', ticket_created: 'orchestrator',
-  ticket_updated: 'orchestrator', artifact_stored: 'report-writer', gate_evaluated: 'reviewer' };
+  ticket_updated: 'orchestrator', artifact_stored: 'report-writer', gate_evaluated: 'reviewer',
+  // WAVE D (D-INTEGRATE, 2026-07-18): forge-manifest.cjs/forge-swarm-resume.cjs/forge-fixtures.cjs are
+  // gates/library calls the coordinating layer invokes, not agents themselves — synthetic fallback node
+  // mirrors registry_scanned/quality_gate_passed's 'orchestrator'.
+  manifest_armed: 'orchestrator', wp_resumed: 'orchestrator', fixtures_required: 'orchestrator', fixtures_waived: 'orchestrator',
+  // forge-harvest.cjs (2026-07-18, post-WAVE-E): a READ-ONLY cross-project learning harvest — mirrors
+  // memory_updated's synthetic node since this is a memory-store operation (writes only the reserved
+  // global lesson namespace, never a project dir). See forge-harvest.cjs header doc comment.
+  lessons_harvested: 'memory-loader',
+  // WAVE H (H1 forge-docs.cjs, H2 forge-repomap.cjs, H4 forge-beads.cjs, H-INTEGRATE, 2026-07-19): synthetic
+  // fallback nodes for events without an `agent` field — doc_generated mirrors artifact_stored (a generated
+  // deliverable), repomap_generated mirrors profile_loaded/project_scanned (a context/orientation scan),
+  // bead_added/bead_closed mirror ticket_created/ticket_updated (a backlog work-item fact).
+  doc_generated: 'report-writer', repomap_generated: 'project-scan', bead_added: 'orchestrator', bead_closed: 'orchestrator',
+  // WAVE G (G1 forge-mcp-gate.cjs + G-INTEGRATE, 2026-07-19): MCP-as-client least-privilege events without
+  // an `agent` field — mcp_grant_validated/mcp_grant_denied mirror gate_evaluated's 'reviewer' synthetic node
+  // (an access-control gate decision); mcp_tool_loaded mirrors skill_loaded's 'skill-runner'; mcp_native_
+  // fallback mirrors native_fallback_used's 'orchestrator'.
+  mcp_grant_validated: 'reviewer', mcp_grant_denied: 'reviewer', mcp_tool_loaded: 'skill-runner', mcp_native_fallback: 'orchestrator',
+  // WAVE J (J1 forge-genesis.cjs, J2 forge-tournament.cjs, J3 forge-secondbrain.cjs, J4 forge-codemodel.cjs,
+  // J5 forge-briefing.cjs, J-INTEGRATE, 2026-07-19): synthetic fallback nodes for events without an `agent`
+  // field. skill_proposed/skill_approved/proposal_rejected mirror skill_loaded's 'skill-runner' (the skill
+  // catalog is the subject). tournament_planned/tournament_scored mirror mission_packet_created/
+  // quality_gate_passed's 'orchestrator' (a planning/judging decision). portfolio_scanned mirrors
+  // project_scanned/repomap_generated's 'project-scan'. codemodel_built/codemodel_updated mirror
+  // repomap_generated's 'project-scan' (a repo-context tool). briefing_generated mirrors
+  // report_generated/doc_generated's 'report-writer'.
+  skill_proposed: 'skill-runner', skill_approved: 'skill-runner', proposal_rejected: 'skill-runner',
+  tournament_planned: 'orchestrator', tournament_scored: 'orchestrator',
+  portfolio_scanned: 'project-scan',
+  codemodel_built: 'project-scan', codemodel_updated: 'project-scan',
+  briefing_generated: 'report-writer',
+  // V9-INTEGRATE (P1 forge-runcontract.cjs, P2 forge-capabilities.cjs, P4 forge-projectbrain.cjs,
+  // P5 forge-scout.cjs, 2026-07-22): synthetic fallback nodes for events without an `agent` field.
+  // research_done mirrors deep_learn_completed's 'project-scan' (a research pass). run_contract_checked/
+  // run_contract_violated mirror gate_evaluated's 'reviewer' (a contract/gate decision). capabilities_reported
+  // mirrors registry_scanned's 'orchestrator' (an inventory report). scout_researched mirrors
+  // project_scanned/repomap_generated's 'project-scan'; capability_vetted mirrors skill_loaded's
+  // 'skill-runner' (the skill/capability catalog is the subject). projectbrain_generated mirrors
+  // doc_generated's 'report-writer' (a generated deliverable, here a real project CLAUDE.md).
+  research_done: 'project-scan', run_contract_checked: 'reviewer', run_contract_violated: 'reviewer',
+  capabilities_reported: 'orchestrator', scout_researched: 'project-scan', capability_vetted: 'skill-runner',
+  projectbrain_generated: 'report-writer',
+  // V9-fix (2026-07-22, break-swarm DEFECT 2/3 honesty-gap close-out): owner_override — synthetic fallback
+  // node for events without an `agent` field. Mirrors run_contract_checked/gate_evaluated's 'reviewer' (a
+  // real owner act clearing one named gate/rule outcome). See log-event.cjs KNOWN_EVENT_TYPES header.
+  owner_override: 'reviewer',
+  // V9 WAVE 2 (forge-bin/forge-audit-loop.cjs, 2026-07-22): the continuous AUDIT-LOOP tool's own events —
+  // mirrors doctor_run's 'reviewer' synthetic node (both are a system self-check fact, logged with
+  // agent:'reviewer' in practice, but a synthetic fallback still matters for any event missing that field).
+  audit_iteration: 'reviewer', audit_finding: 'reviewer',
+  // forge-bin/forge-tool-index.cjs (2026-07-31, mining-ronde-1 §1): rejected_approach — mirrors
+  // lessons_harvested's 'memory-loader' synthetic node (both are recorded knowledge kept so a later run does
+  // not repeat itself). Only a fallback for events that carry no `agent` field.
+  rejected_approach: 'memory-loader',
+  // WORK-PACKAGE OUTCOMES + MODEL PROVENANCE (2026-08-01, "pakket 1"): wp_completed/wp_failed mirror
+  // wp_resumed's 'orchestrator' synthetic node (the coordinating layer owns work packages, not a Boss);
+  // agent_model_used mirrors cost_sampled's 'orchestrator' (a run-accounting fact). Only a fallback for
+  // events that carry no `agent` field — in practice all three always name their agent.
+  wp_completed: 'orchestrator', wp_failed: 'orchestrator', agent_model_used: 'orchestrator' };
 // new swarm events alias their old counterparts: subagent_* ≈ agent_*, mission_blueprint ≈ mission_packet, final_output ≈ report.
 const BACKBONE = new Set(['run_started', 'run_completed', 'agent_selected', 'agent_started', 'agent_completed', 'agent_failed',
   'subagent_started', 'subagent_completed', 'report_generated', 'final_output_created', 'mission_packet_created', 'mission_blueprint_created', 'role_map_created',
@@ -70,7 +138,14 @@ const BACKBONE = new Set(['run_started', 'run_completed', 'agent_selected', 'age
   'merge_started', 'merge_completed', 'quality_gate_passed', 'quality_gate_blocked', 'codex_review_started', 'codex_review_completed', 'codex_finding', 'codex_blocked', 'codex_not_invoked',
   'subagent_failed', 'skill_discovery', 'skill_map_created', 'custom_skill_created', 'skill_assigned',
   // MISSION CONTROL PHASE 2 (WP1) structural milestones
-  'prd_generated', 'mindmap_generated', 'deep_learn_completed', 'doctor_run', 'registry_scanned']);
+  'prd_generated', 'mindmap_generated', 'deep_learn_completed', 'doctor_run', 'registry_scanned',
+  // WAVE D (D-INTEGRATE, 2026-07-18): manifest_armed is a run-level swarm dispatch manifest persist —
+  // structural milestone, never a per-agent task. See forge-verify.cjs BACKBONE (mirrored 1:1).
+  'manifest_armed',
+  // V9 WAVE 2 (forge-bin/forge-audit-loop.cjs, 2026-07-22): audit_iteration/audit_finding — the continuous
+  // AUDIT-LOOP tool's own system-level self-check facts, never a per-agent task. See forge-verify.cjs
+  // BACKBONE (mirrored 1:1).
+  'audit_iteration', 'audit_finding']);
 
 // Fix 1 (task double-count, 2026-07-10): non-BACKBONE start/terminal event pairs that describe ONE logical
 // task (e.g. check_started -> check_passed) — buildNodes() closes the open start-task instead of pushing a
@@ -88,6 +163,10 @@ const TASK_PAIRS = {
   dashboard_isolation_check_started: ['dashboard_isolation_check_completed'],
   deep_learn_started: ['deep_learn_completed'],
   lead_review_started: ['lead_review_completed'],
+  // 2026-08-01 ("pakket 1") — wp_resumed is the START of a re-dispatched work package; wp_completed/
+  // wp_failed are its real terminals (same shape as check_started -> check_passed/check_failed). Both sides
+  // are non-BACKBONE, so this pairing really applies here. Mirrored in forge-verify.cjs TASK_PAIRS.
+  wp_resumed: ['wp_completed', 'wp_failed'],
 };
 const TASK_PAIR_TERMINAL_TO_START = {};
 for (const startType of Object.keys(TASK_PAIRS)) for (const term of TASK_PAIRS[startType]) TASK_PAIR_TERMINAL_TO_START[term] = startType;
@@ -114,24 +193,103 @@ function taskStatus(e) { if (e.status) return statusClass(e.status); const t = e
        'prd_generated', 'mindmap_generated', 'deep_learn_completed', 'doctor_run', 'registry_scanned', 'artifact_stored', 'gate_evaluated',
        // Fix 2 (taxonomy gap, 2026-07-10): one-shot FACT events — the event itself IS the completed micro-action,
        // there is no separate start/terminal pair for these — so they must not fall through to 'waiting' forever.
-       'ticket_created', 'ticket_updated', 'cost_sampled'].includes(t)) return 'done';
+       'ticket_created', 'ticket_updated', 'cost_sampled',
+       // PAPERCLIP CONTROL PLANE done-status events (WAVE C / C-INTEGRATE, 2026-07-18) — mirrored from
+       // forge-verify.cjs TERMINAL_TYPES / log-event.cjs KNOWN_EVENT_TYPES header (same 3-place discipline).
+       'paperclip_runtime_reused', 'paperclip_runtime_started', 'paperclip_skills_catalog_installed',
+       'paperclip_agent_instructions_set', 'paperclip_agent_skills_attached', 'paperclip_selected',
+       'paperclip_company_reused', 'paperclip_company_created', 'paperclip_goal_created', 'paperclip_project_created',
+       'paperclip_workspace_bound', 'paperclip_agent_reused', 'paperclip_agent_docs_written', 'paperclip_agents_paused',
+       'paperclip_agents_resumed', 'paperclip_runtime_stopped',
+       // REQUIRED-EVIDENCE one-shot fact events (WAVE C / C2+C-INTEGRATE, 2026-07-18) — mirrored from
+       // forge-verify.cjs TERMINAL_TYPES / config/orchestration/required-evidence.json any_of_events.
+       'zero_console_errors_noted', 'e2e_passed', 'e2e_result', 'integration_gate_passed',
+       'validate_workflow_passed', 'workflow_validated', 'workflow_imported_inactive', 'robots_checked',
+       'source_compliance_noted', 'citation_verified', 'ingestion_idempotency_verified', 'backtest_completed',
+       'uncertainty_labels_applied', 'webhook_auth_verified', 'outreach_drafted_only_noted',
+       // WAVE D (D-INTEGRATE, 2026-07-18) — manifest_armed (structural fact) / fixtures_waived (check()
+       // ok:true, explicit logged waiver — flagged, never silent). See forge-verify.cjs TERMINAL_TYPES.
+       'manifest_armed', 'fixtures_waived',
+       // WAVE H (H1/H2/H4 + H-INTEGRATE, 2026-07-19) — one-shot deliverable/fact events, same taxonomy as
+       // artifact_stored/ticket_created/ticket_updated. See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'doc_generated', 'repomap_generated', 'bead_added', 'bead_closed',
+       // WAVE G (G1 forge-mcp-gate.cjs + G-INTEGRATE, 2026-07-19) — MCP-as-client one-shot fact events, same
+       // taxonomy as gate_evaluated/native_fallback_used. mcp_grant_denied is in the 'failed' list below.
+       // See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'mcp_grant_validated', 'mcp_tool_loaded', 'mcp_native_fallback',
+       // WAVE J (J1-J5 + J-INTEGRATE, 2026-07-19) — one-shot fact/deliverable events, same taxonomy as
+       // registry_scanned/doc_generated/gate_evaluated. skill_proposed (previewing) / proposal_rejected
+       // (failed) are handled in their own lists below. See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'skill_approved', 'tournament_planned', 'tournament_scored', 'portfolio_scanned',
+       'codemodel_built', 'codemodel_updated', 'briefing_generated',
+       // V9-INTEGRATE (P1/P2/P4/P5 + V9-INTEGRATE, 2026-07-22) — one-shot fact/deliverable events, same
+       // taxonomy as registry_scanned/doc_generated/gate_evaluated. run_contract_violated is in the 'failed'
+       // list below. See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'research_done', 'run_contract_checked', 'capabilities_reported', 'scout_researched',
+       'capability_vetted', 'projectbrain_generated',
+       // V9-fix (2026-07-22, break-swarm DEFECT 2/3 honesty-gap close-out) — owner_override: a completed,
+       // structured owner act. See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'owner_override',
+       // V9 WAVE 2 (forge-bin/forge-audit-loop.cjs, 2026-07-22) — audit_iteration/audit_finding: the
+       // continuous AUDIT-LOOP tool's own one-shot facts. See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'audit_iteration', 'audit_finding',
+       // WORK-PACKAGE OUTCOMES + MODEL PROVENANCE (2026-08-01, "pakket 1") — wp_completed: the per-WP done
+       // fact (its failure twin wp_failed is in the failed list below, its start twin wp_resumed in the
+       // running list). agent_model_used: a one-shot per-agent fact recording the model actually used.
+       // See forge-verify.cjs TERMINAL_TYPES (mirrored 1:1).
+       'wp_completed', 'agent_model_used'].includes(t)) return 'done';
   if (['check_failed', 'agent_failed', 'subagent_failed', 'quality_gate_blocked', 'codex_blocked', 'claude_md_conflict_detected', 'custom_skill_conflict_detected',
        'skill_registry_conflict_detected', 'codex_retry_blocked', 'browser_proof_blocked', 'dashboard_state_project_mismatch', 'dashboard_cross_project_leak_blocked',
-       'ecc_blocked', 'ecc_agent_failed'].includes(t)) return 'failed';
+       'ecc_blocked', 'ecc_agent_failed',
+       // PAPERCLIP CONTROL PLANE failed-status events (WAVE C / C-INTEGRATE, 2026-07-18).
+       'paperclip_runtime_blocked', 'paperclip_agent_instructions_failed', 'paperclip_agent_skills_failed',
+       'paperclip_git_guard_warning', 'paperclip_agent_failed',
+       // WAVE D (D-INTEGRATE, 2026-07-18) — fixtures_required: check() found a correctness-critical domain
+       // with no real fixtures and no waiver (ok:false, exit 3 BLOCKED). See forge-verify.cjs FAILED_TYPES.
+       'fixtures_required',
+       // WAVE G (G1 forge-mcp-gate.cjs + G-INTEGRATE, 2026-07-19) — mcp_grant_denied: a validateGrant() call
+       // resolved allowed:false. See forge-verify.cjs FAILED_TYPES (mirrored 1:1).
+       'mcp_grant_denied',
+       // WAVE J (J1 forge-genesis.cjs + J-INTEGRATE, 2026-07-19) — proposal_rejected: a staged skill
+       // proposal explicitly declined by the owner. See forge-verify.cjs FAILED_TYPES (mirrored 1:1).
+       'proposal_rejected',
+       // V9-INTEGRATE (P1 forge-runcontract.cjs, 2026-07-22) — run_contract_violated: check() resolved
+       // ok:false (a genuinely missing, non-overridden block-rule). See forge-verify.cjs FAILED_TYPES.
+       'run_contract_violated',
+       // WORK-PACKAGE OUTCOMES (2026-08-01, "pakket 1") — wp_failed: the per-WP failure fact
+       // forge-manifest.cjs/forge-briefing.cjs already consume. See forge-verify.cjs FAILED_TYPES.
+       'wp_failed'].includes(t)) return 'failed';
   if (t === 'codex_not_invoked' || t === 'custom_skill_skipped') return 'internal';
   if (['agent_work_package_created', 'custom_subagent_created', 'rework_task_created', 'rework_assigned', 'skill_assigned',
-       'codex_trust_gate_detected', 'codex_interactive_retry_required'].includes(t)) return 'previewing';
+       'codex_trust_gate_detected', 'codex_interactive_retry_required',
+       // PAPERCLIP CONTROL PLANE previewing-status events (WAVE C / C-INTEGRATE, 2026-07-18).
+       'paperclip_agent_created', 'paperclip_ticket_created',
+       // WAVE J (J1 forge-genesis.cjs + J-INTEGRATE, 2026-07-19) — skill_proposed: staged draft, not active.
+       // See forge-verify.cjs PREVIEWING_TYPES (mirrored 1:1).
+       'skill_proposed'].includes(t)) return 'previewing';
   if (t === 'agent_selected') return 'waiting';
   if (['check_started', 'agent_progress', 'agent_started', 'subagent_started', 'codex_review_started', 'fix_started',
        'retest_started', 'lead_review_started', 'rework_started', 'merge_started', 'codex_diagnosis_started', 'codex_retry_started', 'browser_proof_started', 'dashboard_isolation_check_started',
-       'run_started', 'review_started'].includes(t)) return 'running';
+       'run_started', 'review_started',
+       // WAVE D (D-INTEGRATE, 2026-07-18) — wp_resumed: a specific unfinished WP was re-dispatched, per-WP
+       // "started again" event, same taxonomy as check_started. See forge-verify.cjs RUNNING_TYPES.
+       'wp_resumed'].includes(t)) return 'running';
   // informational/activity events that represent an action that already happened
   if (['file_read', 'file_changed', 'command_run', 'skill_loaded', 'project_scanned', 'profile_loaded', 'memory_loaded', 'memory_updated',
        'decision_logged', 'agent_note', 'agent_output', 'agent_decision_summary', 'agent_next_action', 'agent_evidence_added',
-       'agent_artifact_created', 'subagent_artifact_created', 'subagent_output_created', 'agent_handoff', 'ecc_inventory'].includes(t)) return 'done';
+       'agent_artifact_created', 'subagent_artifact_created', 'subagent_output_created', 'agent_handoff', 'ecc_inventory',
+       // WAVE B / B4: the applied-prefs ECHO — mirrors profile_loaded/memory_loaded (forge-verify.cjs TERMINAL_TYPES).
+       'owner_prefs_loaded',
+       // forge-harvest.cjs (2026-07-18, post-WAVE-E): a completed cross-project learning harvest — mirrors
+       // memory_updated (see forge-verify.cjs TERMINAL_TYPES).
+       'lessons_harvested',
+       // forge-bin/forge-tool-index.cjs (2026-07-31, mining-ronde-1 §1): rejected_approach — a real,
+       // evidenced "we tried this and rejected it" fact. Mirrors lessons_harvested (recorded knowledge that
+       // prevents repetition), see forge-verify.cjs TERMINAL_TYPES.
+       'rejected_approach'].includes(t)) return 'done';
   return 'waiting'; // unknown event_type — never imply completion
 }
-function statusLabel(s) { const en = { done: 'COMPLETED', running: 'RUNNING', failed: 'FAILED', waiting: 'WAITING', previewing: 'PREVIEWING', internal: 'INTERNAL ONLY' }; const key = en[s] ? s : 'waiting'; const fb = en[key]; return (window.i18nt ? window.i18nt('status.' + key, fb) : fb); }
+function statusLabel(s) { return ({ done: 'COMPLETED', running: 'RUNNING', failed: 'FAILED', waiting: 'WAITING', previewing: 'PREVIEWING', internal: 'INTERNAL ONLY' }[s] || 'WAITING'); }
 function nodeState(x) { if (!x) return 'waiting'; if (x.event_type) return taskStatus(x); if (x.state) return x.state; return statusClass(x.status); }
 
 /* ---------- role taxonomy + deterministic color ---------- */
@@ -345,12 +503,11 @@ function buildId() { const id = (STATE.run && STATE.run.run_id) || ''; if (!id) 
 function renderTop() {
   const run = STATE.run || {}; const st = (run.status || '').toLowerCase();
   const dot = $('state-dot'), tdot = $('title-dot'), txt = $('state-text');
-  const T = (k, f) => (window.i18nt ? window.i18nt(k, f) : f);
-  if (st === 'running') { dot.className = tdot.className = 'dot run'; txt.textContent = T('run.building', 'BUILDING'); }
-  else if (st === 'completed') { dot.className = tdot.className = 'dot done'; txt.textContent = T('run.complete', 'COMPLETE'); }
-  else if (st === 'failed') { dot.className = tdot.className = 'dot fail'; txt.textContent = T('run.failed', 'FAILED'); }
-  else if (st === 'armed') { dot.className = tdot.className = 'dot'; txt.textContent = T('run.armed', 'ARMED — AWAITING START'); }
-  else { dot.className = tdot.className = 'dot'; txt.textContent = T('run.idle', 'IDLE'); }
+  if (st === 'running') { dot.className = tdot.className = 'dot run'; txt.textContent = 'BUILDING'; }
+  else if (st === 'completed') { dot.className = tdot.className = 'dot done'; txt.textContent = 'COMPLETE'; }
+  else if (st === 'failed') { dot.className = tdot.className = 'dot fail'; txt.textContent = 'FAILED'; }
+  else if (st === 'armed') { dot.className = tdot.className = 'dot'; txt.textContent = 'ARMED — AWAITING START'; }
+  else { dot.className = tdot.className = 'dot'; txt.textContent = 'IDLE'; }
   const last = STATE.events.length ? STATE.events[STATE.events.length - 1].timestamp : run.started;
   $('state-ago').textContent = last ? ago(last) : '—';
   $('build-id').textContent = buildId();

@@ -56,7 +56,7 @@ t('meta.json round-trips the title', metaJson.title === 'Full PRD');
 t('written .md includes both acceptance criteria', fs.readFileSync(written.mdPath, 'utf8').includes('renderPrd produces all sections') && fs.readFileSync(written.mdPath, 'utf8').includes('writePrd creates md+meta+index row'));
 
 // 3) secret redaction — fake secret ABSENT from BOTH the .md and the .meta.json
-const FAKE_SECRET = '\x6Evapi-FAKEFAKEFAKEFAKE1234567890';
+const FAKE_SECRET = 'nvapi-FAKEFAKEFAKEFAKE1234567890';
 const prdSecret = {
   prd_id: 'prd-secret-001', title: 'Secret PRD',
   sections: { goal: 'leaked key: ' + FAKE_SECRET, acceptance_criteria: ['no secrets in output'] },

@@ -1,0 +1,344 @@
+/*
+ * Forge base layer - shared primitives for the dashboard, the chat and the
+ * registry home view. Hand-written; safe to edit.
+ *
+ * Load order matters:   forge-tokens.css  ->  forge-base.css  ->  your view's CSS
+ *
+ * House rule that runs through this file:
+ *   .fg-machine (mono)  = what the system recorded - run ids, event types,
+ *                         agent names, ports, token counts, ledger lines.
+ *   default    (sans)   = what a person wrote - chat, reports, descriptions.
+ * If you can't tell which one a piece of text is, it probably shouldn't be in
+ * the UI yet.
+ */
+
+/* ------------------------------------------------------------------ reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--forge-color-bg);
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-normal);
+  letter-spacing: var(--forge-tracking-tight);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--forge-color-selection);
+}
+
+:focus-visible {
+  outline: var(--forge-border-thick) solid var(--forge-color-focus);
+  outline-offset: 2px;
+  border-radius: var(--forge-radius-xs);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* -------------------------------------------------------------- scrollbar */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--forge-color-line-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--forge-color-line-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--forge-radius-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--forge-color-text-faint);
+  background-clip: padding-box;
+}
+
+/* ------------------------------------------------------------- typography */
+
+.fg-machine {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-sm);
+  letter-spacing: var(--forge-tracking-normal);
+  font-variant-ligatures: none;
+}
+
+.fg-eyebrow {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-muted);
+}
+
+.fg-prose {
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+  max-width: var(--forge-reading, var(--forge-layout-reading));
+}
+
+.fg-muted {
+  color: var(--forge-color-text-muted);
+}
+
+/* ----------------------------------------------------------------- status */
+
+/*
+ * Two axes, deliberately kept apart:
+ *   .fg-status-* = live state, saturated signal colour
+ *   .fg-group-*  = which agent group owns it, muted tempering colour
+ * A node can carry both without the colours arguing.
+ */
+
+.fg-dot {
+  display: inline-block;
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-status-internal);
+  flex: none;
+}
+
+.fg-status-running .fg-dot,
+.fg-dot.is-running { background: var(--forge-status-running); }
+.fg-status-completed .fg-dot,
+.fg-dot.is-completed { background: var(--forge-status-completed); }
+.fg-status-waiting .fg-dot,
+.fg-dot.is-waiting { background: var(--forge-status-waiting); }
+.fg-status-previewing .fg-dot,
+.fg-dot.is-previewing { background: var(--forge-status-previewing); }
+.fg-status-failed .fg-dot,
+.fg-dot.is-failed { background: var(--forge-status-failed); }
+
+.fg-dot.is-running {
+  box-shadow: var(--forge-shadow-glow-running);
+  animation: fg-pulse 1.8s var(--forge-motion-ease-standard) infinite;
+}
+
+@keyframes fg-pulse {
+  50% { opacity: 0.45; }
+}
+
+/* ----------------------------------------------------------------- badges */
+
+.fg-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding: 2px var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.fg-badge.is-running {
+  background: var(--forge-status-running-soft);
+  border-color: var(--forge-status-running-line);
+  color: var(--forge-status-running);
+}
+
+.fg-badge.is-completed {
+  background: var(--forge-status-completed-soft);
+  border-color: var(--forge-status-completed-line);
+  color: var(--forge-status-completed);
+}
+
+.fg-badge.is-waiting {
+  background: var(--forge-status-waiting-soft);
+  border-color: var(--forge-status-waiting-line);
+  color: var(--forge-status-waiting);
+}
+
+.fg-badge.is-previewing {
+  background: var(--forge-status-previewing-soft);
+  border-color: var(--forge-status-previewing-line);
+  color: var(--forge-status-previewing);
+}
+
+.fg-badge.is-failed {
+  background: var(--forge-status-failed-soft);
+  border-color: var(--forge-status-failed-line);
+  color: var(--forge-status-failed);
+}
+
+/* -------------------------------------------------------------- surfaces */
+
+.fg-card {
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  box-shadow: var(--forge-shadow-sm);
+}
+
+.fg-card.is-raised {
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-md);
+}
+
+.fg-rule {
+  border: 0;
+  border-top: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  margin: var(--forge-space-4) 0;
+}
+
+/* --------------------------------------------------------------- controls */
+
+.fg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2) var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  font-family: inherit;
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-none);
+  cursor: pointer;
+  transition: background var(--forge-motion-fast) var(--forge-motion-ease-standard),
+    border-color var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fg-btn:hover {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-line-strong);
+}
+
+.fg-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.fg-btn.is-primary {
+  background: var(--forge-color-accent);
+  border-color: var(--forge-color-accent);
+  color: var(--forge-color-text-on-accent);
+  font-weight: var(--forge-weight-semibold);
+}
+
+.fg-btn.is-primary:hover {
+  background: var(--forge-color-accent-hover);
+  border-color: var(--forge-color-accent-hover);
+}
+
+.fg-btn.is-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--forge-color-text-secondary);
+}
+
+.fg-btn.is-quiet:hover {
+  background: var(--forge-color-surface-2);
+  border-color: transparent;
+  color: var(--forge-color-text);
+}
+
+.fg-input {
+  inline-size: 100%;
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text);
+  font-family: inherit;
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-snug);
+}
+
+.fg-input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+.fg-input:focus {
+  border-color: var(--forge-color-accent);
+}
+
+/* ------------------------------------------------------------------- chat */
+
+.fg-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-6);
+  max-width: var(--forge-layout-reading);
+  margin-inline: auto;
+  padding: var(--forge-space-6) var(--forge-space-4);
+}
+
+.fg-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+}
+
+.fg-msg-you {
+  align-self: flex-end;
+  max-inline-size: 85%;
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border-radius: var(--forge-radius-xl) var(--forge-radius-xl) var(--forge-radius-sm)
+    var(--forge-radius-xl);
+  background: var(--forge-color-surface-3);
+}
+
+/* Forge answers on the canvas itself - no bubble. The agent isn't a person
+   sitting across from you, it's the room you're standing in. */
+.fg-msg-forge {
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+}
+
+.fg-composer {
+  position: sticky;
+  bottom: 0;
+  max-inline-size: var(--forge-layout-composer);
+  margin-inline: auto;
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xl);
+  background: var(--forge-color-surface-1);
+  box-shadow: var(--forge-shadow-lg);
+}
+
+.fg-composer:focus-within {
+  border-color: var(--forge-color-accent);
+}

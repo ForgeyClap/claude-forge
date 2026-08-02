@@ -1,0 +1,7 @@
+node_modules/
+.env
+state/
+transcripts/
+*.log
+.claude-flow/
+temporary screenshots/

@@ -1,0 +1,29 @@
+{
+  "_comment_1": "EXAMPLE ONLY — copy to .mcp.json (project root) and set opted_in to activate; NOTHING here runs until you do. This file is never read at runtime by Forge or any MCP host as-is.",
+  "_comment_2": "Forge's zero-dependency default stays fully intact without this file. This is purely additive and 100% owner-controlled — no server in config/orchestration/mcp-registry.json is usable until its id is explicitly opted in.",
+  "_comment_3": "Two things must both be true before ANY Boss may call this server: (1) opted_in:true here (or the server id listed in an owner-authored config/orchestration/mcp-opt-in.json — either marker counts as opt-in), and (2) that Boss's own entry in config/orchestration/mcp-grants.json allows this server id at this tier. This example shows ONE server (context7) opted in at its registry tier (1) with the least-privilege scope already recorded in mcp-registry.json/mcp-grants.json — nothing here widens a Boss's grant; it only makes the server reachable.",
+  "_doc": "See .claude/skills/forge-mcp-clients/SKILL.md for the full doctrine (4 tiers, per-Boss least-privilege, write-primitive hard-gate, defer-loading, honest native fallback). See config/orchestration/mcp-registry.json for the authoritative server catalog and config/orchestration/mcp-grants.json for the authoritative per-Boss grant matrix — this file only demonstrates wiring one entry from that catalog.",
+
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"],
+      "_forge_opt_in": {
+        "opted_in": true,
+        "server_id": "context7",
+        "tier": 1,
+        "tier_meaning": "read-only REMOTE (docs fetch) — no write scope, no persistent local writes",
+        "credentials_needed": false,
+        "allow_bosses": ["search-boss", "review-boss", "integration-boss"],
+        "source_of_truth": "config/orchestration/mcp-registry.json#context7 + config/orchestration/mcp-grants.json",
+        "note": "This inline marker is illustrative. This project's real opt-in mechanism (per mcp-registry.json) is an owner-authored config/orchestration/mcp-opt-in.json listing opted-in server ids — copy this block's intent there when you actually opt in, and only then does mcp-grants.json's allow-list become usable for the listed Bosses."
+      }
+    }
+  },
+
+  "_not_opted_in_example": {
+    "_comment": "Every OTHER server in config/orchestration/mcp-registry.json (playwright, chrome-devtools, github-read, github-write, exa, firecrawl, serena-lsp) stays dormant by omission — absence from mcpServers above means every Boss falls back to its native capability for those, honestly logged as a native fallback, never silently claimed as available.",
+    "example_dormant_server_id": "github-write",
+    "why_dormant": "tier 3 (WRITE-PRIMITIVE) is never granted by default to any Boss and always requires an explicit per-use owner grant via forge-actiongate.cjs, even if it were opted in here."
+  }
+}

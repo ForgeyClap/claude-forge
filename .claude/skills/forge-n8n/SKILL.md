@@ -1,6 +1,6 @@
 ---
 name: forge-n8n
-description: "Forge playbook for building and validating n8n automation workflows. Use when creating, fixing, or validating an n8n workflow — keywords: n8n, workflow, webhook, automation, node, trigger, schedule, cron, retry, error branch, credentials, validate_workflow. Orchestrates the ECC n8n skills and n8n MCP tools and enforces the validation gate before claiming production-ready."
+description: Forge playbook for building and validating n8n automation workflows. Use for n8n, workflow, webhook, trigger, cron, retry, error branch, credentials, validate_workflow.
 ---
 
 # Forge playbook — n8n / automation

@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for legacy-modernization / migration tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or test-boss / database-reviewer) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a legacy decommission or destructive cutover is always a separate explicit owner decision. ADAPT per project; do not drop-in blindly. Pairs with the forge-migration playbook.",
+  "domain": "migration",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "characterization_tests",
+      "descriptor": "1=legacy behavior changed with no characterization tests; 2=a few tests but they don't cover the behavior being migrated or weren't run on legacy; 3=characterization/golden-master tests exist and pass on the legacy code before any change; 4=characterization suite covers the migrated behavior (incl. undocumented quirks), green on legacy, and re-run green on the new path as the parity oracle",
+      "raise": "write characterization/golden-master tests that pass on the legacy code first, covering the exact behavior you're about to migrate"
+    },
+    {
+      "id": "strangler_incremental",
+      "descriptor": "1=big-bang rewrite / whole-system swap; 2=large multi-module cutover in one step, no seam; 3=a seam/facade routes one slice at a time to the new implementation, old + new run side by side; 4=strangler-fig with per-request routing, slices independently deployable, seams found first where the system resisted slicing",
+      "raise": "introduce a seam/facade and migrate one slice at a time behind it with old and new running side by side — never replace the whole system at once"
+    },
+    {
+      "id": "reversibility",
+      "descriptor": "1=cutover is one-way, no rollback; 2=rollback theoretically possible but untested or slow; 3=each slice is behind a flag/route toggle with a route-back; 4=each slice is independently revertible with a rollback that was actually exercised in seconds, and steps are independently deployable",
+      "raise": "put each slice behind a feature flag/route toggle and actually exercise the route-back so any slice can be reverted in seconds"
+    },
+    {
+      "id": "parity_verification",
+      "descriptor": "1=no parity check, new path trusted blind; 2=spot-checked manually, no systematic diff; 3=old-vs-new shadow/diff run for the slice, discrepancies reconciled before real traffic; 4=systematic shadow/replay diff with evidence, every discrepancy reconciled or owner-accepted, old path authoritative until parity proven",
+      "raise": "shadow or replay-diff the new path against the old for each slice and reconcile every discrepancy before the slice takes real traffic"
+    },
+    {
+      "id": "data_migration_safety",
+      "descriptor": "1=destructive one-way data move, no verification or backup; 2=data moved but not reconciled or no rollback; 3=dual-write or backfill-then-verify with row-count reconciliation and a rollback path; 4=reconciled by row count + checksums, verified backup before any source decommission, source stays authoritative until the target is proven",
+      "raise": "use dual-write or backfill-then-verify, reconcile with row counts + checksums, take a verified backup, and keep the source authoritative until the target is proven"
+    }
+  ]
+}

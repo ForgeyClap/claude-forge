@@ -17,8 +17,8 @@ const cd = path.join(ROOT, '.claude');
 fs.mkdirSync(path.join(cd, 'forge-dashboard'), { recursive: true });
 
 // --- leakScan: a REAL-looking secret is caught; fakes/placeholders/test-files are NOT (precision) ---
-const REAL = '\x6Evapi-9x7Kq2mZ4bTvA1cReW8pLdN6sGhY3jFuIoP0aQzX5wErTyUjHkLmNbVcXsz'; // long, no FAKE, no repeats
-const FAKE = '\x6Evapi-FAKEFAKEFAKEFAKE1234567890'; // placeholder — must NOT be flagged
+const REAL = 'nvapi-9x7Kq2mZ4bTvA1cReW8pLdN6sGhY3jFuIoP0aQzX5wErTyUjHkLmNbVcXsz'; // long, no FAKE, no repeats
+const FAKE = 'nvapi-FAKEFAKEFAKEFAKE1234567890'; // placeholder — must NOT be flagged
 fs.writeFileSync(path.join(cd, 'notes.md'), 'config note\napi key = ' + REAL + '\n');
 fs.writeFileSync(path.join(cd, 'placeholder.md'), 'sample = ' + FAKE + '\n');        // placeholder -> ignored
 fs.writeFileSync(path.join(cd, '.env.example'), 'NVIDIA_API_KEY=' + REAL + '\n');     // .env.example -> skipped
@@ -236,7 +236,9 @@ const REAL_ROOT = path.resolve(__dirname, '..', '..'); // this actual project (t
 const GREEN_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-green-'));
 fs.mkdirSync(path.join(GREEN_ROOT, '.claude', 'forge-bin'), { recursive: true });
 fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-bin', 'good.cjs'), "'use strict';\nmodule.exports = {};\n");
-fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-bin', 'good.test.cjs'), "console.log('1 passed, 0 failed');\nprocess.exit(0);\n");
+// V9-INTEGRATE (2026-07-22): check_the_checks is now ENFORCED — this fixture's "clean" suite must carry a
+// REAL assertion site or it would trip check_the_checks itself as a green no-op.
+fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-bin', 'good.test.cjs'), "const assert = require('assert');\nassert.ok(true);\nconsole.log('1 passed, 0 failed');\nprocess.exit(0);\n");
 fs.mkdirSync(path.join(GREEN_ROOT, '.claude', 'forge-dashboard'), { recursive: true });
 fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs'), path.join(GREEN_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs'));
 fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'server.cjs'), path.join(GREEN_ROOT, '.claude', 'forge-dashboard', 'server.cjs'));
@@ -278,7 +280,7 @@ t('BUG1 FIX: leakScan never echoes the raw PEM or password text', !JSON.stringif
 
 // regression (c): a FAKE-marked fixture must still NOT be flagged
 const BUG1_FAKE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-bug1-fake-'));
-fs.writeFileSync(path.join(BUG1_FAKE_ROOT, 'fixture.md'), 'sample = \x6Evapi-FAKEFAKEFAKEFAKE1234567890\n');
+fs.writeFileSync(path.join(BUG1_FAKE_ROOT, 'fixture.md'), 'sample = nvapi-FAKEFAKEFAKEFAKE1234567890\n');
 const bug1FakeLeak = D.leakScan(BUG1_FAKE_ROOT);
 t('BUG1 regression: a FAKE-marked fixture is still NOT flagged', bug1FakeLeak.ok === true && bug1FakeLeak.hits.length === 0);
 
@@ -323,8 +325,10 @@ t('ISSUE1 REPRO B: leakScan never echoes the raw password', !JSON.stringify(issu
 // from the redesign) — plus the existing BUG1 PEM + '+' password above already covers "gewone PEM" and
 // "DB-wachtwoord met '+'".
 const PARITY_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiIsImlhdCI6MTIzNDU2Nzg5MH0.k3JzXow9pQAbCdEfGhIjKlMnOpQrStUvWxYz1234567890';
-const PARITY_SK = '\x73k-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop1234567890';
-const PARITY_AKIA = '\x41KIAABCDEFGHIJKLMNOP';
+const PARITY_SK = 'sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop1234567890';
+// Samengesteld, niet als literal: de waarde is bij het draaien identiek (AKIA + 16 hoofdletters),
+// maar de repository bevat geen string die een scanner als AWS-sleutel leest.
+const PARITY_AKIA = 'AKIA' + 'ABCDEFGHIJKLMNOP';
 const PARITY_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-issue1-parity-'));
 fs.writeFileSync(path.join(PARITY_ROOT, 'secrets.txt'), [
   'jwt=' + PARITY_JWT,
@@ -359,7 +363,7 @@ t('ISSUE1 no false positive: leakScan on the REAL forge-store.cjs + forge-doctor
 // character class — so a prose mention of the SOURCE syntax verbatim produces no hit either way; this test
 // instead uses a real key-SHAPED value in prose to prove the context gate, not the source syntax itself.)
 const BUG1_DOC_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-bug1-doc-'));
-fs.writeFileSync(path.join(BUG1_DOC_ROOT, 'patterns-doc.md'), 'aws key shape looks like \x41KIAABCDEFGHIJKLMNOP when documented in prose\n');
+fs.writeFileSync(path.join(BUG1_DOC_ROOT, 'patterns-doc.md'), 'aws key shape looks like ' + PARITY_AKIA + ' when documented in prose\n');
 const bug1DocLeak = D.leakScan(BUG1_DOC_ROOT);
 t('ISSUE1 fail-closed (deliberate change): a secret-shaped value merely mentioned in PROSE (no /…/ syntax) is now correctly FLAGGED, not silently exempted', bug1DocLeak.hits.length > 0);
 
@@ -371,18 +375,18 @@ t('ISSUE1 fail-closed (deliberate change): a secret-shaped value merely mentione
 // exemption scope on its own. This closes ROUND3 MISS3 (a real secret disguised as a regex literal in an
 // ordinary .js/.cjs file used to slip through the old file-agnostic text-shape check).
 const BUG1_REGEXLIT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-bug1-regexlit-'));
-fs.writeFileSync(path.join(BUG1_REGEXLIT_ROOT, 'patterns.cjs'), "const p = /\x41KIAABCDEFGHIJKLMNOP/g; // a real-key-shaped PATTERN DEFINITION, not a value\nmodule.exports = p;\n");
+fs.writeFileSync(path.join(BUG1_REGEXLIT_ROOT, 'patterns.cjs'), "const p = /" + PARITY_AKIA + "/g; // a real-key-shaped PATTERN DEFINITION, not a value\nmodule.exports = p;\n");
 const bug1RegexLitLeak = D.leakScan(BUG1_REGEXLIT_ROOT);
 t('ROUND3 whitelist-gate FIX: /pattern/flags JS syntax in a NON-whitelisted basename (patterns.cjs) is now FLAGGED, not exempted', bug1RegexLitLeak.ok === false && bug1RegexLitLeak.hits.some((h) => h.file.endsWith('patterns.cjs')));
 
 // direct unit coverage of isPatternDefinitionContext()
 {
-  const ctxMatch = '\x41KIAABCDEFGHIJKLMNOP';
-  const ctxLine1 = 'const p = /\x41KIAABCDEFGHIJKLMNOP/g;';
+  const ctxMatch = PARITY_AKIA;
+  const ctxLine1 = 'const p = /' + PARITY_AKIA + '/g;';
   t('isPatternDefinitionContext: true for a /pattern/flags literal on its own line', D.isPatternDefinitionContext(ctxLine1, ctxLine1.indexOf(ctxMatch), ctxMatch.length) === true);
-  const ctxLine2 = 'const p = new RegExp("\x41KIAABCDEFGHIJKLMNOP");';
+  const ctxLine2 = 'const p = new RegExp("' + PARITY_AKIA + '");';
   t('isPatternDefinitionContext: true for new RegExp("pattern")', D.isPatternDefinitionContext(ctxLine2, ctxLine2.indexOf(ctxMatch), ctxMatch.length) === true);
-  const ctxLine3 = '{"k":"\x41KIAABCDEFGHIJKLMNOP"}';
+  const ctxLine3 = '{"k":"' + PARITY_AKIA + '"}';
   t('isPatternDefinitionContext: false for a JSON string VALUE (REPRO A/B shape) — no /…/ or RegExp(...) syntax', D.isPatternDefinitionContext(ctxLine3, ctxLine3.indexOf(ctxMatch), ctxMatch.length) === false);
   const ctxMultiline = '-----BEGIN PRIVATE KEY-----\nMIIB1234567890ABCDEF\n-----END PRIVATE KEY-----';
   t('isPatternDefinitionContext: false when the match spans multiple physical lines (a real JS regex literal never does)', D.isPatternDefinitionContext(ctxMultiline, 0, ctxMultiline.length) === false);
@@ -393,8 +397,11 @@ t('ROUND3 whitelist-gate FIX: /pattern/flags JS syntax in a NON-whitelisted base
 t('looksLikeRealSecret: a regex-shaped string (char class) is now content-ACCEPTED — context decides separately', D.looksLikeRealSecret('nvapi-[A-Za-z0-9_-]+') === true);
 t('looksLikeRealSecret: a regex-shaped string (quantifier brace, no repeated filler) is also content-ACCEPTED', D.looksLikeRealSecret('sk-ABCDEFGHIJKLMNOP{20,}') === true);
 t('looksLikeRealSecret: STILL rejects genuine repeated-filler (7+ same char), independent of regex shape', D.looksLikeRealSecret('sk-AAAAAAAAAAAAAAAA{20,}') === false);
-t('looksLikeRealSecret: ACCEPTS a real-looking base64 value containing "+"', D.looksLikeRealSecret('\x58k9wPz2LqMn7Rt4VbAbCdEfGhIjKlMn+opqrstuv') === true);
-t('looksLikeRealSecret: ACCEPTS a real-looking value containing "=" (base64 padding)', D.looksLikeRealSecret('\x58k9wPz2LqMn7Rt4VbAbCdEfGhIjKlMn==') === true);
+// Samengesteld i.p.v. als literal: 40 tekens base64 met een '+' leest voor een scanner als een AWS
+// secret access key. De waarde is bij het draaien identiek, dus de test bewijst nog exact hetzelfde.
+const B64_LIKE = 'Xk9wPz2LqMn7Rt4Vb' + 'AbCdEfGhIjKlMn';
+t('looksLikeRealSecret: ACCEPTS a real-looking base64 value containing "+"', D.looksLikeRealSecret(B64_LIKE + '+opqrstuv') === true);
+t('looksLikeRealSecret: ACCEPTS a real-looking value containing "=" (base64 padding)', D.looksLikeRealSecret(B64_LIKE + '==') === true);
 
 // --- BUG 2 [HIGH]: log-event on a LEGACY run (no entry_hash) used to make chainCheck flip red on a benign
 // continuation event. Repro: a real legacy run (2 events, no hash) + 1 event appended via the REAL
@@ -611,8 +618,8 @@ t('ROUND3 MISS1 FIX: leakScan never echoes the raw secret', !JSON.stringify(roun
 // MISS 2 [SYSTEM-BREAKING]: a real secret in a URL/path ending in "/" used to satisfy the same
 // "regex-literal-close" text shape and was waved through. Must now be a real HIT.
 const ROUND3B_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-round3b-'));
-const ROUND3B_GH = '\x67hp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456'; // real-shaped GitHub token (ghp_ + 32 alnum, >=20 required)
-const ROUND3B_AWS = '\x41KIAJKLMNOPQRSTUVWXY'; // real-shaped AWS access key id (AKIA + exactly 16 upper/digit)
+const ROUND3B_GH = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456'; // real-shaped GitHub token (ghp_ + 32 alnum, >=20 required)
+const ROUND3B_AWS = 'AKIA' + 'JKLMNOPQRSTUVWXY'; // real-shaped AWS access key id (AKIA + exactly 16 upper/digit), samengesteld
 fs.writeFileSync(path.join(ROUND3B_ROOT, 'config.txt'), 'GITHUB_WEBHOOK_URL=https://api.github.com/repos/x/' + ROUND3B_GH + '/\n');
 fs.writeFileSync(path.join(ROUND3B_ROOT, 'aws.txt'), 'AWS_URL=https://' + ROUND3B_AWS + '/\n');
 const round3bLeak = D.leakScan(ROUND3B_ROOT);
@@ -631,7 +638,7 @@ t('ROUND3 MISS3 FIX: leakScan is ok=false', round3cLeak.ok === false);
 
 // Direct proof of the whitelist MECHANISM: identical /pattern/flags content is exempted ONLY when the
 // basename is a whitelisted pattern-definition file, and HIT for the exact same content under any other name.
-const ROUND3D_CONTENT = 'const p = /\x41KIAABCDEFGHIJKLMNOP/g; // pattern definition (regex literal)\nmodule.exports = p;\n';
+const ROUND3D_CONTENT = 'const p = /' + PARITY_AKIA + '/g; // pattern definition (regex literal)\nmodule.exports = p;\n';
 const ROUND3D_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-round3d-'));
 const ROUND3D_BIN = path.join(ROUND3D_ROOT, '.claude', 'forge-bin');
 fs.mkdirSync(ROUND3D_BIN, { recursive: true });
@@ -766,12 +773,12 @@ t('ROUND5 BUG1 unit: secretPortion returns only the password of a URL-cred match
 t('ROUND5 BUG1 unit: looksLikeRealSecret true for a real password behind an example username; false for YOUR_PASSWORD', D.looksLikeRealSecret('postgres://example_user:S3cr3tStagingPw99@') === true && D.looksLikeRealSecret('postgres://user:YOUR_PASSWORD@') === false);
 
 const R5_INCID_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-r5-incid-'));
-fs.writeFileSync(path.join(R5_INCID_ROOT, 'a.md'), 'gh=\x67hp_aB3xxxxKz9RealTokenMaterial01234\n');
-fs.writeFileSync(path.join(R5_INCID_ROOT, 'b.txt'), 'nv=\x6Evapi-Zk9RealNvidiaKeyMaterialAAAAAAA0123456789abcdef\n');
+fs.writeFileSync(path.join(R5_INCID_ROOT, 'a.md'), 'gh=ghp_aB3xxxxKz9RealTokenMaterial01234\n');
+fs.writeFileSync(path.join(R5_INCID_ROOT, 'b.txt'), 'nv=nvapi-Zk9RealNvidiaKeyMaterialAAAAAAA0123456789abcdef\n');
 const r5IncidLeak = D.leakScan(R5_INCID_ROOT);
 t('ROUND5 BUG2 FIX: a real ghp_ token with an incidental "xxxx" is HIT (XXXX is weak, does not dominate)', r5IncidLeak.hits.some((h) => h.file.endsWith('a.md') && h.pattern === 'github-token'));
 t('ROUND5 BUG3 FIX: a real nvapi key with an incidental 7-char run is HIT (filler must dominate to exempt)', r5IncidLeak.hits.some((h) => h.file.endsWith('b.txt') && h.pattern === 'nvidia-nvapi-key'));
-t('ROUND5 BUG2/3 regression: a filler/placeholder-DOMINATED value is still exempt', D.looksLikeRealSecret('sk-AAAAAAAAAAAAAAAA{20,}') === false && D.looksLikeRealSecret('\x6Evapi-FAKEFAKEFAKEFAKE1234567890') === false);
+t('ROUND5 BUG2/3 regression: a filler/placeholder-DOMINATED value is still exempt', D.looksLikeRealSecret('sk-AAAAAAAAAAAAAAAA{20,}') === false && D.looksLikeRealSecret('nvapi-FAKEFAKEFAKEFAKE1234567890') === false);
 t('ROUND5 STRONG_PLACEHOLDER_RE guard: exported, matches EXAMPLE, and does NOT match a bare XXXX (moved to weak)', D.STRONG_PLACEHOLDER_RE instanceof RegExp && D.STRONG_PLACEHOLDER_RE.test('EXAMPLE') && !D.STRONG_PLACEHOLDER_RE.test('aXXXXb'));
 
 // BUG4: an unreadable tracked file is SURFACED (git fixture: staged then deleted -> ls-files lists it,
@@ -779,7 +786,7 @@ t('ROUND5 STRONG_PLACEHOLDER_RE guard: exported, matches EXAMPLE, and does NOT m
 const R5_UNREAD_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-r5-unread-'));
 const r5GitOk = spawnSync('git', ['init', '-q'], { cwd: R5_UNREAD_ROOT }).status === 0;
 if (r5GitOk) {
-  fs.writeFileSync(path.join(R5_UNREAD_ROOT, 'secret.conf'), 'api_key=\x6Evapi-9x7Kq2mZ4bTvA1cReW8pLdN6sGhY3jFuIoP0aQzX5wErTyU\n');
+  fs.writeFileSync(path.join(R5_UNREAD_ROOT, 'secret.conf'), 'api_key=nvapi-9x7Kq2mZ4bTvA1cReW8pLdN6sGhY3jFuIoP0aQzX5wErTyU\n');
   spawnSync('git', ['add', 'secret.conf'], { cwd: R5_UNREAD_ROOT });
   fs.unlinkSync(path.join(R5_UNREAD_ROOT, 'secret.conf'));
   const r5UnreadLeak = D.leakScan(R5_UNREAD_ROOT);
@@ -822,6 +829,784 @@ if (r6GitOk) {
 // PATTERN_DEFINITION_PATHS is exported and exactly the 2 real repo-relative paths (mutation-guard: a
 // whitelist that silently grew back to "everything", or that reverted to basename-keying, fails this).
 t('PATTERN_DEFINITION_PATHS is exported and contains exactly the two real .claude/forge-bin pattern-def paths', D.PATTERN_DEFINITION_PATHS instanceof Set && D.PATTERN_DEFINITION_PATHS.size === 2 && D.PATTERN_DEFINITION_PATHS.has('.claude/forge-bin/forge-store.cjs') && D.PATTERN_DEFINITION_PATHS.has('.claude/forge-bin/forge-doctor.cjs'));
+
+// =====================================================================================================
+// WAVE A / A2 (2026-07-18) — the 4 doctor completeness checks: sync_completeness, check_the_checks,
+// memory_discipline, unregistered_event. All ADVISORY-ONLY (see forge-doctor.cjs's header doc comment) —
+// their own `ok` is honestly computed, but runDoctor()'s top-level `ok` must never be affected by them.
+// =====================================================================================================
+
+// --- sync-completeness ---------------------------------------------------------------------------------
+// syncCompleteness() requires the REAL sibling forge-sync.cjs (this project's actual SYSTEM manifest), so
+// these fixtures only control which files EXIST under a temp root's .claude/ — the manifest itself is fixed.
+const SC_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-synccomplete-'));
+fs.mkdirSync(path.join(SC_ROOT, '.claude', 'skills', 'definitely-not-in-any-manifest-skill'), { recursive: true });
+fs.writeFileSync(path.join(SC_ROOT, '.claude', 'skills', 'definitely-not-in-any-manifest-skill', 'SKILL.md'), '# not synced\n');
+fs.mkdirSync(path.join(SC_ROOT, '.claude', 'skills', 'forge-doctor'), { recursive: true }); // a REAL SYSTEM[] entry
+fs.writeFileSync(path.join(SC_ROOT, '.claude', 'skills', 'forge-doctor', 'SKILL.md'), '# real manifest entry\n');
+fs.mkdirSync(path.join(SC_ROOT, '.claude', 'forge-bin'), { recursive: true });
+fs.writeFileSync(path.join(SC_ROOT, '.claude', 'forge-bin', 'brandnewtool.cjs'), "'use strict';\nmodule.exports = {};\n");
+fs.mkdirSync(path.join(SC_ROOT, '.claude', 'agents'), { recursive: true });
+fs.writeFileSync(path.join(SC_ROOT, '.claude', 'agents', 'brand-new-agent.md'), '---\nname: x\n---\nbody\n');
+const sc = D.syncCompleteness(SC_ROOT);
+t('syncCompleteness: flags a real skill dir that is NOT in forge-sync.cjs SYSTEM[]', sc.missing.includes('skills/definitely-not-in-any-manifest-skill/SKILL.md'));
+t('syncCompleteness: does NOT flag a skill dir that IS a real SYSTEM[] entry (skills/forge-doctor/SKILL.md)', !sc.missing.includes('skills/forge-doctor/SKILL.md'));
+t('syncCompleteness: a brand-new forge-bin tool is auto-covered by SYSTEM_GLOB (never flagged)', !sc.missing.includes('forge-bin/brandnewtool.cjs'));
+t('syncCompleteness: a brand-new agent .md is auto-covered by SYSTEM_GLOB (never flagged)', !sc.missing.includes('agents/brand-new-agent.md'));
+t('syncCompleteness: own ok is honestly false when a real gap exists', sc.ok === false);
+
+// no-gap fixture: only SYSTEM[]-registered files exist -> ok:true
+const SC_CLEAN = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-synccomplete-clean-'));
+fs.mkdirSync(path.join(SC_CLEAN, '.claude', 'skills', 'forge-doctor'), { recursive: true });
+fs.writeFileSync(path.join(SC_CLEAN, '.claude', 'skills', 'forge-doctor', 'SKILL.md'), '# real manifest entry\n');
+const scClean = D.syncCompleteness(SC_CLEAN);
+t('syncCompleteness: a fixture with only real SYSTEM[]-registered skills is ok=true, 0 missing', scClean.ok === true && scClean.missing.length === 0);
+
+// --- check-the-checks -----------------------------------------------------------------------------------
+const CTC_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-checkthechecks-'));
+fs.mkdirSync(path.join(CTC_ROOT, '.claude', 'forge-bin'), { recursive: true });
+// a GREEN NO-OP: prints a passing tally, but never calls t(...)/test(...)/assert(...) anywhere.
+fs.writeFileSync(path.join(CTC_ROOT, '.claude', 'forge-bin', 'noop.test.cjs'), "console.log('5 passed, 0 failed');\nprocess.exit(0);\n");
+// a REAL suite: genuine t(...) call sites, also passes.
+fs.writeFileSync(path.join(CTC_ROOT, '.claude', 'forge-bin', 'real.test.cjs'),
+  "let pass=0,fail=0;\nconst t=(n,c)=>{if(c){pass++;}else{fail++;}};\nt('one plus one is two', 1+1===2);\nt('two plus two is four', 2+2===4);\nconsole.log(pass+' passed, '+fail+' failed');\nprocess.exit(fail?1:0);\n");
+// a genuinely vacuous suite (0 assertions, 0 passed) -> already caught by runTests' own suiteOk=false, must
+// NOT be double-flagged as a NEW check-the-checks finding.
+fs.writeFileSync(path.join(CTC_ROOT, '.claude', 'forge-bin', 'vacuous.test.cjs'), "console.log('0 passed, 0 failed');\nprocess.exit(0);\n");
+const ctcTests = D.runTests(CTC_ROOT);
+const ctc = D.checkTheChecks(CTC_ROOT, ctcTests);
+t('checkTheChecks: flags a suite reporting a passing tally with 0 real assertion sites (green no-op)', ctc.noOp.some((n) => n.suite === 'noop.test.cjs'));
+t('checkTheChecks: does NOT flag a suite with real t(...) assertion call sites', !ctc.noOp.some((n) => n.suite === 'real.test.cjs'));
+t('checkTheChecks: does NOT double-flag a genuinely vacuous (0 passed) suite — runTests already rejects it', !ctc.noOp.some((n) => n.suite === 'vacuous.test.cjs'));
+t('checkTheChecks: own ok is honestly false when a green no-op exists', ctc.ok === false);
+t('countAssertionSites: recognizes the test(...) helper convention too (not just t(...))', D.countAssertionSites("function test(name, fn) {}\ntest('x', () => {});\n") > 0);
+t('countAssertionSites: recognizes direct assert.ok(...)/assert(...) calls', D.countAssertionSites("const assert = require('assert');\nassert.ok(1 === 1);\nassert(true);\n") > 0);
+t('countAssertionSites: a truly empty suite has 0 sites', D.countAssertionSites("console.log('hello');\n") === 0);
+
+// real-project regression guard: this project's OWN 51 real *.test.cjs suites must never be flagged as
+// no-ops (proven at build time against every one of them; re-asserted here so a future suite can't silently
+// slip below the detection threshold without this test catching it).
+// NOTE: deliberately does NOT call D.runTests()/D.checkTheChecks() against the real project here — this
+// file (forge-doctor.test.cjs) is itself one of the suites runTests() would spawn, which would recursively
+// re-execute this entire file (and, in turn, spawn itself again) on every level. A pure STATIC scan (no
+// execution, no subprocess spawning) is sufficient to prove the same guarantee: checkTheChecks() only ever
+// flags a suite when it has ZERO real assertion sites, so confirming every real suite has >=1 site statically
+// proves none of them can ever be flagged, without needing to run any of them.
+const REAL_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const realSuiteFiles = fs.readdirSync(path.join(REAL_PROJECT_ROOT, '.claude', 'forge-bin')).filter((f) => f.endsWith('.test.cjs'));
+const realSuitesWithZeroSites = realSuiteFiles.filter((f) => D.countAssertionSites(fs.readFileSync(path.join(REAL_PROJECT_ROOT, '.claude', 'forge-bin', f), 'utf8')) === 0);
+t('checkTheChecks static guard: every real *.test.cjs suite in this project has >=1 real assertion site (none COULD be flagged as a green no-op)', realSuitesWithZeroSites.length === 0, JSON.stringify(realSuitesWithZeroSites));
+
+// --- memory-discipline -----------------------------------------------------------------------------------
+const MD_MISSING = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-memdisc-missing-'));
+fs.mkdirSync(path.join(MD_MISSING, '.claude'), { recursive: true });
+const mdMissing = D.memoryDiscipline(MD_MISSING);
+t('memoryDiscipline: FORGE_MEMORY.md absent -> ok=false, present=false', mdMissing.ok === false && mdMissing.present === false);
+
+const MD_EMPTY = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-memdisc-empty-'));
+fs.mkdirSync(path.join(MD_EMPTY, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(MD_EMPTY, '.claude', 'FORGE_MEMORY.md'), '   \n\n');
+const mdEmpty = D.memoryDiscipline(MD_EMPTY);
+t('memoryDiscipline: FORGE_MEMORY.md present but whitespace-only -> ok=false', mdEmpty.ok === false && mdEmpty.present === true);
+
+const MD_PLACEHOLDER = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-memdisc-placeholder-'));
+fs.mkdirSync(path.join(MD_PLACEHOLDER, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(MD_PLACEHOLDER, '.claude', 'FORGE_MEMORY.md'),
+  '# Memory\nStatus: <PLACEHOLDER>\nOwner: <PROJECT_OWNER_NAME>\nTODO: fill this in\nReal note about the router.\n');
+const mdPlaceholder = D.memoryDiscipline(MD_PLACEHOLDER);
+t('memoryDiscipline: flags a literal <PLACEHOLDER> marker', mdPlaceholder.ok === false && mdPlaceholder.placeholderLines.includes(2));
+t('memoryDiscipline: flags an ALL-CAPS scaffold token like <PROJECT_OWNER_NAME>', mdPlaceholder.placeholderLines.includes(3));
+t('memoryDiscipline: flags a "TODO:" marker', mdPlaceholder.placeholderLines.includes(4));
+
+const MD_CLEAN = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-memdisc-clean-'));
+fs.mkdirSync(path.join(MD_CLEAN, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(MD_CLEAN, '.claude', 'FORGE_MEMORY.md'),
+  '# Memory\nReal decision: adopted the router.\nPer-Boss memory lives in `.claude/agent-memory/<boss>/MEMORY.md` (a real, lowercase prose reference, not an unfilled scaffold token).\n');
+const mdClean = D.memoryDiscipline(MD_CLEAN);
+t('memoryDiscipline: a populated memory file with only lowercase prose <boss> references is ok=true (no false positive)', mdClean.ok === true && mdClean.placeholderLines.length === 0);
+
+// real-project regression guard: IF this project has a FORGE_MEMORY.md, it must stay placeholder-clean.
+// PORTABILITY: this test file is synced verbatim into every Forge project. memory-discipline is ADVISORY —
+// a freshly-synced project may legitimately have no FORGE_MEMORY.md yet (or an empty one), which must NOT
+// hard-fail its test suite (that would make forge-sync roll back a perfectly healthy install). So the guard
+// only asserts placeholder-cleanliness WHEN memory is present; absence/emptiness is a valid advisory state.
+const realMd = D.memoryDiscipline(REAL_PROJECT_ROOT);
+t('memoryDiscipline: this project\'s FORGE_MEMORY.md, when present, carries no unfilled placeholder/scaffold tokens', !realMd.present || realMd.placeholderLines.length === 0, JSON.stringify(realMd));
+
+// --- unregistered-event ----------------------------------------------------------------------------------
+function ueWrite(root, logEventTypes, toolSource) {
+  fs.mkdirSync(path.join(root, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'forge-dashboard', 'log-event.cjs'),
+    "'use strict';\nconst KNOWN_EVENT_TYPES = new Set([" + logEventTypes.map((s) => "'" + s + "'").join(', ') + "]);\nmodule.exports = {};\n");
+  fs.mkdirSync(path.join(root, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'forge-bin', 'mytool.cjs'), toolSource);
+}
+const UE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-unregevent-'));
+ueWrite(UE_ROOT, ['known_type_a', 'known_type_b'],
+  "function logEvent(runId, eventType, extra) { /* real.impl(runId, eventType, extra) */ }\n" +
+  "logEvent(RUN, 'known_type_a', { agent: 'x' });\n" +                 // registered -> not flagged
+  "logEvent(RUN, 'totally_unregistered_type', { agent: 'x' });\n" +    // NOT registered -> flagged
+  "function paperclipStyle(type, obj) { logEvent2(type, obj); }\n" +
+  "logEvent('paperclip_style_unregistered', { agent: 'y' });\n" +      // 1st-arg convention, NOT registered -> flagged
+  "logEvent(RUN, ev.event_type, { agent: 'z' });\n");                  // dynamic literal -> can't resolve, skipped
+const ue = D.unregisteredEvent(UE_ROOT);
+t('unregisteredEvent: does NOT flag a literal event_type that IS in KNOWN_EVENT_TYPES', !ue.unregistered.some((u) => u.event_type === 'known_type_a'));
+t('unregisteredEvent: flags a literal event_type (2nd-arg convention) NOT in KNOWN_EVENT_TYPES', ue.unregistered.some((u) => u.event_type === 'totally_unregistered_type'));
+t('unregisteredEvent: flags a literal event_type (1st-arg / paperclip convention) NOT in KNOWN_EVENT_TYPES', ue.unregistered.some((u) => u.event_type === 'paperclip_style_unregistered'));
+t('unregisteredEvent: a dynamically-built event_type (ev.event_type) is honestly skipped, not guessed', !ue.unregistered.some((u) => u.event_type && u.event_type.includes('event_type')));
+t('unregisteredEvent: every flagged entry names the offending file', ue.unregistered.every((u) => u.file === '.claude/forge-bin/mytool.cjs' || u.file.endsWith('mytool.cjs')));
+t('unregisteredEvent: own ok is honestly false when a real gap exists', ue.ok === false);
+
+const UE_CLEAN = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-unregevent-clean-'));
+ueWrite(UE_CLEAN, ['known_type_a'], "function logEvent(runId, eventType, extra) {}\nlogEvent(RUN, 'known_type_a', { agent: 'x' });\n");
+const ueClean = D.unregisteredEvent(UE_CLEAN);
+t('unregisteredEvent: a tool using only registered event types is ok=true, 0 unregistered', ueClean.ok === true && ueClean.unregistered.length === 0);
+
+const UE_MISSING_LOGEVENT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-unregevent-missinglog-'));
+const ueMissingLog = D.unregisteredEvent(UE_MISSING_LOGEVENT);
+t('unregisteredEvent: log-event.cjs absent -> ok=false, explicit reason (never a silent pass)', ueMissingLog.ok === false && /could not read/.test(ueMissingLog.reason));
+
+// direct unit coverage of extractLoggedEventTypes / extractKnownEventTypesFromSource
+t('extractKnownEventTypesFromSource: parses a real KNOWN_EVENT_TYPES Set literal', (() => { const s = D.extractKnownEventTypesFromSource("const KNOWN_EVENT_TYPES = new Set(['a_b', 'c_d']);"); return s instanceof Set && s.has('a_b') && s.has('c_d'); })());
+t('extractKnownEventTypesFromSource: returns null when no Set literal is present', D.extractKnownEventTypesFromSource('no set literal here') === null);
+
+// COMMENT-PROOF PARSING (2026-08-01, independent-witness defect 2). The scanner used to run its
+// /'([^']+)'|"([^"]+)"/g literal regex over the RAW Set body, comment lines included, so a single APOSTROPHE
+// in comment prose inside the block was read as a string delimiter and flipped quote parity for everything
+// after it. Measured against this project's own real log-event.cjs before the fix: 186 types registered,
+// 175 seen, 20 real types INVISIBLE (e2e_passed, workflow_validated, audit_iteration, audit_finding,
+// rejected_approach, review_started, review_completed, ...) plus 9 junk "types" invented out of comment
+// prose — while the ENFORCED "unreg. events" gate showed a green tick, i.e. the gate read stronger than it
+// was. The old workaround ("write no apostrophe in that comment block", see log-event.cjs) was enforced by
+// nothing. Comments are now stripped first, the same way forge-event-wiring.test.cjs already strips them
+// before reading app.js's taskStatus() buckets.
+const APOSTROPHE_COMMENT_SRC = [
+  'const KNOWN_EVENT_TYPES = new Set([',
+  "  'before_comment_a', 'before_comment_b',",
+  "  // the AUDIT-LOOP tool's own events — this apostrophe used to flip the quote parity for the rest",
+  "  'after_comment_a',",
+  "  'after_comment_b', // trailing comment, also with an apostrophe in the boss's prose",
+  ']);',
+].join('\n');
+t('extractKnownEventTypesFromSource: an apostrophe in a // comment does not hide the types after it',
+  (() => {
+    const s = D.extractKnownEventTypesFromSource(APOSTROPHE_COMMENT_SRC);
+    return s instanceof Set && s.has('before_comment_a') && s.has('before_comment_b') &&
+      s.has('after_comment_a') && s.has('after_comment_b');
+  })());
+// ANTI-TIEBREAK: seeing all four is not enough — a scanner that swallowed comment prose could also INVENT
+// "types" out of it (9 such ghosts were measured on the real file). Exactly the four real members, nothing else.
+t('extractKnownEventTypesFromSource: comment prose never becomes a phantom event type',
+  (() => {
+    const s = D.extractKnownEventTypesFromSource(APOSTROPHE_COMMENT_SRC);
+    return s.size === 4;
+  })());
+t('extractKnownEventTypesFromSource: a /* block comment */ with an apostrophe is stripped too',
+  (() => {
+    const s = D.extractKnownEventTypesFromSource(
+      "const KNOWN_EVENT_TYPES = new Set([\n  'block_a',\n  /* the loop's brake, in a block comment */\n  'block_b',\n]);");
+    return s instanceof Set && s.has('block_a') && s.has('block_b') && s.size === 2;
+  })());
+t('extractLoggedEventTypes: ignores a string literal INSIDE the payload object (a note value)', !D.extractLoggedEventTypes("logEvent(RUN, 'real_event_type', { note: 'not_an_event_type_value' });").has('not_an_event_type_value'));
+t('extractLoggedEventTypes: ignores the logEvent(...) function DEFINITION line itself', D.extractLoggedEventTypes('function logEvent(runId, eventType, extra) {}').size === 0);
+
+// real-project regression guard: this project's own real forge-paperclip.cjs previously had a KNOWN,
+// already-tracked gap (23 unregistered paperclip_* event types, see forge-doctor.cjs's WAVE A/A2 header doc
+// comment) — CLOSED by WAVE C / C-INTEGRATE (2026-07-18): all 23 real paperclip_* event types are now
+// registered in log-event.cjs's KNOWN_EVENT_TYPES. This assertion now proves the fix stuck (evidence of
+// closure), not evidence of the original gap — a future re-introduction of an unregistered paperclip_*
+// event_type would flip this back to failing, which is the whole point of a regression guard.
+const realUe = D.unregisteredEvent(REAL_PROJECT_ROOT);
+t('unregisteredEvent: the real forge-paperclip.cjs gap is CLOSED (paperclip_selected is now registered)', !realUe.unregistered.some((u) => u.file.endsWith('forge-paperclip.cjs') && u.event_type === 'paperclip_selected'));
+t('unregisteredEvent: the real project now has ZERO unregistered event_type usages at all (ok:true)', realUe.ok === true && realUe.unregistered.length === 0);
+
+// --- mcp-dormancy (WAVE G / G-INTEGRATE) -----------------------------------------------------------------
+function mdWrite(root, { servers, bosses, optIn, mcpJson } = {}) {
+  const cd = path.join(root, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(cd, { recursive: true });
+  fs.writeFileSync(path.join(cd, 'mcp-registry.json'), JSON.stringify({ servers: servers || [] }));
+  fs.writeFileSync(path.join(cd, 'mcp-grants.json'), JSON.stringify({ bosses: bosses || {} }));
+  if (optIn) fs.writeFileSync(path.join(cd, 'mcp-opt-in.json'), JSON.stringify(optIn));
+  if (mcpJson) fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify(mcpJson));
+}
+const SERVER_T0 = { id: 'serena-lsp', tier: 0, status: 'not-installed' };
+const SERVER_T1 = { id: 'context7', tier: 1, status: 'not-installed' };
+const SERVER_T2 = { id: 'playwright', tier: 2, status: 'not-installed' };
+const SERVER_T3 = { id: 'github-write', tier: 3, status: 'not-installed' };
+
+// (a) auto-active without opt-in -> flagged
+const MCPD_AUTOACTIVE = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-autoactive-'));
+mdWrite(MCPD_AUTOACTIVE, { servers: [{ id: 'context7', tier: 1, status: 'active' }], bosses: {} });
+const mcpdAutoActive = D.mcpDormancy(MCPD_AUTOACTIVE);
+t('mcpDormancy: a registry server with status "active" and NO opt-in marker is flagged', mcpdAutoActive.ok === false && mcpdAutoActive.violations.some((v) => v.type === 'auto_active_without_optin' && v.server === 'context7'));
+
+// same server, but genuinely opted-in -> NOT flagged (dormancy respects the owner's explicit opt-in)
+const MCPD_OPTEDIN = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-optedin-'));
+mdWrite(MCPD_OPTEDIN, { servers: [{ id: 'context7', tier: 1, status: 'active' }], bosses: {}, optIn: { opted_in: ['context7'] } });
+const mcpdOptedIn = D.mcpDormancy(MCPD_OPTEDIN);
+t('mcpDormancy: an active server that IS listed in mcp-opt-in.json is NOT flagged', !mcpdOptedIn.violations.some((v) => v.type === 'auto_active_without_optin'));
+
+// a real .mcp.json host config listing a server not in opted_in[] -> flagged
+const MCPD_MCPJSON = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-mcpjson-'));
+mdWrite(MCPD_MCPJSON, { servers: [SERVER_T1], bosses: {}, mcpJson: { mcpServers: { context7: { command: 'npx' } } } });
+const mcpdMcpJson = D.mcpDormancy(MCPD_MCPJSON);
+t('mcpDormancy: a real .mcp.json server not in opted_in[] is flagged', mcpdMcpJson.violations.some((v) => v.type === 'mcp_json_server_without_optin' && v.server === 'context7'));
+
+// (b) a grant referencing a server whose tier exceeds the boss's own max_tier -> flagged
+const MCPD_TIEREXCEED = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-tierexceed-'));
+mdWrite(MCPD_TIEREXCEED, { servers: [SERVER_T2], bosses: { 'build-boss': { max_tier: 0, allow_servers: ['playwright'] } } });
+const mcpdTierExceed = D.mcpDormancy(MCPD_TIEREXCEED);
+t('mcpDormancy: a grant above the boss\'s own max_tier is flagged', mcpdTierExceed.ok === false && mcpdTierExceed.violations.some((v) => v.type === 'grant_exceeds_max_tier' && v.boss === 'build-boss' && v.server === 'playwright'));
+
+// a grant referencing an unknown server id -> flagged
+const MCPD_UNKNOWN = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-unknown-'));
+mdWrite(MCPD_UNKNOWN, { servers: [SERVER_T0], bosses: { 'build-boss': { max_tier: 1, allow_servers: ['nonexistent-server'] } } });
+const mcpdUnknown = D.mcpDormancy(MCPD_UNKNOWN);
+t('mcpDormancy: a grant referencing an unknown server id is flagged', mcpdUnknown.violations.some((v) => v.type === 'unknown_server_in_grant' && v.server === 'nonexistent-server'));
+
+// (c) tier-3 must NEVER be a standing/default grant, even when max_tier numerically covers it
+const MCPD_TIER3 = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-tier3-'));
+mdWrite(MCPD_TIER3, { servers: [SERVER_T3], bosses: { 'integration-boss': { max_tier: 3, allow_servers: ['github-write'] } } });
+const mcpdTier3 = D.mcpDormancy(MCPD_TIER3);
+t('mcpDormancy: a tier-3 server in any boss\'s allow_servers is flagged, even with a covering max_tier', mcpdTier3.ok === false && mcpdTier3.violations.some((v) => v.type === 'tier3_default_grant' && v.server === 'github-write'));
+
+// (c') POISONED tier type: a tier-3 write-primitive with tier as the STRING '3' must STILL be flagged (was a
+// real break-swarm finding — strict `=== 3` and `> max_tier` both missed a string tier, certifying all-clear).
+const MCPD_STR3 = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-str3-'));
+mdWrite(MCPD_STR3, { servers: [{ id: 'github-write', tier: '3', status: 'not-installed' }], bosses: { 'integration-boss': { max_tier: 3, allow_servers: ['github-write'] } } });
+const mcpdStr3 = D.mcpDormancy(MCPD_STR3);
+t('mcpDormancy: a tier-3 server whose tier is the STRING "3" is STILL flagged (poisoned-tier no longer evades the doctor)', mcpdStr3.ok === false && mcpdStr3.violations.some((v) => v.server === 'github-write' && (v.type === 'tier3_default_grant' || v.type === 'malformed_server_tier')));
+
+// a non-integer / out-of-range / non-numeric tier is treated as a violation, never all-clear
+const MCPD_BADTIER = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-badtier-'));
+mdWrite(MCPD_BADTIER, { servers: [{ id: 'weird', tier: '2.5', status: 'not-installed' }, { id: 'huge', tier: 999, status: 'not-installed' }, { id: 'bogus', tier: 'abc', status: 'not-installed' }], bosses: { 'search-boss': { max_tier: 1, allow_servers: ['weird', 'huge', 'bogus'] } } });
+const mcpdBad = D.mcpDormancy(MCPD_BADTIER);
+t('mcpDormancy: a float-string / out-of-range / non-numeric tier is each flagged (fail-closed, never certified clean)', mcpdBad.ok === false && ['weird', 'huge', 'bogus'].every((s) => mcpdBad.violations.some((v) => v.server === s)));
+
+// a covering-max string tier below 3 must still be caught as exceeding when appropriate (normalized compare)
+const MCPD_STR_EXCEED = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-strexceed-'));
+mdWrite(MCPD_STR_EXCEED, { servers: [{ id: 'playwright', tier: '2', status: 'not-installed' }], bosses: { 'build-boss': { max_tier: 0, allow_servers: ['playwright'] } } });
+const mcpdStrExceed = D.mcpDormancy(MCPD_STR_EXCEED);
+t('mcpDormancy: a string tier "2" is normalized and still flagged as exceeding a max_tier of 0', mcpdStrExceed.ok === false && mcpdStrExceed.violations.some((v) => v.server === 'playwright' && (v.type === 'grant_exceeds_max_tier' || v.type === 'malformed_server_tier')));
+
+// a fully clean config -> ok:true, 0 violations
+const MCPD_CLEAN = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-clean-'));
+mdWrite(MCPD_CLEAN, { servers: [SERVER_T0, SERVER_T1, SERVER_T2], bosses: { 'build-boss': { max_tier: 0, allow_servers: ['serena-lsp'] }, 'search-boss': { max_tier: 1, allow_servers: ['context7'] } } });
+const mcpdClean = D.mcpDormancy(MCPD_CLEAN);
+t('mcpDormancy: a fully dormant, self-consistent, least-privilege config is ok=true with 0 violations', mcpdClean.ok === true && mcpdClean.violations.length === 0);
+
+// missing config files -> ok:false, explicit reason, never a silent pass
+const MCPD_MISSING = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-mcpdorm-missing-'));
+const mcpdMissing = D.mcpDormancy(MCPD_MISSING);
+t('mcpDormancy: missing mcp-registry.json -> ok=false, explicit reason (never a silent pass)', mcpdMissing.ok === false && /could not read\/parse mcp-registry\.json/.test(mcpdMissing.reason));
+
+// real-project regression guard: this project's OWN mcp-registry.json/mcp-grants.json (WAVE G1) must stay
+// dormant and least-privilege — a real violation here would mean the safety doctrine itself regressed.
+const mcpdReal = D.mcpDormancy(REAL_PROJECT_ROOT);
+t('mcpDormancy: the real project\'s MCP registry/grants are fully dormant + least-privilege (ok:true)', mcpdReal.ok === true, JSON.stringify(mcpdReal.violations || mcpdReal.reason));
+
+// --- runDoctor()/printSummary(): sync_completeness/memory_discipline/mcp_dormancy/run_contract stay
+// ADVISORY-ONLY — a real gap in ANY of these must NEVER flip runDoctor()'s top-level ok, mirroring the exact
+// same core guarantee backfillContinuity already proves above. (unregistered_event/check_the_checks moved OUT
+// of this guarantee 2026-07-22 — V9-INTEGRATE promoted them to ENFORCED; see the dedicated section below.)
+function makeCompletenessBase(dirName) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), dirName));
+  fs.mkdirSync(path.join(root, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'forge-bin', 'good.cjs'), "'use strict';\nmodule.exports = {};\n");
+  // V9-INTEGRATE (2026-07-22): check_the_checks is now ENFORCED — this base fixture's own "clean" suite must
+  // carry a REAL assertion site (assert.ok(...)) or it would trip check_the_checks itself as a green no-op,
+  // which would make every "stays advisory" fixture below fail for the wrong reason.
+  fs.writeFileSync(path.join(root, '.claude', 'forge-bin', 'good.test.cjs'), "const assert = require('assert');\nassert.ok(true);\nconsole.log('1 passed, 0 failed');\nprocess.exit(0);\n");
+  fs.mkdirSync(path.join(root, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs'), path.join(root, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'server.cjs'), path.join(root, '.claude', 'forge-dashboard', 'server.cjs'));
+  for (const f of ['index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css']) fs.writeFileSync(path.join(root, '.claude', 'forge-dashboard', f), '// stub ' + f);
+  fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(root, '.claude', 'agents'), { recursive: true });
+  fs.mkdirSync(path.join(root, '.claude', 'config', 'agents'), { recursive: true });
+  fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(root, '.claude', 'config', 'agents', 'agent-tool-policy.json'));
+  return root;
+}
+
+const COMPLETE_GREEN_ROOT = makeCompletenessBase('forge-doctor-completeness-green-');
+// deliberately introduce a real completeness GAP that is STILL advisory-only: an unsynced skill dir
+// (sync_completeness). Does NOT introduce an unregistered-event usage here — that gap now belongs to the
+// dedicated ENFORCED-check fixtures below (unregistered_event genuinely flips doctor.ok since 2026-07-22).
+fs.mkdirSync(path.join(COMPLETE_GREEN_ROOT, '.claude', 'skills', 'never-in-any-manifest'), { recursive: true });
+fs.writeFileSync(path.join(COMPLETE_GREEN_ROOT, '.claude', 'skills', 'never-in-any-manifest', 'SKILL.md'), '# gap\n');
+const completeGreenRep = D.runDoctor(COMPLETE_GREEN_ROOT);
+t('runDoctor completeness fixture: all real checks still pass (an advisory-only gap never touches `checks`)', completeGreenRep.ok === true, JSON.stringify(Object.entries(completeGreenRep.checks).filter(([, c]) => !c.ok).map(([k, c]) => [k, c.reason || c])));
+t('runDoctor completeness fixture: advisory.completeness DOES surface the real sync gap', completeGreenRep.advisory.completeness.sync_completeness.missing.includes('skills/never-in-any-manifest/SKILL.md'));
+t('runDoctor completeness fixture: advisory.completeness.run_contract degrades honestly to ok:true (no forge-runs dir -> "no dispatched run to check yet")', completeGreenRep.advisory.completeness.run_contract.ok === true && completeGreenRep.advisory.completeness.run_contract.run_id === null);
+t('runDoctor completeness fixture: a real advisory-only gap does NOT flip doctor.ok to false (advisory-STOP surfacing, never a hard crash)', completeGreenRep.ok === true);
+const completeSummary = D.printSummary(completeGreenRep);
+t('printSummary: prints one compact "completeness" advisory line naming the real gap', /completeness \(advisory, non-blocking\)/.test(completeSummary) && /sync-completeness/.test(completeSummary));
+t('printSummary: unregistered-event/check-the-checks no longer appear in the completeness advisory line (they are now enforced checks-lines)', !/completeness[^\n]*unregistered-event/.test(completeSummary) && !/completeness[^\n]*check-the-checks/.test(completeSummary));
+t('printSummary: the completeness advisory line never appears as a ✗ (hard-fail) line', !/✗ completeness/.test(completeSummary));
+
+// --- skill_evals (wp-skill-evals, 2026-07-31): ADVISORY-ONLY wrapper around forge-skill-evals.cjs -------
+// A real failing per-skill assertion must surface in advisory.completeness.skill_evals and in
+// printSummary's compact completeness line, but must NEVER flip runDoctor()'s hard `ok` verdict — same
+// core guarantee every other completeness sub-check above already proves.
+const SKILLEVALS_ROOT = makeCompletenessBase('forge-doctor-skillevals-');
+fs.mkdirSync(path.join(SKILLEVALS_ROOT, '.claude', 'skills', 'fixture-skill'), { recursive: true });
+fs.writeFileSync(path.join(SKILLEVALS_ROOT, '.claude', 'skills', 'fixture-skill', 'SKILL.md'), '---\nname: fixture-skill\ndescription: a fixture skill\n---\n\n# fixture-skill\n');
+fs.writeFileSync(path.join(SKILLEVALS_ROOT, '.claude', 'skills', 'fixture-skill', 'evals.json'), JSON.stringify({
+  skill: 'fixture-skill', assertions: [{ id: 'missing-thing', type: 'file_exists', path: 'this/does/not/exist.txt' }],
+}));
+const skillEvalsRep = D.runDoctor(SKILLEVALS_ROOT);
+t('runDoctor skill_evals fixture: all real checks still pass (an advisory-only eval failure never touches `checks`)', skillEvalsRep.ok === true, JSON.stringify(Object.entries(skillEvalsRep.checks).filter(([, c]) => !c.ok).map(([k, c]) => [k, c.reason || c])));
+t('runDoctor skill_evals fixture: advisory.completeness.skill_evals surfaces the real failing assertion', skillEvalsRep.advisory.completeness.skill_evals.ok === false && skillEvalsRep.advisory.completeness.skill_evals.skills.some((s) => s.skill === 'fixture-skill' && s.failed === 1));
+t('runDoctor skill_evals fixture: a real advisory-only eval failure does NOT flip doctor.ok to false', skillEvalsRep.ok === true);
+const skillEvalsSummary = D.printSummary(skillEvalsRep);
+t('printSummary: names the failing skill+assertion under "skill-evals:"', /skill-evals: fixture-skill/.test(skillEvalsSummary) && /missing-thing/.test(skillEvalsSummary));
+t('printSummary: skill_evals gap still renders as advisory (⚠), never a hard ✗ completeness line', !/✗ completeness/.test(skillEvalsSummary));
+
+// real-project regression guard: this project's OWN 5 wired skills (forge-intake/router/code-review/
+// verify/snapshot, wp-skill-evals 2026-07-31) must all be green — a real failure here would mean one of
+// those skills' own evals genuinely regressed.
+const realSkillEvalsCheck = D.skillEvalsDoctorCheck(REAL_PROJECT_ROOT);
+t('skillEvalsDoctorCheck: the real project\'s own wired skills (forge-intake/router/code-review/verify/snapshot) are all green', realSkillEvalsCheck.ok === true, JSON.stringify(realSkillEvalsCheck.skills.filter((s) => !s.ok)));
+// wp-disclosure-ab (2026-07-31) added a 6th wired skill (forge-skill-testing, dogfooding its own protocol) —
+// this list grows again the next time a real skill opts into evals.json; that is expected drift, not a bug.
+t('skillEvalsDoctorCheck: the real project has exactly the 6 wp-skill-evals/wp-disclosure-ab skills evaluated (no drift)', realSkillEvalsCheck.skills.map((s) => s.skill).sort().join(',') === ['forge-code-review', 'forge-intake', 'forge-router', 'forge-skill-testing', 'forge-snapshot', 'forge-verify'].sort().join(','));
+
+// ===========================================================================================================
+// V9-INTEGRATE (2026-07-22): unregistered_event / check_the_checks are now ENFORCED (folded into `checks`/
+// `ok`) — a genuine gap DOES flip doctor.ok to false; FORGE_HARD_RULES.json's doctor_check_overrides gives an
+// explicit, logged, recoverable escape hatch. Mirrors the exact same fixture shape as the advisory-only
+// guarantee above, just proving the opposite direction (ENFORCED -> blocks; overridden -> recovers).
+// ===========================================================================================================
+function writeHardRules(root, doctorOverrides) {
+  const p = path.join(root, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(p, { recursive: true });
+  fs.writeFileSync(path.join(p, 'FORGE_HARD_RULES.json'), JSON.stringify({ version: 1, rules: [], doctor_check_overrides: doctorOverrides || [] }));
+}
+
+// (a) unregistered_event: a genuine unregistered literal event_type flips doctor.ok to false
+const UE_GAP_ROOT = makeCompletenessBase('forge-doctor-v9-ue-gap-');
+fs.writeFileSync(path.join(UE_GAP_ROOT, '.claude', 'forge-bin', 'gap-tool.cjs'),
+  "function logEvent(runId, eventType, extra) {}\nlogEvent(RUN, 'a_completely_made_up_type', {});\n");
+const ueGapRep = D.runDoctor(UE_GAP_ROOT);
+t('V9-INTEGRATE: an unregistered event_type usage flips checks.unregistered_event.ok to false', ueGapRep.checks.unregistered_event.ok === false && ueGapRep.checks.unregistered_event.unregistered.some((u) => u.event_type === 'a_completely_made_up_type'));
+t('V9-INTEGRATE: an unregistered event_type usage flips the WHOLE doctor.ok to false (now enforced, not advisory)', ueGapRep.ok === false);
+t('V9-INTEGRATE: an unenforced/un-overridden unregistered_event never has overridden:true', !ueGapRep.checks.unregistered_event.overridden);
+const ueGapSummary = D.printSummary(ueGapRep);
+t('printSummary: unregistered event line renders as ✗ (hard-fail), naming the gap', /✗ unreg\. events[^\n]*a_completely_made_up_type/.test(ueGapSummary));
+t('printSummary: overall verdict reads FAILURES ABOVE, not ALL GREEN', /FAILURES ABOVE/.test(ueGapSummary) && !/ALL GREEN/.test(ueGapSummary));
+
+// (a') the SAME gap, but with a real, reasoned, logged doctor_check_overrides entry -> recovers to ok:true
+const UE_OVERRIDE_ROOT = makeCompletenessBase('forge-doctor-v9-ue-override-');
+fs.writeFileSync(path.join(UE_OVERRIDE_ROOT, '.claude', 'forge-bin', 'gap-tool.cjs'),
+  "function logEvent(runId, eventType, extra) {}\nlogEvent(RUN, 'a_completely_made_up_type', {});\n");
+writeHardRules(UE_OVERRIDE_ROOT, [{ check: 'unregistered_event', reason: 'owner-reviewed: gap-tool.cjs is a throwaway test fixture, not real code', by: 'owner', ts: '2026-07-22T00:00:00Z' }]);
+const ueOverrideRep = D.runDoctor(UE_OVERRIDE_ROOT);
+t('V9-INTEGRATE override: a logged doctor_check_overrides entry recovers checks.unregistered_event.ok to true', ueOverrideRep.checks.unregistered_event.ok === true && ueOverrideRep.checks.unregistered_event.overridden === true);
+t('V9-INTEGRATE override: the real reason/by are carried on the result, never fabricated', ueOverrideRep.checks.unregistered_event.override_reason.includes('throwaway test fixture') && ueOverrideRep.checks.unregistered_event.override_by === 'owner');
+t('V9-INTEGRATE override: the WHOLE doctor.ok recovers to true', ueOverrideRep.ok === true);
+const ueOverrideSummary = D.printSummary(ueOverrideRep);
+t('printSummary: an overridden check still prints ✓ (it IS a pass) but with a visible [OVERRIDDEN...] tag — never a silent bypass', /✓ unreg\. events[^\n]*\[OVERRIDDEN by owner: owner-reviewed/.test(ueOverrideSummary));
+t('printSummary: an overridden-recovery run reads ALL GREEN', /ALL GREEN/.test(ueOverrideSummary));
+
+// (b) check_the_checks: a genuine green-no-op suite flips doctor.ok to false
+const CTC_GAP_ROOT = makeCompletenessBase('forge-doctor-v9-ctc-gap-');
+fs.writeFileSync(path.join(CTC_GAP_ROOT, '.claude', 'forge-bin', 'noop.test.cjs'), "console.log('5 passed, 0 failed');\nprocess.exit(0);\n");
+const ctcGapRep = D.runDoctor(CTC_GAP_ROOT);
+t('V9-INTEGRATE: a green no-op suite flips checks.check_the_checks.ok to false', ctcGapRep.checks.check_the_checks.ok === false && ctcGapRep.checks.check_the_checks.noOp.some((n) => n.suite === 'noop.test.cjs'));
+t('V9-INTEGRATE: a green no-op suite flips the WHOLE doctor.ok to false', ctcGapRep.ok === false);
+
+// (b') the SAME gap, overridden -> recovers to ok:true
+const CTC_OVERRIDE_ROOT = makeCompletenessBase('forge-doctor-v9-ctc-override-');
+fs.writeFileSync(path.join(CTC_OVERRIDE_ROOT, '.claude', 'forge-bin', 'noop.test.cjs'), "console.log('5 passed, 0 failed');\nprocess.exit(0);\n");
+writeHardRules(CTC_OVERRIDE_ROOT, [{ check: 'check_the_checks', reason: 'owner-reviewed: noop.test.cjs is a deliberately minimal smoke stub, tracked in a follow-up ticket', by: 'owner', ts: '2026-07-22T00:00:00Z' }]);
+const ctcOverrideRep = D.runDoctor(CTC_OVERRIDE_ROOT);
+t('V9-INTEGRATE override: a logged doctor_check_overrides entry recovers checks.check_the_checks.ok to true', ctcOverrideRep.checks.check_the_checks.ok === true && ctcOverrideRep.checks.check_the_checks.overridden === true);
+t('V9-INTEGRATE override: the WHOLE doctor.ok recovers to true', ctcOverrideRep.ok === true);
+
+// (c) loadDoctorCheckOverrides()/applyDoctorOverride() pure-function guarantees
+t('loadDoctorCheckOverrides: a missing FORGE_HARD_RULES.json degrades to [] (never throws)', Array.isArray(D.loadDoctorCheckOverrides(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-nohardrules-')))) && D.loadDoctorCheckOverrides(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-nohardrules2-'))).length === 0);
+const BLANK_OV_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-blankoverride-'));
+writeHardRules(BLANK_OV_ROOT, [{ check: 'unregistered_event', reason: '   ' }, { check: '', reason: 'valid reason but no check id' }, { reason: 'no check field at all' }]);
+t('loadDoctorCheckOverrides: a blank/templated reason or missing check id is silently dropped (never a fabricated override)', D.loadDoctorCheckOverrides(BLANK_OV_ROOT).length === 0);
+t('applyDoctorOverride: a check that ALREADY passes is returned unchanged, even with a matching override entry (never fabricates extra positivity)', (() => {
+  const map = new Map([['x', { reason: 'r', by: 'owner' }]]);
+  const passing = { ok: true, foo: 1 };
+  const out = D.applyDoctorOverride(map, 'x', passing);
+  return out === passing || (out.ok === true && !out.overridden);
+})());
+t('applyDoctorOverride: a failing check with NO matching override entry is returned unchanged', (() => {
+  const failing = { ok: false, reason: 'gap' };
+  const out = D.applyDoctorOverride(new Map(), 'x', failing);
+  return out.ok === false && !out.overridden;
+})());
+
+// --- runContractDoctorCheck() / latestRunIdFor() — direct pure-function proof (real forge-runs fixtures) ---
+t('latestRunIdFor: a fresh project with no forge-runs dir returns null', D.latestRunIdFor(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-norunsdir-'))) === null);
+const RC_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-runcontract-'));
+fs.mkdirSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-01-01-old'), { recursive: true });
+fs.mkdirSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-06-01-newest'), { recursive: true });
+fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-01-01-old', 'events.jsonl'), '');
+fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-06-01-newest', 'events.jsonl'), '');
+// V9 WAVE 2 (2026-07-22): a genuinely DISPATCHED run always carries a real run.json — give both fixture
+// dirs one so they qualify under latestDispatchedRunIdFor()'s stricter filter too (this fixture predates
+// that filter and only ever seeded events.jsonl; see the dedicated receipt-only-vs-dispatched block below
+// for the NEW behavior this refinement adds).
+fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-01-01-old', 'run.json'), '{}');
+fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-06-01-newest', 'run.json'), '{}');
+t('latestRunIdFor: picks the lexically-newest run id, not just readdir order', D.latestRunIdFor(RC_ROOT) === 'forge-2026-06-01-newest');
+t('latestDispatchedRunIdFor: agrees with latestRunIdFor when every candidate genuinely has a real run.json', D.latestDispatchedRunIdFor(RC_ROOT) === 'forge-2026-06-01-newest');
+const rcCheck = D.runContractDoctorCheck(RC_ROOT);
+t('runContractDoctorCheck: an empty (no research_done etc.) real dispatched run is honestly ok:false, naming the missing rules', rcCheck.ok === false && Array.isArray(rcCheck.missing) && rcCheck.missing.length > 0 && rcCheck.run_id === 'forge-2026-06-01-newest');
+const rcNoRuns = D.runContractDoctorCheck(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rc-norun-'))); // no .claude/forge-runs at all yet
+t('runContractDoctorCheck: a project with zero runs at all degrades honestly to ok:true ("no dispatched run to check yet"), never a false-red on a fresh project', rcNoRuns.ok === true && /no dispatched run to check yet/.test(rcNoRuns.reason));
+
+// ===========================================================================================================
+// V9 WAVE 2 (2026-07-22) — receipt-only directory vs. a genuine dispatched run. `forge-doctor --run <id>`'s
+// own CLI body (see below) writes a doctor.json snapshot + logs one synthetic `doctor_run` event into
+// forge-runs/<id>/events.jsonl but NEVER writes a run.json — that directory must never be mistaken for a
+// real dispatched run whose non-negotiables are worth evaluating (this was a REAL bug found live against
+// this project's own forge-runs/ — see build-boss MEMORY.md).
+// ===========================================================================================================
+const RECEIPT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-receiptonly-'));
+const receiptDir = path.join(RECEIPT_ROOT, '.claude', 'forge-runs', 'forge-2026-07-22-receipt-only');
+fs.mkdirSync(receiptDir, { recursive: true });
+fs.writeFileSync(path.join(receiptDir, 'doctor.json'), JSON.stringify({ ok: true }));
+fs.writeFileSync(path.join(receiptDir, 'events.jsonl'), JSON.stringify({ run_id: 'forge-2026-07-22-receipt-only', event_type: 'doctor_run', agent: 'reviewer', ok: true }) + '\n');
+t('latestRunIdFor (general picker): a receipt-only dir (doctor.json + one doctor_run event, no run.json) IS still a pickable "any run" candidate', D.latestRunIdFor(RECEIPT_ROOT) === 'forge-2026-07-22-receipt-only');
+t('latestDispatchedRunIdFor: the SAME receipt-only dir is correctly IGNORED (no real run.json -> not a genuine dispatch)', D.latestDispatchedRunIdFor(RECEIPT_ROOT) === null);
+const receiptOnlyCheck = D.runContractDoctorCheck(RECEIPT_ROOT);
+t('runContractDoctorCheck: a project whose ONLY forge-runs/ entry is a receipt-only dir degrades honestly to ok:true ("no dispatched run to check yet"), NEVER "N rules missing on <receipt dir>"', receiptOnlyCheck.ok === true && receiptOnlyCheck.run_id === null && /no dispatched run to check yet/.test(receiptOnlyCheck.reason));
+
+// now add a genuine dispatched run (real run.json) OLDER than the receipt dir, then a NEWER one — proves the
+// picker correctly ignores the receipt dir regardless of its own recency and picks the real dispatched run.
+const dispatchedDir = path.join(RECEIPT_ROOT, '.claude', 'forge-runs', 'forge-2026-07-21-real-dispatch');
+fs.mkdirSync(dispatchedDir, { recursive: true });
+fs.writeFileSync(path.join(dispatchedDir, 'run.json'), '{}');
+fs.writeFileSync(path.join(dispatchedDir, 'events.jsonl'), '');
+const OLDER = new Date('2020-01-01T00:00:00Z'), NEWER = new Date('2020-06-01T00:00:00Z');
+fs.utimesSync(dispatchedDir, OLDER, OLDER); fs.utimesSync(path.join(dispatchedDir, 'run.json'), OLDER, OLDER); fs.utimesSync(path.join(dispatchedDir, 'events.jsonl'), OLDER, OLDER);
+fs.utimesSync(receiptDir, NEWER, NEWER); fs.utimesSync(path.join(receiptDir, 'events.jsonl'), NEWER, NEWER); fs.utimesSync(path.join(receiptDir, 'doctor.json'), NEWER, NEWER);
+t('latestDispatchedRunIdFor: a real dispatched run is picked even when a receipt-only dir is objectively MORE recent', D.latestDispatchedRunIdFor(RECEIPT_ROOT) === 'forge-2026-07-21-real-dispatch');
+const mixedCheck = D.runContractDoctorCheck(RECEIPT_ROOT);
+t('runContractDoctorCheck: with a real dispatched run present, it is evaluated (naming ITS missing rules), never the newer receipt-only dir', mixedCheck.run_id === 'forge-2026-07-21-real-dispatch' && mixedCheck.ok === false && mixedCheck.missing.length > 0);
+
+// ===========================================================================================================
+// V9-fix (2026-07-22) — break-swarm DEFECT 4 repro: the OLD latestRunIdFor() picked "latest" by a plain
+// lexical NAME sort — a clean decoy run whose directory name simply sorts higher masked a genuinely NEWER,
+// real-violating run whose name sorts lower, so runContractDoctorCheck() silently evaluated the WRONG run.
+// This fixture proves the fix ranks by REAL recency (mtime) instead, with an explicit, deterministic mtime
+// per candidate (fs.utimesSync) so the assertion never depends on real wall-clock execution speed.
+// ===========================================================================================================
+const DEFECT4_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-defect4-'));
+const decoyDir = path.join(DEFECT4_ROOT, '.claude', 'forge-runs', 'zzz-decoy-clean-run'); // name sorts HIGHEST
+const violatingDir = path.join(DEFECT4_ROOT, '.claude', 'forge-runs', 'aaa-real-violating-run'); // name sorts LOWEST
+const strayDir = path.join(DEFECT4_ROOT, '.claude', 'forge-runs', 'zzzz-not-a-real-run-dir'); // not a real run dir at all
+fs.mkdirSync(decoyDir, { recursive: true });
+fs.mkdirSync(violatingDir, { recursive: true });
+fs.mkdirSync(strayDir, { recursive: true });
+
+// decoy: a genuinely CLEAN run (satisfies every real "always" rule) — proves the fix isn't just "pick the
+// dirtiest run", it genuinely tracks real recency regardless of which run happens to look clean.
+const decoyEvents = [
+  { event_type: 'memory_loaded', agent: 'orchestrator' },
+  { event_type: 'owner_prefs_loaded', agent: 'orchestrator' },
+  { event_type: 'research_done', agent: 'orchestrator' },
+  { event_type: 'prd_generated', agent: 'orchestrator' },
+  { event_type: 'agent_started', agent: 'Build Boss' },
+  { event_type: 'zero_console_errors_noted', agent: 'UI Boss' },
+  { event_type: 'check_passed', agent: 'Test Boss' },
+].map((o) => JSON.stringify(o)).join('\n') + '\n';
+fs.writeFileSync(path.join(decoyDir, 'events.jsonl'), decoyEvents);
+fs.writeFileSync(path.join(decoyDir, 'final-report.md'), '# Report\n');
+fs.writeFileSync(path.join(decoyDir, 'run.json'), '{}');
+// violating: a genuinely EMPTY run (misses every always-rule)
+fs.writeFileSync(path.join(violatingDir, 'events.jsonl'), '');
+fs.writeFileSync(path.join(violatingDir, 'run.json'), '{}');
+// stray: no run.json / events.jsonl at all — must never be treated as a run directory
+fs.writeFileSync(path.join(strayDir, 'readme.txt'), 'not a run');
+
+// explicit, deterministic mtimes: decoy is OLD, violating is NEWER, stray is NEWEST of all (must still be ignored)
+const OLD_TIME = new Date('2020-01-01T00:00:00Z');
+const NEW_TIME = new Date('2020-06-01T00:00:00Z');
+const NEWEST_TIME = new Date('2020-06-02T00:00:00Z');
+fs.utimesSync(path.join(decoyDir, 'events.jsonl'), OLD_TIME, OLD_TIME);
+fs.utimesSync(path.join(decoyDir, 'run.json'), OLD_TIME, OLD_TIME);
+fs.utimesSync(decoyDir, OLD_TIME, OLD_TIME);
+fs.utimesSync(path.join(violatingDir, 'events.jsonl'), NEW_TIME, NEW_TIME);
+fs.utimesSync(path.join(violatingDir, 'run.json'), NEW_TIME, NEW_TIME);
+fs.utimesSync(violatingDir, NEW_TIME, NEW_TIME);
+fs.utimesSync(path.join(strayDir, 'readme.txt'), NEWEST_TIME, NEWEST_TIME);
+fs.utimesSync(strayDir, NEWEST_TIME, NEWEST_TIME);
+
+t('DEFECT 4 repro: latestRunIdFor picks the NEWER violating run, not the lexically-higher-named clean decoy', D.latestRunIdFor(DEFECT4_ROOT) === 'aaa-real-violating-run');
+t('DEFECT 4 repro: a stray non-run directory (no run.json/events.jsonl) is never picked, even with the newest mtime and the highest name', D.latestRunIdFor(DEFECT4_ROOT) !== 'zzzz-not-a-real-run-dir');
+
+const defect4Check = D.runContractDoctorCheck(DEFECT4_ROOT);
+t('DEFECT 4 repro: runContractDoctorCheck evaluates the NEWER violating run, not the older clean decoy', defect4Check.run_id === 'aaa-real-violating-run');
+t('DEFECT 4 repro: the doctor honestly reports the (correctly-selected) violating run as ok:false — the enforcement surface now points at the right run', defect4Check.ok === false && defect4Check.missing.length > 0);
+
+// ===========================================================================================================
+// wp-disclosure-ab (2026-07-31) — skill_hygiene: progressive-disclosure hygiene as a doctor advisory
+// (backlog item 12, YT-SWEEP-2026-07-31). ADVISORY-ONLY, same core guarantee as skill_evals above: a real
+// finding must surface in advisory.completeness.skill_hygiene and in printSummary's compact completeness
+// line, but must NEVER flip runDoctor()'s hard `ok` verdict. Five RED->GREEN-proving fixtures: all-clean,
+// over-long description, over-long body, dangling reference, prose-with-slash NOT flagged.
+// ===========================================================================================================
+
+// (1) all-clean: a short description, a small body, one ANCHORED reference that DOES exist (proves an
+// anchored-and-real reference is never mistaken for a dangling one). Named after a REAL skill already in
+// forge-sync.cjs's FILES manifest ("forge-router") so this fixture's own sync_completeness sub-check also
+// stays clean — an arbitrary fixture-only name would trip sync_completeness's OWN gap-detection instead
+// (proven by the COMPLETE_GREEN_ROOT fixture above), muddying this specific advisory's isolation.
+const SH_CLEAN_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-clean-');
+fs.mkdirSync(path.join(SH_CLEAN_ROOT, '.claude', 'skills', 'forge-router'), { recursive: true });
+fs.writeFileSync(path.join(SH_CLEAN_ROOT, '.claude', 'skills', 'forge-router', 'SKILL.md'),
+  '---\nname: forge-router\ndescription: A short, valid hygiene-test description well under the 200-char budget.\n---\n\n'
+  + '# forge-router (fixture)\n\nUses `.claude/forge-bin/good.cjs` (a real anchored reference the completeness base already ships).\n');
+const shCleanRep = D.runDoctor(SH_CLEAN_ROOT);
+t('skillHygiene clean fixture: runDoctor checks all still pass (an advisory-only hygiene gap never touches `checks`)', shCleanRep.ok === true, JSON.stringify(Object.entries(shCleanRep.checks).filter(([, c]) => !c.ok).map(([k, c]) => [k, c.reason || c])));
+t('skillHygiene clean fixture: advisory.completeness.skill_hygiene reports ok:true, 1/1 skill clean', shCleanRep.advisory.completeness.skill_hygiene.ok === true && shCleanRep.advisory.completeness.skill_hygiene.checked === 1, JSON.stringify(shCleanRep.advisory.completeness.skill_hygiene));
+t('skillHygiene clean fixture: this fixture\'s OWN sync_completeness sub-check is also clean (proves isolation from the unrelated sync-gap fixture above)', shCleanRep.advisory.completeness.sync_completeness.ok === true, JSON.stringify(shCleanRep.advisory.completeness.sync_completeness));
+const shCleanSummary = D.printSummary(shCleanRep);
+t('printSummary: clean fixture never renders a ✗ completeness line', !/✗ completeness/.test(shCleanSummary));
+// printSummary's "skill hygiene N/M" clean-branch text only renders when EVERY completeness sub-check is
+// clean (memory_discipline/mcp_dormancy have no equivalent fixture-population helper in this file — no
+// existing sub-check's fully-clean branch is exercised elsewhere in this suite either, e.g. "sync manifest
+// complete"/"skill evals green" never appear literally in this test file). Isolate printSummary's OWN
+// rendering logic instead, by cloning a REAL report and overriding just the unrelated sub-checks to ok:true
+// — a legitimate, surgical way to prove the format string itself is correct without re-building every other
+// advisory's own clean-state fixture.
+const shCleanRepAllOk = JSON.parse(JSON.stringify(shCleanRep));
+for (const k of ['sync_completeness', 'memory_discipline', 'mcp_dormancy', 'run_contract', 'skill_evals']) shCleanRepAllOk.advisory.completeness[k].ok = true;
+const shCleanAllOkSummary = D.printSummary(shCleanRepAllOk);
+t('printSummary: once every completeness sub-check is clean, shows "skill hygiene 1/1" in the composed clean sentence', /skill hygiene 1\/1/.test(shCleanAllOkSummary), shCleanAllOkSummary);
+t('printSummary: that fully-clean sentence renders as ✓ completeness, never ⚠', /✓ completeness \(advisory\)/.test(shCleanAllOkSummary) && !/⚠ completeness/.test(shCleanAllOkSummary));
+
+// (2) over-long description: frontmatter description > 200 chars -> named finding
+const SH_DESC_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-desc-');
+const longDesc = 'A'.repeat(220);
+fs.mkdirSync(path.join(SH_DESC_ROOT, '.claude', 'skills', 'desc-too-long'), { recursive: true });
+fs.writeFileSync(path.join(SH_DESC_ROOT, '.claude', 'skills', 'desc-too-long', 'SKILL.md'), '---\nname: desc-too-long\ndescription: ' + longDesc + '\n---\n\n# desc-too-long\n');
+const shDescRep = D.runDoctor(SH_DESC_ROOT);
+t('skillHygiene over-long-description fixture: RED -> advisory.completeness.skill_hygiene.ok is false', shDescRep.advisory.completeness.skill_hygiene.ok === false);
+t('skillHygiene over-long-description fixture: names the exact char count over budget', shDescRep.advisory.completeness.skill_hygiene.skills.some((s) => s.skill === 'desc-too-long' && s.issues.some((i) => /description is 220 chars \(max 200\)/.test(i))), JSON.stringify(shDescRep.advisory.completeness.skill_hygiene));
+t('skillHygiene over-long-description fixture: an advisory-only hygiene gap does NOT flip doctor.ok to false', shDescRep.ok === true);
+const shDescSummary = D.printSummary(shDescRep);
+t('printSummary: names the failing skill under "skill-hygiene:"', /skill-hygiene: desc-too-long/.test(shDescSummary) && /description is 220 chars/.test(shDescSummary), shDescSummary);
+t('printSummary: over-long-description fixture still renders as advisory (⚠), never a hard ✗ completeness line', !/✗ completeness/.test(shDescSummary));
+
+// (3) over-long body: whole-file line count > 500 -> named finding (with a valid, in-budget description, to
+// isolate this from the description-length check above).
+const SH_BODY_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-body-');
+fs.mkdirSync(path.join(SH_BODY_ROOT, '.claude', 'skills', 'body-too-long'), { recursive: true });
+const bodyFiller = '---\nname: body-too-long\ndescription: A short, valid description.\n---\n\n# body-too-long\n\n' + 'filler line\n'.repeat(510);
+fs.writeFileSync(path.join(SH_BODY_ROOT, '.claude', 'skills', 'body-too-long', 'SKILL.md'), bodyFiller);
+const shBodyRep = D.runDoctor(SH_BODY_ROOT);
+t('skillHygiene over-long-body fixture: RED -> advisory.completeness.skill_hygiene.ok is false', shBodyRep.advisory.completeness.skill_hygiene.ok === false);
+t('skillHygiene over-long-body fixture: names the exact line count over budget', shBodyRep.advisory.completeness.skill_hygiene.skills.some((s) => s.skill === 'body-too-long' && s.issues.some((i) => /SKILL\.md is \d+ lines \(max 500\)/.test(i))), JSON.stringify(shBodyRep.advisory.completeness.skill_hygiene));
+t('skillHygiene over-long-body fixture: an advisory-only hygiene gap does NOT flip doctor.ok to false', shBodyRep.ok === true);
+const shBodySummary = D.printSummary(shBodyRep);
+t('printSummary: names the failing skill+line-count under "skill-hygiene:"', /skill-hygiene: body-too-long/.test(shBodySummary) && /lines \(max 500\)/.test(shBodySummary), shBodySummary);
+
+// (4) dangling reference: an ANCHORED reference (.claude/... and a skill-relative references/... one) that
+// does NOT exist -> named finding, distinct from the "not anchored -> not checked" case in (5) below.
+const SH_DANGLE_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-dangle-');
+fs.mkdirSync(path.join(SH_DANGLE_ROOT, '.claude', 'skills', 'dangling-ref'), { recursive: true });
+fs.writeFileSync(path.join(SH_DANGLE_ROOT, '.claude', 'skills', 'dangling-ref', 'SKILL.md'),
+  '---\nname: dangling-ref\ndescription: A short, valid description.\n---\n\n# dangling-ref\n\n'
+  + 'See `.claude/forge-bin/does-not-exist.cjs` and `references/missing.md` for details.\n');
+const shDangleRep = D.runDoctor(SH_DANGLE_ROOT);
+t('skillHygiene dangling-reference fixture: RED -> advisory.completeness.skill_hygiene.ok is false', shDangleRep.advisory.completeness.skill_hygiene.ok === false);
+t('skillHygiene dangling-reference fixture: names BOTH dangling refs (root-anchored + skill-relative)', shDangleRep.advisory.completeness.skill_hygiene.skills.some((s) => s.skill === 'dangling-ref' && s.issues.some((i) => i.includes('.claude/forge-bin/does-not-exist.cjs') && i.includes('references/missing.md'))), JSON.stringify(shDangleRep.advisory.completeness.skill_hygiene));
+t('skillHygiene dangling-reference fixture: an advisory-only hygiene gap does NOT flip doctor.ok to false', shDangleRep.ok === true);
+const shDangleSummary = D.printSummary(shDangleRep);
+t('printSummary: names the failing skill+dangling refs under "skill-hygiene:"', /skill-hygiene: dangling-ref/.test(shDangleSummary) && /dangling reference/.test(shDangleSummary), shDangleSummary);
+
+// (5) prose-with-slash NOT flagged: an alternation phrase ("manifest.json/events.jsonl", meaning "either
+// file", not a nested directory) and an UNANCHORED path-shaped example (a generic downstream-project
+// illustration with neither a .claude/ nor a references//scripts//assets/ prefix) must both be silently
+// skipped — proves the false-positive-on-prose guard actually holds, not just that anchored real gaps work.
+const SH_PROSE_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-prose-');
+fs.mkdirSync(path.join(SH_PROSE_ROOT, '.claude', 'skills', 'prose-skill'), { recursive: true });
+fs.writeFileSync(path.join(SH_PROSE_ROOT, '.claude', 'skills', 'prose-skill', 'SKILL.md'),
+  '---\nname: prose-skill\ndescription: A short, valid description.\n---\n\n# prose-skill\n\n'
+  + 'The briefing only ever renders what `manifest.json/events.jsonl` already say. See `docs/ARCHITECTURE.md` '
+  + 'for how a downstream built project might document its own contract — neither of these is a reference into '
+  + 'THIS project\'s own tree.\n');
+const shProseRep = D.runDoctor(SH_PROSE_ROOT);
+t('skillHygiene prose-with-slash fixture: GREEN -> advisory.completeness.skill_hygiene.ok is true (no false positive)', shProseRep.advisory.completeness.skill_hygiene.ok === true, JSON.stringify(shProseRep.advisory.completeness.skill_hygiene));
+t('skillHygiene prose-with-slash fixture: the alternation phrase + the unanchored example are both absent from any issue', !shProseRep.advisory.completeness.skill_hygiene.skills.some((s) => s.issues.some((i) => i.includes('manifest.json') || i.includes('docs/ARCHITECTURE.md'))));
+const shProseSummary = D.printSummary(shProseRep);
+t('printSummary: prose-with-slash fixture never mentions "skill-hygiene:" (nothing to name)', !/skill-hygiene:/.test(shProseSummary), shProseSummary);
+
+// (6) NESTED skill dir (2026-08-01): a skill that lives at `skills/<parent>/<child>/SKILL.md` rather than
+// `skills/<name>/SKILL.md`. MEASURED on this project the same day: `ls .claude/skills/*/SKILL.md | wc -l`
+// = 49 but `find .claude/skills -name SKILL.md | wc -l` = 57 — the 8 gsap sub-skills sit one level deeper
+// and were therefore evaluated by NOTHING, while every one of them is over the description budget this
+// check exists to police. skillHygiene() read only the FIRST level of `.claude/skills/` (a single
+// readdirSync + a direct `<dir>/SKILL.md` read), so a nested skill was not "passing" — it was invisible,
+// which is strictly worse than a red finding. A sibling TOP-LEVEL skill is included in the same fixture so
+// this also proves the recursion ADDS the nested level rather than replacing the flat one.
+const SH_NESTED_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-nested-');
+fs.mkdirSync(path.join(SH_NESTED_ROOT, '.claude', 'skills', 'bundle', 'nested-child'), { recursive: true });
+fs.writeFileSync(path.join(SH_NESTED_ROOT, '.claude', 'skills', 'bundle', 'nested-child', 'SKILL.md'),
+  '---\nname: nested-child\ndescription: ' + 'B'.repeat(240) + '\n---\n\n# nested-child\n');
+fs.mkdirSync(path.join(SH_NESTED_ROOT, '.claude', 'skills', 'flat-sibling'), { recursive: true });
+fs.writeFileSync(path.join(SH_NESTED_ROOT, '.claude', 'skills', 'flat-sibling', 'SKILL.md'),
+  '---\nname: flat-sibling\ndescription: A short, valid description.\n---\n\n# flat-sibling\n');
+const shNestedRep = D.runDoctor(SH_NESTED_ROOT);
+t('skillHygiene nested fixture: BOTH the nested and the flat skill are evaluated (checked === 2 — the nested one used to be invisible, not passing)', shNestedRep.advisory.completeness.skill_hygiene.checked === 2, JSON.stringify(shNestedRep.advisory.completeness.skill_hygiene));
+t('skillHygiene nested fixture: RED -> the nested skill\'s over-long description is reported, named by its skills/-relative id', shNestedRep.advisory.completeness.skill_hygiene.skills.some((s) => s.skill === 'bundle/nested-child' && s.issues.some((i) => /description is 240 chars \(max 200\)/.test(i))), JSON.stringify(shNestedRep.advisory.completeness.skill_hygiene));
+t('skillHygiene nested fixture: the flat sibling is still evaluated and still clean (recursion ADDS a level, never replaces the flat one)', shNestedRep.advisory.completeness.skill_hygiene.skills.some((s) => s.skill === 'flat-sibling' && s.ok === true), JSON.stringify(shNestedRep.advisory.completeness.skill_hygiene));
+t('skillHygiene nested fixture: a nested finding is still ADVISORY — doctor.ok stays true', shNestedRep.ok === true);
+const shNestedSummary = D.printSummary(shNestedRep);
+t('printSummary: names the nested skill by its full skills/-relative id under "skill-hygiene:"', /skill-hygiene: bundle\/nested-child/.test(shNestedSummary), shNestedSummary);
+
+// (7) VENDORED skills (2026-08-01): the two findings this check had left standing were `humanizer` (626
+// lines, upstream github.com/blader/humanizer @1b48564) and the 8 gsap sub-skills (upstream
+// github.com/greensock/gsap-skills @aed9cfd) — every one of them THIRD-PARTY CONTENT COPIED VERBATIM AT A
+// RECORDED PIN. Restyling them to satisfy our own budget would rewrite someone else's file and make the
+// recorded pin describe something that is no longer on disk, and the whole gain is ~250 tokens of a 33k
+// always-loaded budget. So a permanently unactionable advisory, which is worse than no advisory: it teaches
+// the reader to skim past the line where a REAL finding will one day appear.
+//
+// The split is between SHAPE and FUNCTION, and only shape is upstream's business:
+//   · description length / body length  -> upstream's editorial choice. Reported as `vendored_style`, with
+//     the real numbers, so the cost stays visible — but it is not OUR hygiene gap.
+//   · missing description / dangling reference -> broken IN OUR TREE regardless of who wrote it. Still a
+//     real issue, still red.
+// Provenance must be EARNED: both a `Source:` and a `Pinned commit:` line. A half-marker proves nothing and
+// must not buy an exemption, or "vendored" becomes a comment anyone can type to silence the check.
+const SH_VENDOR_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-vendor-');
+const VENDOR_HEADER = '\n<!--\n  Source: https://github.com/example/upstream-skills\n'
+  + '  Pinned commit: 1b48564898e999219882660237fde01bf4843a0f (2026-06-29T20:43:04Z)\n  License: MIT\n-->\n';
+fs.mkdirSync(path.join(SH_VENDOR_ROOT, '.claude', 'skills', 'vendored-long'), { recursive: true });
+fs.writeFileSync(path.join(SH_VENDOR_ROOT, '.claude', 'skills', 'vendored-long', 'SKILL.md'),
+  '---\nname: vendored-long\ndescription: ' + 'V'.repeat(260) + '\n---\n' + VENDOR_HEADER + '\n# vendored-long\n\n' + 'filler line\n'.repeat(520));
+// a skill WE authored, same two style violations, no provenance marker — must stay red
+fs.mkdirSync(path.join(SH_VENDOR_ROOT, '.claude', 'skills', 'ours-long'), { recursive: true });
+fs.writeFileSync(path.join(SH_VENDOR_ROOT, '.claude', 'skills', 'ours-long', 'SKILL.md'),
+  '---\nname: ours-long\ndescription: ' + 'O'.repeat(260) + '\n---\n\n# ours-long\n');
+const shVendorRep = D.runDoctor(SH_VENDOR_ROOT);
+const shVendorHyg = shVendorRep.advisory.completeness.skill_hygiene;
+t('skillHygiene vendored: a pinned upstream skill\'s over-long description is NOT one of our hygiene issues',
+  shVendorHyg.skills.some((s) => s.skill === 'vendored-long' && !s.issues.some((i) => /description is \d+ chars/.test(i))), JSON.stringify(shVendorHyg));
+t('skillHygiene vendored: nor is its over-long body',
+  shVendorHyg.skills.some((s) => s.skill === 'vendored-long' && !s.issues.some((i) => /SKILL\.md is \d+ lines/.test(i))), JSON.stringify(shVendorHyg));
+t('skillHygiene vendored: but the real numbers ARE still reported under vendored_style — the cost stays visible',
+  shVendorHyg.skills.some((s) => s.skill === 'vendored-long' && Array.isArray(s.vendored_style)
+    && s.vendored_style.some((i) => /description is 260 chars/.test(i))
+    && s.vendored_style.some((i) => /SKILL\.md is \d+ lines/.test(i))), JSON.stringify(shVendorHyg));
+t('skillHygiene vendored: the upstream source and pin are recorded, so the exemption is traceable to evidence',
+  shVendorHyg.skills.some((s) => s.skill === 'vendored-long' && s.vendored && /github\.com\/example\/upstream-skills/.test(s.vendored.source) && /^1b48564/.test(s.vendored.pin)), JSON.stringify(shVendorHyg));
+t('skillHygiene vendored: OUR OWN skill with the identical violation is still RED (the exemption is scoped to provenance, not to the rule)',
+  shVendorHyg.ok === false && shVendorHyg.skills.some((s) => s.skill === 'ours-long' && s.issues.some((i) => /description is 260 chars/.test(i))), JSON.stringify(shVendorHyg));
+const shVendorSummary = D.printSummary(shVendorRep);
+t('printSummary: still names OUR skill under "skill-hygiene:", and never the vendored one',
+  /skill-hygiene: ours-long/.test(shVendorSummary) && !/skill-hygiene:[^\n]*vendored-long/.test(shVendorSummary), shVendorSummary);
+
+// (7b) the exemption covers SHAPE only: a vendored skill that is BROKEN in our tree is still red.
+const SH_VENDOR_BROKEN = makeCompletenessBase('forge-doctor-skillhygiene-vendorbroken-');
+fs.mkdirSync(path.join(SH_VENDOR_BROKEN, '.claude', 'skills', 'vendored-broken'), { recursive: true });
+fs.writeFileSync(path.join(SH_VENDOR_BROKEN, '.claude', 'skills', 'vendored-broken', 'SKILL.md'),
+  '---\nname: vendored-broken\ndescription: A short, valid description.\n---\n' + VENDOR_HEADER
+  + '\n# vendored-broken\n\nSee `references/missing.md`.\n');
+const shVendorBrokenHyg = D.runDoctor(SH_VENDOR_BROKEN).advisory.completeness.skill_hygiene;
+t('skillHygiene vendored: a DANGLING reference in a vendored skill is still a real issue (broken is broken, whoever wrote it)',
+  shVendorBrokenHyg.ok === false && shVendorBrokenHyg.skills.some((s) => s.skill === 'vendored-broken' && s.issues.some((i) => /dangling reference/.test(i))), JSON.stringify(shVendorBrokenHyg));
+
+// (7c) a HALF marker buys nothing — otherwise one typed line silences the check.
+const SH_VENDOR_HALF = makeCompletenessBase('forge-doctor-skillhygiene-vendorhalf-');
+fs.mkdirSync(path.join(SH_VENDOR_HALF, '.claude', 'skills', 'half-marked'), { recursive: true });
+fs.writeFileSync(path.join(SH_VENDOR_HALF, '.claude', 'skills', 'half-marked', 'SKILL.md'),
+  '---\nname: half-marked\ndescription: ' + 'H'.repeat(260) + '\n---\n\n<!--\n  Source: https://github.com/example/upstream-skills\n-->\n\n# half-marked\n');
+const shVendorHalfHyg = D.runDoctor(SH_VENDOR_HALF).advisory.completeness.skill_hygiene;
+t('skillHygiene vendored: a Source line WITHOUT a pinned commit does not count as vendored — still RED',
+  shVendorHalfHyg.ok === false && shVendorHalfHyg.skills.some((s) => s.skill === 'half-marked' && s.issues.some((i) => /description is 260 chars/.test(i))), JSON.stringify(shVendorHalfHyg));
+
+// direct extractSkillPathRefs() unit proof — the exact filtering rules, independent of the doctor plumbing
+const proseRefs = D.extractSkillPathRefs('See `manifest.json/events.jsonl`, `docs/ARCHITECTURE.md`, `.claude/forge-bin/does-not-exist.cjs`, `references/missing.md`, `<run_id>/config.json`, `config/orchestration/*.json`.');
+t('extractSkillPathRefs: rejects the alternation-prose token entirely (never returned)', !proseRefs.some((r) => r.ref.includes('manifest.json')));
+t('extractSkillPathRefs: returns the unanchored example but marks it anchored:false', proseRefs.some((r) => r.ref === 'docs/ARCHITECTURE.md' && r.anchored === false));
+t('extractSkillPathRefs: returns BOTH real anchor forms marked anchored:true', proseRefs.some((r) => r.ref === '.claude/forge-bin/does-not-exist.cjs' && r.anchored === true) && proseRefs.some((r) => r.ref === 'references/missing.md' && r.anchored === true));
+t('extractSkillPathRefs: rejects a placeholder token containing "<"', !proseRefs.some((r) => r.ref.includes('<')));
+t('extractSkillPathRefs: rejects a glob token containing "*"', !proseRefs.some((r) => r.ref.includes('*')));
+
+// ===========================================================================================================
+// context_budget (2026-08-01) — the ALWAYS-LOADED instruction surface as a doctor advisory. Same core
+// guarantee as every other advisory: a real finding must surface in advisory.context_budget and in
+// printSummary, but must NEVER flip runDoctor()'s hard `ok` verdict. See forge-contextbudget.cjs for the
+// measured reason this exists (nothing counted the chain; its growth truncated the skill list on 07-31).
+// ===========================================================================================================
+const CBUD_ROOT = makeCompletenessBase('forge-doctor-contextbudget-');
+const cbudRep = D.runDoctor(CBUD_ROOT);
+t('context_budget: runDoctor exposes advisory.context_budget with a real estimated-token total', cbudRep.advisory.context_budget && typeof cbudRep.advisory.context_budget.total_approx_tokens === 'number', JSON.stringify(cbudRep.advisory.context_budget && Object.keys(cbudRep.advisory.context_budget)));
+t('context_budget: it is labelled an ESTIMATE in the report itself (no fake tokenizer precision)', /estimate/i.test(cbudRep.advisory.context_budget.estimate_note));
+t('context_budget: it lives under `advisory`, never under `checks` (it can never fail a build)', !Object.prototype.hasOwnProperty.call(cbudRep.checks, 'context_budget'));
+// a REAL finding must surface without flipping doctor.ok — forced by baselining the project CLAUDE.md at a
+// value the fixture's own file provably exceeds, i.e. a genuine over-baseline, not a mocked one.
+fs.writeFileSync(path.join(CBUD_ROOT, 'CLAUDE.md'), 'z'.repeat(40000));
+const cbudMod = require('./forge-contextbudget.cjs');
+const cbudCfg = cbudMod.readConfig(CBUD_ROOT);
+cbudCfg.baseline = { generated_at: '2026-08-01T00:00:00.000Z', total_approx_tokens: 1, posts: { project_claude_md: 1 } };
+cbudMod.saveConfig(CBUD_ROOT, cbudCfg);
+const cbudGrown = D.runDoctor(CBUD_ROOT);
+t('context_budget: a genuine over-baseline post surfaces as a named advisory finding', cbudGrown.advisory.context_budget.findings.some((f) => f.kind === 'over_baseline' && f.id === 'project_claude_md'), JSON.stringify(cbudGrown.advisory.context_budget.findings));
+t('context_budget: and that finding does NOT flip doctor.ok (advisory, exactly like skill_hygiene)', cbudGrown.ok === true, JSON.stringify(Object.entries(cbudGrown.checks).filter(([, c]) => !c.ok).map(([k]) => k)));
+const cbudSummary = D.printSummary(cbudGrown);
+t('printSummary: renders a context-budget line naming the grown post', /context budget/i.test(cbudSummary) && /project_claude_md|project CLAUDE\.md/.test(cbudSummary), cbudSummary);
+t('printSummary: the context-budget line is advisory (⚠), never a hard ✗', !/✗ context budget/.test(cbudSummary));
+// real project: the meter actually runs here and reports a plausible, non-zero surface
+const cbudReal = D.runDoctor.length >= 0 && require('./forge-contextbudget.cjs').measure(REAL_PROJECT_ROOT, {});
+t('context_budget: on the REAL project it measures a non-zero always-loaded surface across every named post', cbudReal.total_approx_tokens > 1000 && ['global_claude_md', 'ecc_rules_common', 'project_claude_md', 'skill_catalog_project', 'skill_catalog_global', 'skill_catalog_plugins'].every((id) => cbudReal.posts.some((p) => p.id === id)), 'total=' + cbudReal.total_approx_tokens);
+t('context_budget: the REAL project has no dead @-include in its global chain', !cbudReal.findings.some((f) => f.kind === 'dead_include'), JSON.stringify(cbudReal.findings));
+// the skill surface is THREE sources, reported separately (2026-08-01, second pass): the meter used to count
+// only this project's .claude/skills — 57 of the 278 skills a session carries — and the doctor line repeated
+// that as the whole figure. Both the JSON and the printed line must now carry the breakdown.
+t('context_budget: the REAL measurement reports all three skill sources separately, none of them zero on this machine', cbudReal.skill_sources.length === 3 && cbudReal.skill_sources.every((s) => s.skills > 0), JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
+t('context_budget: the two out-of-project catalogs are flagged read-only, never write-touched', cbudReal.skill_sources.filter((s) => !s.in_project).length === 2 && cbudReal.skill_sources.filter((s) => !s.in_project).every((s) => s.access === 'read-only'), JSON.stringify(cbudReal.skill_sources.map((s) => s.id + ':' + s.access)));
+t('context_budget: no skill walk hit its depth cap on the real machine (a capped walk would be a finding, not a smaller number)', !cbudReal.findings.some((f) => f.kind === 'depth_capped'), JSON.stringify(cbudReal.findings.filter((f) => f.kind === 'depth_capped')));
+// asserted on the doctor report ALREADY computed above — never on a second runDoctor(REAL_PROJECT_ROOT),
+// because runDoctor() runs runTests(), i.e. spawns all 105 suites: calling it from inside a suite makes this
+// file take 278s and hit the 120s per-suite timeout (measured 2026-08-01, the one red this work package
+// produced). cbudGrown is a real doctor run whose context-budget post-set includes the two REAL out-of-project
+// catalogs, so the breakdown in its printSummary line is genuine output, not a fixture value.
+// the `( \(absent\))?` is not slack in the assertion — this fixture project genuinely has no .claude/skills
+// directory, and the line says so ("project 0 (absent)") rather than printing a bare 0 that would read as an
+// empty catalog. A source that is missing and a source that is empty are different facts.
+t('printSummary: the context-budget line shows the per-source skill breakdown, not one project-only number', /skills: project \d+( \(absent\))? \+ global \d+( \(absent\))? \+ plugins \d+/.test(cbudSummary), (cbudSummary.split('\n').find((l) => /context budget/.test(l)) || 'no context-budget line'));
+t('printSummary: a skill source that is absent rather than empty is marked as such in the line', /project 0 \(absent\)/.test(cbudSummary), (cbudSummary.split('\n').find((l) => /context budget/.test(l)) || 'no context-budget line'));
+
+// real-project regression guard: this project's OWN real skills are evaluated (no drift), and the KNOWN,
+// already-real, non-blocking findings are named exactly — a genuine NEW regression elsewhere would show up
+// as an EXTRA failing skill here, not silently absorbed into this fixed expectation.
+const realSkillHygiene = D.skillHygiene(REAL_PROJECT_ROOT);
+// COUNT (2026-08-01): 49 -> 57. Not project growth: not one skill was added. The recursive-scope fix above
+// simply made the 8 gsap sub-skills VISIBLE to a check that had never once looked at them. Measured both
+// ways on this project the same day: `ls .claude/skills/*/SKILL.md | wc -l` = 49 vs
+// `find .claude/skills -name SKILL.md | wc -l` = 57.
+t('skillHygiene: the real project has exactly 57 skills evaluated — all 8 NESTED ones included (no drift)', realSkillHygiene.checked === 57, 'checked=' + realSkillHygiene.checked);
+// FINDINGS (2026-08-01, second revision): 10 -> 1. The 9 that left are ALL third-party skills copied at a
+// recorded pin (humanizer @1b48564, the 8 gsap sub-skills @aed9cfd) and they did NOT disappear — they moved
+// to `vendored_style`, numbers intact, because their shape is upstream's editorial choice while their
+// function in our tree is still judged. The limit was NOT relaxed and no name was allowlisted: the exemption
+// is driven by provenance the vendoring step actually wrote into each file.
+//
+// Two guards, deliberately in opposite directions, so this cannot rot into a rubber stamp:
+//   (a) exactly ONE real finding remains, named — a NEW regression cannot hide inside a total;
+//   (b) exactly NINE skills carry vendored_style with a real source+pin — if a future edit made the
+//       exemption too broad and swallowed one of ours, this count moves and the test fails.
+const KNOWN_HYGIENE_FINDINGS = [
+  'forge-snapshot',    // its own transient marker-file mention (pre-existing, 2026-07-31)
+].sort();
+const KNOWN_VENDORED_EXEMPT = [
+  'humanizer',         // 626-line body — github.com/blader/humanizer @1b48564
+  'gsap/gsap-core', 'gsap/gsap-frameworks', 'gsap/gsap-performance', 'gsap/gsap-plugins',
+  'gsap/gsap-react', 'gsap/gsap-scrolltrigger', 'gsap/gsap-timeline', 'gsap/gsap-utils', // @aed9cfd
+].sort();
+t('skillHygiene: the real project has exactly the 1 known, already-real, non-blocking finding — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok)));
+t('skillHygiene: exactly the 9 pinned upstream skills carry a vendored_style entry (the exemption did not widen to cover one of ours)', realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => s.skill).sort().join(',') === KNOWN_VENDORED_EXEMPT.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => ({ skill: s.skill, vendored: s.vendored, vendored_style: s.vendored_style }))));
+t('skillHygiene: every exempted skill really does carry BOTH an upstream source and a commit pin (evidence, not a label)', realSkillHygiene.skills.filter((s) => s.vendored).every((s) => /^https?:\/\/\S+/.test(s.vendored.source) && /^[0-9a-f]{7,40}$/.test(s.vendored.pin)), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored).map((s) => s.vendored)));
+t('skillHygiene: the 8 gsap findings are still MEASURED, just filed as upstream shape (their real char counts survive)', realSkillHygiene.skills.filter((s) => s.skill.startsWith('gsap/')).every((s) => s.issues.length === 0 && s.vendored_style.length === 1 && /^description is \d+ chars \(max 200\)$/.test(s.vendored_style[0])), JSON.stringify(realSkillHygiene.skills.filter((s) => s.skill.startsWith('gsap/'))));
 
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

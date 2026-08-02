@@ -63,7 +63,11 @@ function scanMemory(root) {
   return { ok: hits.length === 0, hits };
 }
 
-module.exports = { addLesson, listLessons, recall, scanMemory, memDir, scrub, TYPES };
+// SECRET_RE exported (2026-07-18, forge-harvest wave) so a sibling READ-ONLY tool that must double-check
+// its own redaction (forge-harvest.cjs's cross-project secret guard) can reuse this exact pattern set
+// instead of maintaining a second, drifting copy — this file stays the single source of truth for what
+// "redacted" means for a lesson's text.
+module.exports = { addLesson, listLessons, recall, scanMemory, memDir, scrub, TYPES, SECRET_RE };
 
 if (require.main === module) {
   const [boss, cmd, ...rest] = process.argv.slice(2);

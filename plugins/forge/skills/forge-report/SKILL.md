@@ -1,6 +1,6 @@
 ---
 name: forge-report
-description: Use when delivering the result of a Forge build, fix, automation, audit, or review task — to produce the standard end-of-task report with project adaptation, an evidence-based agent activity ledger, memory update, and dashboard update. Trigger when wrapping up any non-trivial /forge change.
+description: Produces the standard end-of-task Forge report — project adaptation, agent ledger, memory update. Use when delivering the result of any non-trivial /forge build, fix, or review.
 ---
 
 # Forge delivery report
@@ -56,17 +56,14 @@ Be honest: if Forge used native roles because ECC was unavailable/blocked/too-sm
 - `FORGE_AGENT_LEDGER.md`: created / updated / unchanged
 - Summary of memory changes · any uncertain/inferred memory.
 
-## 8. Dashboard Update (project-local — no fake starts)
-- dashboard installed: yes/no
-- dashboard started: yes/no (only "yes" if a health check passed or the start was clearly confirmed)
-- project-local dashboard: yes
-- dashboard port: <port>
-- dashboard URL: http://localhost:<port>
-- port source: stored in `.claude/forge-dashboard/PORT` / newly assigned / fallback because busy
-- health check: passed / failed / not run (`GET /api/health`)
-- latest run id: <id> · events written: <n> · dashboard state file updated: yes/no
-- **Forge Session Mode:** on / paused / off (from `FORGE_SESSION_STATE.json`) · FLOW studio layout rendered (preflight band separated; mission→lead→plan→subagents→outputs→review/rework→fix/retest→merge→codex→final) · Live/Replay available
-Allowed wording: "Dashboard started and health check passed." · "Dashboard start command created, but not executed." · "Dashboard server is installed but not currently running." · "Port 3737 was busy, used 3741 instead." Never claim a URL is live unless tested/confirmed.
+## 8. Dashboard Update (no fake starts)
+The dashboard is the **Command Center** (`http://127.0.0.1:4100`, owner decision 2026-07-31 — one dashboard for every project); the old per-project Control Center is RETIRED and only its `log-event.cjs` stays in service as the run-event writer. Report the Command Center first:
+- Command Center health check: passed / failed / not run (`GET http://127.0.0.1:4100/api/health` — **the report may only say the dashboard runs if this passed**)
+- Command Center URL: http://127.0.0.1:4100 (only when the health check passed)
+- latest run id: <id> · events written: <n> (via `.claude/forge-dashboard/log-event.cjs`)
+- **Forge Session Mode:** on / paused / off (from `FORGE_SESSION_STATE.json`)
+Legacy Control Center (ONLY if the owner explicitly requested `legacy dashboard` this run): started yes/no · port <from `.claude/forge-dashboard/PORT`> · health check result.
+Allowed wording: "Command Center health check passed (4100)." · "Command Center not reachable — start command printed, not executed." · "Events written via log-event.cjs; dashboard not started (not requested)." Never claim a URL is live unless tested/confirmed.
 
 ## 8b. Command Pack Update (include on install / when it changed)
 - forge-bin installed: yes/no · PowerShell scripts: installed/not · CMD scripts: installed/not · Bash scripts: installed/not
@@ -99,7 +96,7 @@ Pick ONE overall level + give the per-layer verdicts. Do **not** use FULL PASS i
 - **FULL PASS** — all critical requirements proven; Codex proof passed or not required; browser proof passed if dashboard changes were tested; no critical PARTIALs.
 - **PASS CORE / PARTIAL PROOF** — core Forge behavior passed; one or more proof layers missing; no safety/isolation failure.
 - **PARTIAL** — an important required feature unproven/blocked; fallbacks used; manual follow-up needed.
-- **BLOCKED** — cannot safely/honestly complete.
+- **BLOCKED** — cannot safely/honestly complete. A BLOCKED status requires a real recovery ledger, not just an assertion: `node .claude/forge-bin/forge-recovery.cjs check-block <record.json>` must report `ok:true` (≥3 alternatives attempted, ≥5 for a high-value item, a Verify-Agent verdict, non-empty queries/tools). While `check-block` reports `ok:false`, BLOCKED is not yet a valid final status — keep attempting safe alternatives first (`GLOBAL_RESEARCH_RECOVERY_POLICY.md`).
 - **FAIL** — critical requirement failed · safety/isolation violated · fake claim detected · required artifact missing.
 
 Per-layer (state each): **Core** · **Codex** · **Browser proof** · **Dashboard** · **Project isolation** · **Overall**.

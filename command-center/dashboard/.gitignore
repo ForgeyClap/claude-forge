@@ -1,0 +1,63 @@
+# Forge V2 — secrets (managed by forge-setup guard)
+.env
+.env.local
+.env.*.local
+.env.forge-setup
+.env.tmp-*
+!.env.example
+
+# Build output and test artefacts
+node_modules/
+dist/
+dist-bridge/
+playwright-report/
+test-results/
+coverage/
+.vite/
+*.tsbuildinfo
+*.local
+
+# Screenshots ARE kept: they are the approved visual baseline and the review page
+# links to them. Regenerate with `npm run shots`.
+
+# Forge runtime (project-local)
+.claude/forge-runs/
+.claude/forge-dashboard/PORT
+.claude/forge-dashboard/DASHBOARD_STATE.json
+
+# ---------------------------------------------------------------------------
+# Connected workspace — runtime state. None of this belongs in version control:
+# it is machine-local, it changes constantly, and some of it is user content.
+# ---------------------------------------------------------------------------
+
+# Bridge runtime databases, event logs and checkpoints
+.forge-workspace/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Transient logs and diagnostics
+logs/
+*.log
+diagnostics-*.json
+
+# Uploaded attachments — user content, never committed
+**/.forge/attachments/
+**/.forge/quarantine/
+
+# Local Claude session mapping and per-machine state
+**/.forge/sessions/
+**/.forge/state.json
+.forge-local/
+
+# Caches
+.cache/
+.temp/
+tmp/
+
+# Mutation testing (Stryker) — sandboxes and reports are throwaway
+.stryker-tmp/
+reports/mutation/
+stryker*.log

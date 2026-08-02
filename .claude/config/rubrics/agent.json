@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for agent / LLM-app + eval tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-boss for the injection surface) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-agent playbook.",
+  "domain": "agent",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "tool_schema_safety",
+      "descriptor": "1=free-form eval/shell/SQL passthrough or destructive tools called autonomously; 2=tools exist but inputs unvalidated or over-broad privileges; 3=typed schema validated per tool, least-privilege set, destructive tools gated; 4=every tool JSON-Schema-validated + least privilege + irreversible tools confirmation/human-gated + tool outputs treated as untrusted",
+      "raise": "add a validated input schema to every tool, cut the tool set to least privilege, and put explicit confirmation/human approval in front of any destructive or irreversible tool"
+    },
+    {
+      "id": "injection_resistance",
+      "descriptor": "1=retrieved/tool/user content flows straight into instructions or an unbroken read-private-data-then-send trifecta; 2=only a 'ignore malicious instructions' prompt line, no structural control; 3=plan-then-execute + one trifecta leg severed; 4=plan-then-execute + capability-split reader returning validated structured summaries + trifecta demonstrably broken (draft-only/reader-split/no-private-data)",
+      "raise": "commit the action plan before ingesting untrusted content, move ingestion into a tool-restricted reader subagent that returns validated fields, and sever one leg of the read-private-data + external-send trifecta"
+    },
+    {
+      "id": "eval_harness",
+      "descriptor": "1=no eval, only 'looks good'; 2=ad-hoc manual spot-checks, not repeatable; 3=a versioned eval set runs and reports a real pass rate; 4=eval set covers answer-quality + task-success + tool-call correctness + refuse-when-appropriate, runs in CI, regressions are catchable, prompts versioned",
+      "raise": "build a versioned golden dataset (inputs -> expected outcomes), run it to produce a real pass rate, and wire it so prompt/tool changes are measured against it"
+    },
+    {
+      "id": "honest_fallback_handoff",
+      "descriptor": "1=fabricates facts/citations/tool results when unsure; 2=fails silently or dead-ends with no fallback; 3=honest fallback on low-confidence/empty-retrieval/tool-unavailable; 4=honest fallback + a defined, reachable human-handoff path for high-stakes actions or repeated failure",
+      "raise": "make the agent say when it is unsure or out of scope instead of guessing, and wire a reachable human-handoff path for high-stakes or repeatedly-failing cases"
+    },
+    {
+      "id": "cost_rate_loop_guards",
+      "descriptor": "1=no budget, no loop cap — can run away or storm the provider; 2=some limits but not enforced or untested; 3=token/cost budget + agent-loop iteration cap + timeout present; 4=budget + hard iteration cap + per-call timeout + rate-limit backoff all enforced AND proven to bound a runaway",
+      "raise": "add a per-request/session token-cost budget, a hard agent-loop iteration cap, per-call timeouts, and rate-limit backoff, then test that a runaway is actually bounded"
+    }
+  ]
+}

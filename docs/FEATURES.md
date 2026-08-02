@@ -179,7 +179,7 @@ node .claude/forge-dashboard/server.cjs
 # prints the real http://localhost:<port>, exposes GET /api/health
 ```
 
-- **Per-project, deterministic port (3737–3999).** The port is a hash of the project path, stored in `.claude/forge-dashboard/PORT`; if busy, the server walks to the next free port and updates the file. Two Forge projects run side by side without clashing.
+- **One Command Center on 127.0.0.1:4100.** It auto-discovers your Forge projects and shows strictly per-project data, so two projects never clash and you only run one dashboard. *(Legacy: the retired per-project Control Center still derives a deterministic port in 3737–3999 from the project path, stored in `.claude/forge-dashboard/PORT` — used only by an explicit `legacy dashboard` request.)*
 - **Real activity only.** It reads each run's `.claude/forge-runs/<run_id>/{run.json, events.jsonl, final-report.md}` **read-only** and renders real events. It never reads another project's `.claude/`.
 - **Zero dependencies.** No database, no cloud, no login — a plain Node `.cjs` server + a static SPA.
 

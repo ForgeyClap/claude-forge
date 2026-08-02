@@ -1,0 +1,18 @@
+{
+  "_doc": "Forge V2 WAVE G1 (2026-07-19) — the per-Boss LEAST-PRIVILEGE matrix (doctrine #4): each Boss has a MAX tier + an explicit allow-list of mcp-registry.json server ids. A Boss may never obtain a tool above its max_tier or from a server it is not listed for — forge-mcp-gate.cjs::validateGrant() enforces both independently (tier<=max_tier AND server present in allow_servers), so an entry can never accidentally widen scope by only editing one side. Boss ids match config/agents/agent-registry.json exactly (the 12 permanent Bosses); a boss not listed here defaults to max_tier:0, allow_servers:[] (no MCP grant at all — native fallback only) rather than an implicit wide grant. Tier 3 (WRITE-PRIMITIVE) is NEVER granted by default to any Boss, even one whose max_tier could numerically cover it — validateGrant() hard-requires opts.ownerGrant PLUS a live forge-actiongate.cjs confirmation for every tier-3 request, regardless of what this file says. This file only ever WIDENS what a Boss may attempt to request; it never itself authorizes a write.",
+  "version": 1,
+  "bosses": {
+    "boss": { "max_tier": 0, "allow_servers": [], "why": "The Lead orchestrates and delegates — it does not call MCP tools directly." },
+    "head-chef": { "max_tier": 0, "allow_servers": [], "why": "Task decomposition/verification does not require direct MCP tool access." },
+    "review-boss": { "max_tier": 1, "allow_servers": ["github-read", "context7"], "why": "Final QA needs read-only GitHub context (PRs/issues/code) and versioned docs — never write access." },
+    "test-boss": { "max_tier": 2, "allow_servers": ["playwright", "chrome-devtools"], "why": "Automated browser-driven QA is a sandboxed action (drive a real browser), never a project write-primitive." },
+    "ui-boss": { "max_tier": 2, "allow_servers": ["playwright", "chrome-devtools"], "why": "Visual/screenshot verification is the same sandboxed browser-QA action tier as Test Boss." },
+    "seo-boss": { "max_tier": 0, "allow_servers": [], "why": "No default MCP grant — performance/SEO audits run on the project's own build/native tooling unless the owner explicitly widens this." },
+    "security-boss": { "max_tier": 0, "allow_servers": [], "why": "No default MCP grant — security review stays on Claude's own reasoning + repo reads; remote/network tools are not auto-granted to a high-risk role." },
+    "skill-boss": { "max_tier": 0, "allow_servers": [], "why": "Registry/skill-bundle maintenance is local file work — no MCP grant needed." },
+    "search-boss": { "max_tier": 1, "allow_servers": ["exa", "firecrawl", "context7"], "why": "Source-grounded research needs read-only web search/scrape/docs — never write access." },
+    "build-boss": { "max_tier": 0, "allow_servers": ["serena-lsp"], "why": "Implementation gets local semantic code intelligence (LSP) only — remote/write tools stay out of the coding loop by default." },
+    "integration-boss": { "max_tier": 1, "allow_servers": ["context7"], "why": "API/integration work needs versioned third-party API docs — read-only." },
+    "docs-boss": { "max_tier": 0, "allow_servers": [], "why": "No default MCP grant — documentation is authored from the repo's own real state." }
+  }
+}

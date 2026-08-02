@@ -1,0 +1,104 @@
+{
+  "_doc": "Function-level model fit for NVIDIA-as-tool bulk offload (WP-NVIDIA-FIT, 2026-07-26, owner directive: a Boss's bulk work must route by FUNCTION strength, not just its default NVIDIA role — 'an agent mag niet iets doen waar z'n model slecht in is'). Method: live single-shot mini-task probes on the real API key, output read and judged by hand (Claude) against the model-capability-matrix.json's existing honesty standard — no vibes, no model-card theory. `functions` maps each bulk-work function to the NVIDIA role/model judged good at it, with literal evidence and a fit verdict (correct | correct-but-slow | partial | none). `agentAllowedFunctions` lists which functions each nvidiaForBulkOnly Boss is currently wired to reach; claudeWinsSkipNvidia Bosses (boss/head-chef/review-boss/security-boss/integration-boss/ui-boss) deliberately have NO entry here — they never call NVIDIA regardless of function (agent-model-map.json usagePolicy, enforced in nvidia-provider.cjs BEFORE function resolution). HARD RULE (the owner's exact complaint, now enforced in code): a function with fit=\"none\" or no model routes to NONE — Claude keeps that work; NVIDIA is never force-fit onto a function it's bad at. Re-probe alongside model-capability-matrix.json's ~1-week re-probe rule; function fit can drift if the underlying model drifts. UPDATED 2026-07-26 (WP-NVIDIA-CONSOLIDATE, owner follow-up: '1 model mag meerdere rollen doen — als 1 model meerdere functies beter kan dan de rest, dan houden we er 2 of 3 over'): 10 additional live cross-probes re-tested every weak spot from the first round (summarize's 57s minimax bottleneck, translate-rewrite's partial-fit mistral, code-draft's untested nano ceiling, research-digest's untried nemotron-3-super, data-extract's untried nemotron-3-super) against real same-task prompts. Result: nemotron-3-super and nemotron-3-nano now cover ALL 7 functions at fit=\"correct\" — minimax-m3 and mistral-small-4-119b-2603 are no longer needed by ANY function (kept only as historical `alts` evidence, see `consolidation` below); deepseek-v4-flash lost its one function (research-digest) to a faster equally-correct nemotron-3-super result. See `consolidation` for the final verdict table.",
+  "functions": {
+    "code-draft": {
+      "role": "coding", "model": "nvidia/nemotron-3-super-120b-a12b", "fit": "correct",
+      "evidence": "Live 2026-07-25 (model-capability-matrix.json, role=coding, no agent tag): prompt to write add(a,b) -> clean 'def add(a, b): return a + b', finish=stop, 890ms @200-token budget (needed headroom — reasoning-heavy model gave only chain-of-thought at 60 tokens). Reused directly here; not re-probed.",
+      "alts": [
+        { "model": "nvidia/nemotron-3-nano-30b-a3b", "fit": "correct (harder task)",
+          "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe): given a HARDER task than the original add() — `divide_safe(a, b)` returning None on b==0 instead of raising ZeroDivisionError — nano produced correct, minimal code `return a / b if b else None`, finish=stop, 872ms. Genuinely good evidence nano CAN handle simple/moderate code-drafts with an edge case, not just the trivial add() case.",
+          "decision": "NOT switched to primary this round: code-draft stays on nemotron-3-super because it is the established quality-tier model already shared with test-sketch, its own evidence is equally clean, and code output already goes through the mandatory build+test gate regardless of which model drafted it — correctness-under-gate, not raw speed, is the deciding factor here. Recorded as a real option for a future lower-risk/high-volume code-draft split, not force-switched without a stronger reason to move a currently-working quality assignment." }
+      ],
+      "verified": "live-probe-2026-07-25; cross-probed 2026-07-26 (WP-NVIDIA-CONSOLIDATE, alt confirmed, primary unchanged)"
+    },
+    "test-sketch": {
+      "role": "coding", "model": "nvidia/nemotron-3-super-120b-a12b", "fit": "correct",
+      "evidence": "Live 2026-07-26 (agent=build-boss, role=coding): 'write one Jest test case for add(a,b)' -> valid `test('adds two numbers', () => { expect(add(2, 3)).toBe(5); });`, finish=stop, 2008ms.",
+      "note": "Shares its model + quality-tier rationale with code-draft (same nemotron-3-super evidence baseline) — not independently re-probed in the 2026-07-26 WP-NVIDIA-CONSOLIDATE round; no new evidence needed since nothing changed for this function.",
+      "verified": "live-probe-2026-07-26"
+    },
+    "doc-draft": {
+      "role": "fast", "model": "nvidia/nemotron-3-nano-30b-a3b", "fit": "correct",
+      "evidence": "Live 2026-07-26 (agent=docs-boss, role=fast): 'write a 2-sentence changelog entry (dark mode toggle + 15% faster page load)' -> clean, exactly 2 sentences, both facts correct, no filler, finish=stop, 713ms.",
+      "note": "Not re-probed in the 2026-07-26 WP-NVIDIA-CONSOLIDATE round (already fit=correct on the fastest model available, no weak spot to chase).",
+      "verified": "live-probe-2026-07-26"
+    },
+    "research-digest": {
+      "role": "reasoning", "model": "nvidia/nemotron-3-super-120b-a12b", "fit": "correct",
+      "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe, unclassified manual call): reconstructed the original 2-step logic prompt scope — 'Given claudeWinsSkipNvidia = [boss, head-chef, review-boss, security-boss, integration-boss, ui-boss]... Step 1: is search-boss in this list? Step 2: can search-boss call NVIDIA directly for bulk work?' -> correct 2-sentence answer ('No, search-boss is not in the claudeWinsSkipNvidia list. Therefore, search-boss may call NVIDIA directly for bulk work.'), finish=stop, 2345ms — 3-5x faster than deepseek's own evidence below for equal correctness. PRIMARY SWITCHED from deepseek-v4-flash to nemotron-3-super-120b-a12b on this evidence.",
+      "alts": [
+        { "model": "deepseek-ai/deepseek-v4-flash", "fit": "correct (slower)",
+          "evidence": "Live 2026-07-26 (agent=search-boss, role=reasoning i.e. search-boss's nvidiaFallback): 2-step logic prompt about claudeWinsSkipNvidia/head-chef -> correct 'No... never calls NVIDIA directly', concise, finish=stop, 7195ms. Still correct, just 3-5x slower than the new super pick — kept as the historical loser. deepseek-v4-flash remains the model-capability-matrix.json 'reasoning' ROLE default for non-function-routed calls; that broader role binding is unchanged/out of this WP's scope — only the research-digest FUNCTION moved off it." }
+      ],
+      "note": "Reachable as a bulk-offload path today via search-boss's agentAllowedFunctions (--function research-digest), independent of the raw 'reasoning' ROLE's own reachability (which stays mostly idle — see model-capability-matrix.json honesty notes: head-chef/security-boss have it as primary but are both claudeWinsSkipNvidia/hard-blocked).",
+      "verified": "live-probe-2026-07-26 (WP-NVIDIA-CONSOLIDATE, primary switched)"
+    },
+    "data-extract": {
+      "role": "fast", "model": "nvidia/nemotron-3-nano-30b-a3b", "fit": "correct",
+      "evidence": "Live 2026-07-26 (agent=skill-boss, role=fast): 'extract name/age/city as JSON from a sentence' -> valid JSON, all 3 fields correct, finish=stop, 783ms.",
+      "alts": [
+        { "model": "minimaxai/minimax-m3", "fit": "correct-but-slow",
+          "evidence": "Live 2026-07-26 (agent=search-boss, role=default, same extraction prompt): also correct valid JSON, but finish=stop @ 38691ms — ~49x slower than the fast/nano result for equal correctness." },
+        { "model": "nvidia/nemotron-3-super-120b-a12b", "fit": "correct (slower)",
+          "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe, sanity check): same extraction prompt -> correct JSON, all 3 fields right, finish=stop, 1198ms — correct but ~1.5x slower than nano's 783ms. Confirms nano remains the fastest correct option; primary NOT changed." }
+      ],
+      "note": "search-boss's PRIMARY nvidia role is \"default\" (minimax-m3, now itself remapped to nano — see model-capability-matrix.json roles.default); for data-extract specifically, prefer overriding to role=\"fast\" via --function data-extract instead of search-boss's raw default role, per the alt evidence above.",
+      "verified": "live-probe-2026-07-26; cross-probed again 2026-07-26 (WP-NVIDIA-CONSOLIDATE, primary confirmed unchanged)"
+    },
+    "summarize": {
+      "role": "fast", "model": "nvidia/nemotron-3-nano-30b-a3b", "fit": "correct",
+      "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe, unclassified manual call, same real ~280-word paragraph pulled from docs/model-routing.md 'Rules'+'Function fit' sections, asked for exactly one sentence): FIRST attempt at max_tokens:400 truncated mid-sentence (finish='length' — nano's verbose/shows-reasoning style needs headroom, same pattern already documented for nemotron-3-super's coding role). SPOT-CHECK RETRY at max_tokens:900 -> completed cleanly: one long compound sentence, faithful to every point in the source (fit-first routing, fallback chain, premium rule, function-fit routing, re-probe cadence), finish=stop, 3449ms (562 completion tokens used) — correct AND ~16.7x faster than minimax's 57424ms on the same-shape task. PRIMARY SWITCHED from minimaxai/minimax-m3 to nvidia/nemotron-3-nano-30b-a3b on this evidence.",
+      "alts": [
+        { "model": "minimaxai/minimax-m3", "fit": "correct-but-slow",
+          "evidence": "Live 2026-07-26 (agent=search-boss, role=default): one-sentence summary of a real multi-clause paragraph -> accurate, complete, faithful to source, finish=stop, but 57424ms (vs sub-6s on the matrix's trivial 'PIPELINE OK' pings) — latency scales poorly with real content length on this model. Kept as the historical loser; minimax-m3 is no longer assigned to any function or role default (see model-capability-matrix.json roles.default remap)." },
+        { "model": "nvidia/nemotron-3-super-120b-a12b", "fit": "correct (slower)",
+          "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe): same task -> clean one-sentence summary, faithful, finish=stop, 6152ms — correct but ~1.8x slower than nano's headroom-adjusted 3449ms." },
+        { "model": "deepseek-ai/deepseek-v4-flash", "fit": "correct (slower)",
+          "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe): same task -> clean one-sentence summary, faithful, finish=stop, 7672ms — correct but slowest of the three cross-probed candidates." }
+      ],
+      "note": "Give nano real headroom (>=900 max_tokens) for prose-summarization calls, not the 400-token budget used on the first truncated attempt — a finish='length' result on this model means 'needs more budget', not 'wrong fit' (mirrors the nemotron-3-super coding-role lesson from 2026-07-25).",
+      "verified": "live-probe-2026-07-26 (WP-NVIDIA-CONSOLIDATE, primary switched)"
+    },
+    "translate-rewrite": {
+      "role": "review", "model": "nvidia/nemotron-3-super-120b-a12b", "fit": "correct",
+      "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe, unclassified manual call, same tone-shift mini-task as the original mistral probe — rewrite one informal one-line message in a formal tone — with an explicit 'reply with ONLY the rewritten sentence, no salutation/signature/extra commentary' constraint added this round to test directly for the over-elaboration failure mode): message 'hey can u send me the report when u get a chance, no rush' -> 'Could you please send me the report at your earliest convenience?' — single clean sentence, correct tone shift, NO letter template/salutation/signature, finish=stop, 934ms. Fixes the exact failure (over-elaboration into a full letter template) that made mistral's original verdict 'partial'. PRIMARY SWITCHED from mistralai/mistral-small-4-119b-2603 to nvidia/nemotron-3-super-120b-a12b on this evidence.",
+      "alts": [
+        { "model": "nvidia/nemotron-3-nano-30b-a3b", "fit": "correct",
+          "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe): same prompt -> 'Please forward the report at your earliest convenience; there is no urgency.' — single clean sentence, no over-elaboration, finish=stop, 1176ms. Also a clean pass; super was marginally faster (934ms) so it was picked as primary." },
+        { "model": "deepseek-ai/deepseek-v4-flash", "fit": "correct (slower)",
+          "evidence": "Live 2026-07-26 (WP-NVIDIA-CONSOLIDATE cross-probe): same prompt -> 'Please send me the report at your earliest convenience.' — single clean sentence, correct, finish=stop, but 10716ms — slowest of the three correct candidates." },
+        { "model": "mistralai/mistral-small-4-119b-2603", "fit": "partial",
+          "evidence": "Live 2026-07-26 (original round, unclassified/manual call, no agent tag): asked to rewrite one informal sentence in a formal tone -> correct tone shift, but over-elaborated into a full letter template (salutation + signature placeholders) that was not asked for, ignoring the 'just rewrite the message' scope. Kept as the historical loser and the exact reason this function was reprobed with a tighter output-scope constraint." }
+      ],
+      "note": "Still no bulk-allowed Boss has nvidia:\"review\" wired as primary OR fallback (only review-boss does, and review-boss is claudeWinsSkipNvidia/hard-blocked) — this function has no wired Boss path today; see `unassigned` below. Fit is now proven correct+fast and ready for a future Boss assignment decision; stays with Claude by default until wired.",
+      "verified": "live-probe-2026-07-26 (WP-NVIDIA-CONSOLIDATE, primary switched)"
+    }
+  },
+  "agentAllowedFunctions": {
+    "build-boss": ["code-draft", "test-sketch"],
+    "test-boss": ["test-sketch"],
+    "docs-boss": ["doc-draft"],
+    "seo-boss": ["doc-draft"],
+    "search-boss": ["research-digest", "data-extract", "summarize"],
+    "skill-boss": ["data-extract"],
+    "_note": "Only the 6 nvidiaForBulkOnly Bosses appear here. boss/head-chef/review-boss/security-boss/integration-boss/ui-boss are claudeWinsSkipNvidia (agent-model-map.json) and are deliberately ABSENT — they have zero allowed functions; nvidia-provider.cjs's existing hard-block fires before function resolution is ever reached for them, regardless of --function passed. UNCHANGED by the 2026-07-26 WP-NVIDIA-CONSOLIDATE round — only which MODEL backs each function moved, not which Boss reaches which function."
+  },
+  "unassigned": {
+    "translate-rewrite": "As of the 2026-07-26 WP-NVIDIA-CONSOLIDATE round this function's fit is now \"correct\" (nvidia/nemotron-3-super-120b-a12b, 934ms) — but no bulk-allowed Boss is wired to reach it today (see functions.translate-rewrite.note). Available for a future Boss assignment; not force-fit onto an unrelated Boss's role just to give it a home."
+  },
+  "consolidation": {
+    "_wp": "WP-NVIDIA-CONSOLIDATE, 2026-07-26 — owner follow-up: '1 model mag meerdere rollen doen — als 1 model meerdere functies beter kan dan de rest, dan houden we er 2 of 3 over.'",
+    "method": "10 additional live single-shot cross-probes (same-task, cross-model) targeted directly at the first round's known weak spots (summarize's slow minimax, translate-rewrite's partial mistral, code-draft's untested nano ceiling, research-digest's untried nemotron-3-super, data-extract's untried nemotron-3-super) plus one spot-check consistency retry (nano-summarize at a larger token budget). Every call's real output was read and judged by hand against the same correct/correct-but-slow/partial/none scale used throughout this file; every losing candidate's evidence is kept inline above (never discarded).",
+    "finalModelSet": {
+      "nvidia/nemotron-3-nano-30b-a3b": ["doc-draft", "data-extract", "summarize"],
+      "nvidia/nemotron-3-super-120b-a12b": ["code-draft", "test-sketch", "research-digest", "translate-rewrite"]
+    },
+    "droppedFromFunctionFit": {
+      "minimaxai/minimax-m3": "Was summarize's primary (correct-but-slow, 57424ms); lost to nemotron-3-nano (correct, 3449ms with adequate token budget). No function needs it anymore.",
+      "mistralai/mistral-small-4-119b-2603": "Was translate-rewrite's only candidate (fit=partial — over-elaborated past scope); lost to nemotron-3-super (correct, 934ms, respects the 'only the rewrite' scope). No function needs it anymore.",
+      "deepseek-ai/deepseek-v4-flash": "Was research-digest's primary (correct, 7195ms); lost to nemotron-3-super (correct, 2345ms — 3-5x faster for equal correctness). Did not uniquely win any cross-probed function this round; no function needs it anymore for FUNCTION-fit routing. Still the model-capability-matrix.json 'reasoning' ROLE default for non-function-routed calls — that broader role binding is unchanged/out of this WP's explicit scope."
+    },
+    "result": "All 7 functions now carry fit=\"correct\" on exactly 2 models (nemotron-3-nano for speed-tier work, nemotron-3-super for quality-tier work) — down from 5 distinct models (nano, super, deepseek, minimax, mistral) before this round. No function's fit was forced; every switch is backed by a same-task, same-round live comparison recorded above."
+  },
+  "honesty": "ROUND 1 (2026-07-26, WP-NVIDIA-FIT): 7 live single-shot probes, one per function (data-extract got 2, for a same-task cross-model latency comparison). ROUND 2 (2026-07-26, WP-NVIDIA-CONSOLIDATE, this update): 10 further live single-shot probes specifically re-testing every weak spot from round 1 for consolidation — 17 live probes total across both rounds. Every probe's real output was read and judged here by hand (correct / correct-but-slow / partial / none); no probe in either round came back outright wrong, so no function currently carries fit=\"none\" in this file — but the routing mechanism for that case (resolveFunction() in nvidia-provider.cjs) is implemented and unit-tested with an injected fake fit-map so a genuinely bad-fit function is never force-routed once one is found. Every losing candidate's evidence is preserved inline (never deleted) per the owner's 'negative evidence is valuable' instruction. Re-probe alongside the matrix's ~1-week rule; a model recommended here can drift the same way roles do."
+}

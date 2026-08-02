@@ -91,7 +91,7 @@ const partialFixture = { status: 'partial', work_package: 'WP-4', files_changed:
 t('partial status with no blockers field is fine (blockers only required when blocked)', R.parseReport(blockText(partialFixture)).ok === true);
 
 // ---- buildIngestEvents: redaction of a real-looking secret ------------------------------------------
-const SECRET = '\x6Evapi-FAKEFAKEFAKEFAKE1234567890';
+const SECRET = 'nvapi-FAKEFAKEFAKEFAKE1234567890';
 const secretReport = Object.assign({}, validCompleted, { evidence: ['key used: ' + SECRET], tests_run: 'curl with ' + SECRET + ' -> 200' });
 const events = R.buildIngestEvents(secretReport, 'Build Boss');
 const serialized = JSON.stringify(events);

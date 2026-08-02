@@ -10,16 +10,54 @@ else {
   exit 1
 }
 $dash = "$PSScriptRoot\..\forge-dashboard"
+$ccGateway = "$PSScriptRoot\..\..\command-center\gateway\bin.mjs"
+$ccDistIndex = "$PSScriptRoot\..\..\command-center\dashboard\dist\index.html"
 $cmd = if ($args.Count -ge 1) { $args[0] } else { 'help' }
-$rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+
+# WP7d: if THIS project has a Command Center (command-center/gateway/bin.mjs), it is now the real
+# dashboard — start it (port 4100) instead of the old Control Center. If it exists but
+# dashboard/dist hasn't been built yet, say so honestly rather than failing silently. If
+# command-center/ doesn't exist at all (most projects today, no command-center yet), fall back to
+# the original per-project Control Center exactly as before. This fallback is MANDATORY: this
+# wrapper syncs to every other Forge project via the template, most of which have no
+# command-center. The old Control Center stays reachable regardless via 'legacy-dashboard'.
+function Start-DashboardOrFallback {
+  if (Test-Path $ccGateway) {
+    if (Test-Path $ccDistIndex) {
+      & $node $ccGateway
+    } else {
+      Write-Host 'Command Center found but not built yet. Run: cd command-center/dashboard && npm install && npm run build'
+    }
+  } else {
+    & $node "$dash\server.cjs"
+  }
+}
+# Pre-existing bug found+fixed while wiring `learn` (2026-07-18): when exactly ONE trailing arg exists,
+# `$args[1..($args.Count-1)]` is a 1-element array, but PowerShell's `if`-as-expression enumerates a
+# single-element array output and COLLAPSES it to a bare scalar STRING on assignment. `@rest` splat on a
+# bare string then explodes it character-by-character (PowerShell treats a string as IEnumerable<char>),
+# so `forge.ps1 learn --json` silently forwarded ['-','-','j','s','o','n'] to node instead of ['--json'] —
+# reproduced directly (`node -e "console.log(process.argv.slice(2))" @rest`) before fixing. Only surfaced
+# now because forge-harvest.cjs's parseArgs is the first subcommand strict enough to reject the garbage
+# tokens instead of silently ignoring them; `log-event`/`resume` shared the exact same latent bug. Fix:
+# the unary comma operator `,(...)` wraps the slice in an explicit array literal BEFORE it leaves the
+# `if` block, so a single-element result is never collapsed to a scalar (2+ elements were never affected).
+$rest = if ($args.Count -gt 1) { , $args[1..($args.Count - 1)] } else { @() }
 switch ($cmd) {
-  'dashboard'   { & $node "$dash\server.cjs" }
-  'start'       { & $node "$dash\server.cjs" }
+  'dashboard'   { Start-DashboardOrFallback }
+  'start'       { Start-DashboardOrFallback }
+  'legacy-dashboard' { & $node "$dash\server.cjs" }
   'status'      { & $node "$dash\server.cjs" --status }
   'runs'        { & $node "$dash\server.cjs" --runs }
   'open-report' { & $node "$dash\server.cjs" --open-report }
   'health'      { & $node "$dash\server.cjs" --health }
   'assign-only' { & $node "$dash\server.cjs" --assign-only }
   'log-event'   { & $node "$dash\log-event.cjs" @rest }
-  default       { Write-Host 'Forge commands: dashboard | start | status | runs | open-report | health | assign-only | log-event' }
+  # reconciles the run's manifest.json from logged events and reports which work packages remain
+  # unfinished (forge-swarm-resume.cjs). Usage: .\forge.ps1 resume --run <run_id> [--json]
+  'resume'      { & $node "$PSScriptRoot\forge-swarm-resume.cjs" @rest }
+  # read-only cross-project learning harvest into the reserved global lesson namespace (forge-harvest.cjs).
+  # Usage: .\forge.ps1 learn --scan <dir> [--global-store <file>] [--dry-run] [--json]
+  'learn'       { & $node "$PSScriptRoot\forge-harvest.cjs" @rest }
+  default       { Write-Host 'Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn' }
 }

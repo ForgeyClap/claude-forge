@@ -145,7 +145,7 @@ function runCli(args, root) {
 {
   const root = makeFixture('case7');
   const runId = 'run-case7';
-  const secret = '\x73k_live_abc123456789012345';
+  const secret = 'sk_live_abc123456789012345';
   writeRun(root, runId, [{ event_type: 'subagent_completed', agent: 'Build Boss', task: 'add API key handling', note: `tested with ${secret} successfully` }]);
   D.distillRun(runId, { max: 3, dryRun: false, root });
   const lessons = lessonsFor(root, 'build-boss');
@@ -216,6 +216,59 @@ function runCli(args, root) {
   t('case12: no arguments at all -> usage error exit 2', noArgs.status === 2);
   const noRunId = runCli(['--run'], root);
   t('case12: --run with no run_id value -> usage error exit 2', noRunId.status === 2);
+}
+
+
+// ---- 13) SECURITY (fix-cap-order): a credential that CROSSES the per-field truncation boundary must
+//         never survive into a stored lesson. truncate() used to cut at 200/300 chars and leave
+//         redaction to forge-memory.addLesson() afterwards, so every forge-store.cjs pattern that needs
+//         a trailing anchor (the full PEM block, a JWT, a SendGrid key) stopped matching and the
+//         readable head was written to .claude/agent-memory/<boss>/lessons.jsonl. Generated rather than
+//         enumerated: each credential shape is placed at four offsets that all straddle the 300-char
+//         `issue` cut, through the REAL CLI, and the real stored lessons file is what gets asserted.
+{
+  const root = makeFixture('case13');
+  const memory = require('./forge-memory.cjs');
+  const SAMPLES = {
+    pem: {
+      build: () => '-----BEGIN RSA PRIVATE KEY-----\n' + 'MIIEow'.repeat(120) + '\n-----END RSA PRIVATE KEY-----',
+      partial: /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+    },
+    jwt: {
+      build: () => 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' + 'eyJzdWIiOiIxMjM0NTY3ODkwIn0'.repeat(6) + '.' + 'S1gnatur3'.repeat(8),
+      partial: /eyJ[A-Za-z0-9_-]{10,}\./,
+    },
+    sendgrid: {
+      build: () => 'SG.' + 'A1b2C3d4E5f6G7h8'.repeat(3) + '.' + 'Z9y8X7w6V5u4T3s2'.repeat(6),
+      partial: /SG\.[A-Za-z0-9_-]{16,}\./,
+    },
+  };
+  let leaks = 0;
+  let cases = 0;
+  let cliFailures = 0;
+  for (const name of Object.keys(SAMPLES)) {
+    const spec = SAMPLES[name];
+    const secret = spec.build();
+    for (const fraction of [0.1, 0.4, 0.7, 0.95]) {
+      cases++;
+      const past = Math.max(1, Math.min(secret.length - 1, Math.round(secret.length * fraction)));
+      const inside = secret.length - past;
+      const lead = 'x'.repeat(Math.max(0, 300 - inside - 1));
+      const runId = 'run-case13-' + name + '-' + Math.round(fraction * 100);
+      writeRun(root, runId, [{ event_type: 'subagent_failed', agent: 'Build Boss', task: 'deploy the service', issue: lead + ' ' + secret, required_fix: 'rotate the credential' }]);
+      const r = runCli(['--run', runId, '--json'], root);
+      if (r.status !== 0) { cliFailures++; continue; }
+    }
+  }
+  const lessonsFile = path.join(root, '.claude', 'agent-memory', 'build-boss', 'lessons.jsonl');
+  const stored = fs.existsSync(lessonsFile) ? fs.readFileSync(lessonsFile, 'utf8') : '';
+  for (const name of Object.keys(SAMPLES)) {
+    if (SAMPLES[name].partial.test(stored)) leaks++;
+  }
+  t('case13: all ' + cases + ' generated straddle runs completed', cliFailures === 0);
+  t('case13: a lesson was actually written (otherwise this case would pass vacuously)', stored.trim().length > 0);
+  t('case13: none of the ' + cases + ' straddling credentials left readable material in lessons.jsonl', leaks === 0);
+  t('case13: forge-memory still owns the scrubber truncate() calls (no drifting second copy here)', typeof memory.scrub === 'function');
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

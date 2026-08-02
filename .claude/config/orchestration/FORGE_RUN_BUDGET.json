@@ -1,0 +1,22 @@
+{
+  "_purpose": "Per-run dollar ceiling for UNATTENDED (headless, `claude -p`) runs. Read by .claude/forge-bin/forge-run-budget.cjs, which renders it as the real CLI flag --max-budget-usd. The owner's INTERACTIVE session is deliberately untouched by this file.",
+  "_motivation": "The one real cost measurement this project has is a logged cost_sampled event: 15400 tokens for $0.21 on Opus 4.8 (run forge-2026-07-10-mc-checkup), i.e. about $13.60 per million tokens blended. The unattended wrapper we actually have runs on Sonnet, roughly a fifth of that price, so about $2.70 per million tokens. A monthly sweep that searches, filters and transcribes 10-15 videos is tool-heavy but bounded; even at two million cumulative tokens of re-sent context it lands near $5.50. The default of 5.00 is therefore a CEILING that a healthy run should not reach, not a target it is expected to spend. The point is not to price the run precisely - it is to make a runaway run stop while it is still cheap. max_usd 25.00 is the hard ceiling on any override, so neither a typo nor an environment variable can quietly remove the brake; min_usd 0.25 is the floor, so a stray 0 cannot turn the cap into an instant kill. Revisit these numbers as soon as real total_cost_usd envelopes exist for a full sweep - they are a defensible starting point, not a measurement.",
+  "default_usd": 5.0,
+  "limits": {
+    "min_usd": 0.25,
+    "max_usd": 25.0
+  },
+  "levels": {
+    "_note": "Router fan-out levels, per .claude/CLAUDE.md: L1 small (1-3 agents), L2 medium (3-6), L3 complex (6-12), L4 large (phased). Used only when an unattended caller names a level and has no wrapper entry of its own.",
+    "L1": 2.0,
+    "L2": 5.0,
+    "L3": 10.0,
+    "L4": 20.0
+  },
+  "wrappers": {
+    "_note": "One entry per unattended wrapper that shells out to `claude -p`. Today this project has exactly one: .claude/forge-bin/maand-sweep.cmd, the monthly Claude-news sweep registered as the scheduled task ForgeMaandSweep.",
+    "maand-sweep": 5.0
+  },
+  "env_override": "FORGE_RUN_BUDGET_USD",
+  "_honesty": "A run that hits this cap is reported with status stopped_by_budget and is never counted as finished: forge-run-budget.cjs writes a verdict line into the run directory and forge-verify.cjs gates on it."
+}

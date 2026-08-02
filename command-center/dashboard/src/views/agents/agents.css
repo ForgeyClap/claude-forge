@@ -1,0 +1,1168 @@
+/*
+ * Agents view.
+ *
+ * Rules obeyed here, without exception:
+ *   - no raw hex / rgb() / hsl(). Every value is a var(--forge-*) token or a
+ *     local --fw-* property derived from one.
+ *   - status is carried by the status token trio (value / style / width) on top
+ *     of an icon and an uppercase label, never by colour alone.
+ *   - agent groups are told apart by luminance (--forge-group-*) plus a glyph.
+ *     There is no hue to spend.
+ *   - the ember accent appears only where the primitives already ration it:
+ *     the focus ring and the running progress meter.
+ */
+
+/* =========================================================================
+   View shell
+   The root fills its parent when the shell gives it a definite height, and
+   simply grows when it does not. Either way the page never scrolls sideways:
+   every wide thing below has its own overflow container.
+   ========================================================================= */
+
+.fw-agents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: var(--fw-gutter);
+  overflow: hidden;
+
+  --fw-agents-pad: var(--forge-space-4);
+}
+
+:root[data-density='compact'] .fw-agents {
+  --fw-agents-pad: var(--forge-space-3);
+}
+
+/* =========================================================================
+   Head
+   ========================================================================= */
+
+.fw-agents__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--fw-gap);
+  flex-wrap: wrap;
+  flex: none;
+  min-inline-size: 0;
+}
+
+.fw-agents__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 22rem;
+  min-inline-size: 0;
+}
+
+.fw-agents__title {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-agents__subtitle {
+  max-inline-size: 52ch;
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-agents__toolbar {
+  flex: none;
+  padding-inline: 0;
+  min-block-size: 0;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+/* =========================================================================
+   Live now strip (feat-live-visibility, Gap B)
+   Sits above the filter row. Reuses the SAME .fw-agents-chip surface the
+   roster below already uses for permission/verification chips — only the
+   `[data-live]` attribute selector and the small count badge are new here.
+   ========================================================================= */
+
+.fw-agents__live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-inline-size: 0;
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-agents__live-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-agents__live-empty {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+  font-style: italic;
+}
+
+.fw-agents__live-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-agents__live-note {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-faint);
+  max-inline-size: 68ch;
+}
+
+.fw-agents-chip__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-4);
+  padding-inline: var(--forge-space-1);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-3);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Live-dispatch state: weight/motion, never a new hue — a running dispatch's
+   icon is the SAME spinning Loader statusPresentation('running') already
+   uses; this chip's own border simply matches that with the existing
+   status-running token. */
+.fw-agents-chip[data-live='running'] {
+  border-color: var(--forge-status-running);
+  color: var(--forge-color-text);
+}
+
+.fw-agents-chip[data-live='dispatched'] {
+  border-style: dashed;
+}
+
+/* =========================================================================
+   Filter row
+   Eight chips, each with a live count. Scrolls inside itself on a phone
+   rather than pushing the page wider.
+   ========================================================================= */
+
+.fw-agents__filters {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding-block-end: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.fw-agents__filter {
+  flex: none;
+}
+
+.fw-agents__filter .fw-button__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  overflow: visible;
+}
+
+.fw-agents__filter-label {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+.fw-agents__filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-5);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-agents__filter.is-active .fw-agents__filter-count {
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+}
+
+/* =========================================================================
+   Body — the one vertical scroller in this view
+   ========================================================================= */
+
+.fw-agents__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding-block-start: var(--forge-space-1);
+}
+
+/* =========================================================================
+   Group carrier
+   Resolves the seven --forge-group-* luminance steps into local properties so
+   a card, a row or a band header can all wear the same tempering value.
+   ========================================================================= */
+
+.fw-agents-group {
+  --fw-group-color: var(--forge-group-domain);
+  --fw-group-soft: var(--forge-group-domain-soft);
+  --fw-group-line: var(--forge-group-domain-line);
+}
+
+.fw-agents-group[data-group='control'] {
+  --fw-group-color: var(--forge-group-control);
+  --fw-group-soft: var(--forge-group-control-soft);
+  --fw-group-line: var(--forge-group-control-line);
+}
+.fw-agents-group[data-group='context'] {
+  --fw-group-color: var(--forge-group-context);
+  --fw-group-soft: var(--forge-group-context-soft);
+  --fw-group-line: var(--forge-group-context-line);
+}
+.fw-agents-group[data-group='planning'] {
+  --fw-group-color: var(--forge-group-planning);
+  --fw-group-soft: var(--forge-group-planning-soft);
+  --fw-group-line: var(--forge-group-planning-line);
+}
+.fw-agents-group[data-group='domain'] {
+  --fw-group-color: var(--forge-group-domain);
+  --fw-group-soft: var(--forge-group-domain-soft);
+  --fw-group-line: var(--forge-group-domain-line);
+}
+.fw-agents-group[data-group='execution'] {
+  --fw-group-color: var(--forge-group-execution);
+  --fw-group-soft: var(--forge-group-execution-soft);
+  --fw-group-line: var(--forge-group-execution-line);
+}
+.fw-agents-group[data-group='review'] {
+  --fw-group-color: var(--forge-group-review);
+  --fw-group-soft: var(--forge-group-review-soft);
+  --fw-group-line: var(--forge-group-review-line);
+}
+.fw-agents-group[data-group='memory'] {
+  --fw-group-color: var(--forge-group-memory);
+  --fw-group-soft: var(--forge-group-memory-soft);
+  --fw-group-line: var(--forge-group-memory-line);
+}
+
+/* =========================================================================
+   Grid
+   Reflows from four columns to one purely on available width — no breakpoint
+   list, so it behaves the same inside a narrow shell as on a narrow phone.
+   ========================================================================= */
+
+.fw-agents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+  gap: var(--fw-gap);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+/* =========================================================================
+   Card
+   ========================================================================= */
+
+.fw-agents-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+  padding: var(--fw-agents-pad);
+  padding-inline-start: calc(var(--fw-agents-pad) + var(--forge-space-2));
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+}
+
+/* The status edge. Drawn as a pseudo-element so a hover or selected rule can
+   never accidentally repaint it through the border shorthand. */
+.fw-agents-card::before,
+.fw-agents-row::before {
+  content: '';
+  position: absolute;
+  inset-block: var(--forge-space-4);
+  inset-inline-start: 0;
+  inline-size: 0;
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-color);
+}
+
+.fw-agents-card:hover,
+.fw-agents-row:hover {
+  background: var(--forge-color-surface-2);
+}
+
+.fw-agents-card.is-selected,
+.fw-agents-row.is-selected {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-strong);
+}
+
+/* Keyboard focus is reported by the whole card, not by the bare name text. */
+.fw-agents-card:has(.fw-agents-card__hit:focus-visible),
+.fw-agents-row:has(.fw-agents-row__hit:focus-visible) {
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-agents-card__top {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-agents-card__ident {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+/* The hit target. Its ::after stretches over the whole card, so a click
+   anywhere selects the agent while the accessible name stays the agent name. */
+.fw-agents-card__hit,
+.fw-agents-row__hit {
+  display: block;
+  max-inline-size: 100%;
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+  text-align: start;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-agents-card__hit::after,
+.fw-agents-row__hit::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--forge-radius-lg);
+}
+
+.fw-agents-card__hit:focus-visible,
+.fw-agents-row__hit:focus-visible {
+  box-shadow: none;
+}
+
+.fw-agents-card__id {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+}
+
+.fw-agents-card__group {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-agents-card__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--forge-control-xs);
+  block-size: var(--forge-control-xs);
+  border: var(--forge-border-hair) solid var(--fw-group-line);
+  border-radius: var(--forge-radius-xs);
+  background: var(--fw-group-soft);
+  color: var(--fw-group-color);
+}
+
+.fw-agents-card__divider {
+  inline-size: var(--forge-border-hair);
+  block-size: var(--forge-space-3);
+  background: var(--forge-color-line);
+}
+
+.fw-agents-card__role {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-agents-card__task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-agents-card__task-text {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-agents-card__task-text.is-none {
+  color: var(--forge-color-text-faint);
+  font-style: italic;
+}
+
+.fw-agents-card__models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-agents-model {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-agents-model__key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  inline-size: 6.5rem;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-agents-model__val {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  font-size: var(--forge-text-2xs);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* fix-modelpick-clip: the editable value cell hosts AgentModelPicker, whose absolute panel is a
+ * child of this cell — the base cell's overflow:hidden (text truncation) clipped the entire open
+ * panel to the cell's own 26px height (measured live 2026-07-30; the owner saw "niks" on click).
+ * The trigger's own label keeps ellipsis via .fw-agents-modelpick__trigger .fw-button__label, so
+ * lifting the clip here loses no truncation. */
+.fw-agents-model__val--editor {
+  overflow: visible;
+}
+
+.fw-agents-card__skills {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-agents-card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  padding-block-start: var(--forge-space-2);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-agents-card__activity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  margin-inline-start: auto;
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+}
+
+/* =========================================================================
+   Compact list
+   ========================================================================= */
+
+.fw-agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-agents-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 9rem);
+  align-items: start;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+  padding: var(--forge-space-3);
+  padding-inline-start: var(--forge-space-4);
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+}
+
+:root[data-density='compact'] .fw-agents-row {
+  padding-block: var(--forge-space-2);
+}
+
+.fw-agents-row::before {
+  inset-block: var(--forge-space-3);
+}
+
+.fw-agents-row__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--fw-group-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--fw-group-soft);
+  color: var(--fw-group-color);
+}
+
+.fw-agents-row__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-agents-row__line {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-agents-row__hit {
+  flex: 0 1 auto;
+}
+
+.fw-agents-row__id {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-agents-row__role {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-agents-row__task {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-agents-row__task .fw-icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-agents-row__task.is-none {
+  color: var(--forge-color-text-faint);
+  font-style: italic;
+}
+
+.fw-agents-row__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  padding-block-start: var(--forge-space-1);
+}
+
+.fw-agents-row__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-agents-row__meta-item .fg-machine {
+  font-size: var(--forge-text-2xs);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-agents-row__progress {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-inline-size: 0;
+  padding-block-start: var(--forge-space-1);
+}
+
+.fw-agents-row__progress-idle {
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   Grouped bands
+   ========================================================================= */
+
+.fw-agents__bands {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-section-gap);
+  min-inline-size: 0;
+}
+
+.fw-agents__band {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  min-inline-size: 0;
+}
+
+.fw-agents__band-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  padding-block-end: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-agents__band-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--fw-group-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--fw-group-soft);
+  color: var(--fw-group-color);
+}
+
+.fw-agents__band-title {
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-semibold);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  color: var(--fw-group-color);
+}
+
+.fw-agents__band-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-5);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-full);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-agents__band-note {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-agents__band-empty {
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   Chips, effort mark, skills
+   Every chip pairs an icon with an uppercase machine label, so none of them
+   depend on their border treatment alone to be read.
+   ========================================================================= */
+
+.fw-agents-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  block-size: var(--forge-control-xs);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-agents-chip .fg-machine {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  line-height: var(--forge-leading-none);
+}
+
+/* Permission: weight, never hue. More authority = a heavier edge. */
+.fw-agents-chip[data-permission='read-only'] {
+  border-style: dotted;
+  color: var(--forge-color-text-faint);
+}
+.fw-agents-chip[data-permission='standard'] {
+  border-style: solid;
+}
+.fw-agents-chip[data-permission='elevated'] {
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-secondary);
+}
+.fw-agents-chip[data-permission='lead'] {
+  border-width: var(--forge-border-thick);
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text);
+}
+
+/* Verification state. Not one of the seven statuses, so it gets its own
+   treatment out of the neutral line tokens rather than borrowing a status. */
+.fw-agents-chip[data-verification='verified'] {
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-secondary);
+}
+.fw-agents-chip[data-verification='pending'] {
+  border-style: dashed;
+}
+.fw-agents-chip[data-verification='rejected'] {
+  border-width: var(--forge-border-thick);
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text);
+}
+.fw-agents-chip[data-verification='not-required'] {
+  border-style: dotted;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-agents-chip--skill {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-line-subtle);
+}
+
+.fw-agents-skills {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-agents-skills__none {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+  font-style: italic;
+}
+
+.fw-agents-effort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-agents-effort .fg-machine {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+.fw-agents-effort__bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--forge-space-px);
+  block-size: var(--forge-space-3);
+}
+
+.fw-agents-effort__bar {
+  inline-size: var(--forge-border-thick);
+  block-size: 100%;
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-line);
+}
+
+.fw-agents-effort__bar.is-on {
+  background: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   Nodes graph
+   Adapted from this project's own legacy Control Center pan/zoom canvas
+   (read-only reference: .claude/forge-dashboard/graph.js — not imported) in
+   this view's own strict monochrome language: group and status are told
+   apart by luminance step, border weight and dash pattern, never colour.
+   Every transition below touches `transform` only — never a layout
+   property, never `transition: all` — and the existing reduced-motion rule
+   at the end of this file (`.fw-agents *`) already turns it off, so no
+   separate override is needed here.
+   ========================================================================= */
+
+.fw-agents-graph {
+  position: relative;
+  block-size: 100%;
+  min-block-size: 0;
+  inline-size: 100%;
+  min-inline-size: 0;
+  overflow: hidden;
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-canvas);
+}
+
+.fw-agents-graph__canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  /* Pointer drags belong to the graph, not the page. */
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.fw-agents-graph__canvas.is-panning {
+  cursor: grabbing;
+}
+
+.fw-agents-graph__world {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  transform-origin: 0 0;
+}
+
+.fw-agents-graph__world.is-smooth {
+  transition: transform var(--forge-motion-base) var(--forge-motion-ease-standard);
+}
+
+.fw-agents-graph__svg {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: block;
+  overflow: visible;
+  /* app.css caps every svg at 100% of its parent; the world is wider than the
+     viewport by design, so this one opts out. */
+  max-inline-size: none;
+}
+
+.fw-agents-graph__nodes {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+}
+
+/* ---- edges: two weights, one dash pattern, one shared arrow — never colour ---- */
+
+.fw-agents-graph__edge {
+  fill: none;
+  stroke: var(--forge-color-line-loud);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.fw-agents-graph__edge--root {
+  stroke-width: 2;
+}
+
+.fw-agents-graph__edge--branch {
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+  opacity: 0.9;
+}
+
+.fw-agents-graph__arrow {
+  fill: var(--forge-color-line-loud);
+}
+
+/* ---- nodes: same group/status carriers the cards and rows already use ---- */
+
+.fw-agents-graph__node {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-2);
+  overflow: hidden;
+  text-align: start;
+  cursor: pointer;
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--fw-group-line);
+  /* The status border treatment, straight off the tokens (fw-status carrier). */
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-color);
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text);
+  box-shadow: var(--forge-shadow-sm);
+}
+
+/* Boss: the sole root, weighted heavier so the top of the hierarchy reads
+   instantly without depending on position alone. */
+.fw-agents-graph__node.is-root {
+  border-width: var(--forge-border-thick);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-agents-graph__node:hover {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-agents-graph__node.is-selected {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-text);
+  border-width: var(--forge-border-thick);
+  box-shadow: var(--forge-shadow-md);
+}
+
+.fw-agents-graph__node:focus-visible {
+  outline: none;
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-agents-graph__node-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-agents-graph__node-glyph {
+  flex: none;
+  color: var(--fw-group-color);
+}
+
+.fw-agents-graph__node-name {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+}
+
+.fw-agents-graph__node-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-agents-graph__node-role {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+/* ---- floating controls: screen-space, does not move with the world ---- */
+
+.fw-agents-graph__controls {
+  position: absolute;
+  inset-block-start: var(--forge-space-3);
+  inset-inline-end: var(--forge-space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-1) var(--forge-space-2);
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  box-shadow: var(--forge-shadow-sm);
+}
+
+.fw-agents-graph__zoom {
+  min-inline-size: 4ch;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* =========================================================================
+   Narrow shells
+   ========================================================================= */
+
+@media (max-width: 60rem) {
+  .fw-agents-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .fw-agents-row__progress {
+    grid-column: 2;
+    justify-content: flex-start;
+    max-inline-size: 18rem;
+  }
+}
+
+@media (max-width: 34rem) {
+  .fw-agents__toolbar,
+  .fw-agents__filters {
+    inline-size: 100%;
+  }
+
+  /* Keep the accessible name — hide the label visually, never from the tree. */
+  .fw-agents__layout .fw-segmented__label {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    padding: 0;
+    margin: -1px;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .fw-agents-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fw-agents-row__glyph {
+    display: none;
+  }
+
+  .fw-agents-row__progress {
+    grid-column: 1;
+  }
+
+  .fw-agents-model__key {
+    inline-size: 5rem;
+  }
+}
+
+/* =========================================================================
+   Model picker (feat-agent-model-edit)
+   The Runtime/Effort trigger + popover — same surface/border/shadow language
+   as the composer's own menu popover (chat.css's .fw-chat-menu__panel), a
+   fresh local rule set rather than a cross-view import.
+   ========================================================================= */
+
+.fw-agents-modelpick {
+  position: relative;
+  display: inline-flex;
+  min-inline-size: 0;
+}
+
+.fw-agents-modelpick__trigger {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.fw-agents-modelpick__trigger .fw-button__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-agents-modelpick__panel {
+  position: absolute;
+  inset-block-start: calc(100% + var(--forge-space-1));
+  inset-inline-start: 0;
+  z-index: var(--forge-z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  inline-size: max-content;
+  min-inline-size: 8rem;
+  max-inline-size: 16rem;
+  max-block-size: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-lg);
+}
+
+.fw-agents-modelpick__item {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  background: transparent;
+  color: var(--forge-color-text-secondary);
+  text-align: start;
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.fw-agents-modelpick__item:hover,
+.fw-agents-modelpick__item:focus-visible {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-agents-modelpick__check {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--forge-color-text);
+}
+
+/* =========================================================================
+   Reduced motion
+   The global rule in src/styles/app.css already disables transitions; this
+   block is the local, explicit promise for anything added here later.
+   ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-agents *,
+  .fw-agents *::before,
+  .fw-agents *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

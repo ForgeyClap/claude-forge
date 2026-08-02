@@ -2,8 +2,6 @@
 /* Forge Control Center — workbench panels: agent-groups sidebar, work-package inspector (tabs),
    live activity feed, bottom dock tabs, summary metrics. Pure render fns; wiring lives in graph.js. */
 
-// i18n helper: translate a UI label key, falling back to the English literal (English is always the default).
-const iT = (k, f) => (window.i18nt ? window.i18nt(k, f) : f);
 function kv(k, v, cls) { return '<div class="kv"><div class="k">' + esc(k) + '</div><div class="v ' + (cls || '') + '">' + esc(v == null || v === '' ? '—' : v) + '</div></div>'; }
 function snItem(o) { return '<div class="sn-item"><div class="ts">' + esc(hhmmss(o.ts)) + '</div><div class="tx">' + esc(o.text) + '</div>' + (o.evidence ? '<div class="ev">✔ ' + esc(o.evidence) + '</div>' : '') + '</div>'; }
 function liList(arr, mark) { if (!arr || !arr.length) return '<div class="sn-empty">none</div>'; return arr.map((x) => '<div class="sn-li ' + (mark === 'no' ? 'no' : '') + '">' + esc(typeof x === 'string' ? x : fileName(x)) + '</div>').join(''); }
@@ -25,7 +23,7 @@ function renderSidebar() {
   const leg = $('status-legend');
   if (leg && !leg.dataset.done) { leg.dataset.done = '1';
     const L = [['running', 'Running'], ['done', 'Completed'], ['waiting', 'Waiting'], ['previewing', 'Previewing'], ['failed', 'Failed'], ['internal', 'Internal only']];
-    leg.innerHTML = L.map(([s, t]) => '<span class="lg"><span class="sd ' + s + '"></span>' + esc(iT('legend.st.' + s, t)) + '</span>').join('');
+    leg.innerHTML = L.map(([s, t]) => '<span class="lg"><span class="sd ' + s + '"></span>' + t + '</span>').join('');
   }
 }
 
@@ -38,10 +36,10 @@ function selectedAgentNode() {
 }
 function renderInspector() {
   const n = selectedAgentNode(); const tabsEl = $('ins-tabs'), body = $('ins-body'), titleEl = $('ins-agent'), chip = $('ins-status'); if (!body) return;
-  if (!n) { titleEl.textContent = iT('ins.selectedAgent', 'SELECTED AGENT'); chip.hidden = true; tabsEl.innerHTML = ''; body.innerHTML = '<div class="sn-empty">' + esc(iT('ins.selectPrompt', 'Select an agent to inspect it.')) + '</div>'; return; }
+  if (!n) { titleEl.textContent = 'SELECTED AGENT'; chip.hidden = true; tabsEl.innerHTML = ''; body.innerHTML = '<div class="sn-empty">Select an agent to inspect it.</div>'; return; }
   const c = agentColor(n.key, n.role); titleEl.textContent = n.key; chip.hidden = false; chip.className = 'st-chip ' + n.status;
   chip.textContent = statusLabel(n.status) + (n._claimMismatch ? ' ⚠' : ''); // Fix 3c: claims-done-but-open-task mismatch, same text convention as ⚠ UNREG
-  tabsEl.innerHTML = INS_TABS.map(([id, lbl]) => '<button role="tab" data-itab="' + id + '" aria-selected="' + (STATE.ui.insTab === id) + '">' + esc(iT('tab.' + id, lbl)) + '</button>').join('');
+  tabsEl.innerHTML = INS_TABS.map(([id, lbl]) => '<button role="tab" data-itab="' + id + '" aria-selected="' + (STATE.ui.insTab === id) + '">' + lbl + '</button>').join('');
   const tab = STATE.ui.insTab; const doneT = n.tasks.filter((t) => t.status === 'done').length; let h = '';
   const head = '<div class="sn-cat"><span class="gl" style="color:' + c.solid + '">' + c.glyph + '</span> ' + esc((n.role || c.label).toUpperCase()) + (n.derived ? '<span class="derived">derived</span>' : '') + '</div>';
   const rtFull = (Forge.runtimeBadge ? Forge.runtimeBadge(n).full : '') || (n.runtime || '—');
@@ -123,11 +121,12 @@ function actTag(e) { const t = e.event_type;
   if (t.indexOf('codex') === 0) return 'codex'; if (t.indexOf('check') === 0) return 'check'; if (t.indexOf('fix') === 0) return 'fix';
   if (t.indexOf('retest') === 0) return 'retest'; if (t.indexOf('quality') === 0) return 'gate'; if (t === 'memory_loaded' || t === 'memory_updated') return 'memory';
   if (t === 'ecc_inventory') return 'ecc'; if (t === 'agent_selected') return 'routing'; if (t === 'agent_work_package_created') return 'work pkg'; if (t === 'agent_artifact_created') return 'artifact'; if (t === 'agent_handoff') return 'handoff';
+  if (t === 'owner_prefs_loaded') return 'prefs'; // WAVE B / B4: the applied-prefs ECHO
   return e.role ? String(e.role).split('/')[0] : 'event'; }
 function actMsg(e) { return e.note || e.output || e.task || e.issue || e.command || e.artifact || (e.files_changed && e.files_changed.map(fileName).join(', ')) || (e.files_read && e.files_read.map(fileName).join(', ')) || e.decision_summary || e.event_type; }
 function renderActivity() {
   const wrap = $('act-feed'); if (!wrap) return; const f = STATE.ui.actFilter;
-  $('act-filters').innerHTML = ACT_FILTERS.map(([id, lbl]) => '<button data-actf="' + id + '" aria-selected="' + (f === id) + '">' + esc(iT('filter.' + id, lbl)) + '</button>').join('');
+  $('act-filters').innerHTML = ACT_FILTERS.map(([id, lbl]) => '<button data-actf="' + id + '" aria-selected="' + (f === id) + '">' + lbl + '</button>').join('');
   const rows = STATE.events.map((e, i) => ({ e, i })).filter((x) => actMatch(x.e, f)).slice(-40).reverse();
   wrap.innerHTML = rows.length ? rows.map(({ e, i }) => { const err = e.event_type === 'check_failed' || e.event_type === 'agent_failed' || e.event_type === 'quality_gate_blocked' || (e.event_type === 'codex_finding' && /critical|high/.test(e.severity || ''));
     return '<div class="act-row ' + (err ? 'err' : '') + '" data-ev="' + i + '"><span class="at">' + esc(hhmmss(e.timestamp)) + '</span><span class="am"><span class="aa">' + esc(e.agent || SYNTH[e.event_type] || 'system') + '</span><span class="atag">' + esc(actTag(e)) + '</span><br>' + esc(trunc(actMsg(e), 52)) + '</span></div>'; }).join('') : '<div class="sn-empty">no activity yet</div>';
@@ -436,12 +435,100 @@ function renderBossAgents() {
   return '<div class="boss-list">' + bosses.map(bossRowHtml).join('') + '</div>';
 }
 
+/* ---------- Capabilities & Enforcement panel (V9-INTEGRATE, 2026-07-22) ----------
+   read-only render of GET /api/capabilities (forge-capabilities.cjs report()) and GET /api/runcontract
+   (forge-runcontract.cjs check() for the currently-viewed run). Pure render: STATE.capabilities/
+   STATE.runcontract are lazy-loaded ONLY when this dock tab opens (see graph.js loadCapabilitiesPanel()
+   call + panels.js loadCapabilitiesPanel() below) — never invented, never polled on the fast tick. Honest
+   "not loaded yet" state until the fetch resolves, honest degraded state when the sibling tool is
+   unavailable (server.cjs returns {ok:false, error, ...}) — never rendered as if it were a clean result. */
+function capRowHtml(c) {
+  const used = c.times_used > 0;
+  const pill = c.status === 'active' ? 'ok' : (c.status === 'dormant' ? 'bad' : 'neutral');
+  const usedText = used ? (c.times_used + 'x' + (c.last_used_run ? ' · last ' + c.last_used_run : '')) : 'never used';
+  return '<div class="cap-row cap-' + pill + '"><span class="cap-kind">' + esc(c.kind) + '</span>'
+    + '<span class="cap-name">' + esc(c.name) + '</span>'
+    + '<span class="cap-pill ' + pill + '">' + esc(c.status) + '</span>'
+    + '<span class="cap-used' + (used ? '' : ' cap-never') + '">' + esc(usedText) + '</span></div>';
+}
+function renderRunContractSection() {
+  const rc = STATE.runcontract;
+  if (!rc) return '<div class="sn-empty">Run contract: not loaded.</div>';
+  if (rc.error) return '<div class="sn-empty">Run contract unavailable: ' + esc(rc.error) + '</div>';
+  const rows = []
+    .concat((rc.satisfied || []).map((id) => '<div class="rc-row rc-ok"><span class="rc-id">' + esc(id) + '</span><span class="rc-pill ok">SATISFIED</span></div>'))
+    .concat((rc.missing || []).map((id) => '<div class="rc-row rc-bad"><span class="rc-id">' + esc(id) + '</span><span class="rc-pill bad">MISSING</span></div>'))
+    .concat((rc.warnings || []).map((id) => '<div class="rc-row rc-warn"><span class="rc-id">' + esc(id) + '</span><span class="rc-pill warn">WARN</span></div>'))
+    .concat((rc.overridden || []).map((o) => '<div class="rc-row rc-over"><span class="rc-id">' + esc(o.id) + '</span><span class="rc-pill over">OVERRIDDEN</span><span class="rc-note">' + esc(o.note) + '</span></div>'));
+  return '<div class="doc-banner ' + (rc.ok ? 'ok' : 'bad') + '">' + (rc.ok ? '✓ CONTRACT OK' : '⚠ NOT DONE') + ' · run ' + esc(rc.run_id || '—') + '</div>'
+    + '<div class="rc-list">' + (rows.length ? rows.join('') : '<div class="sn-empty">no applicable rules</div>') + '</div>';
+}
+function renderCapabilities() {
+  const rep = STATE.capabilities;
+  let out = '<div class="cap-section"><div class="cap-h">Run contract (current run)</div>' + renderRunContractSection() + '</div>';
+  out += '<div class="cap-section"><div class="cap-h">Capabilities inventory</div>';
+  if (!rep) { out += '<div class="sn-empty">Loading capabilities…</div></div>'; return out; }
+  if (rep.error) { out += '<div class="sn-empty">Capabilities unavailable: ' + esc(rep.error) + '</div></div>'; return out; }
+  const s = rep.summary || {};
+  out += '<div class="doc-banner ' + (s.never_used ? 'bad' : 'ok') + '">' + (s.total || 0) + ' total · ' + (s.active || 0) + ' active · '
+    + (s.dormant || 0) + ' dormant · ' + (s.opt_in || 0) + ' opt-in · <b>' + (s.never_used || 0) + ' never used</b></div>';
+  const caps = (rep.capabilities || []).slice().sort((a, b) => (a.times_used > 0) - (b.times_used > 0) || String(a.name).localeCompare(String(b.name)));
+  out += '<div class="cap-list">' + (caps.length ? caps.map(capRowHtml).join('') : '<div class="sn-empty">no capabilities found</div>') + '</div></div>';
+  return out;
+}
+// loadCapabilitiesPanel() — fires the two lazy GETs (fire-and-forget; each independently degrades honestly
+// via server.cjs, never thrown to the caller) and re-renders the dock ONLY if the tab is still active when
+// the response lands (a user who already switched tabs must never see a stale panel flash back).
+async function loadCapabilitiesPanel() {
+  try {
+    const r = await fetch('/api/capabilities', { cache: 'no-store' });
+    STATE.capabilities = await r.json();
+  } catch (e) { STATE.capabilities = { ok: false, error: String(e && e.message || e) }; }
+  const runId = STATE.run && STATE.run.run_id;
+  if (runId) {
+    try {
+      const rr = await fetch('/api/runcontract?run=' + encodeURIComponent(runId), { cache: 'no-store' });
+      STATE.runcontract = await rr.json();
+    } catch (e) { STATE.runcontract = { ok: false, error: String(e && e.message || e) }; }
+  } else {
+    STATE.runcontract = { ok: false, error: 'no active run' };
+  }
+  if (STATE.ui.dockTab === 'capabilities') renderDock();
+}
+
+/* ---------- Stats panel: read-only cross-run analytics from STATS.json (forge-stats.cjs) ---------- */
+// STATE.stats is the raw /api/stats payload (server readStats()). Pure render — never fabricates a number;
+// honest loading/empty/error states. Reuses the existing cost-* + doc-banner classes (no new CSS).
+function renderStats() {
+  const s = STATE.stats;
+  if (!s) return '<div class="sn-empty">Loading cross-run stats…</div>';
+  if (s.ok === false || s.error) return '<div class="sn-empty">' + esc(s.error || 'stats unavailable') + '</div>';
+  const perBoss = s.perBoss || {};
+  const names = Object.keys(perBoss).sort((a, b) => (perBoss[b].dispatched || 0) - (perBoss[a].dispatched || 0) || a.localeCompare(b));
+  if (!names.length) return '<div class="sn-empty">No cross-run stats yet — run forge-stats.cjs after some runs.</div>';
+  const when = s.generated_at ? String(s.generated_at).replace('T', ' ').slice(0, 16) : '';
+  let h = '<div class="cost-wrap"><div class="doc-banner ok">' + (s.runs_scanned || 0) + ' runs scanned · ' + names.length + ' bosses' + (when ? ' · ' + esc(when) : '') + '</div>';
+  h += '<div class="cost-rows">' + names.map((n) => {
+    const b = perBoss[n] || {};
+    const fp = (b.first_pass_rate != null) ? (b.first_pass_rate + '% 1st-pass') : '—';
+    return '<div class="cost-row"><span class="cost-agent">' + esc(n) + '</span>'
+      + '<span class="cost-tok">' + (b.dispatched || 0) + ' disp · ' + (b.completed || 0) + ' done · ' + (b.failed || 0) + ' fail' + (b.rework_received ? ' · ' + b.rework_received + ' rework' : '') + '</span>'
+      + '<span class="cost-usd">' + esc(fp) + '</span></div>';
+  }).join('') + '</div></div>';
+  return h;
+}
+async function loadStatsPanel() {
+  try { const r = await fetch('/api/stats', { cache: 'no-store' }); STATE.stats = await r.json(); }
+  catch (e) { STATE.stats = { ok: false, error: String(e && e.message || e) }; }
+  if (STATE.ui.dockTab === 'stats') renderDock();
+}
+
 /* ---------- bottom dock ---------- */
-const DOCK_TABS = [['log', 'Live Log'], ['files', 'Files Changed'], ['memory', 'Memory Status'], ['report', 'Final Report'], ['preview', 'Preview'], ['board', 'Agent Board'], ['tickets', 'Tickets'], ['prd', 'PRD'], ['vault', 'Vault'], ['gates', 'Gates'], ['trust', 'Proof/Trust'], ['cost', 'Cost'], ['doctor', 'Doctor'], ['bosses', 'Bosses']];
+const DOCK_TABS = [['log', 'Live Log'], ['files', 'Files Changed'], ['memory', 'Memory Status'], ['report', 'Final Report'], ['preview', 'Preview'], ['board', 'Agent Board'], ['tickets', 'Tickets'], ['prd', 'PRD'], ['vault', 'Vault'], ['gates', 'Gates'], ['trust', 'Proof/Trust'], ['cost', 'Cost'], ['doctor', 'Doctor'], ['bosses', 'Bosses'], ['capabilities', 'Capabilities'], ['stats', 'Stats']];
 function logMsg(e) { return e.note || e.output || e.decision_summary || e.summary || e.task || e.issue || (e.files_changed && e.files_changed.length ? e.files_changed.map(fileName).join(', ') : '') || e.command || e.artifact || e.status || ''; }
 function renderDock() {
   const body = $('dock-body'); if (!body) return; const d = STATE.ui.dockTab;
-  $('dock-tabs').innerHTML = DOCK_TABS.map(([id, lbl]) => '<button role="tab" data-dock="' + id + '" aria-selected="' + (d === id) + '">' + esc(iT('dock.' + id, lbl)) + '</button>').join('');
+  $('dock-tabs').innerHTML = DOCK_TABS.map(([id, lbl]) => '<button role="tab" data-dock="' + id + '" aria-selected="' + (d === id) + '">' + lbl + '</button>').join('');
   if (d === 'log') {
     const near = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
     body.innerHTML = STATE.events.length ? '<div class="log">' + STATE.events.map((e, i) => { const t = e.event_type; let cls = ''; if (['check_passed', 'run_completed', 'fix_completed', 'retest_completed', 'quality_gate_passed'].includes(t)) cls = 'pass'; if (['check_failed', 'agent_failed', 'quality_gate_blocked'].includes(t) || (t === 'codex_finding' && /crit|high/.test(e.severity || ''))) cls = 'fail';
@@ -476,6 +563,10 @@ function renderDock() {
     body.innerHTML = renderDoctor();
   } else if (d === 'bosses') {
     body.innerHTML = renderBossAgents();
+  } else if (d === 'capabilities') {
+    body.innerHTML = renderCapabilities();
+  } else if (d === 'stats') {
+    body.innerHTML = renderStats();
   }
 }
 

@@ -31,8 +31,29 @@
  *     listed is invalid).
  *   - tests_run must be a string or an array — "none" is an honest, valid answer.
  *   - next_action must be a non-empty string.
+ *   - result_caveat (OPTIONAL, 2026-08-01) must be a non-empty string WHEN PRESENT. See below.
  *   - Only the LAST ```forge-report fenced block in the text is used (an agent may think out loud with
  *     earlier examples/drafts; the final block is the real contract).
+ *
+ * THE FAILURE SIDE OF THE CONTRACT (2026-08-01). Measured that day: `result_caveat`, `on_stuck` and
+ * `requires_inputs` returned ZERO hits repo-wide. The contract above validated status/work_package/
+ * files_changed/tests_run/evidence/blockers/next_action — seven fields about what WORKED and not one about
+ * the conditions under which the result stops holding, what an agent should do when it gets stuck, or what a
+ * work package needs before it can start at all. Those three gaps are where self-deception lives: a green
+ * test on a conveniently chosen scenario reads identically to a green test on the real one.
+ *
+ *   result_caveat  — "under what circumstances does this result NOT hold". OPTIONAL and validated only when
+ *                    present (an empty or non-string value IS an error — a field that can be filled with
+ *                    whitespace is a rubber stamp). When a COMPLETED report omits it, parseReport returns an
+ *                    honest NOTE rather than an error: making it required would invalidate every report
+ *                    written before today, and a contract that rejects the past teaches people to route
+ *                    around it. Notes are surfaced by the CLI and by any caller that wants them.
+ *   on_stuck       — the DISPATCH side (validateBrief below): one of exactly three agreed behaviours, so
+ *                    "the agent got stuck" has a defined outcome instead of an improvised one.
+ *   requires_inputs— also dispatch side: the artefact/event keys this work package cannot start without.
+ *                    The SCHEMA is checked here (pure, no I/O — the same discipline validateReport follows);
+ *                    resolving those keys against real run state is forge-verify.cjs::checkRequiredInputs,
+ *                    which is the module that already owns "does this claim match the run".
  *   - On ingest, the WHOLE report is redacted with forge-store.cjs's redactValue() before it ever
  *     touches events.jsonl — a secret pasted into evidence/tests_run never reaches disk in the clear.
  *   - On a validation failure, ingest logs NOTHING — the report goes back to the agent, not the dashboard.
@@ -108,23 +129,90 @@ function validateReport(report) {
   if (!nonEmptyString(report.next_action)) {
     errors.push('next_action must be a non-empty string');
   }
+  // result_caveat is OPTIONAL, but a present one must say something. `undefined` passes (see reportNotes);
+  // `""`, `"   "` and a non-string are errors, because a field that accepts whitespace is not a caveat, it is
+  // a checkbox, and a checkbox is exactly what this field exists to not be.
+  if (report.result_caveat !== undefined && !nonEmptyString(report.result_caveat)) {
+    errors.push('result_caveat must be a non-empty string when present — it answers "under what circumstances does this result NOT hold"; omit the field entirely rather than filling it with whitespace');
+  }
   return errors;
 }
 
-/** parseReport(text) -> {ok:true, report} | {ok:false, errors:[...]} */
+/** reportNotes(report) -> [string] — VALID-but-worth-saying observations. Deliberately separate from
+ *  validateReport's errors: a note never makes a report invalid and never blocks an ingest. Today it carries
+ *  exactly one thing — a completed claim with no stated caveat — because that is the case where the report is
+ *  formally perfect and still leaves the most important question unanswered. A blocked/failed report is not
+ *  nagged: its blockers already ARE the statement of what does not hold. */
+function reportNotes(report) {
+  const notes = [];
+  if (!report || typeof report !== 'object') return notes;
+  if (report.status === 'completed' && report.result_caveat === undefined) {
+    notes.push('no result_caveat given: this report claims completed without stating under what circumstances '
+      + 'the result does NOT hold (platform, data, scale, scenario). Not an error — the field is optional — but '
+      + 'a green result whose validity conditions are unwritten is the easiest kind to over-trust.');
+  }
+  return notes;
+}
+
+/** parseReport(text) -> {ok:true, report, notes:[...]} | {ok:false, errors:[...], notes:[]}
+ *  `notes` is additive (2026-08-01) — existing callers reading .ok/.report/.errors are unaffected. */
 function parseReport(text) {
-  if (typeof text !== 'string') return { ok: false, errors: ['input must be a string'] };
+  if (typeof text !== 'string') return { ok: false, errors: ['input must be a string'], notes: [] };
   const blockText = findLastForgeReportBlock(text);
-  if (blockText === null) return { ok: false, errors: ['no ```forge-report fenced block found in text'] };
+  if (blockText === null) return { ok: false, errors: ['no ```forge-report fenced block found in text'], notes: [] };
   let report;
   try {
     report = JSON.parse(blockText);
   } catch (e) {
-    return { ok: false, errors: ['malformed JSON in ```forge-report block: ' + e.message] };
+    return { ok: false, errors: ['malformed JSON in ```forge-report block: ' + e.message], notes: [] };
   }
   const errors = validateReport(report);
-  if (errors.length) return { ok: false, errors };
-  return { ok: true, report };
+  if (errors.length) return { ok: false, errors, notes: reportNotes(report) };
+  return { ok: true, report, notes: reportNotes(report) };
+}
+
+// ---- 2b) the DISPATCH half of the same contract: the work-package brief -------------------------------
+/** BRIEF_ON_STUCK — the only three behaviours a stuck agent may be told to take, and there are exactly three
+ *  on purpose. "Ask" concentrates every question into ONE consolidated interruption instead of a drip feed;
+ *  "stop and report" preserves what was actually tried instead of burning the rest of the budget guessing;
+ *  "flagged best guess" allows progress but forces the assumption to be visible in the result. Anything else
+ *  ("improvise", "figure it out") is not a behaviour, it is the absence of one — which is what a brief with no
+ *  on_stuck field silently means today. */
+const BRIEF_ON_STUCK = ['ask_owner', 'stop_and_report', 'flagged_best_guess'];
+
+/** validateBrief(brief) -> [errors]. PURE — no I/O, exactly like validateReport. Only `work_package` is
+ *  required: on_stuck and requires_inputs are OPTIONAL so that every dispatch written before today stays
+ *  valid, and their absence is surfaced through briefNotes() instead of through a rejection. */
+function validateBrief(brief) {
+  const errors = [];
+  if (brief === null || typeof brief !== 'object' || Array.isArray(brief)) return ['brief must be a JSON object'];
+  if (!nonEmptyString(brief.work_package)) errors.push('work_package must be a non-empty string');
+  if (brief.on_stuck !== undefined && !BRIEF_ON_STUCK.includes(brief.on_stuck)) {
+    errors.push('on_stuck must be one of: ' + BRIEF_ON_STUCK.join(', ') + ' (got ' + JSON.stringify(brief.on_stuck) + ')');
+  }
+  if (brief.requires_inputs !== undefined) {
+    if (!Array.isArray(brief.requires_inputs)) {
+      errors.push('requires_inputs must be an array of input keys (e.g. ["prd.acceptance_criteria", "event.browser_screenshot_captured.screenshot_path"])');
+    } else if (!brief.requires_inputs.every(nonEmptyString)) {
+      errors.push('requires_inputs must contain only non-empty strings — an empty key cannot be resolved against run state and would silently pass');
+    }
+  }
+  return errors;
+}
+
+/** briefNotes(brief) -> [string] — valid-but-worth-saying, same contract as reportNotes(). */
+function briefNotes(brief) {
+  const notes = [];
+  if (!brief || typeof brief !== 'object') return notes;
+  if (brief.on_stuck === undefined) {
+    notes.push('no on_stuck given: this brief does not say what the agent should do when it gets stuck, so the '
+      + 'behaviour is whatever the agent improvises. Allowed values: ' + BRIEF_ON_STUCK.join(', ') + '.');
+  }
+  if (brief.requires_inputs === undefined) {
+    notes.push('no requires_inputs given: nothing will be checked before dispatch, so this work package can be '
+      + 'started against empty input and left to improvise.');
+  }
+  return notes;
 }
 
 // ---- 3) build the ingest events (pure — no I/O; unit-testable without touching events.jsonl) ---
@@ -149,7 +237,12 @@ function buildIngestEvents(report, agent) {
   ];
 }
 
-module.exports = { parseReport, validateReport, buildIngestEvents, findLastForgeReportBlock, summarizeReport, REQUIRED_STATUSES };
+module.exports = {
+  parseReport, validateReport, buildIngestEvents, findLastForgeReportBlock, summarizeReport, REQUIRED_STATUSES,
+  // 2026-08-01 — the failure side of the same contract (see the file header): the report's validity
+  // conditions, and the dispatch brief's stuck-behaviour + required inputs.
+  reportNotes, validateBrief, briefNotes, BRIEF_ON_STUCK,
+};
 
 // ---- CLI -----------------------------------------------------------------------------------------
 function readInput(fileArg) {
@@ -170,6 +263,8 @@ if (require.main === module) {
       const result = parseReport(text);
       if (result.ok) {
         console.log('VALID — ' + result.report.work_package + ' (' + result.report.status + ')');
+        // notes never change the exit code — they are what a valid report still leaves unsaid
+        (result.notes || []).forEach((n) => console.log('  note: ' + n));
         process.exitCode = 0;
       } else {
         console.error('INVALID:');

@@ -1,0 +1,315 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * forge-genesis.cjs — Forge GENESIS: staged, approval-gated self-authoring (2026-07-19, PIECE J1).
+ * When Forge hits a real capability gap during a run (no existing skill/agent covers a need it just hit),
+ * it can PROPOSE a new skill — but a proposal is always a DRAFT written to a staging directory, never a
+ * live capability. Nothing in this file ever writes into the live `.claude/skills/` directory except
+ * approve(), and approve() ONLY runs when the caller supplies an explicit, non-empty `opts.ownerApproval`
+ * token. This is the safety core the task brief calls out: a self-modifying agent that writes its own
+ * capabilities is dangerous if unchecked, so the write/approve boundary is a hard, mechanical gate, not a
+ * convention a caller could accidentally skip.
+ *
+ * MODEL:
+ *   proposeSkill({ gap, evidence, evidencePath, name }, opts) -> { ok, staged, name, dir, skillPath, reason }
+ *     - `gap` (required, non-empty string) — the capability gap in plain language.
+ *     - `evidence` (string) OR `evidencePath` (a file Forge reads real evidence from) — REQUIRED. A
+ *       proposal with no real evidence is REJECTED before anything is written (honesty: no inventing a
+ *       gap). `evidence` wins if both are supplied.
+ *     - Writes `.claude/forge-genesis-staging/<name>/SKILL.md` (draft, "status: PROPOSED" banner + a
+ *       required-evidence block quoting the real evidence + a test stub) and a sibling `proposal.json`
+ *       metadata record. NEVER touches `.claude/skills/` and NEVER marks anything active.
+ *     - Refuses (does not throw) to silently overwrite an existing staged proposal of the same name unless
+ *       `opts.overwrite === true`.
+ *
+ *   approve({ name }, opts) -> { ok, promoted, name, destPath, reason }
+ *     - The ONLY path that promotes a staged draft into the live `.claude/skills/<name>/SKILL.md`.
+ *     - Requires `opts.ownerApproval` to be an explicit, non-empty string token. Missing/empty/falsy ->
+ *       refused, nothing promoted, nothing written to the live skills dir.
+ *     - On success, records the approval (timestamp, optional `opts.approver`, and a hash of the token —
+ *       never the raw token itself) into the staged proposal's `proposal.json` AND into an append-only
+ *       `.claude/forge-genesis-staging/_approvals.jsonl` audit log.
+ *
+ *   list(opts) -> { proposals: [{ name, gap, status, proposedAt, approvedAt|null }, ...] }
+ *     - Reads every staged proposal's `proposal.json`. Read-only.
+ *
+ * CLI:
+ *   node forge-genesis.cjs propose --gap "<x>" --evidence <file> [--name <slug>] [--json]
+ *   node forge-genesis.cjs list [--json]
+ *   node forge-genesis.cjs approve <name> --owner-approval <token> [--approver <who>] [--json]
+ * Exit codes: 0 = success · 2 = usage/config error · 3 = refused (no evidence / no approval token / unknown
+ * proposal) — mirrors forge-actiongate.cjs's 0/2/3 convention so a caller scripting Forge tools already
+ * knows what a "3" means: something was correctly BLOCKED, not a crash.
+ *
+ * FORGE_PROJECT_ROOT overrides the project root (same convention as forge-memory.cjs/forge-recall.cjs).
+ * Zero-dependency: fs/path/crypto only.
+ */
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PROJECT_ROOT = process.env.FORGE_PROJECT_ROOT ? path.resolve(process.env.FORGE_PROJECT_ROOT) : path.resolve(__dirname, '..', '..');
+
+function slugify(s) {
+  return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'skill';
+}
+function hashToken(token) { return crypto.createHash('sha256').update(String(token)).digest('hex').slice(0, 16); }
+function nowISO(opts) { return opts && opts.now ? new Date(opts.now).toISOString() : new Date().toISOString(); }
+
+function stagingDirFor(root, opts) { return (opts && opts.stagingDir) || path.join(root, '.claude', 'forge-genesis-staging'); }
+function skillsDirFor(root, opts) { return (opts && opts.skillsDir) || path.join(root, '.claude', 'skills'); }
+
+/** buildDraftSkillMd — the staged draft's content. Every field written here is either a literal safety
+ *  banner or a value the caller actually supplied (gap/evidence) — nothing about the proposed skill's
+ *  purpose/scope is invented; those sections are left as explicit TODOs for the human reviewer. */
+function buildDraftSkillMd(fields) {
+  const { name, gap, evidenceText, evidenceSource, proposedAt } = fields;
+  return [
+    '---',
+    'name: ' + name,
+    'description: PROPOSED (staged, not active) — ' + gap.slice(0, 140).replace(/\n/g, ' '),
+    'status: PROPOSED — requires owner approval via /forge approve-skill',
+    'proposed_at: ' + proposedAt,
+    '---',
+    '',
+    '# ' + name + ' (STAGED PROPOSAL — NOT ACTIVE)',
+    '',
+    '**status: PROPOSED — requires owner approval via /forge approve-skill**',
+    '',
+    'This draft was generated by `forge-genesis.cjs` because Forge hit a real capability gap during a run.',
+    'It is a DRAFT ONLY — it is not registered, not loaded, and not active. Nothing in Forge auto-promotes',
+    'this file. The ONLY way this becomes a live skill is an explicit owner action:',
+    '`forge-genesis approve ' + name + ' --owner-approval <token>` (or `/forge approve-skill ' + name + '`),',
+    'which requires a human-supplied approval token — there is no default/implicit token.',
+    '',
+    '## Capability gap',
+    gap,
+    '',
+    '## Required evidence (why this gap is real)',
+    '> A proposal with no real evidence is rejected before it is even staged — this section is never empty.',
+    '',
+    evidenceText,
+    '',
+    'Evidence source: ' + (evidenceSource || 'inline (supplied directly to proposeSkill)'),
+    '',
+    '## Proposed purpose',
+    '<TODO — fill in during owner review: what capability this would add>',
+    '',
+    '## Proposed scope',
+    '<TODO — when to use / when NOT to use, and which existing skill(s) it does NOT duplicate>',
+    '',
+    '## Test stub (must be replaced with real assertions before this proposal is trusted)',
+    '```js',
+    '// ' + name + '.test.cjs — TODO: replace with real, evidence-backed assertions.',
+    '// A staged draft\'s test stub is NOT executed automatically and proves nothing on its own.',
+    'const assert = require(\'assert\');',
+    'function t(label, fn) { try { fn(); console.log(\'  ok   \' + label); } catch (e) { console.log(\'  FAIL \' + label + \' — \' + e.message); process.exitCode = 1; } }',
+    't(\'TODO: replace with a real assertion for the proposed capability\', () => {',
+    '  assert.ok(false, \'test stub not yet implemented — fill in before trusting this skill\');',
+    '});',
+    '```',
+    '',
+    '## Approval record',
+    '_not yet approved_',
+    '',
+  ].join('\n');
+}
+
+/** proposeSkill — see file header MODEL. Pure filesystem write to the STAGING dir only; never touches the
+ *  live skills dir. Returns a result object rather than throwing so a caller (CLI/skill) can report a
+ *  refusal cleanly without a stack trace. */
+function proposeSkill(params, opts) {
+  params = params || {}; opts = opts || {};
+  const root = opts.root || PROJECT_ROOT;
+  const gap = params.gap != null ? String(params.gap).trim() : '';
+  if (!gap) return { ok: false, staged: false, reason: 'no gap description supplied — refusing to invent a capability gap' };
+
+  let evidenceText = '';
+  let evidenceSource = null;
+  if (params.evidence != null && String(params.evidence).trim()) {
+    evidenceText = String(params.evidence).trim();
+    evidenceSource = 'inline';
+  } else if (params.evidencePath) {
+    evidenceSource = params.evidencePath;
+    try { evidenceText = fs.readFileSync(params.evidencePath, 'utf8').trim(); }
+    catch (e) { return { ok: false, staged: false, reason: 'evidencePath could not be read: ' + e.message }; }
+  }
+  if (!evidenceText) {
+    return { ok: false, staged: false, reason: 'no real evidence supplied — a proposal with no evidence is rejected (honesty: no inventing a gap)' };
+  }
+
+  const name = slugify(params.name || gap);
+  const staging = stagingDirFor(root, opts);
+  const dir = path.join(staging, name);
+  if (fs.existsSync(path.join(dir, 'SKILL.md')) && opts.overwrite !== true) {
+    return { ok: false, staged: false, reason: 'a proposal named "' + name + '" is already staged — pass opts.overwrite to replace it, or approve/reject the existing one first' };
+  }
+
+  const proposedAt = nowISO(opts);
+  fs.mkdirSync(dir, { recursive: true });
+  const skillMd = buildDraftSkillMd({ name, gap, evidenceText, evidenceSource, proposedAt });
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), skillMd, 'utf8');
+  const meta = {
+    name, gap,
+    evidence: evidenceText.slice(0, 4000),
+    evidenceSource,
+    status: 'PROPOSED',
+    proposedAt,
+    approvedAt: null,
+    approver: null,
+  };
+  fs.writeFileSync(path.join(dir, 'proposal.json'), JSON.stringify(meta, null, 2), 'utf8');
+
+  return { ok: true, staged: true, name, dir, skillPath: path.join(dir, 'SKILL.md') };
+}
+
+/** promoteContent — deterministic string transform of the draft SKILL.md we ourselves authored (fixed
+ *  markers from buildDraftSkillMd) into a promoted/active version. Never invents new claims about the
+ *  skill's purpose; only updates the status banner and appends a real approval record. */
+function promoteContent(content, record) {
+  let out = content.replace(
+    'status: PROPOSED — requires owner approval via /forge approve-skill',
+    'status: active (promoted from staged proposal on ' + record.approvedAt + ')'
+  );
+  out = out.replace(
+    '(STAGED PROPOSAL — NOT ACTIVE)',
+    '(promoted ' + record.approvedAt + ')'
+  );
+  out = out.replace(
+    '**status: PROPOSED — requires owner approval via /forge approve-skill**',
+    '**status: active — promoted from a staged forge-genesis proposal on ' + record.approvedAt + '**'
+  );
+  out = out.replace(
+    '_not yet approved_',
+    'Approved ' + record.approvedAt + (record.approver ? ' by ' + record.approver : ' (approver not recorded)') + '. Approval token hash: ' + record.tokenHash + '.'
+  );
+  return out;
+}
+
+/** approve — see file header MODEL. THE ONLY function in this file that writes into the live skills dir,
+ *  and only when opts.ownerApproval is an explicit, non-empty string. This check runs BEFORE any staged
+ *  content is even read, so a missing/blank token can never reach the promotion path. */
+function approve(params, opts) {
+  params = params || {}; opts = opts || {};
+  const root = opts.root || PROJECT_ROOT;
+  const name = slugify(params.name || '');
+  if (!name || name === 'skill') return { ok: false, promoted: false, reason: 'a proposal name is required' };
+
+  const token = opts.ownerApproval;
+  if (typeof token !== 'string' || !token.trim()) {
+    return { ok: false, promoted: false, reason: 'approve() refused: opts.ownerApproval must be an explicit, non-empty token — nothing is ever auto-promoted' };
+  }
+
+  const staging = stagingDirFor(root, opts);
+  const srcDir = path.join(staging, name);
+  const srcSkill = path.join(srcDir, 'SKILL.md');
+  if (!fs.existsSync(srcSkill)) return { ok: false, promoted: false, reason: 'no staged proposal named "' + name + '"' };
+
+  const metaPath = path.join(srcDir, 'proposal.json');
+  let meta = {};
+  try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch { meta = { name }; }
+
+  const approvedAt = nowISO(opts);
+  const record = { approvedAt, approver: opts.approver || null, tokenHash: hashToken(token) };
+
+  const draftContent = fs.readFileSync(srcSkill, 'utf8');
+  const promoted = promoteContent(draftContent, record);
+
+  const skillsDir = skillsDirFor(root, opts);
+  const destDir = path.join(skillsDir, name);
+  fs.mkdirSync(destDir, { recursive: true });
+  fs.writeFileSync(path.join(destDir, 'SKILL.md'), promoted, 'utf8');
+
+  meta.status = 'APPROVED';
+  meta.approvedAt = approvedAt;
+  meta.approver = record.approver;
+  meta.approvalTokenHash = record.tokenHash;
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+
+  const approvalsLog = path.join(staging, '_approvals.jsonl');
+  fs.appendFileSync(approvalsLog, JSON.stringify({ name, approvedAt, approver: record.approver, tokenHash: record.tokenHash, destPath: path.relative(root, destDir) }) + '\n', 'utf8');
+
+  return { ok: true, promoted: true, name, destPath: destDir };
+}
+
+/** list — read-only summary of every staged proposal. Never touches the live skills dir. */
+function list(opts) {
+  opts = opts || {};
+  const root = opts.root || PROJECT_ROOT;
+  const staging = stagingDirFor(root, opts);
+  let entries = [];
+  try { entries = fs.readdirSync(staging, { withFileTypes: true }); } catch { return { proposals: [] }; }
+  const proposals = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const metaPath = path.join(staging, e.name, 'proposal.json');
+    let meta;
+    try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch { continue; }
+    proposals.push({ name: meta.name || e.name, gap: meta.gap || '', status: meta.status || 'PROPOSED', proposedAt: meta.proposedAt || null, approvedAt: meta.approvedAt || null });
+  }
+  proposals.sort((a, b) => String(a.proposedAt).localeCompare(String(b.proposedAt)));
+  return { proposals };
+}
+
+module.exports = { proposeSkill, approve, list, slugify, hashToken, buildDraftSkillMd, promoteContent, stagingDirFor, skillsDirFor };
+
+// ---- CLI ----
+function parseArgs(argv) {
+  const cmd = argv[0] || null;
+  const rest = argv.slice(1);
+  const opts = { cmd, gap: null, evidence: null, name: null, ownerApproval: null, approver: null, json: false, positional: [] };
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === '--gap') opts.gap = rest[++i];
+    else if (a === '--evidence') opts.evidence = rest[++i];
+    else if (a === '--name') opts.name = rest[++i];
+    else if (a === '--owner-approval') opts.ownerApproval = rest[++i];
+    else if (a === '--approver') opts.approver = rest[++i];
+    else if (a === '--json') opts.json = true;
+    else opts.positional.push(a);
+  }
+  return opts;
+}
+function printUsage() {
+  console.error('Usage: node forge-genesis.cjs propose --gap "<x>" --evidence <file> [--name <slug>] [--json]');
+  console.error('       node forge-genesis.cjs list [--json]');
+  console.error('       node forge-genesis.cjs approve <name> --owner-approval <token> [--approver <who>] [--json]');
+}
+
+if (require.main === module) {
+  const cli = parseArgs(process.argv.slice(2));
+  try {
+    if (cli.cmd === 'propose') {
+      if (!cli.gap || !cli.evidence) { printUsage(); process.exitCode = 2; }
+      else {
+        const result = proposeSkill({ gap: cli.gap, evidencePath: cli.evidence, name: cli.name }, {});
+        if (cli.json) console.log(JSON.stringify(result));
+        else if (result.ok) console.log('staged proposal "' + result.name + '" -> ' + result.skillPath);
+        else console.log('REFUSED: ' + result.reason);
+        process.exitCode = result.ok ? 0 : 3;
+      }
+    } else if (cli.cmd === 'list') {
+      const result = list({});
+      if (cli.json) console.log(JSON.stringify(result));
+      else if (!result.proposals.length) console.log('no staged proposals');
+      else for (const p of result.proposals) console.log(p.name + '\t[' + p.status + ']\t' + p.gap.slice(0, 80));
+      process.exitCode = 0;
+    } else if (cli.cmd === 'approve') {
+      const name = cli.positional[0];
+      if (!name || !cli.ownerApproval) { printUsage(); process.exitCode = 2; }
+      else {
+        const result = approve({ name }, { ownerApproval: cli.ownerApproval, approver: cli.approver });
+        if (cli.json) console.log(JSON.stringify(result));
+        else if (result.ok) console.log('promoted "' + result.name + '" -> ' + result.destPath);
+        else console.log('REFUSED: ' + result.reason);
+        process.exitCode = result.ok ? 0 : 3;
+      }
+    } else {
+      printUsage();
+      process.exitCode = 2;
+    }
+  } catch (e) {
+    console.error('forge-genesis: ' + e.message);
+    process.exitCode = 2;
+  }
+}

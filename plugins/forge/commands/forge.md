@@ -17,22 +17,18 @@ Run Forge for: **$ARGUMENTS**. Load the **`forge-core`** skill for behavior + ru
 - **ECC Full Test Mode** (broad inventory / unblock-diagnose / permission test) is **opt-in only** — `enable ECC test mode for this project`. Default OFF.
 - **Deliver** an honest report (what changed · ECC attempted/used vs native fallback + reason · checks actually run · not run · next step).
 
-If you want the **full** Forge V2 installed into this project, say: **`install Forge V2 into this project`** — the `forge-core` skill scans the project, writes project memory (`FORGE_PROJECT_PROFILE.md` + `FORGE_MEMORY.md` + role map), installs the router + domain playbooks (website, full-stack, n8n, scraping, RAG, prediction, integration), and the local **Forge Control Center** dashboard (`.claude/forge-dashboard/`). Project-local only, no security hooks.
+**v8 default behavior (every project with the local install — see the `forge-core` "v8" section):**
+- **Owner memory first:** read the owner profile + standing rules and echo which were auto-applied (`forge-prefs`/`forge-standing`/`forge-echo`) — never-auto-push, language, real-file-testing, UI-quality, draft-only outreach, etc. `/forge remember <text>` makes a rule stick.
+- **Autonomy `continue-within-mission`** by default (no phase re-asking); hard-gates (deploy/push/spend/DNS/prod/credentials/outbound/outside-root) + usage-limit ALWAYS interrupt (`forge-actiongate`).
+- **Evidence gates:** web ⇒ real responsive screenshots + the auto web-quality contract, correctness-critical ⇒ real fixtures — or the run is not "done".
+- **Learns across projects:** recalls the global lesson namespace before dispatch; `/forge learn` harvests your other projects' Forge memory (read-only, secrets-excluded, evidenced-only).
+- **`/forge resume <run_id>`** re-dispatches only the unfinished work packages after a session/usage-limit interruption.
+- **Stay current:** on `/forge`, if this project's Forge is behind the canonical template it is brought current via the safe `forge-sync install` (backup + doctor-validate + rollback; only ever touches `.claude/`, never your app code).
+
+**v8.1 (all opt-in / owner-gated — see forge-core "v8.1"):** external **MCP tools** via `forge-mcp-clients` are dormant + least-privilege (4 tiers; every write-tool is hard-gated); **moonshots** — `forge-genesis` (self-proposed skills, staged + `/forge approve-skill` token-gated), `forge-tournament` (best-of-N), `forge-secondbrain` (read-only portfolio strategist), `forge-codemodel` (living repo index), `forge-nightshift` (opt-in overnight builder + morning briefing), `forge-guardian` (owner-gated prod self-heal scaffold). None run or self-act without your explicit opt-in.
+
+If you want the **full** Forge V2 installed into this project, say: **`install Forge V2 into this project`** — the `forge-core` skill scans the project, writes project memory (`FORGE_PROJECT_PROFILE.md` + `FORGE_MEMORY.md` + role map), installs the router + domain playbooks (website, full-stack, n8n, scraping, RAG, prediction, integration), and the per-project run-event writer (`.claude/forge-dashboard/log-event.cjs`) that the Command Center reads. Project-local only, no security hooks.
 
 After install, project-local sub-commands work: `/forge dashboard` / `/forge start` (start THIS project's dashboard + health-check + report the real URL), `/forge use`, `/forge status`, `/forge runs`, `/forge open-report`. Natural language also triggers Forge: **"use Forge system"**, **"gebruik Forge systeem"**, **"start Forge dashboard"**.
 
-Each project gets its **own** dashboard on its **own** stable port (3737–3999, from the project path; stored in `.claude/forge-dashboard/PORT`). Never a shared/global dashboard; never read another project's `.claude/`. Never claim the dashboard is running unless a `/api/health` check passed — otherwise print the exact command + URL.
-
-<!-- forge-onboarding-i18n-v1 -->
-## First run — onboarding gate (optional, never a hard block)
-Before executing a Forge task, check whether this project is onboarded:
-`node .claude/forge-bin/forge-setup.cjs status --json` (or the presence of `.claude/.forge-setup.json`).
-If it is NOT onboarded, briefly offer to run **/setup-forge** first — it captures the user's name, goal,
-project type, **language**, and does beginner-safe API-key setup. If the user declines or it's a quick task,
-proceed anyway: onboarding is optional and must never block work.
-
-## Language — internationalization (required)
-Forge is international. Determine the user's language with `node .claude/forge-bin/forge-setup.cjs lang`
-(falls back to `en`). **Respond to the user, write the final forge-report, and run any wizard IN THAT
-LANGUAGE.** Default to English when unset. The dashboard has its own language toggle. Never fabricate a
-translation of a proper noun/command; keep commands/paths verbatim.
+**The dashboard is the Forge Command Center** — one local app on `http://127.0.0.1:4100` that auto-discovers your projects and shows strictly per-project data. `/forge dashboard` starts it when this project hosts it (`node command-center/gateway/supervisor.mjs`), or simply health-checks the running instance, which already covers this project. The per-project **Control Center** (ports 3737–3999, `.claude/forge-dashboard/server.cjs`) is **retired**: it never starts automatically and only runs on an explicit `legacy dashboard` request — but its `log-event.cjs` stays in service as the per-project run-event writer. Never read another project's `.claude/`. **Never claim the dashboard is running unless a `GET /api/health` check actually passed** — otherwise print the exact command + URL.

@@ -34,7 +34,7 @@ function mkProject(name, opts) {
 }
 
 // two clean projects + one with a malformed run.json (must not crash; defaults apply)
-const FAKE_SECRET = '\x6Evapi-FAKEFAKEFAKEFAKE1234567890';
+const FAKE_SECRET = 'nvapi-FAKEFAKEFAKEFAKE1234567890';
 mkProject('alpha', { port: 3801, state: { project_name: 'alpha', status: 'ready', latest_run_id: 'run-1' } });
 mkProject('beta', { port: 3802, state: { project_name: 'beta ' + FAKE_SECRET, status: 'ready', latest_run_id: 'run-1' } });
 const gammaDir = mkProject('gamma', { port: 3803, runJson: '{ this is not valid json ', state: { project_name: 'gamma', status: 'ready' } });

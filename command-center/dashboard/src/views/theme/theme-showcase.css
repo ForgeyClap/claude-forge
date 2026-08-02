@@ -1,0 +1,830 @@
+/*
+ * Theme showcase.
+ *
+ * Every specimen on this page is drawn with the token it names — there is not a
+ * single literal colour, size or shadow value in this file. If a rule below
+ * stops matching brand/tokens.json, the page changes with it.
+ */
+
+/*
+ * The root fills its parent when the shell gives it a definite height and
+ * simply grows when it does not. Nothing here may scroll the page sideways —
+ * the wide specimens wrap or carry their own overflow container.
+ */
+.fw-theme {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ head */
+
+.fw-theme__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  flex: none;
+  padding: var(--fw-gutter) var(--fw-gutter) var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-theme__headings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-theme__title {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-theme__lede {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-theme__toolbar {
+  padding-inline: 0;
+  flex-wrap: wrap;
+  row-gap: var(--forge-space-2);
+}
+
+/* ------------------------------------------------------------------ body */
+
+.fw-theme__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding: var(--fw-gutter);
+}
+
+.fw-theme__sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-section-gap);
+  max-inline-size: 72rem;
+  min-inline-size: 0;
+}
+
+.fw-theme__caption {
+  margin-block-start: var(--forge-space-4);
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+/* -------------------------------------------------------------- surfaces */
+
+.fw-theme__swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__swatch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-theme__swatch-chip {
+  block-size: var(--forge-space-12);
+  margin-block-end: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  box-shadow: var(--forge-shadow-inset);
+}
+
+.fw-theme__swatch-chip[data-surface='canvas'] {
+  background: var(--forge-color-canvas);
+}
+.fw-theme__swatch-chip[data-surface='bg'] {
+  background: var(--forge-color-bg);
+}
+.fw-theme__swatch-chip[data-surface='surface-1'] {
+  background: var(--forge-color-surface-1);
+}
+.fw-theme__swatch-chip[data-surface='surface-2'] {
+  background: var(--forge-color-surface-2);
+}
+.fw-theme__swatch-chip[data-surface='surface-3'] {
+  background: var(--forge-color-surface-3);
+}
+.fw-theme__swatch-chip[data-surface='raised'] {
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-md);
+}
+.fw-theme__swatch-chip[data-surface='sunken'] {
+  background: var(--forge-color-sunken);
+}
+
+.fw-theme__swatch-key {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__swatch-token {
+  font-size: var(--forge-text-2xs);
+}
+
+/* ----------------------------------------------------------------- lines */
+
+.fw-theme__lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__line-row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-theme__line-key {
+  flex: none;
+  inline-size: 7rem;
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__line-rule {
+  flex: 1 1 auto;
+  min-inline-size: var(--forge-space-8);
+  block-size: var(--forge-space-1);
+  border-radius: var(--forge-radius-full);
+}
+
+.fw-theme__line-rule[data-line='line-subtle'] {
+  background: var(--forge-color-line-subtle);
+}
+.fw-theme__line-rule[data-line='line'] {
+  background: var(--forge-color-line);
+}
+.fw-theme__line-rule[data-line='line-strong'] {
+  background: var(--forge-color-line-strong);
+}
+.fw-theme__line-rule[data-line='line-loud'] {
+  background: var(--forge-color-line-loud);
+}
+
+/* ------------------------------------------------------------------ text */
+
+.fw-theme__texts,
+.fw-theme__scale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__text-row,
+.fw-theme__scale-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--forge-space-4);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-theme__text-row + .fw-theme__text-row,
+.fw-theme__scale-row + .fw-theme__scale-row {
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-theme__text-sample {
+  min-inline-size: 0;
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-theme__text-sample[data-text='text'] {
+  color: var(--forge-color-text);
+}
+.fw-theme__text-sample[data-text='text-secondary'] {
+  color: var(--forge-color-text-secondary);
+}
+.fw-theme__text-sample[data-text='text-muted'] {
+  color: var(--forge-color-text-muted);
+}
+.fw-theme__text-sample[data-text='text-faint'] {
+  color: var(--forge-color-text-faint);
+}
+.fw-theme__text-sample[data-text='text-on-accent'] {
+  padding: var(--forge-space-1) var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-accent);
+  color: var(--forge-color-text-on-accent);
+}
+.fw-theme__text-sample[data-text='text-inverse'] {
+  padding: var(--forge-space-1) var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-text);
+  color: var(--forge-color-text-inverse);
+}
+
+.fw-theme__scale-sample {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+.fw-theme__scale-token {
+  flex: none;
+}
+
+.fw-theme__scale-sample[data-size='4xl'] {
+  font-size: var(--forge-text-4xl);
+}
+.fw-theme__scale-sample[data-size='3xl'] {
+  font-size: var(--forge-text-3xl);
+}
+.fw-theme__scale-sample[data-size='2xl'] {
+  font-size: var(--forge-text-2xl);
+}
+.fw-theme__scale-sample[data-size='xl'] {
+  font-size: var(--forge-text-xl);
+}
+.fw-theme__scale-sample[data-size='lg'] {
+  font-size: var(--forge-text-lg);
+}
+.fw-theme__scale-sample[data-size='md'] {
+  font-size: var(--forge-text-md);
+}
+.fw-theme__scale-sample[data-size='base'] {
+  font-size: var(--forge-text-base);
+}
+.fw-theme__scale-sample[data-size='sm'] {
+  font-size: var(--forge-text-sm);
+}
+.fw-theme__scale-sample[data-size='xs'] {
+  font-size: var(--forge-text-xs);
+}
+.fw-theme__scale-sample[data-size='2xs'] {
+  font-size: var(--forge-text-2xs);
+}
+
+/* ---------------------------------------------------------------- status */
+
+.fw-theme__statuses {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--fw-gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  block-size: 100%;
+  padding: var(--forge-space-3);
+  border: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-2);
+  min-inline-size: 0;
+}
+
+.fw-theme__status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-theme__status-desc {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-theme__status-rule {
+  display: block;
+  inline-size: 100%;
+  border-block-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-color);
+}
+
+.fw-theme__status-tokens {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--forge-text-2xs);
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- groups */
+
+.fw-theme__groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__group {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--fw-group-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--fw-group-soft);
+  min-inline-size: 0;
+}
+
+.fw-theme__group[data-group='control'] {
+  --fw-group: var(--forge-group-control);
+  --fw-group-soft: var(--forge-group-control-soft);
+  --fw-group-line: var(--forge-group-control-line);
+}
+.fw-theme__group[data-group='context'] {
+  --fw-group: var(--forge-group-context);
+  --fw-group-soft: var(--forge-group-context-soft);
+  --fw-group-line: var(--forge-group-context-line);
+}
+.fw-theme__group[data-group='planning'] {
+  --fw-group: var(--forge-group-planning);
+  --fw-group-soft: var(--forge-group-planning-soft);
+  --fw-group-line: var(--forge-group-planning-line);
+}
+.fw-theme__group[data-group='domain'] {
+  --fw-group: var(--forge-group-domain);
+  --fw-group-soft: var(--forge-group-domain-soft);
+  --fw-group-line: var(--forge-group-domain-line);
+}
+.fw-theme__group[data-group='execution'] {
+  --fw-group: var(--forge-group-execution);
+  --fw-group-soft: var(--forge-group-execution-soft);
+  --fw-group-line: var(--forge-group-execution-line);
+}
+.fw-theme__group[data-group='review'] {
+  --fw-group: var(--forge-group-review);
+  --fw-group-soft: var(--forge-group-review-soft);
+  --fw-group-line: var(--forge-group-review-line);
+}
+.fw-theme__group[data-group='memory'] {
+  --fw-group: var(--forge-group-memory);
+  --fw-group-soft: var(--forge-group-memory-soft);
+  --fw-group-line: var(--forge-group-memory-line);
+}
+
+.fw-theme__group-bar {
+  flex: none;
+  inline-size: var(--forge-space-10);
+  block-size: var(--forge-space-4);
+  border-radius: var(--forge-radius-sm);
+  background: var(--fw-group);
+}
+
+.fw-theme__group-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-theme__group-name {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-theme__group-soft {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* -------------------------------------------------------------- controls */
+
+.fw-theme__controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__control-row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-theme__control-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-inline-size: 7rem;
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-theme__control-box[data-control='xs'] {
+  block-size: var(--forge-control-xs);
+}
+.fw-theme__control-box[data-control='sm'] {
+  block-size: var(--forge-control-sm);
+}
+.fw-theme__control-box[data-control='md'] {
+  block-size: var(--forge-control-md);
+}
+.fw-theme__control-box[data-control='lg'] {
+  block-size: var(--forge-control-lg);
+}
+.fw-theme__control-box[data-control='xl'] {
+  block-size: var(--forge-control-xl);
+}
+
+.fw-theme__control-key {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__control-demo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-theme__meters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  margin-block-start: var(--forge-space-5);
+  max-inline-size: 28rem;
+}
+
+/* ----------------------------------------------------------------- icons */
+
+.fw-theme__icons {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--forge-space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__icon-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--forge-space-1);
+}
+
+.fw-theme__icon-frame {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--forge-control-xl);
+  block-size: var(--forge-control-xl);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__icon-key {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__icon-token {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-theme__stroke-demo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-6);
+  margin-block-start: var(--forge-space-5);
+}
+
+.fw-theme__stroke-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  color: var(--forge-color-text-secondary);
+}
+
+/* ----------------------------------------------------------------- radii */
+
+.fw-theme__radii,
+.fw-theme__shadows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__radius,
+.fw-theme__shadow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+}
+
+.fw-theme__radius-box {
+  inline-size: var(--forge-space-12);
+  block-size: var(--forge-space-12);
+  margin-block-end: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  background: var(--forge-color-surface-3);
+}
+
+.fw-theme__radius-box[data-radius='xs'] {
+  border-radius: var(--forge-radius-xs);
+}
+.fw-theme__radius-box[data-radius='sm'] {
+  border-radius: var(--forge-radius-sm);
+}
+.fw-theme__radius-box[data-radius='md'] {
+  border-radius: var(--forge-radius-md);
+}
+.fw-theme__radius-box[data-radius='lg'] {
+  border-radius: var(--forge-radius-lg);
+}
+.fw-theme__radius-box[data-radius='xl'] {
+  border-radius: var(--forge-radius-xl);
+}
+.fw-theme__radius-box[data-radius='2xl'] {
+  border-radius: var(--forge-radius-2xl);
+}
+.fw-theme__radius-box[data-radius='full'] {
+  border-radius: var(--forge-radius-full);
+}
+
+.fw-theme__radius-key,
+.fw-theme__shadow-key {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__radius-token,
+.fw-theme__shadow-token {
+  font-size: var(--forge-text-2xs);
+}
+
+/* --------------------------------------------------------------- shadows */
+
+.fw-theme__shadow-box {
+  inline-size: var(--forge-space-16);
+  block-size: var(--forge-space-12);
+  margin-block-end: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-theme__shadow-box[data-shadow='sm'] {
+  box-shadow: var(--forge-shadow-sm);
+}
+.fw-theme__shadow-box[data-shadow='md'] {
+  box-shadow: var(--forge-shadow-md);
+}
+.fw-theme__shadow-box[data-shadow='lg'] {
+  box-shadow: var(--forge-shadow-lg);
+}
+.fw-theme__shadow-box[data-shadow='inset'] {
+  box-shadow: var(--forge-shadow-inset);
+}
+
+/* --------------------------------------------------------------- spacing */
+
+.fw-theme__spaces {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__space-row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-theme__space-key {
+  flex: none;
+  inline-size: var(--forge-space-8);
+  font-size: var(--forge-text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__space-bar {
+  flex: none;
+  block-size: var(--forge-space-2);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-text-faint);
+}
+
+.fw-theme__space-bar[data-space='px'] {
+  inline-size: var(--forge-space-px);
+}
+.fw-theme__space-bar[data-space='1'] {
+  inline-size: var(--forge-space-1);
+}
+.fw-theme__space-bar[data-space='2'] {
+  inline-size: var(--forge-space-2);
+}
+.fw-theme__space-bar[data-space='3'] {
+  inline-size: var(--forge-space-3);
+}
+.fw-theme__space-bar[data-space='4'] {
+  inline-size: var(--forge-space-4);
+}
+.fw-theme__space-bar[data-space='5'] {
+  inline-size: var(--forge-space-5);
+}
+.fw-theme__space-bar[data-space='6'] {
+  inline-size: var(--forge-space-6);
+}
+.fw-theme__space-bar[data-space='8'] {
+  inline-size: var(--forge-space-8);
+}
+.fw-theme__space-bar[data-space='10'] {
+  inline-size: var(--forge-space-10);
+}
+.fw-theme__space-bar[data-space='12'] {
+  inline-size: var(--forge-space-12);
+}
+.fw-theme__space-bar[data-space='16'] {
+  inline-size: var(--forge-space-16);
+}
+.fw-theme__space-bar[data-space='20'] {
+  inline-size: var(--forge-space-20);
+}
+
+/* ------------------------------------------------------------ provenance */
+
+.fw-theme__provenance {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--fw-gap);
+  min-inline-size: 0;
+}
+
+.fw-theme__prov-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-2);
+  min-inline-size: 0;
+}
+
+.fw-theme__prov-prose {
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-theme__prov-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.fw-theme__prov-note {
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-faint);
+}
+
+/* ------------------------------------------------------------------ focus */
+
+.fw-theme__focus-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--forge-space-3);
+  margin-block: var(--forge-space-4);
+  min-inline-size: 0;
+}
+
+.fw-theme__input {
+  block-size: var(--fw-control-h);
+  min-inline-size: 0;
+  inline-size: 12rem;
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+}
+
+.fw-theme__input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-theme__link {
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-base);
+  text-decoration: underline;
+  text-decoration-color: var(--forge-color-line-loud);
+  text-underline-offset: var(--forge-space-1);
+}
+
+.fw-theme__link:hover {
+  text-decoration-color: var(--forge-color-text);
+}
+
+.fw-theme__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-theme__facts > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+/* --------------------------------------------------------------- density */
+
+:root[data-density='compact'] .fw-theme__swatch-chip {
+  block-size: var(--forge-space-10);
+}
+
+:root[data-density='compact'] .fw-theme__radius-box {
+  inline-size: var(--forge-space-10);
+  block-size: var(--forge-space-10);
+}
+
+/* ---------------------------------------------------------------- narrow */
+
+@media (max-width: 620px) {
+  .fw-theme__line-key {
+    inline-size: 5rem;
+  }
+
+  .fw-theme__control-box {
+    min-inline-size: 5rem;
+  }
+}

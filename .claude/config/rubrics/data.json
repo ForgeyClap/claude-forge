@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for data-engineering / ETL / dbt tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or database-reviewer / data-scientist) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-data playbook.",
+  "domain": "data",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "schema_contracts",
+      "descriptor": "1=no schema enforcement, columns/types coerced or dropped silently on drift; 2=schema assumed but not enforced, drift can pass through unnoticed; 3=explicit schema/contract at source + model outputs, drift fails the run; 4=contracts enforced at every boundary (dbt contracts / typed load checks), upstream drift fails loudly with a clear error and cited config",
+      "raise": "declare an explicit enforced schema/contract at each boundary and make an upstream type/column change fail the run instead of silently coercing"
+    },
+    {
+      "id": "idempotent_incremental",
+      "descriptor": "1=append-only with no dedupe key, reruns duplicate rows; 2=incremental exists but key/watermark is unstable or a rerun can double-load; 3=stable unique key + merge/upsert + watermark, rerun does not duplicate; 4=idempotency proven with evidence (two runs, identical row count on the key), backfills explicit + bounded, no accidental full rewrite",
+      "raise": "add a stable unique key with merge/upsert + a watermark, then prove a rerun yields identical row counts (no duplicates) and bound any backfill by partition/date"
+    },
+    {
+      "id": "data_quality",
+      "descriptor": "1=no data-quality tests; 2=a few ad-hoc checks, key columns untested, no freshness; 3=not-null/unique/accepted-values/relationships on key columns + a freshness check, tests green; 4=full dq suite incl. volume/row-count anomaly + freshness + referential integrity, real passing output attached",
+      "raise": "add not-null/unique/accepted-values/relationships tests on key columns plus freshness + row-count sanity checks, and attach the real green output"
+    },
+    {
+      "id": "lineage_reproducibility",
+      "descriptor": "1=no lineage, runs non-deterministic or credentials committed; 2=partial lineage or unpinned deps / secret in profiles; 3=lineage/DAG documented, deps pinned, SQL versioned, credentials in env; 4=column-level lineage + docs, deterministic reproducible run (same code+input -> same table), pinned deps, env-only credentials, raw/staging/mart layers separated",
+      "raise": "generate/document the DAG or column-level lineage, pin dependencies, version the SQL, move credentials to env, and make the transformation deterministic"
+    },
+    {
+      "id": "pii_safety",
+      "descriptor": "1=PII unclassified, written to logs or committed to the repo; 2=PII present, partially handled, some leak risk in logs or storage; 3=PII classified and masked/hashed/scoped where it lands, not in logs or git; 4=PII classified up front, masked/tokenized, warehouse-access-scoped, absent from logs/git, and minimized to what's actually needed",
+      "raise": "classify PII up front, mask/hash/tokenize where it lands, scope warehouse access, remove it from logs and git, and keep only what's needed"
+    }
+  ]
+}

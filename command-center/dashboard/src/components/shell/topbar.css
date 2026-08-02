@@ -1,0 +1,368 @@
+/*
+ * Forge Workspace — topbar.
+ *
+ * One strip, the height of --forge-layout-header (retuned by the density hook
+ * as --fw-header-h). Two lines of identity on the left, controls on the right.
+ * Everything that can be dropped is dropped in width order, so the strip never
+ * forces the page to scroll sideways: first the chip's detail, then the search
+ * label, then the appearance control, then the breadcrumb.
+ */
+
+.fw-topbar {
+  grid-area: topbar;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+  block-size: var(--fw-header-h);
+  padding-inline: var(--fw-gutter);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-1);
+}
+
+/* ------------------------------------------------------------- identity */
+
+.fw-topbar__drawer {
+  display: none;
+  flex: none;
+  margin-inline-start: calc(var(--forge-space-2) * -1);
+}
+
+.fw-topbar__identity {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--forge-space-px);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-crumbs {
+  min-inline-size: 0;
+}
+
+.fw-crumbs__list {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-crumbs__item {
+  display: inline-flex;
+  align-items: center;
+  min-inline-size: 0;
+}
+
+.fw-crumbs__link {
+  max-inline-size: 26ch;
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text-muted);
+  border-radius: var(--forge-radius-xs);
+}
+
+.fw-crumbs__link:hover {
+  color: var(--forge-color-text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.fw-crumbs__sep {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-crumbs__current {
+  max-inline-size: 26ch;
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-topbar__title {
+  font-size: var(--forge-text-md);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+/* --------------------------------------------------------------- tools */
+
+.fw-topbar__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-inline-size: 0;
+}
+
+.fw-topbar__search {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  block-size: var(--fw-control-h);
+  inline-size: 14rem;
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-muted);
+  cursor: pointer;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-topbar__search:hover {
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-topbar__search-icon {
+  flex: none;
+}
+
+.fw-topbar__search-text {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-sm);
+  text-align: start;
+}
+
+/* ----------------------------------------------- local Claude Code chip */
+
+.fw-cc {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-md);
+  background: transparent;
+  color: var(--forge-color-text-faint);
+  cursor: help;
+}
+
+.fw-cc__icon {
+  flex: none;
+}
+
+.fw-cc__text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  white-space: nowrap;
+}
+
+.fw-cc__sep {
+  color: var(--forge-color-line-loud);
+}
+
+.fw-cc__state {
+  color: var(--forge-color-text-muted);
+}
+
+/* ------------------------------------------------------------- account */
+
+.fw-topbar__panels {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  padding-inline-start: var(--forge-space-2);
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-topbar__account {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.fw-topbar__account-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--forge-radius-sm);
+  cursor: pointer;
+}
+
+.fw-topbar__account-button:hover .fw-avatar {
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text);
+}
+
+.fw-account {
+  position: absolute;
+  inset-block-start: calc(100% + var(--forge-space-2));
+  inset-inline-end: 0;
+  z-index: var(--forge-z-overlay);
+  inline-size: 15rem;
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-lg);
+  animation: fw-account-in var(--forge-motion-fast) var(--forge-motion-ease-enter) both;
+}
+
+.fw-account__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding-block-end: var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  margin-block-end: var(--forge-space-3);
+}
+
+.fw-account__identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-account__name {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+.fw-account__handle {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-account__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin-block-end: var(--forge-space-3);
+}
+
+.fw-account__item {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  min-block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-account__item:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-account__icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-account__note {
+  padding-block-start: var(--forge-space-3);
+  margin-block-start: var(--forge-space-2);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+}
+
+@keyframes fw-account-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--forge-space-1) * -1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-account {
+    animation: none !important;
+  }
+}
+
+/* =========================================================================
+   Width order: what is dropped, and when
+   ========================================================================= */
+
+@media (max-width: 1380px) {
+  .fw-cc__part {
+    display: none;
+  }
+  .fw-cc__sep {
+    display: none;
+  }
+}
+
+@media (max-width: 1180px) {
+  .fw-topbar__search {
+    inline-size: auto;
+  }
+  .fw-topbar__search-text,
+  .fw-topbar__search .fw-keyhint {
+    display: none;
+  }
+}
+
+@media (max-width: 1020px) {
+  .fw-cc {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  /* The appearance control lives on in the account popover and in Settings. */
+  .fw-topbar__appearance {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .fw-topbar {
+    gap: var(--forge-space-2);
+    padding-inline: var(--fw-gutter-tight);
+  }
+
+  .fw-topbar__drawer {
+    display: inline-flex;
+    margin-inline-start: 0;
+  }
+
+  .fw-crumbs {
+    display: none;
+  }
+
+  .fw-topbar__panels {
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  /* The dock stays reachable from the account popover. */
+  .fw-topbar__panels .fw-icon-button:first-child {
+    display: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .fw-account {
+    inline-size: min(15rem, calc(100vw - var(--forge-space-6)));
+  }
+}

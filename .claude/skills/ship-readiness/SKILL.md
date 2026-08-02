@@ -1,6 +1,6 @@
 ---
 name: ship-readiness
-description: ADVISORY pre-deploy / pre-handoff checklist (not a blocker). Use when preparing a project for deployment, release, or client/handoff to sanity-check it's genuinely ready — covers websites/landing pages, full-stack apps, APIs, dashboards, n8n workflows, scraping, AI/RAG chatbots, prediction systems, Telegram bots, and business automations. Trigger on "deploy", "ship", "go live", "release", "hand off".
+description: Advisory pre-deploy/pre-handoff checklist (not a blocker). Use when preparing a project for deployment, release, or client handoff — deploy, ship, go live, release, hand off.
 ---
 
 # Ship-readiness (advisory checklist — not a blocker)
@@ -11,6 +11,7 @@ This is a **practical checklist**, not an enforced gate. Report items as pass/fa
 - No test mode, mock backend, or fake/sample data left in.
 - No localhost URLs, debug/test banners, or debug-only UI.
 - Secrets in env; `.env.example` uses placeholders; no real secrets committed.
+- Runtime artifacts swept for leaked secrets too, not just source: `node .claude/forge-bin/forge-secret-scrub.cjs [--json]` (advisory, reports location only) — covers `.claude/forge-runs/*/events.jsonl`, which the doctor's git-tracked leak scan cannot see because it is gitignored.
 - No unfinished placeholder content/copy.
 - Forms submit and validate; error handling present on all I/O.
 - Mobile **and** desktop layout intact; primary CTA clear.

@@ -60,7 +60,17 @@ const TYPE_LABEL = { episodic: 'guard-rail', semantic: 'strategy', procedural: '
 // Single-line data guarantee (security-boss LOW-2, 2026-07-12): interpolated event fields are
 // attacker-influencable in principle, so control chars are stripped and whitespace collapsed — a
 // crafted multi-line note can never smuggle an instruction-looking line into a recalled lesson.
-function truncate(s, n) { s = String(s == null ? '' : s).replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+// fix-cap-order: SCRUB FIRST, cut second. This used to cut at 200/300 chars and leave redaction to
+// forge-memory.addLesson() further down the pipe — redaction therefore ran on ALREADY-CUT text. Every
+// pattern in forge-store.cjs that needs a trailing anchor (the full PEM block needs its
+// `-----END ... PRIVATE KEY-----`, a JWT needs all three dot-separated segments) then matched nothing
+// and the readable head survived into .claude/agent-memory/<boss>/lessons.jsonl. Measured on a real
+// events.jsonl-shaped `issue` field: a PEM header line (BEGIN-marker + base64 body, written out in
+// full in the test, never here — quoting it verbatim in a comment trips our own leak scan) came through
+// intact; scrubbing first yields `***REDACTED***`. The scrubber stays OWNED by forge-memory.cjs (this
+// file still reimplements no redaction of its own, per its own header) — it is only applied at the
+// right moment. Scrubbing twice is harmless: it is idempotent.
+function truncate(s, n) { s = memory.scrub(String(s == null ? '' : s)).replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 function normalizeText(s) { return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim(); }
 function hasSubstance(ev) { return ['task', 'note', 'output', 'evidence'].some((k) => ev[k] != null && String(ev[k]).trim().length > 0); }
 function extractKeywords(text, max) {

@@ -184,8 +184,7 @@ function renderReplayBar() { const bar = $('replay-bar'); if (!bar) return; cons
   const playBtn = $('rp-play'), label = $('rp-label'), spd = $('rp-speed');
   if (spd) spd.textContent = (r.speed || 1) + 'x';
   if (playBtn) playBtn.textContent = (r.active && r.playing) ? '⏸' : '▶';
-  const rpT = (k, f) => (window.i18nt ? window.i18nt(k, f) : f);
-  if (label) label.textContent = r.active ? (rpT('rp.replaying', 'Replaying') + ' ' + Math.min(r.cursor, n) + '/' + n) : (done ? rpT('rp.completedRun', 'Completed run — Replay available') : rpT('rp.liveRun', 'Live run'));
+  if (label) label.textContent = r.active ? ('Replaying ' + Math.min(r.cursor, n) + '/' + n) : (done ? 'Completed run — Replay available' : 'Live run');
   bar.classList.toggle('replaying', r.active); bar.classList.toggle('disabled', n === 0); }
 function initReplay() { const p = $('rp-play'); if (p) p.addEventListener('click', replayToggle);
   const s = $('rp-speed'); if (s) s.addEventListener('click', replaySpeed);
@@ -235,9 +234,15 @@ function initInteraction() {
   $('act-feed').addEventListener('click', (e) => { const r = e.target.closest('.act-row'); if (r) { const ev = STATE.events[+r.dataset.ev]; if (ev) { const k = ev.agent || SYNTH[ev.event_type]; selectAgent(k); focusNode(k); } } });
   $('act-more').addEventListener('click', (e) => { e.preventDefault(); STATE.ui.dockTab = 'log'; renderDock(); });
   // dock tabs
-  $('dock-tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { STATE.ui.dockTab = b.dataset.dock; renderDock(); } });
+  $('dock-tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { STATE.ui.dockTab = b.dataset.dock; renderDock();
+    // V9-INTEGRATE (2026-07-22): the 'capabilities' tab lazy-loads its data on activation (real filesystem
+    // scan + per-run contract check, never worth polling on the fast SSE/250ms tick — see panels.js
+    // loadCapabilitiesPanel() doc comment). Fire-and-forget; loadCapabilitiesPanel() re-renders itself.
+    if (b.dataset.dock === 'capabilities' && typeof loadCapabilitiesPanel === 'function') loadCapabilitiesPanel();
+    if (b.dataset.dock === 'stats' && typeof loadStatsPanel === 'function') loadStatsPanel();
+  } });
   // copy url
-  $('copy-url').addEventListener('click', () => { try { navigator.clipboard.writeText(location.origin + location.pathname); const b = $('copy-url'); const cT = (k, f) => (window.i18nt ? window.i18nt(k, f) : f); b.textContent = cT('btn.copied', 'Copied ✓'); setTimeout(() => b.textContent = cT('btn.copyUrl', 'Copy URL'), 1200); } catch {} });
+  $('copy-url').addEventListener('click', () => { try { navigator.clipboard.writeText(location.origin + location.pathname); const b = $('copy-url'); b.textContent = 'Copied ✓'; setTimeout(() => b.textContent = 'Copy URL', 1200); } catch {} });
   let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { MM.render(CURRENT_MODEL.nodes); VP.schedule(); }, 120); });
 }
 
@@ -250,6 +255,10 @@ function init() { VP.init(); MM.init(); currentLens = lensFromURL(); buildLensBa
   if (SHOT && !new URLSearchParams(location.search).has('showreplay')) { const rb = $('replay-bar'); if (rb) rb.style.display = 'none'; }
   const q = new URLSearchParams(location.search); const selParam = q.get('sel'), tabParam = q.get('tab'), dockParam = q.get('dock');
   fetchState().then(() => { if (dockParam) STATE.ui.dockTab = dockParam; renderAll(); // ?dock=<id> deep-links a dock tab (Mission Control 2026-07-10)
+    // V9-INTEGRATE (2026-07-22): a ?dock=capabilities deep-link must also trigger the lazy load (the dock-tabs
+    // click handler above only fires on a real click, not on this programmatic tab selection).
+    if (dockParam === 'capabilities' && typeof loadCapabilitiesPanel === 'function') loadCapabilitiesPanel();
+    if (dockParam === 'stats' && typeof loadStatsPanel === 'function') loadStatsPanel();
     if (selParam) { if (tabParam) STATE.ui.insTab = tabParam; selectAgent(selParam); focusNode(selParam); }
     if (SHOT || PINNED_RUN) setLive('on', PINNED_RUN ? 'RUN ' + PINNED_RUN.replace(/^forge-/, '') : 'SNAPSHOT'); else connectSSE(); });
   if (!SHOT && !PINNED_RUN) setInterval(async () => { await fetchState(); renderTop(); renderMetrics(); }, 5000); }

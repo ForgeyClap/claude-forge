@@ -382,6 +382,29 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font
 .boss-chip{flex:none;font-size:8.5px;letter-spacing:1.2px;text-transform:uppercase;padding:2px 8px;border-radius:3px;border:1px solid var(--line);color:var(--ink-faint)}
 .boss-mem{flex:1;min-width:0;font-size:10.5px;color:var(--ink-faint);text-align:right}
 .boss-mem-has{color:var(--st-done)}
+/* Capabilities & Enforcement panel (V9-INTEGRATE, 2026-07-22) — mirrors the Doctor/Bosses panel row shape */
+.cap-section{margin-bottom:14px}
+.cap-h{font-size:10.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px}
+.cap-list{display:flex;flex-direction:column;gap:6px}
+.cap-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:var(--panel-2)}
+.cap-row.cap-bad{border-color:var(--st-fail)}
+.cap-kind{flex:0 0 44px;font-size:8.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--ink-faint)}
+.cap-name{flex:0 0 220px;font-size:11px;color:var(--ink);letter-spacing:.2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cap-pill{flex:none;font-size:8.5px;letter-spacing:1.2px;text-transform:uppercase;padding:2px 8px;border-radius:3px;border:1px solid var(--line);color:var(--ink-faint)}
+.cap-pill.ok{color:var(--st-done);border-color:var(--st-done)}
+.cap-pill.bad{color:var(--st-fail);border-color:var(--st-fail)}
+.cap-used{flex:1;min-width:0;font-size:10.5px;color:var(--ink-faint);text-align:right}
+.cap-never{color:var(--st-run)}
+.rc-list{display:flex;flex-direction:column;gap:6px}
+.rc-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:var(--panel-2)}
+.rc-row.rc-bad{border-color:var(--st-fail)}
+.rc-id{flex:0 0 220px;font-size:11px;color:var(--ink);letter-spacing:.2px}
+.rc-pill{flex:none;font-size:8.5px;letter-spacing:1.2px;text-transform:uppercase;padding:2px 8px;border-radius:3px;border:1px solid var(--line);color:var(--ink-faint)}
+.rc-pill.ok{color:var(--st-done);border-color:var(--st-done)}
+.rc-pill.bad{color:var(--st-fail);border-color:var(--st-fail)}
+.rc-pill.warn{color:var(--st-run);border-color:var(--st-run)}
+.rc-pill.over{color:var(--ink-faint);border-color:var(--st-int)}
+.rc-note{flex:1;min-width:0;font-size:10.5px;color:var(--ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* ---------------- PROOF/TRUST STRIP (WP5 — verified vs merely-claimed events) ---------------- */
 .trust-wrap{display:flex;flex-direction:column;gap:12px}
 .trust-big{font-size:40px;font-weight:700;letter-spacing:-1px;color:var(--st-done);display:flex;align-items:baseline;gap:8px}

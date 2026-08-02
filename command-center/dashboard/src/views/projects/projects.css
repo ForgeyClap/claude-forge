@@ -1,0 +1,387 @@
+/*
+ * Projects view — the browser over the example registry.
+ *
+ * One component, two layouts. Both are CSS grids driven by named areas, so the
+ * markup order never has to change between list and grid. Tokens only.
+ */
+
+.fw-projects {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  background: var(--forge-color-bg);
+}
+
+/* ================================================================== header */
+
+.fw-projects__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-4);
+  flex: none;
+  padding: var(--forge-space-6) var(--forge-space-6) var(--forge-space-4);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+:root[data-density='compact'] .fw-projects__header {
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-4) var(--forge-space-4) var(--forge-space-3);
+}
+
+.fw-projects__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+}
+
+.fw-projects__title {
+  font-size: var(--forge-text-2xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+:root[data-density='compact'] .fw-projects__title {
+  font-size: var(--forge-text-xl);
+}
+
+.fw-projects__subtitle {
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-projects__toolbar {
+  flex-wrap: wrap;
+}
+
+.fw-projects__search {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: 1 1 16rem;
+  min-inline-size: 12rem;
+  max-inline-size: 26rem;
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-projects__search:focus-within {
+  border-color: var(--forge-color-accent);
+}
+
+.fw-projects__search-icon {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-projects__search-input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+}
+
+.fw-projects__search-input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+/* ================================================================== canvas */
+
+.fw-projects__scroll {
+  flex: 1 1 auto;
+  padding: var(--forge-space-5) var(--forge-space-6) var(--forge-space-10);
+}
+
+:root[data-density='compact'] .fw-projects__scroll {
+  padding: var(--forge-space-3) var(--forge-space-4) var(--forge-space-8);
+}
+
+.fw-projects__empty {
+  display: flex;
+  justify-content: center;
+  padding-block: var(--forge-space-16);
+}
+
+.fw-projects__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---------------------------------------------------------------- item base */
+
+.fw-projects__item {
+  position: relative;
+  min-inline-size: 0;
+}
+
+.fw-projects__body {
+  inline-size: 100%;
+  text-align: start;
+  cursor: pointer;
+  color: inherit;
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-projects__glyph {
+  grid-area: glyph;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--forge-control-lg);
+  block-size: var(--forge-control-lg);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-projects__main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-projects__name {
+  font-size: var(--forge-text-md);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-projects__description {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-projects__type {
+  grid-area: type;
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+  white-space: nowrap;
+}
+
+.fw-projects__counts {
+  grid-area: counts;
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+}
+
+.fw-projects__count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-projects__health {
+  grid-area: health;
+  min-inline-size: 0;
+}
+
+.fw-projects__state {
+  grid-area: state;
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  white-space: nowrap;
+}
+
+.fw-projects__aside {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+}
+
+/* ------------------------------------------------------------- list layout */
+
+.fw-projects__list--list {
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+  overflow: hidden;
+}
+
+.fw-projects__list--list .fw-projects__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding-inline-end: var(--forge-space-3);
+}
+
+.fw-projects__list--list .fw-projects__item + .fw-projects__item {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+/* The active row is marked by a rule, not only by a tint — a tint alone is
+   invisible next to a hover state. */
+.fw-projects__list--list .fw-projects__item[data-active='true'] {
+  background: var(--forge-color-selected);
+  box-shadow: inset var(--forge-border-thick) 0 0 0 var(--forge-color-line-loud);
+}
+
+.fw-projects__list--list .fw-projects__item:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-projects__list--list .fw-projects__body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto 9rem auto;
+  grid-template-areas: 'glyph main type counts health state';
+  align-items: center;
+  gap: var(--forge-space-4);
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border-radius: 0;
+}
+
+:root[data-density='compact'] .fw-projects__list--list .fw-projects__body {
+  padding-block: var(--forge-space-2);
+  gap: var(--forge-space-3);
+}
+
+.fw-projects__list--list .fw-projects__name,
+.fw-projects__list--list .fw-projects__description {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Shed the optional columns before anything starts to squeeze. */
+@media (max-width: 1240px) {
+  .fw-projects__list--list .fw-projects__body {
+    grid-template-columns: auto minmax(0, 1fr) auto 9rem auto;
+    grid-template-areas: 'glyph main type health state';
+  }
+
+  .fw-projects__list--list .fw-projects__counts {
+    display: none;
+  }
+}
+
+@media (max-width: 1040px) {
+  .fw-projects__list--list .fw-projects__body {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas: 'glyph main type state';
+  }
+
+  .fw-projects__list--list .fw-projects__health {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .fw-projects__list--list .fw-projects__body {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: 'glyph main state';
+  }
+
+  .fw-projects__list--list .fw-projects__type {
+    display: none;
+  }
+
+  .fw-projects__list--list .fw-projects__state > .fw-machine {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------- grid layout */
+
+.fw-projects__list--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(22rem, 100%), 1fr));
+  gap: var(--forge-space-4);
+}
+
+.fw-projects__list--grid .fw-projects__item {
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-projects__list--grid .fw-projects__item:hover {
+  border-color: var(--forge-color-line);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-projects__list--grid .fw-projects__item[data-active='true'] {
+  border-color: var(--forge-color-line-strong);
+  background: var(--forge-color-selected);
+}
+
+.fw-projects__list--grid .fw-projects__body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    'glyph type'
+    'main main'
+    'state state'
+    'health health'
+    'counts counts';
+  align-items: center;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-4);
+}
+
+:root[data-density='compact'] .fw-projects__list--grid .fw-projects__body {
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-3);
+}
+
+/* Only the top line has to clear the pin and open controls; the description
+   below them keeps the full card width. */
+.fw-projects__list--grid .fw-projects__type {
+  justify-self: start;
+  padding-inline-end: var(--forge-space-16);
+}
+
+.fw-projects__list--grid .fw-projects__description {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fw-projects__list--grid .fw-projects__state {
+  justify-content: space-between;
+  padding-block-start: var(--forge-space-1);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-projects__list--grid .fw-projects__aside {
+  position: absolute;
+  inset-block-start: var(--forge-space-3);
+  inset-inline-end: var(--forge-space-3);
+}
+
+/* --------------------------------------------------------------- responsive */
+
+@media (max-width: 760px) {
+  .fw-projects__header {
+    padding: var(--forge-space-4) var(--forge-space-4) var(--forge-space-3);
+  }
+
+  .fw-projects__scroll {
+    padding: var(--forge-space-3) var(--forge-space-4) var(--forge-space-8);
+  }
+
+  .fw-projects__search {
+    max-inline-size: none;
+  }
+}

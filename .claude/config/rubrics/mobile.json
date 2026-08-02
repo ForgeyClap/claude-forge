@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for mobile app (React Native / Expo / Flutter) tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-boss) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-mobile playbook.",
+  "domain": "mobile",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "native_build_reality",
+      "descriptor": "1=only Metro/Expo Go runs, no standalone build; 2=build config exists but the binary was never produced/launched; 3=release binary builds and launches on an emulator/simulator; 4=release binary builds, installs, and launches on a real device or emulator with real output attached, release signing configured",
+      "raise": "produce the actual release artifact (apk/aab/ipa or EAS build), install and launch it on a device/emulator, and attach the build + launch output as evidence"
+    },
+    {
+      "id": "secret_and_secure_storage",
+      "descriptor": "1=secrets baked into the bundle or tokens in AsyncStorage/SharedPreferences; 2=no hardcoded secret but tokens in insecure storage; 3=no secrets in bundle, tokens in secure store; 4=real secrets stay server-side behind an API, only public keys ship, tokens in Keychain/Keystore/SecureStore, verified",
+      "raise": "move real secrets server-side, keep only public keys client-side, and store tokens in expo-secure-store / react-native-keychain / flutter_secure_storage — never AsyncStorage"
+    },
+    {
+      "id": "permissions_least_privilege",
+      "descriptor": "1=broad permissions with no justification / missing iOS usage strings; 2=some unused permissions or vague rationale; 3=permissions mostly minimal and justified; 4=only used permissions requested, each with a real iOS usage-description string and a minimal Android manifest, every one justifiable",
+      "raise": "request only permissions the code uses, add a real iOS usage-description string per permission, and trim the Android manifest to what is actually needed"
+    },
+    {
+      "id": "offline_and_device_qa",
+      "descriptor": "1=network calls silently fail, no device testing; 2=some states handled, no real device/emulator run; 3=offline paths and core screens tested on device/emulator; 4=offline-where-promised works (cached reads, queued writes, no-connection UI), safe-area/keyboard/orientation/dark-mode verified on device/emulator with evidence",
+      "raise": "verify offline reads/writes and no-connection UI, then QA safe-area, keyboard, orientation and dark mode on a real device or emulator and attach screenshots"
+    },
+    {
+      "id": "store_readiness",
+      "descriptor": "1=test/demo/mock data or debug menus in the release build; 2=some placeholder data or __DEV__ shortcuts remain; 3=no obvious mock data, icon/splash/version set; 4=release build free of mock data/debug menus/__DEV__ shortcuts, icon + splash + version set, store-listing prerequisites (screenshots, privacy/data-safety) prepared for owner submission",
+      "raise": "strip all mock data, debug menus and __DEV__ shortcuts from the release build, set icon/splash/version, and prepare store-listing assets for the owner to submit"
+    }
+  ]
+}

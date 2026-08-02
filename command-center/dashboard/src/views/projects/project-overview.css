@@ -1,0 +1,468 @@
+/*
+ * Project overview.
+ *
+ * A fixed header (identity, machine-recorded meta, tab strip) over a scrolling
+ * two-column body. The header never scrolls away, because it carries the answer
+ * to "which project am I looking at" and that question keeps coming back.
+ */
+
+.fw-project {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  background: var(--forge-color-bg);
+}
+
+.fw-project--empty {
+  align-items: center;
+  justify-content: center;
+  padding: var(--forge-space-8);
+}
+
+/* ================================================================== header */
+
+.fw-project__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-4);
+  flex: none;
+  padding: var(--forge-space-6) var(--forge-space-6) 0;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-bg);
+}
+
+:root[data-density='compact'] .fw-project__header {
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-4) var(--forge-space-4) 0;
+}
+
+.fw-project__identity {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-4);
+}
+
+.fw-project__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-xl);
+  block-size: var(--forge-control-xl);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-project__naming {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-project__title {
+  font-size: var(--forge-text-2xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+:root[data-density='compact'] .fw-project__title {
+  font-size: var(--forge-text-xl);
+}
+
+.fw-project__description {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fw-project__state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--forge-space-2);
+  flex: none;
+}
+
+.fw-project__activity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  color: var(--forge-color-text-muted);
+}
+
+/* --------------------------------------------------------- machine meta row */
+
+.fw-project__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-2) var(--forge-space-6);
+  margin: 0;
+  padding-block: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-project__meta-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-project__meta-key {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+  white-space: nowrap;
+}
+
+.fw-project__meta-value {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  margin: 0;
+  min-inline-size: 0;
+  color: var(--forge-color-text-secondary);
+}
+
+/* ------------------------------------------------------------------- tabs */
+
+.fw-project__tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-block-end: 0;
+  /* room for the selected-tab underline, which sits one hairline low */
+  padding-block-end: var(--forge-border-thick);
+}
+
+/* ================================================================== canvas */
+
+.fw-project__scroll {
+  flex: 1 1 auto;
+  padding: var(--forge-space-5) var(--forge-space-6) var(--forge-space-10);
+}
+
+:root[data-density='compact'] .fw-project__scroll {
+  padding: var(--forge-space-3) var(--forge-space-4) var(--forge-space-8);
+}
+
+.fw-project__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: var(--forge-space-5);
+  align-items: start;
+}
+
+.fw-project__column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-5);
+  min-inline-size: 0;
+}
+
+:root[data-density='compact'] .fw-project__grid,
+:root[data-density='compact'] .fw-project__column {
+  gap: var(--forge-space-3);
+}
+
+.fw-project__signpost {
+  max-inline-size: 42rem;
+  margin-inline: auto;
+  padding-block: var(--forge-space-8);
+}
+
+/* ==================================================================== rows */
+
+.fw-project__rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-project__rows > li + li {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-project__row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  padding: var(--forge-space-3) var(--fw-panel-pad);
+  text-align: start;
+  cursor: pointer;
+  color: inherit;
+}
+
+.fw-project__row:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-project__row--tight {
+  padding-block: var(--forge-space-2);
+}
+
+.fw-project__row--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--forge-space-2);
+}
+
+.fw-project__row-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-project__row-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-project__row-title {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-project__row-detail {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-project__agent-group {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+/* -------------------------------------------------------------- run rows */
+
+.fw-project__run-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex-wrap: wrap;
+}
+
+.fw-project__run-goal {
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-project__run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-3);
+  font-size: var(--forge-text-2xs);
+}
+
+/* ============================================================ task columns */
+
+.fw-project__columns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-project__column-row {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--forge-space-3);
+}
+
+.fw-project__column-name {
+  font-size: var(--forge-text-xs);
+  text-transform: capitalize;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-project__column-bar {
+  block-size: var(--forge-space-2);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-3);
+  overflow: hidden;
+}
+
+.fw-project__column-fill {
+  display: block;
+  block-size: 100%;
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-line-loud);
+}
+
+/* ================================================================== health */
+
+.fw-project__health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-4);
+}
+
+.fw-project__figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-4);
+  margin: 0;
+}
+
+.fw-project__figure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+}
+
+.fw-project__figure dt {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-project__figure dd {
+  margin: 0;
+  font-size: var(--forge-text-lg);
+  color: var(--forge-color-text);
+}
+
+/* =================================================================== tests */
+
+.fw-project__tests {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-4);
+}
+
+.fw-project__test-figures {
+  display: flex;
+  gap: var(--forge-space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-project__test-figures > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-project__test-value {
+  font-size: var(--forge-text-lg);
+  letter-spacing: var(--forge-tracking-normal);
+  text-transform: none;
+  color: var(--forge-color-text);
+}
+
+.fw-project__gates {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-project__gate {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  padding-block: var(--forge-space-2);
+  font-size: var(--forge-text-sm);
+}
+
+.fw-project__gate + .fw-project__gate {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-project__gate-name {
+  flex: 1 1 auto;
+  color: var(--forge-color-text-secondary);
+}
+
+/* ================================================================== skills */
+
+.fw-project__skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-project__skill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-1) var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+}
+
+/* ============================================================== responsive */
+
+@media (max-width: 1100px) {
+  .fw-project__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .fw-project__header {
+    padding: var(--forge-space-4) var(--forge-space-4) 0;
+  }
+
+  .fw-project__identity {
+    flex-wrap: wrap;
+  }
+
+  .fw-project__state {
+    align-items: flex-start;
+    flex-direction: row;
+  }
+
+  .fw-project__scroll {
+    padding: var(--forge-space-3) var(--forge-space-4) var(--forge-space-8);
+  }
+
+  .fw-project__column-row {
+    grid-template-columns: 6rem minmax(0, 1fr) auto;
+  }
+}

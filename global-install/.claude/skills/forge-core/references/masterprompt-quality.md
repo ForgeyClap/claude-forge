@@ -420,7 +420,7 @@ When Paperclip is used, these guards are mandatory:
 
 3. Standalone Claude path
    Use durable standalone Claude path:
-   C:/Users/YOUR_USERNAME/.local/bin/claude.exe
+   C:/Users/YOU/.local/bin/claude.exe
 
 Do not use versioned VS Code extension paths such as:
 anthropic.claude-code-2.1.196
@@ -989,7 +989,7 @@ For cashflow project work, Paperclip must follow the official optional control p
 1. Loopback only by default.
 2. Scoped Claude config.
 3. Standalone Claude path:
-   C:/Users/YOUR_USERNAME/.local/bin/claude.exe
+   C:/Users/YOU/.local/bin/claude.exe
 4. Target project folder must be git-initialized before Paperclip Claude writes there.
 5. Paperclip workspace must bind directly to the exact project folder.
 6. Use assignment wakes for real project work.
@@ -1238,7 +1238,7 @@ END OF PER-TASK VERIFY-AND-CORRECT + SCREENSHOT-LOOP PROOF ADD-ON.
 - On a subscription the constraint is **quota, not dollars**. Opus drains **several× faster** than Sonnet; Sonnet more than Haiku. Max plans have **two weekly caps: one across all models + one Sonnet-only**. Sonnet still counts against the shared all-models cap, but because Opus costs several× more per turn, **moving work off Opus onto Sonnet spares shared/Opus headroom** (and draws the separate Sonnet-only cap instead). Per the owner, this account is on **Max 20x** (lots of headroom): the bias is **"don't waste," not "cripple quality"** — keep full quality on the hard parts, stop paying Opus for trivial parts.
 - Quota hygiene that helps regardless of model: `/clear` between unrelated tasks · reference files by path (don't paste) · targeted reads/diffs, not whole-repo dumps · don't re-read a just-edited file · summarize logs to a path · **smallest team that fits** (over-spawning is the #1 waste) · compact internal output, full only for deliverables.
 
-**§6 Machine-readable map.** The template ships `.claude/FORGE_MODEL_ROUTING.json` (session + role→tier + escalation + effort + quota hygiene). The Lead reads it at team-build time, may override per task, and logs the model actually used. The map is **guidance only** and never overrides governance/security/QA. The Forge↔Paperclip bridge (`forge-bin/forge-paperclip.cjs`) applies the SAME tiers to every Paperclip agent’s `adapterConfig.model` (Lead/architect/security → `claude-opus-4-8`; default → alias `sonnet` → current Sonnet 5; trivial → `haiku`), so Paperclip never falls back to its adapter’s cheap `claude-sonnet-4-6` profile.
+**§6 Machine-readable map.** The template ships `.claude/FORGE_MODEL_ROUTING.json` (session + role→tier + escalation + effort + quota hygiene). The Lead reads it at team-build time, may override per task, and logs the model actually used. The map is **guidance only** and never overrides governance/security/QA. The Forge↔Paperclip bridge (`forge-bin/forge-paperclip.cjs`) applies the SAME tiers to every Paperclip agent’s `adapterConfig.model` (Lead/architect/security → `claude-opus-5`; default → alias `sonnet` → current Sonnet 5; trivial → `haiku`), so Paperclip never falls back to its adapter’s cheap `claude-sonnet-4-6` profile.
 
 **§7 Honesty.** Never claim a subagent ran on a model it didn't. Never fabricate quota "savings" numbers — the map is guidance; real savings require real measurement. When Forge recommends the owner change the session model, say so plainly; do not pretend it happened automatically.
 

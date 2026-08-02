@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for AI voice/phone-agent tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions (no outbound/SMS enablement is scored, never auto-approved). ADAPT per project; do not drop-in blindly. Pairs with the forge-voice playbook.",
+  "domain": "voice",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "dutch_first_ux",
+      "descriptor": "1=English/translated cadence for a Dutch client, or wrong voice; 2=Dutch but stilted; 3=natural spoken Dutch, correct voice; 4=natural spoken Dutch throughout with the configured voice, short polite phrasing and a clean close",
+      "raise": "make the caller-facing conversation natural spoken Dutch with the configured voice; keep prompts short and end the call cleanly"
+    },
+    {
+      "id": "turn_discipline",
+      "descriptor": "1=stacks multiple questions per turn; 2=mostly one but occasionally piles on; 3=one question per turn; 4=one question per turn, state-machine conversation, graceful endpointing/silence handling",
+      "raise": "ask exactly one question per turn and model the call as workflow states, each with a single job"
+    },
+    {
+      "id": "barge_in_latency",
+      "descriptor": "1=cannot interrupt / high latency; 2=barge-in flaky or latency unmeasured; 3=barge-in works, latency reasonable; 4=barge-in cuts TTS within ~200ms and voice-to-voice latency is measured and reported (real numbers, well under ~1s)",
+      "raise": "enable barge-in that stops TTS within ~200ms and measure+report real voice-to-voice latency"
+    },
+    {
+      "id": "consent_disclosure",
+      "descriptor": "1=no AI disclosure and/or recording without a basis; 2=vague disclosure/consent; 3=clear early AI disclosure + a recording basis; 4=clear early AI disclosure (AI Act Art.50), specific+informed recording basis recorded, opt-out honoured immediately",
+      "raise": "disclose the AI early and clearly, record a valid specific consent/legal basis for any recording, and honour opt-out at once"
+    },
+    {
+      "id": "action_safety",
+      "descriptor": "1=auto outbound/SMS or multiple emails per call, or invented business facts; 2=some guarding but leaky; 3=<=1 email/call, no outbound/SMS without approval; 4=<=1 idempotent email/call, no outbound/SMS/customer traffic without owner approval, honest fallback + human handoff when unsure",
+      "raise": "cap at one idempotent email per call, keep outbound/SMS owner-gated, and use an honest fallback+handoff instead of inventing business facts"
+    }
+  ]
+}

@@ -34,6 +34,108 @@
  *
  * Module API: { nodeCheckAll, runTests, strictEventCheck, spaPresent, leakScan, agentsCheck, chainCheck,
  *   rebindingGuard, backfillContinuity, runDoctor, secretLabel }
+ *
+ * WAVE A / A2 (2026-07-18) — doctor COMPLETENESS checks. Originally all four were ADVISORY-ONLY
+ * (report.advisory.completeness, never folded into the hard `ok` verdict — see backfillContinuity's doc
+ * above for why a brand-new heuristic must never flip a healthy project's doctor run red the first time it
+ * ships). V9-INTEGRATE (2026-07-22) promotes TWO of the four to ENFORCED (folded into `checks`/`ok`) — see
+ * the "V9-INTEGRATE enforcement" note below for exactly which, and why each individual check was or was not
+ * safe to promote:
+ *   sync_completeness    — ADVISORY (unchanged). every real skill dir (skills/**\/SKILL.md) / forge-bin tool /
+ *                           agent .md that exists on disk is present in forge-sync.cjs's FILES manifest
+ *                           (listSystemFiles). NOT promoted: a new tool is routinely added to forge-bin/
+ *                           before its SYSTEM[] pin is remembered in the SAME edit session — hard-blocking
+ *                           every doctor run on that ordinary in-progress state would punish normal iterative
+ *                           work, not just a genuine regression.
+ *   check_the_checks      — ENFORCED (V9-INTEGRATE). a *.test.cjs suite that REPORTS a passing tally (per
+ *                           runTests) but contains ZERO real assertion call sites in its own source is a
+ *                           "green no-op": the tally cannot be genuine. Promoted: purely mechanical/static,
+ *                           0 findings on this real project (see forge-doctor.test.cjs's static guard), and a
+ *                           healthy project can never accidentally trip it — there is no code path that
+ *                           creates a passing-but-assertion-free suite by ordinary means.
+ *   memory_discipline     — ADVISORY (unchanged, deliberately — see WAVE A/A2 doc above). FORGE_MEMORY.md is
+ *                           absent/empty, or still carries an unfilled placeholder marker
+ *                           (<PLACEHOLDER>/<TODO>/TODO:/TBD/FIXME/etc). NOT promoted: a brand-new/freshly
+ *                           cloned project legitimately has no memory yet — this is the canonical example of
+ *                           a check that must stay advisory for a fresh project (see the plan's own framing).
+ *   unregistered_event    — ENFORCED (V9-INTEGRATE). a forge-bin/*.cjs tool calls its local logEvent(...)
+ *                           wrapper with a literal event_type string that is not registered in
+ *                           log-event.cjs's KNOWN_EVENT_TYPES (+ cross-checked against forge-verify.cjs's own
+ *                           TERMINAL_TYPES/BACKBONE mirror, when that module is available) — the 3-place
+ *                           event-registration discipline the plan's invariant #6 requires. Static
+ *                           best-effort scan of the logEvent(...) call convention only (see
+ *                           extractLoggedEventTypes doc); a dynamically-built event_type argument can never
+ *                           be resolved statically and is honestly skipped, not guessed. Promoted: purely
+ *                           mechanical/static, 0 findings on this real project, and a genuinely NEW tool
+ *                           always has a real registration step in the SAME wave that adds it (this very
+ *                           piece is the proof) — a false-red here means a literal registration bug, not
+ *                           ordinary project state.
+ *   mcp_dormancy           — ADVISORY (unchanged). WAVE G / G-INTEGRATE (2026-07-19): the MCP-as-client
+ *                           SAFETY DOCTRINE self-test — see mcpDormancy() below for the full contract. NOT
+ *                           promoted: security-classification heuristics deserve a human review pass before
+ *                           they can hard-block a build; kept conservative on purpose.
+ *   run_contract          — NEW (V9-INTEGRATE), ADVISORY-ONLY. Wraps forge-runcontract.cjs::check() against
+ *                           the MOST RECENT GENUINELY DISPATCHED run only (see runContractDoctorCheck() /
+ *                           latestDispatchedRunIdFor() below) — never every historical run, and, as of V9
+ *                           WAVE 2 (2026-07-22), never a "doctor-receipt-only" directory either (a dir this
+ *                           same file's own `--run <id>` CLI flag creates: a doctor.json snapshot + one
+ *                           synthetic doctor_run event, no run.json — that is a RECEIPT, not a dispatch, and
+ *                           evaluating its non-negotiables was never meaningful). When no genuinely dispatched
+ *                           run exists yet, this degrades honestly to a clean/neutral "no dispatched run to
+ *                           check yet" rather than naming a receipt directory's missing rules. Explicitly NOT
+ *                           enforced: FORGE_HARD_RULES.json's own `research-done` rule has ZERO historical
+ *                           call sites (documented in that file's own _doc HONEST GAPS #1) — every
+ *                           pre-existing dispatched run in this project would show it as genuinely missing, so
+ *                           making this check blocking today would immediately red every doctor run in every
+ *                           project that adopts it, which is exactly the false-red this plan says to avoid.
+ *                           A future pass MAY promote it once research_done has real call sites.
+ *   skill_evals            — NEW (wp-skill-evals, 2026-07-31), ADVISORY-ONLY. Wraps
+ *                           forge-skill-evals.cjs::runAll() — the per-skill binary-evals FOUNDATION piece
+ *                           (backlog item 1, YT-SWEEP-2026-07-31: per-skill evals.json + learnings.md).
+ *                           A skill with no evals.json is simply not evaluated. NOT enforced: no
+ *                           autonomous keep/revert loop exists yet (nightshift-gated, a later piece) — a
+ *                           real failure here is a review signal today, not yet a build gate.
+ *   skill_hygiene           — NEW (wp-disclosure-ab, 2026-07-31), ADVISORY-ONLY. Progressive-disclosure
+ *                           hygiene on EVERY skill under .claude/skills/ that has a SKILL.md (no opt-in,
+ *                           unlike skill_evals): frontmatter `description` present and <= 200 chars (the
+ *                           wp3b budget law), whole-file line count <= 500 (this project's own file-size
+ *                           guidance), and every ANCHORED path-shaped `` `backtick-code-span` `` reference
+ *                           in the body resolves to a real file (see skillHygiene()/extractSkillPathRefs()
+ *                           below for the exact, deliberately conservative extraction/anchor rules — no
+ *                           false positives on ordinary prose). NOT enforced: same reasoning as skill_evals
+ *                           — a real finding here (e.g. an over-long SKILL.md) is a review signal for the
+ *                           Skill Boss today, not yet a build gate.
+ *
+ * "PAKKET 2" (2026-08-01) — one further ADVISORY-ONLY check, reported under its OWN top-level key
+ * `report.advisory.run_liveness` (liveness is not completeness) with its own printSummary WARN line, exactly
+ * like backfill_continuity:
+ *   run_liveness  — ADVISORY. Wraps forge-runwatch.cjs::watch() over every run whose run.json CLAIMS to be
+ *                   running, and reports each one the events prove is not alive (finished_but_open /
+ *                   stalled / no_agent_activity / no_events), carrying runwatch's OWN terminal event lines
+ *                   as evidence. This is what makes forge-runwatch run automatically instead of only on
+ *                   request — see runLiveness()'s doc comment for the concrete 30+-hour failure it catches
+ *                   and for why it uses a much wider silence window than runwatch's interactive default.
+ *
+ * CONTEXT BUDGET (2026-08-01) — one further ADVISORY-ONLY check under its own top-level key
+ * `report.advisory.context_budget`, on the same footing as run_liveness:
+ *   context_budget — ADVISORY. Wraps forge-contextbudget.cjs::measure() over the ALWAYS-LOADED instruction
+ *                   chain (global CLAUDE.md, each of its @-includes, rules/ecc/common, the workspace and
+ *                   project CLAUDE.md, and the name+description of every skill), compares each post against
+ *                   a recorded baseline, and reports growth and dead @-includes. Two things make it
+ *                   permanently advisory: its token figures are ESTIMATES (characters/4, no tokenizer runs
+ *                   — the report says so in its own words), and most of what it counts lives OUTSIDE this
+ *                   project root, where this codebase reads but never writes. Its printSummary line is the
+ *                   only advisory printed on EVERY run rather than only on a finding, because the failure
+ *                   being guarded is silent growth: a number nobody sees is the state that let the skill
+ *                   list get truncated on 31 July with no warning at all.
+ *
+ * V9-INTEGRATE ENFORCEMENT OVERRIDE PATH (2026-07-22): a promoted-to-ENFORCED check's failure is recoverable
+ * without editing code — config/orchestration/FORGE_HARD_RULES.json's `doctor_check_overrides` array (see
+ * loadDoctorCheckOverrides() below) lets the owner log an explicit, reasoned, timestamped override for
+ * `unregistered_event` or `check_the_checks` (or a future promoted check) that turns a genuine false-red back
+ * into a visible-but-non-blocking PASS (never a silent one — see printSummary()'s `[OVERRIDDEN: ...]` tag).
+ * This is the SAME file forge-runcontract.cjs's own per-run overrides already live in, reused rather than
+ * inventing a second override mechanism.
  */
 const fs = require('fs');
 const path = require('path');
@@ -47,6 +149,36 @@ const store = require('./forge-store.cjs');
 // the tool-policy sub-check honestly (ok:false, explicit reason) rather than crash the entire doctor run.
 let policy = null;
 try { policy = require('./forge-policy.cjs'); } catch { policy = null; }
+// forge-sync.cjs / forge-verify.cjs are SOFT sibling dependencies too, for the same reason: sync_completeness
+// and unregistered_event are ADVISORY, so a hermetic fixture that only ships forge-doctor.cjs + forge-store.cjs
+// must degrade those two sub-checks honestly rather than crash the whole doctor run. Both modules guard their
+// CLI body behind `require.main === module`, so requiring them here never triggers their CLI side effects.
+let syncTool = null;
+try { syncTool = require('./forge-sync.cjs'); } catch { syncTool = null; }
+let verifyTool = null;
+try { verifyTool = require('./forge-verify.cjs'); } catch { verifyTool = null; }
+// V9-INTEGRATE (2026-07-22): forge-runcontract.cjs is a SOFT sibling dependency too, same reasoning as
+// forge-sync.cjs/forge-verify.cjs above — run_contract is ADVISORY-ONLY, so a hermetic fixture that only
+// ships forge-doctor.cjs + forge-store.cjs must degrade it honestly rather than crash the whole doctor run.
+let runContractTool = null;
+try { runContractTool = require('./forge-runcontract.cjs'); } catch { runContractTool = null; }
+// wp-skill-evals (2026-07-31): forge-skill-evals.cjs is a SOFT sibling dependency too, same reasoning as
+// syncTool/verifyTool/runContractTool above — skill_evals is ADVISORY-ONLY, so a hermetic fixture that
+// only ships forge-doctor.cjs + forge-store.cjs must degrade it honestly rather than crash the whole
+// doctor run.
+let skillEvalsTool = null;
+try { skillEvalsTool = require('./forge-skill-evals.cjs'); } catch { skillEvalsTool = null; }
+// "pakket 2" (2026-08-01): forge-runwatch.cjs is a SOFT sibling dependency too, same reasoning as the four
+// above — run_liveness is ADVISORY-ONLY. forge-runwatch is read-only and guards its CLI behind
+// `require.main === module`, so requiring it here has no side effects.
+let runwatchTool = null;
+try { runwatchTool = require('./forge-runwatch.cjs'); } catch { runwatchTool = null; }
+// 2026-08-01: forge-contextbudget.cjs is a SOFT sibling dependency on the same terms — context_budget is
+// ADVISORY-ONLY and the meter is strictly read-only (it opens the always-loaded instruction chain, most of
+// which lives OUTSIDE this project root, and never writes any of it — see that file's header on the
+// project boundary). Its absence degrades to an honest "unavailable", never a doctor failure.
+let contextBudgetTool = null;
+try { contextBudgetTool = require('./forge-contextbudget.cjs'); } catch { contextBudgetTool = null; }
 
 const NODE = process.execPath;
 const DASH_SPA = ['server.cjs', 'index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css'];
@@ -604,21 +736,771 @@ function backfillContinuity(root) {
   return { ok: warnings.length === 0, checkedRuns: runIds.length, applicableRuns, warnings };
 }
 
+// ===========================================================================================================
+// WAVE A / A2 (2026-07-18) — doctor completeness checks. All four are ADVISORY-ONLY (see the header doc
+// comment above for why); each function below is a pure `(root) -> {ok, ...}` reader, mirroring the shape of
+// every other check in this file, so they compose the same way in runDoctor()/printSummary().
+// ===========================================================================================================
+
+// --- sync-completeness: every real skill dir / forge-bin tool / agent .md is present in the forge-sync.cjs
+// FILES manifest (listSystemFiles). forge-bin tools and agent .md files are DYNAMICALLY globbed by
+// forge-sync's SYSTEM_GLOB (any file currently on disk is, by construction, already covered) — re-checked
+// here anyway as an honest regression guard in case a future SYSTEM_GLOB narrowing ever drops coverage.
+// skills/**/SKILL.md is NOT auto-globbed (each path must be added to forge-sync's SYSTEM[] by hand) — this is
+// the real, evidence-proven drift surface (the "forge-router silent-drift bug" the plan's invariant #1 cites).
+function listSkillFiles(root) {
+  const base = path.join(claudeDir(root), 'skills');
+  const cd = claudeDir(root);
+  const out = [];
+  (function walk(dir) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && e.name === 'SKILL.md') out.push(path.relative(cd, p).split(path.sep).join('/'));
+    }
+  })(base);
+  return out.sort();
+}
+function syncCompleteness(root) {
+  if (!syncTool) return { ok: false, reason: 'forge-sync.cjs module not available (sync-completeness unavailable)', missing: [] };
+  const cd = claudeDir(root);
+  let manifestList;
+  try { manifestList = syncTool.listSystemFiles(cd); } catch (e) { return { ok: false, reason: 'forge-sync.listSystemFiles threw: ' + e.message, missing: [] }; }
+  const manifestSet = new Set(manifestList.map((r) => r.split(path.sep).join('/')));
+  const skillFiles = listSkillFiles(root);
+  const binFiles = listByExt(path.join(cd, 'forge-bin'), ['.cjs', '.ps1', '.cmd', '.sh', '.md', '.bat']).map((p) => 'forge-bin/' + path.basename(p));
+  const agentFiles = listByExt(path.join(cd, 'agents'), ['.md']).map((p) => 'agents/' + path.basename(p));
+  const missing = [];
+  for (const rel of skillFiles) if (!manifestSet.has(rel)) missing.push(rel);
+  for (const rel of binFiles) if (!manifestSet.has(rel)) missing.push(rel);
+  for (const rel of agentFiles) if (!manifestSet.has(rel)) missing.push(rel);
+  return { ok: missing.length === 0, checkedSkills: skillFiles.length, checkedBinTools: binFiles.length, checkedAgents: agentFiles.length, missing };
+}
+
+// --- check-the-checks: detect a "green no-op" — a *.test.cjs suite that runTests() reports as passing
+// (passed > 0) but that contains ZERO real assertion call sites in its own source. Matches this codebase's two
+// real local-helper conventions (`t('name', ...)` and `test('name', ...)`) plus direct `assert(...)`/
+// `assert.foo(...)` calls, so it stays accurate across every existing suite regardless of which convention it
+// uses (proven against all 51 real forge-bin/*.test.cjs suites at build time — every one has >=1 site).
+const ASSERTION_SITE_RE = /\b(t|test)\s*\(\s*['"`]|\bassert(\.[A-Za-z]+)?\s*\(/g;
+function countAssertionSites(text) {
+  let n = 0, m; ASSERTION_SITE_RE.lastIndex = 0;
+  while ((m = ASSERTION_SITE_RE.exec(text)) !== null) n++;
+  return n;
+}
+function checkTheChecks(root, testsResult) {
+  const dir = path.join(claudeDir(root), 'forge-bin');
+  const files = listByExt(dir, ['.cjs']).filter((f) => f.endsWith('.test.cjs'));
+  const perSuite = (testsResult && Array.isArray(testsResult.perSuite)) ? testsResult.perSuite : [];
+  const noOp = [];
+  for (const f of files) {
+    const base = path.basename(f);
+    let text; try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    if (countAssertionSites(text) > 0) continue; // has real assertion call sites -> not a no-op
+    const suiteResult = perSuite.find((s) => s.suite === base);
+    // Only flag when the suite ALSO reported a passing tally (passed>0) with zero real assertion sites — that
+    // exact combination means the printed tally cannot be genuine. A 0-assertion suite that also reports 0
+    // passed is already caught honestly by runTests' own vacuous-tally rejection (suiteOk=false) — not a NEW
+    // finding here, so it is intentionally not double-flagged.
+    if (suiteResult && suiteResult.passed > 0) {
+      noOp.push({ suite: base, passed: suiteResult.passed, reason: 'reports a passing tally but has 0 real assertion call sites (t(...)/test(...)/assert(...)) in its source — the tally cannot be genuine' });
+    }
+  }
+  return { ok: noOp.length === 0, checked: files.length, noOp };
+}
+
+// --- memory-discipline: FORGE_MEMORY.md is absent/empty, or still carries an unfilled scaffold-placeholder
+// marker. Deliberately narrow (angle-bracket ALL-CAPS/underscore tokens + explicit TODO/TBD/FIXME markers)
+// so it never false-positives on ordinary lowercase prose placeholders this project's real memory legitimately
+// uses (e.g. "<boss>" as a variable reference in a sentence) — proven clean against the real FORGE_MEMORY.md.
+const MEMORY_PLACEHOLDER_RE = /<PLACEHOLDER>|<TODO>|<TBD>|<FILL[_ ]IN>|<[A-Z][A-Z0-9]*(_[A-Z0-9]+)+>|\[TODO\]|\[TBD\]|\bTODO:|\bFIXME\b|\bTBD\b/;
+function memoryDiscipline(root) {
+  const file = path.join(claudeDir(root), 'FORGE_MEMORY.md');
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); }
+  catch { return { ok: false, present: false, reason: 'FORGE_MEMORY.md is absent (expected at .claude/FORGE_MEMORY.md)', placeholderLines: [] }; }
+  if (!text.trim()) return { ok: false, present: true, reason: 'FORGE_MEMORY.md exists but is empty', placeholderLines: [] };
+  const placeholderLines = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) if (MEMORY_PLACEHOLDER_RE.test(lines[i])) placeholderLines.push(i + 1);
+  return { ok: placeholderLines.length === 0, present: true, reason: placeholderLines.length ? placeholderLines.length + ' unfilled placeholder line(s)' : '', placeholderLines };
+}
+
+// --- unregistered-event: a forge-bin/*.cjs tool's local logEvent(...) wrapper is called with a literal
+// event_type string that log-event.cjs's KNOWN_EVENT_TYPES does not recognize (it would be STRICT-REJECTED,
+// exit 2, at write time — see strictEventCheck above). Cross-checked against forge-verify.cjs's own
+// TERMINAL_TYPES/BACKBONE mirror too, per the plan's 3-place event-registration discipline.
+/** stripJsComments(text) -> the same source with // line comments and block comments removed.
+ *  String-literal aware, single left-to-right pass: while inside a quoted string a `//` or a block-comment
+ *  opener is just text, and while inside a comment a quote character is just text. That statefulness is the
+ *  whole point — the naive stateless literal regex below cannot tell the two apart, which is exactly how an
+ *  APOSTROPHE in comment prose used to flip quote parity and hide every event type after it (see
+ *  extractKnownEventTypesFromSource). Same idea forge-event-wiring.test.cjs already applies before reading
+ *  app.js's taskStatus() buckets, generalized here to trailing and block comments as well.
+ *  Newlines are preserved (line structure stays intact); a block comment collapses to a single space so it
+ *  can never weld two tokens together. Not a JS parser: a `/` that starts a regex literal is out of scope,
+ *  which is fine for the string-literal lists this is used on. */
+function stripJsComments(text) {
+  let out = '';
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '/' && next === '/') {
+      while (i < n && text[i] !== '\n') i++;   // the '\n' itself is kept by the default branch
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i++;
+      i += 2;
+      out += ' ';
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < n) {
+        if (text[i] === '\\') { out += text[i] + (text[i + 1] || ''); i += 2; continue; }
+        out += text[i];
+        const closed = text[i] === quote;
+        i++;
+        if (closed) break;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+/** extractKnownEventTypesFromSource(text) -> Set of the event types log-event.cjs really registers.
+ *  Comments are stripped from the WHOLE source FIRST — before the Set literal is located and before any
+ *  string literal is read — so neither the locating regex nor the literal scan can be steered by comment
+ *  prose. Measured on this project's real log-event.cjs when the strip was missing (2026-08-01): 186 types
+ *  registered, 175 seen, 20 real types silently invisible to the ENFORCED unregistered_event gate, and 9
+ *  junk "types" invented out of comment text. */
+function extractKnownEventTypesFromSource(text) {
+  const m = stripJsComments(text).match(/KNOWN_EVENT_TYPES\s*=\s*new Set\(\s*\[([\s\S]*?)\]\s*\)/);
+  if (!m) return null;
+  const out = new Set();
+  const re = /'([^']+)'|"([^"]+)"/g;
+  let mm;
+  while ((mm = re.exec(m[1])) !== null) out.add(mm[1] || mm[2]);
+  return out;
+}
+const EVENT_TYPE_SHAPE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/; // snake_case, matches KNOWN_EVENT_TYPES' own naming convention
+/** extractLoggedEventTypes — for every `logEvent(` call site, reads only the argument text BEFORE the call's
+ *  object-literal payload (its first `{`) — every real logEvent() wrapper in this codebase places the literal
+ *  event_type string there, whether as the 1st positional arg (forge-paperclip.cjs's `logEvent(type, obj)`) or
+ *  the 2nd/3rd (forge-artifact.cjs/forge-deeplearn.cjs/forge-mindmap.cjs/forge-prd.cjs/forge-registry.cjs's
+ *  `logEvent(runId, eventType, extra)`). This avoids ever matching an unrelated string INSIDE the payload
+ *  object (a `note`/`evidence` value). A dynamically-built event_type (e.g. `ev.event_type`, a variable) has
+ *  no quoted literal to find and is honestly skipped — never guessed. Best-effort static scan only; it does
+ *  not attempt to resolve every possible spawnSync/execFileSync call shape in the codebase. */
+function extractLoggedEventTypes(text) {
+  const out = new Set();
+  const callRe = /\blogEvent\s*\(/g;
+  let cm;
+  while ((cm = callRe.exec(text)) !== null) {
+    const start = cm.index + cm[0].length;
+    let depth = 1, i = start, braceIdx = -1;
+    for (; i < text.length && depth > 0; i++) {
+      const ch = text[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (ch === '{' && braceIdx === -1) braceIdx = i;
+    }
+    const argsPrefix = text.slice(start, braceIdx !== -1 ? braceIdx : i);
+    const litRe = /'([^']*)'|"([^"]*)"/g;
+    let lm;
+    while ((lm = litRe.exec(argsPrefix)) !== null) {
+      const lit = lm[1] !== undefined ? lm[1] : lm[2];
+      if (EVENT_TYPE_SHAPE_RE.test(lit)) out.add(lit);
+    }
+  }
+  return out;
+}
+function unregisteredEvent(root) {
+  const logEventPath = path.join(claudeDir(root), 'forge-dashboard', 'log-event.cjs');
+  let leText;
+  try { leText = fs.readFileSync(logEventPath, 'utf8'); }
+  catch (e) { return { ok: false, reason: 'could not read log-event.cjs: ' + e.message, unregistered: [] }; }
+  const known = extractKnownEventTypesFromSource(leText);
+  if (!known) return { ok: false, reason: 'could not statically parse KNOWN_EVENT_TYPES from log-event.cjs', unregistered: [] };
+  const verifySet = new Set();
+  if (verifyTool) {
+    try {
+      for (const t of verifyTool.TERMINAL_TYPES || []) verifySet.add(t);
+      for (const t of verifyTool.BACKBONE || []) verifySet.add(t);
+    } catch { /* best effort — verify cross-check stays empty */ }
+  }
+  const dir = path.join(claudeDir(root), 'forge-bin');
+  const files = listByExt(dir, ['.cjs']).filter((f) => !f.endsWith('.test.cjs'));
+  const unregistered = [];
+  for (const f of files) {
+    let text; try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    for (const type of extractLoggedEventTypes(text)) {
+      if (known.has(type)) continue;
+      const missingFrom = ['log-event.KNOWN_EVENT_TYPES'];
+      if (verifyTool && !verifySet.has(type)) missingFrom.push('forge-verify.allow-list');
+      unregistered.push({ file: path.relative(root, f).split(path.sep).join('/'), event_type: type, missingFrom });
+    }
+  }
+  return { ok: unregistered.length === 0, checkedFiles: files.length, unregistered };
+}
+
+// --- mcp-dormancy (WAVE G / G-INTEGRATE, 2026-07-19): the MCP-as-client SAFETY DOCTRINE self-test.
+// Reads config/orchestration/mcp-registry.json + mcp-grants.json (+ an owner-authored real `.mcp.json` MCP
+// host config at the project root, if one exists — NOT config/mcp/.mcp.json.example, which is a reference
+// template, never live config) and asserts, purely by reading JSON (never by requiring forge-mcp-gate.cjs,
+// so a malformed/adversarial fixture can be reported as a finding instead of crashing the whole doctor run):
+//   (a) no registry server is status:"active"/active:true without being listed in mcp-opt-in.json's
+//       opted_in[] (the owner-authored dormancy marker), and no server configured in a real `.mcp.json`
+//       host file is missing from that same opt-in list;
+//   (b) no boss's mcp-grants.json allow_servers entry exceeds that boss's own declared max_tier, and no
+//       allow_servers entry references a server id absent from the registry;
+//   (c) no boss's allow_servers ever contains a tier-3 (WRITE-PRIMITIVE) server — tier-3 must never be a
+//       standing/default grant, regardless of the boss's numeric max_tier (doctrine #3/#4).
+// ADVISORY-ONLY (folded into report.advisory.completeness, same discipline as the other 4 WAVE A/A2 checks
+// above) — a brand-new heuristic must never flip a healthy project's doctor run red the first time it ships.
+function mcpDormancy(root, opts) {
+  opts = opts || {};
+  const cd = claudeDir(root);
+  const registryPath = opts.registryPath || path.join(cd, 'config', 'orchestration', 'mcp-registry.json');
+  const grantsPath = opts.grantsPath || path.join(cd, 'config', 'orchestration', 'mcp-grants.json');
+  const optInPath = opts.optInPath || path.join(cd, 'config', 'orchestration', 'mcp-opt-in.json');
+  const mcpJsonPath = opts.mcpJsonPath || path.join(root, '.mcp.json'); // real owner-authored MCP host config — NOT the .example template
+
+  let registry;
+  try { registry = JSON.parse(fs.readFileSync(registryPath, 'utf8')); }
+  catch (e) { return { ok: false, reason: 'could not read/parse mcp-registry.json: ' + e.message, violations: [] }; }
+  if (!registry || !Array.isArray(registry.servers)) return { ok: false, reason: 'mcp-registry.json has no "servers" array', violations: [] };
+
+  let grants;
+  try { grants = JSON.parse(fs.readFileSync(grantsPath, 'utf8')); }
+  catch (e) { return { ok: false, reason: 'could not read/parse mcp-grants.json: ' + e.message, violations: [] }; }
+  if (!grants || !grants.bosses || typeof grants.bosses !== 'object') return { ok: false, reason: 'mcp-grants.json has no "bosses" object', violations: [] };
+
+  let optIn = { opted_in: [] };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(optInPath, 'utf8'));
+    if (parsed && Array.isArray(parsed.opted_in)) optIn = parsed;
+  } catch { /* missing/malformed opt-in file -> dormant default; the forge-mcp-gate live path hard-errors on a MALFORMED (not missing) file, but this advisory reader stays lenient by design */ }
+  const optedIn = new Set(optIn.opted_in);
+
+  const violations = [];
+
+  // (a) no server auto-active without an explicit opt-in marker
+  for (const s of registry.servers) {
+    if (!s || typeof s.id !== 'string') continue;
+    const autoActive = s.status === 'active' || s.active === true;
+    if (autoActive && !optedIn.has(s.id)) {
+      violations.push({ type: 'auto_active_without_optin', server: s.id, detail: 'registry entry is active/auto-active but "' + s.id + '" is not listed in mcp-opt-in.json opted_in[]' });
+    }
+  }
+  let mcpJson = null;
+  try { mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8')); } catch { mcpJson = null; }
+  if (mcpJson && mcpJson.mcpServers && typeof mcpJson.mcpServers === 'object') {
+    for (const id of Object.keys(mcpJson.mcpServers)) {
+      if (!optedIn.has(id)) violations.push({ type: 'mcp_json_server_without_optin', server: id, detail: 'a real .mcp.json configures server "' + id + '" but it is not listed in mcp-opt-in.json opted_in[]' });
+    }
+  }
+
+  // (b)+(c) per-boss grant self-consistency
+  const serverById = new Map(registry.servers.filter((s) => s && typeof s.id === 'string').map((s) => [s.id, s]));
+  for (const [bossId, g] of Object.entries(grants.bosses)) {
+    if (!g || typeof g.max_tier !== 'number' || !Array.isArray(g.allow_servers)) {
+      violations.push({ type: 'malformed_grant', boss: bossId, detail: 'grant entry missing max_tier/allow_servers' });
+      continue;
+    }
+    for (const serverId of g.allow_servers) {
+      const entry = serverById.get(serverId);
+      if (!entry) { violations.push({ type: 'unknown_server_in_grant', boss: bossId, server: serverId, detail: 'grant references a server id not present in mcp-registry.json' }); continue; }
+      // Type-normalize the registry tier before comparing. A poisoned config (tier as a string like '3',
+      // a float, out-of-range, or missing) must NOT slip past these guards — the enforcement gate
+      // (forge-mcp-gate.loadRegistry) hard-rejects a non-number tier, and this advisory check is deliberately
+      // decoupled from it, so it must replicate that validation itself rather than trust the JSON shape.
+      // (Found by the Wave-G break-swarm: `tier:'3'` defeated the strict `=== 3` / `> max_tier` guards.)
+      const t = (typeof entry.tier === 'number') ? entry.tier
+        : (typeof entry.tier === 'string' && /^\d+$/.test(entry.tier.trim()) ? Number(entry.tier.trim()) : NaN);
+      if (!Number.isInteger(t) || t < 0 || t > 3) { violations.push({ type: 'malformed_server_tier', boss: bossId, server: serverId, tier: entry.tier, detail: 'server tier is not an integer 0-3 (poisoned/invalid registry entry) — treated as a violation, never all-clear' }); continue; }
+      if (t === 3) { violations.push({ type: 'tier3_default_grant', boss: bossId, server: serverId, detail: 'tier-3 write-primitive must never be a standing/default grant (doctrine #3/#4)' }); continue; }
+      if (t > g.max_tier) { violations.push({ type: 'grant_exceeds_max_tier', boss: bossId, server: serverId, tier: t, max_tier: g.max_tier, detail: 'server tier exceeds this boss\'s declared max_tier' }); }
+    }
+  }
+
+  return { ok: violations.length === 0, checkedServers: registry.servers.length, checkedBosses: Object.keys(grants.bosses).length, violations };
+}
+
+// ===========================================================================================================
+// V9-INTEGRATE (2026-07-22) — run-contract wiring + the doctor_check_overrides recovery path. See the header
+// doc comment ("V9-INTEGRATE ENFORCEMENT OVERRIDE PATH") for the full model.
+// ===========================================================================================================
+
+/** rankRunCandidates(root, opts) -> [{name, mtimeMs}, ...] sorted newest-first. Shared ranking core behind
+ *  BOTH latestRunIdFor() and latestDispatchedRunIdFor() below — one recency algorithm, never two that could
+ *  silently drift apart. Ranks by REAL recency: the latest of (a) events.jsonl's own mtime — the truest
+ *  "last real activity" signal, updated on every real event append — (b) run.json's mtime, and (c) the run
+ *  directory's own mtime, taking the max of whichever of these exist. Name is only a TIE-BREAK (descending)
+ *  for the vanishingly-rare case of two runs with an identical mtime down to the millisecond.
+ *  opts.requireDispatched:true (V9 WAVE 2, 2026-07-22 — forge-audit-loop's own doctor-receipt-vs-real-run
+ *  gap) additionally requires a REAL, parseable run.json object — a "doctor-receipt-only" directory (created
+ *  solely by this file's own `--run <id>` CLI flag: a doctor.json snapshot + a single synthetic doctor_run
+ *  event in events.jsonl, but NO run.json at all — see this file's own CLI body below) is never mistaken for
+ *  a genuine DISPATCHED Forge run, which always has a real run.json written by the orchestration layer.
+ *  Without opts.requireDispatched, behavior is byte-for-byte the original "any real run dir" filter (must
+ *  have a real run.json OR events.jsonl) — unchanged. */
+function rankRunCandidates(root, opts) {
+  opts = opts || {};
+  const dir = path.join(claudeDir(root), 'forge-runs');
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const candidates = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const runDir = path.join(dir, e.name);
+    const eventsPath = path.join(runDir, 'events.jsonl');
+    const runJsonPath = path.join(runDir, 'run.json');
+    const hasEvents = fs.existsSync(eventsPath);
+    const hasRunJson = fs.existsSync(runJsonPath);
+    if (opts.requireDispatched) {
+      let parsedRunJson = null;
+      if (hasRunJson) { try { parsedRunJson = JSON.parse(fs.readFileSync(runJsonPath, 'utf8')); } catch { parsedRunJson = null; } }
+      if (!parsedRunJson || typeof parsedRunJson !== 'object' || Array.isArray(parsedRunJson)) continue; // no real run.json -> not a genuine dispatched run
+    } else if (!hasEvents && !hasRunJson) {
+      continue; // not a real Forge run dir at all — never a pickable candidate
+    }
+    let mtimeMs = 0;
+    try {
+      if (hasEvents) mtimeMs = Math.max(mtimeMs, fs.statSync(eventsPath).mtimeMs);
+      if (hasRunJson) mtimeMs = Math.max(mtimeMs, fs.statSync(runJsonPath).mtimeMs);
+      mtimeMs = Math.max(mtimeMs, fs.statSync(runDir).mtimeMs);
+    } catch { /* a stat race on an individual file never disqualifies the candidate — 0/partial mtime is still real evidence */ }
+    candidates.push({ name: e.name, mtimeMs });
+  }
+  candidates.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+  return candidates;
+}
+/** latestRunIdFor — the single most-recent run id under <root>/.claude/forge-runs/, ANY real run directory
+ *  (a run.json OR an events.jsonl is enough — this is the general-purpose "most recently touched run"
+ *  picker; see latestDispatchedRunIdFor() below for the stricter "genuinely dispatched" variant used by
+ *  runContractDoctorCheck()). V9-fix (2026-07-22 — break-swarm DEFECT 4): the OLD implementation picked
+ *  "latest" by a plain lexical name sort — a clean decoy run whose directory name simply sorts higher (e.g.
+ *  "zzz-decoy") masked a genuinely NEWER, real-violating run whose name happens to sort lower. Now ranks by
+ *  REAL recency via rankRunCandidates() — see that function's doc for the exact algorithm. null when no real
+ *  run directories exist yet (a fresh project) or the directory can't be read — never thrown. */
+function latestRunIdFor(root) {
+  const candidates = rankRunCandidates(root, {});
+  return candidates.length ? candidates[0].name : null;
+}
+/** latestDispatchedRunIdFor — V9 WAVE 2 (2026-07-22, forge-audit-loop's own honest-realization pass): the
+ *  most-recent run id that carries a REAL, parseable run.json — i.e. a genuinely DISPATCHED Forge run, never
+ *  a "doctor-receipt-only" directory (see rankRunCandidates()'s opts.requireDispatched doc above). Used by
+ *  runContractDoctorCheck() below so its advisory never mistakes `forge-doctor --run <id>`'s own receipt
+ *  directory (created by THIS file's CLI body — doctor.json + one synthetic doctor_run event, no run.json)
+ *  for a real dispatched run whose non-negotiables are worth evaluating. null when no genuinely dispatched
+ *  run exists yet under forge-runs/ (a fresh project, or a project where every run so far is receipt-only) —
+ *  never thrown. */
+function latestDispatchedRunIdFor(root) {
+  const candidates = rankRunCandidates(root, { requireDispatched: true });
+  return candidates.length ? candidates[0].name : null;
+}
+/** runContractDoctorCheck — ADVISORY-ONLY (see header doc). Evaluates forge-runcontract.cjs::check() against
+ *  ONLY the most recent GENUINELY DISPATCHED run (latestDispatchedRunIdFor() — V9 WAVE 2, 2026-07-22: never a
+ *  doctor-receipt-only directory, see that function's doc above), never every historical run (which would
+ *  just re-surface the same documented gap — research-done has no historical call sites — hundreds of times
+ *  over) and never a receipt-only directory this same file's own `--run` CLI flag creates. When there is no
+ *  genuinely dispatched run at all yet (a fresh project, or a project where forge-doctor has only ever been
+ *  run in receipt mode), this degrades honestly to a clean/neutral "no dispatched run to check yet" —
+ *  never fabricates a "rules missing" verdict against a directory that was never a real dispatch. domain is
+ *  read best-effort from that run's own run.json (`domain` field if present, else the free-text
+ *  `project_type` — forge-runcontract.cjs's ruleApplies() degrades a domain it doesn't recognize to "no
+ *  domain-scoped rule applies", never a fabricated match). */
+function runContractDoctorCheck(root) {
+  if (!runContractTool) return { ok: true, reason: 'forge-runcontract.cjs module not available (run-contract check unavailable)', run_id: null };
+  const runId = latestDispatchedRunIdFor(root);
+  if (!runId) return { ok: true, reason: 'no dispatched run to check yet', run_id: null };
+  let domain = null;
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(claudeDir(root), 'forge-runs', runId, 'run.json'), 'utf8'));
+    if (meta && (meta.domain || meta.project_type)) domain = String(meta.domain || meta.project_type);
+  } catch { /* run.json missing/malformed — the "always" rules still run with domain:null, never a hard fail */ }
+  try {
+    const result = runContractTool.check({ run_id: runId, domain }, { root });
+    return Object.assign({}, result, { reason: result.ok ? '' : (result.missing.length + ' required rule(s) missing on the latest dispatched run') });
+  } catch (e) {
+    return { ok: false, reason: 'forge-runcontract check threw: ' + e.message, run_id: runId };
+  }
+}
+
+/** skillEvalsDoctorCheck(root) -> {ok, reason, skills, summary} — ADVISORY-ONLY wrapper around
+ *  forge-skill-evals.cjs::runAll() (wp-skill-evals, backlog item 1 / YT-SWEEP-2026-07-31, 2026-07-31 —
+ *  see that module's own header for the full evals.json schema and assertion-type catalog). A skill with
+ *  no evals.json is simply not evaluated by that module — this check never invents a requirement for a
+ *  skill that hasn't opted in yet. Degrades honestly (never throws) when the sibling module is
+ *  unavailable (soft dependency, same posture as syncTool/verifyTool/runContractTool above) or when the
+ *  underlying runAll() call itself throws (a malformed --skill filter can never reach here — this call
+ *  never passes one). Zero skills carrying an evals.json yet is vacuously ok:true (a fresh project must
+ *  never doctor-fail for opting into nothing). NOT promoted to ENFORCED: this is the FOUNDATION piece of
+ *  the self-improvement substrate — no autonomous keep/revert loop exists yet (that stays nightshift-
+ *  gated, a later piece), so a real assertion failure here is a signal to review by hand, not yet a build
+ *  gate. */
+function skillEvalsDoctorCheck(root) {
+  if (!skillEvalsTool) return { ok: true, reason: 'forge-skill-evals.cjs module not available (skill-evals check unavailable)', skills: [], summary: null };
+  try {
+    const out = skillEvalsTool.runAll({ root });
+    return {
+      ok: out.ok,
+      reason: out.ok ? '' : (out.summary.failedSkills + ' skill(s) with a failing/malformed eval'),
+      skills: out.skills,
+      summary: out.summary,
+    };
+  } catch (e) {
+    return { ok: false, reason: 'forge-skill-evals check threw: ' + e.message, skills: [], summary: null };
+  }
+}
+
+// ===========================================================================================================
+// "pakket 2" (2026-08-01) — RUN LIVENESS as a doctor advisory: forge-runwatch.cjs finally runs by itself.
+//
+// THE CONCRETE FAILURE THIS EXISTS TO CATCH: run forge-2026-07-29-cc-finish sat on status "running" for 30+
+// hours — a `run_completed` event had been logged and 135 further events followed, but nothing ever compared
+// the LEDGER (run.json's `status`) against the EVIDENCE (events.jsonl). forge-runwatch.cjs could answer that
+// question exactly, terminal event line included, but it only ever ran when someone asked it to, so nobody
+// asked. Wiring it into the doctor — which runs before every ship/handoff — is what makes it automatic.
+//
+// TWO HONEST WINDOWS, NOT ONE: forge-runwatch's own interactive default is 15 minutes, right for a Lead
+// watching a live swarm. That is far too tight for a batch sweep over every historical run — an agent
+// legitimately thinking for 20 minutes would be branded dead. LIVENESS_WINDOW_MS below is deliberately much
+// wider (6h): well beyond any real single turn, far short of the 30+ hours actually observed. The window is
+// an explicit parameter (opts.windowMs) so the test can prove the exclusion of a LIVE run is really about
+// elapsed silence and not about that fixture being special.
+//
+// ADVISORY-ONLY, and it stays that way: a stale ledger is a bookkeeping error to correct by hand, not a
+// reason to fail a build. It is reported under report.advisory.run_liveness with its own printSummary line,
+// exactly like backfill_continuity.
+const LIVENESS_WINDOW_MS = 6 * 60 * 60 * 1000;
+// Status values that CLAIM the run is still going. Anything else (completed, done, failed, aborted, absent)
+// is a ledger that is not claiming liveness, so there is nothing to contradict — never a finding.
+const LIVENESS_RUNNING_STATUSES = new Set(['running', 'in_progress', 'in-progress', 'active', 'dispatched', 'started']);
+
+/** runLiveness(root, opts) -> {ok, checked, findings, windowMs, reason}
+ *  For every run whose run.json CLAIMS to be running, asks forge-runwatch.cjs what the events actually show
+ *  and reports the contradictions, each with runwatch's OWN evidence attached (never a re-derived verdict):
+ *    finished_but_open  — every started agent has a real terminal event AND the run has been silent past the
+ *                         window: the work is provably over, the ledger just never said so. (The silence
+ *                         requirement is what keeps a genuinely live run between two waves out of this.)
+ *    stalled            — an agent started, never terminated, and has been silent past the window.
+ *    no_agent_activity  — events exist but not one agent ever started, and it has been silent past the window.
+ *    no_events          — the ledger says running and the run never logged a single event; age is measured
+ *                         from run.json's own started_at (falling back to its mtime).
+ *  A run directory with no parseable run.json is skipped entirely: nothing there claims to be running, so
+ *  there is nothing to contradict. Missing forge-runs directory / missing forge-runwatch degrade to a clean,
+ *  explicitly-reasoned ok:true — a fresh project must never produce a fabricated finding. */
+function runLiveness(root, opts) {
+  opts = opts || {};
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const windowMs = (Number.isFinite(opts.windowMs) && opts.windowMs > 0) ? opts.windowMs : LIVENESS_WINDOW_MS;
+  if (!runwatchTool) return { ok: true, checked: 0, findings: [], windowMs, reason: 'forge-runwatch.cjs module not available (run-liveness check unavailable)' };
+  const runsDir = path.join(claudeDir(root), 'forge-runs');
+  let entries;
+  try { entries = fs.readdirSync(runsDir, { withFileTypes: true }); }
+  catch { return { ok: true, checked: 0, findings: [], windowMs, reason: 'no forge-runs directory yet' }; }
+  const findings = [];
+  let checked = 0;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const runJsonPath = path.join(runsDir, e.name, 'run.json');
+    let meta = null;
+    try { meta = JSON.parse(fs.readFileSync(runJsonPath, 'utf8')); } catch { continue; } // no real ledger -> nothing claims "running"
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) continue;
+    const status = String(meta.status == null ? '' : meta.status).trim().toLowerCase();
+    if (!LIVENESS_RUNNING_STATUSES.has(status)) continue;
+    checked++;
+    const st = runwatchTool.watch(e.name, { runsDir, now, stallMs: windowMs });
+    if (st == null) {
+      let startedAt = Date.parse(meta.started_at || meta.startedAt || '');
+      if (!Number.isFinite(startedAt)) { try { startedAt = fs.statSync(runJsonPath).mtimeMs; } catch { startedAt = now; } }
+      const silentMs = now - startedAt;
+      if (silentMs >= windowMs) {
+        findings.push({
+          run_id: e.name, status, kind: 'no_events', overall: 'no-events', silent_ms: silentMs,
+          last_event_at: null, counts: null, evidence: [], stalled_agents: [],
+          detail: 'run.json says "' + status + '" but this run never logged a single event',
+        });
+      }
+      continue;
+    }
+    const silentMs = st.lastEventAt == null ? null : (now - st.lastEventAt);
+    const silentPastWindow = silentMs == null || silentMs >= windowMs;
+    let kind = null, detail = '';
+    if (st.overall === 'stalled') {
+      kind = 'stalled';
+      detail = st.counts.stalled + ' agent(s) started and never reported a terminal event';
+    } else if (st.overall === 'done' && silentPastWindow) {
+      kind = 'finished_but_open';
+      detail = 'every started agent has a real terminal event (' + st.evidence.length + ' proof line(s)) — the work is over, the ledger still says "' + status + '"';
+    } else if (st.overall === 'empty' && silentPastWindow) {
+      kind = 'no_agent_activity';
+      detail = 'events exist but no agent ever started';
+    }
+    if (!kind) continue;
+    findings.push({
+      run_id: e.name, status, kind, overall: st.overall, silent_ms: silentMs, last_event_at: st.lastEventAt,
+      counts: st.counts, evidence: st.evidence, stalled_agents: st.stalledAgents, detail,
+    });
+  }
+  return { ok: findings.length === 0, checked, findings, windowMs, reason: '' };
+}
+
+// ===========================================================================================================
+// wp-disclosure-ab (2026-07-31) — progressive-disclosure hygiene as a doctor advisory (backlog item 12,
+// YT-SWEEP-2026-07-31, 6 source videos: zKBPwDpBfhs, WMi0BLDLAjk, 7s9Fnorg3eI, HCwfRe5EHGQ, fOxC44g8vig,
+// JN7QCdvJwwM — see .claude/forge-research/YT-SWEEP-2026-07-31.md item #12). Built on the forge-skill-evals.cjs
+// FOUNDATION piece above (same ADVISORY-ONLY posture, same "a skill dir is scanned independently — one bad
+// skill never crashes the whole check" discipline).
+// ===========================================================================================================
+const SKILL_DESCRIPTION_MAX_CHARS = 200; // the wp3b description-length budget law — see forge-skill-evals.cjs's
+  // own `frontmatter_field` max_length for the SAME budget wired as a per-skill, opt-in, machine-checkable
+  // assertion; this check applies it project-wide, unconditionally, to every skill.
+const SKILL_BODY_MAX_LINES = 500; // this project's own CLAUDE.md file-size guidance ("Keep files under 500
+  // lines"). Whole-file line count, frontmatter included — mirrors forge-skill-evals.cjs's own `max_lines`
+  // assertion semantics (the frontmatter is only a few lines, a faithful proxy for "keep the body small").
+const SKILL_CODE_SPAN_RE = /`([^`\n]+)`/g;
+const SKILL_PATH_SHAPE_RE = /^(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}$/;
+// Deliberately narrow anchor set — matches the work package's own two examples exactly: a fully-qualified
+// project path from the repo root (".claude/...") or a skill's own tier-3 on-demand subfolder convention
+// (references/ / scripts/ / assets/), resolved relative to the SKILL.md's own directory. A bare relative
+// mention with NEITHER anchor (e.g. "docs/ARCHITECTURE.md", "src/contract.js" — real strings this project's
+// own playbooks use to describe a DOWNSTREAM built project's OWN tree, never this Forge project's) is
+// intentionally left unchecked: there is no safe, unambiguous base to resolve it against (project root? this
+// project's .claude/? the skill's own folder?) — guessing one would fabricate a finding, not report one.
+const SKILL_REF_WHITELIST_PREFIXES = ['.claude/', 'references/', 'scripts/', 'assets/'];
+
+/** extractSkillPathRefs(text) -> [{ref, anchored}, ...] — every DISTINCT backtick-wrapped, path-shaped token
+ *  in a SKILL.md body. ONLY scans inside backtick code-spans: a survey of every real file/tool reference
+ *  across this project's actual 48 SKILL.md files (2026-07-31) found every genuine one already wrapped in
+ *  backticks, and requiring the code-span boundary is what keeps this check from ever matching an ordinary
+ *  prose sentence that happens to contain a slash and a period (a date, a fraction, an abbreviation) — the
+ *  work package's own "no false positives on prose" requirement. Two further filters, both proven necessary
+ *  against this project's real content:
+ *   - a URL (http:// or https://) is stripped from the text before scanning, so a URL's own path segment
+ *     (e.g. "github.com/owner/repo.git") is never mistaken for a project file reference.
+ *   - an "alternation" token — e.g. "manifest.json/events.jsonl", real prose in this project meaning
+ *     "manifest.json OR events.jsonl", never a nested directory — is detected (any segment BEFORE the last
+ *     one that already looks like a complete "name.ext" on its own) and rejected; a genuine nested directory
+ *     component in this codebase never itself has a bare "name.ext" shape.
+ *  A candidate containing "<" (a placeholder like "<run_id>") or "*" (a glob, e.g.
+ *  "config/orchestration/*.json") is never treated as a literal file, per the work package. `anchored` (see
+ *  SKILL_REF_WHITELIST_PREFIXES above) marks whether this checker has a safe, unambiguous base to resolve
+ *  the reference against; an unanchored candidate is returned but never existence-checked by skillHygiene()
+ *  below — never a fabricated finding against a base this checker is only guessing at. Never throws. */
+function extractSkillPathRefs(text) {
+  const withoutUrls = text.replace(/https?:\/\/[^\s)`'"]+/g, '');
+  const seen = new Set();
+  const out = [];
+  let m;
+  SKILL_CODE_SPAN_RE.lastIndex = 0;
+  while ((m = SKILL_CODE_SPAN_RE.exec(withoutUrls)) !== null) {
+    const inner = m[1].trim();
+    if (!SKILL_PATH_SHAPE_RE.test(inner)) continue;
+    if (inner.includes('<') || inner.includes('*')) continue;
+    if (seen.has(inner)) continue;
+    const segs = inner.split('/');
+    let altProse = false;
+    for (let i = 0; i < segs.length - 1; i++) {
+      if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,8}$/.test(segs[i])) { altProse = true; break; }
+    }
+    if (altProse) continue;
+    seen.add(inner);
+    out.push({ ref: inner, anchored: SKILL_REF_WHITELIST_PREFIXES.some((p) => inner.startsWith(p)) });
+  }
+  return out;
+}
+
+/**
+ * detectVendorPin(text) -> {source, pin} | null — is this skill third-party content copied at a recorded pin?
+ *
+ * Provenance has to be EARNED, not claimed: BOTH an upstream `Source:` and a `Pinned commit:` hash. One line
+ * on its own proves nothing, and if a single typed word could buy an exemption then "vendored" stops being
+ * evidence and becomes a way to silence a check. Only the head of the file is read, because this must be a
+ * header the vendoring step wrote — not a phrase that happens to appear in 600 lines of prose.
+ */
+function detectVendorPin(text) {
+  const head = String(text || '').slice(0, 4000);
+  const source = head.match(/^[\s*/#-]*Source:\s*(\S+)/m);
+  const pin = head.match(/^[\s*/#-]*Pinned commit:\s*([0-9a-f]{7,40})\b/im);
+  if (!source || !pin) return null;
+  return { source: source[1], pin: pin[1] };
+}
+
+/** skillHygiene(root) -> {ok, checked, vendored_exempt, skills:[{skill, ok, issues:[], vendored?, vendored_style?}]}
+ *  ADVISORY-ONLY (see header doc).
+ *  Unlike skill_evals above (opt-in evals.json), EVERY skill dir under .claude/skills/ that has a SKILL.md
+ *  is IN SCOPE here — there is no opt-out.
+ *
+ *  SCOPE DEFECT FIXED 2026-08-01 (measured on this project, not assumed): this function used to do its own
+ *  single-level `readdirSync(skills/)` + `<dir>/SKILL.md` read, i.e. exactly a one-star `skills/<x>/SKILL.md`
+ *  glob — which found 49 of this project's 57 real SKILL.md files. The 8 gsap sub-skills live one level deeper
+ *  (`skills/gsap/gsap-core/SKILL.md` …) and were therefore evaluated by NOTHING: not passing, INVISIBLE,
+ *  which is strictly worse than a red finding — and every one of them is over the description budget this
+ *  check exists to police, i.e. the check was blind to precisely the surface it was written for. It now
+ *  reuses listSkillFiles() (already defined and exported above for sync_completeness), the one recursive
+ *  SKILL.md walker in this file — so the hygiene scope and the sync-manifest scope can never drift apart
+ *  again. `skill` is the skills/-relative id ("gsap/gsap-core"), never a bare leaf name two bundles could
+ *  both claim. Three checks per skill: (1) frontmatter `description` present
+ *  and <= SKILL_DESCRIPTION_MAX_CHARS; (2) whole-file line count <= SKILL_BODY_MAX_LINES; (3) every
+ *  ANCHORED path-shaped reference (extractSkillPathRefs above) resolves to a real file — a `.claude/`-
+ *  prefixed ref resolves from the project root, everything else (references//scripts//assets/) resolves
+ *  from the SKILL.md's OWN directory. A skill dir with no SKILL.md is out of scope (mirrors
+ *  listSkillDirs()'s own opt-in-by-file-presence posture in forge-skill-evals.cjs — not a skill, not
+ *  evaluated). Never throws: an unreadable SKILL.md is simply excluded from `checked`, never crashes the
+ *  whole scan (one bad skill dir must never take down every other skill's report). NOT promoted to
+ *  ENFORCED: same reasoning as skill_evals — this is advisory review signal for the Skill Boss today, not
+ *  yet a build gate. */
+function skillHygiene(root) {
+  const cd = claudeDir(root);
+  const skills = [];
+  for (const rel of listSkillFiles(root)) {
+    const skillFile = path.join(cd, rel.split('/').join(path.sep));
+    const skillDir = path.dirname(skillFile);
+    // skills/-relative id, so a nested skill is named the way it is actually addressed on disk
+    // ("gsap/gsap-core"), never collapsed to a bare leaf name that two bundles could both claim.
+    const skillId = rel.replace(/^skills\//, '').replace(/\/SKILL\.md$/, '');
+    let text;
+    try { text = fs.readFileSync(skillFile, 'utf8'); } catch { continue; }
+    const issues = [];
+    // VENDORED CONTENT (2026-08-01). A skill copied verbatim from an upstream repo at a recorded pin is not
+    // ours to restyle: rewriting it would make the pin describe something no longer on disk. So its SHAPE
+    // (description/body length) is reported separately, with the real numbers, while its FUNCTION in our
+    // tree (a usable description, references that resolve) is judged exactly like anything else. See the
+    // vendored fixtures in forge-doctor.test.cjs §7 for why a half-marker must not buy this exemption.
+    const vendored = detectVendorPin(text);
+    const vendoredStyle = [];
+    const styleIssue = (msg) => (vendored ? vendoredStyle : issues).push(msg);
+    const fm = parseFrontmatter(text);
+    const desc = fm && fm.description;
+    if (!desc) issues.push('description missing/empty in frontmatter'); // no description = undiscoverable HERE, never upstream's problem to own
+    else if (desc.length > SKILL_DESCRIPTION_MAX_CHARS) styleIssue('description is ' + desc.length + ' chars (max ' + SKILL_DESCRIPTION_MAX_CHARS + ')');
+    const lineCount = text.split(/\r?\n/).length;
+    if (lineCount > SKILL_BODY_MAX_LINES) styleIssue('SKILL.md is ' + lineCount + ' lines (max ' + SKILL_BODY_MAX_LINES + ')');
+    const dangling = [];
+    for (const r of extractSkillPathRefs(text)) {
+      if (!r.anchored) continue;
+      const resolved = r.ref.startsWith('.claude/') ? path.resolve(root, r.ref) : path.resolve(skillDir, r.ref);
+      let exists = false;
+      try { exists = fs.statSync(resolved).isFile(); } catch { exists = false; }
+      if (!exists) dangling.push(r.ref);
+    }
+    if (dangling.length) issues.push(dangling.length + ' dangling reference(s): ' + dangling.join(', '));
+    const entry = { skill: skillId, ok: issues.length === 0, issues };
+    if (vendored) { entry.vendored = vendored; entry.vendored_style = vendoredStyle; }
+    skills.push(entry);
+  }
+  return {
+    ok: skills.every((s) => s.ok),
+    checked: skills.length,
+    vendored_exempt: skills.filter((s) => s.vendored && s.vendored_style.length).length,
+    skills,
+  };
+}
+
+/** loadDoctorCheckOverrides — reads config/orchestration/FORGE_HARD_RULES.json's `doctor_check_overrides`
+ *  array (see that file's own top-level doc for the exact shape: {check, reason, by, ts}). A missing file,
+ *  malformed JSON, or a missing/empty `doctor_check_overrides` array all degrade to "no overrides" ([]) —
+ *  this is an OPT-IN recovery mechanism, not a required config; its absence must never be an error. Every
+ *  entry MUST carry a non-empty string `check` id and a non-empty string `reason` (a blank/templated reason
+ *  is silently dropped, same "no blank override" discipline forge-scout.cjs's record() enforces for its own
+ *  ledger) — a malformed single entry is skipped, never crashes the whole read. */
+function loadDoctorCheckOverrides(root) {
+  const p = path.join(claudeDir(root), 'config', 'orchestration', 'FORGE_HARD_RULES.json');
+  let data;
+  try { data = JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return []; }
+  if (!data || !Array.isArray(data.doctor_check_overrides)) return [];
+  return data.doctor_check_overrides.filter((o) => o && typeof o.check === 'string' && o.check.trim() && typeof o.reason === 'string' && o.reason.trim());
+}
+/** applyDoctorOverride — a promoted-to-ENFORCED check's result is passed through UNCHANGED when it already
+ *  passes (an override never "improves" a real pass into something more positive than reality) or when no
+ *  matching override entry exists. Only a GENUINE failure with a matching, valid override entry is turned
+ *  into a visible-but-honest pass: `ok:true` PLUS `overridden:true` + the real reason/by fields, so
+ *  printSummary() can render it distinctly from an ordinary clean pass (see the '[OVERRIDDEN: ...]' tag) —
+ *  never a silent bypass. */
+function applyDoctorOverride(overrideMap, checkId, result) {
+  if (result.ok) return result;
+  const ov = overrideMap.get(checkId);
+  if (!ov) return result;
+  return Object.assign({}, result, { ok: true, overridden: true, override_reason: ov.reason, override_by: (ov.by && String(ov.by).trim()) || 'owner' });
+}
+
+/** contextBudgetCheck(root) -> the forge-contextbudget.cjs report, or an honest "unavailable" stand-in.
+ *  ADVISORY-ONLY and deliberately so: the numbers are ESTIMATES (characters/4, no tokenizer), and failing a
+ *  build on an estimate would be exactly the fake precision that check refuses to produce. It is also the
+ *  one doctor check that reads files OUTSIDE the project root — read-only, counted, never written (see
+ *  forge-contextbudget.cjs's header). A throw is swallowed into ok:true + a reason: a meter must never be
+ *  able to take down the doctor it is only advising. */
+function contextBudgetCheck(root) {
+  if (!contextBudgetTool) return { ok: true, reason: 'forge-contextbudget.cjs module not available (context-budget check unavailable)', posts: [], findings: [], total_approx_tokens: 0 };
+  try { return contextBudgetTool.measure(root, {}); }
+  catch (e) { return { ok: true, reason: 'forge-contextbudget.measure threw: ' + e.message, posts: [], findings: [], total_approx_tokens: 0 }; }
+}
+
 function runDoctor(root) {
   root = path.resolve(root);
+  const testsResult = runTests(root);
+  const overrides = loadDoctorCheckOverrides(root);
+  const overrideMap = new Map(overrides.map((o) => [o.check, o]));
   const checks = {
     node_check: nodeCheckAll(root),
-    tests: runTests(root),
+    tests: testsResult,
     strict_events: strictEventCheck(root),
     dashboard_spa: spaPresent(root),
     leak_scan: leakScan(root),
     agents: agentsCheck(root),
     chain: chainCheck(root),
     rebinding_guard: rebindingGuard(root),
+    // V9-INTEGRATE (2026-07-22): promoted from advisory-only to ENFORCED — see the header doc's
+    // "V9-INTEGRATE enforcement" note above for exactly why these two (and no others) were safe to promote.
+    // Recoverable via FORGE_HARD_RULES.json's doctor_check_overrides (loadDoctorCheckOverrides()/
+    // applyDoctorOverride() above) if a genuine false-red ever surfaces.
+    unregistered_event: applyDoctorOverride(overrideMap, 'unregistered_event', unregisteredEvent(root)),
+    check_the_checks: applyDoctorOverride(overrideMap, 'check_the_checks', checkTheChecks(root, testsResult)),
   };
   // advisory checks are DELIBERATELY excluded from this ok computation — see backfillContinuity's doc above.
   const ok = Object.values(checks).every((c) => c.ok);
-  const advisory = { backfill_continuity: backfillContinuity(root) };
+  const advisory = {
+    backfill_continuity: backfillContinuity(root),
+    // "pakket 2" (2026-08-01): forge-runwatch.cjs, run automatically instead of only on request — its own
+    // top-level advisory key (liveness is not completeness) with its own printSummary line, exactly like
+    // backfill_continuity. See runLiveness() above for the window/status rules and why it stays advisory.
+    run_liveness: runLiveness(root),
+    // 2026-08-01: the ALWAYS-LOADED instruction surface, metered. Its own top-level advisory key (a context
+    // budget is not completeness) with its own printSummary line. See contextBudgetCheck() above.
+    context_budget: contextBudgetCheck(root),
+    // WAVE A / A2 (2026-07-18) + V9-INTEGRATE (2026-07-22): the completeness checks that remain
+    // ADVISORY-ONLY, grouped under one key so printSummary can emit a single compact advisory line — see the
+    // header doc comment for exactly why each one here (unlike unregistered_event/check_the_checks above)
+    // was NOT promoted to enforced.
+    completeness: {
+      sync_completeness: syncCompleteness(root),
+      memory_discipline: memoryDiscipline(root),
+      // WAVE G / G-INTEGRATE (2026-07-19): MCP-as-client safety-doctrine self-test — see mcpDormancy() above.
+      mcp_dormancy: mcpDormancy(root),
+      // V9-INTEGRATE (2026-07-22): forge-runcontract.cjs wired in, advisory-only — see runContractDoctorCheck()
+      // above for why this specific check is not yet safe to enforce.
+      run_contract: runContractDoctorCheck(root),
+      // wp-skill-evals (2026-07-31): forge-skill-evals.cjs wired in, advisory-only — see
+      // skillEvalsDoctorCheck() above for why this FOUNDATION piece is not yet safe to enforce.
+      skill_evals: skillEvalsDoctorCheck(root),
+      // wp-disclosure-ab (2026-07-31): progressive-disclosure hygiene, advisory-only — see skillHygiene()
+      // above for why this is review signal today, not yet a build gate.
+      skill_hygiene: skillHygiene(root),
+    },
+  };
   return { ok, root, checks, advisory, generated_at: new Date().toISOString() };
 }
 
@@ -667,6 +1549,19 @@ function printSummary(rep) {
     out.push(line('event chain', ch.ok, ch.chained + '/' + ch.checked + ' runs hash-chained · tamper-evident' + (ch.ok ? '' : ' · BROKEN: ' + ch.broken.map((b) => b.run + ' (' + b.reason + ')').join('; '))));
   }
   if (c.rebinding_guard) out.push(line('rebind guard', c.rebinding_guard.ok, c.rebinding_guard.ok ? 'dashboard Host/Origin/Sec-Fetch guard wired' : c.rebinding_guard.reason));
+  // V9-INTEGRATE (2026-07-22): the two completeness checks promoted from advisory to ENFORCED — printed as
+  // ordinary ✓/✗ lines like every other checks-key above (they now genuinely gate `ok`). An `overridden:true`
+  // result still prints ✓ (it IS a pass — see applyDoctorOverride() doc) but carries a visible
+  // `[OVERRIDDEN: <reason>]` tag so an owner override is never mistaken for an ordinary clean pass.
+  const overrideTag = (r) => r.overridden ? ' [OVERRIDDEN by ' + (r.override_by || 'owner') + ': ' + r.override_reason + ']' : '';
+  if (c.unregistered_event) {
+    const ue = c.unregistered_event;
+    out.push(line('unreg. events', ue.ok, (ue.ok && !ue.overridden ? (ue.checkedFiles || 0) + ' files scanned · none unregistered' : (ue.unregistered && ue.unregistered.length ? ue.unregistered.length + ' unregistered usage(s): ' + ue.unregistered.map((u) => u.event_type + ' in ' + u.file).join('; ') : (ue.reason || ''))) + overrideTag(ue)));
+  }
+  if (c.check_the_checks) {
+    const ctc = c.check_the_checks;
+    out.push(line('no-op tests', ctc.ok, (ctc.ok && !ctc.overridden ? (ctc.checked || 0) + ' suites scanned · no green no-ops' : (ctc.noOp && ctc.noOp.length ? ctc.noOp.length + ' green no-op suite(s): ' + ctc.noOp.map((n) => n.suite).join(', ') : '')) + overrideTag(ctc)));
+  }
   // Advisory (never fails the doctor, never part of the ALL GREEN / FAILURES verdict above) — printed as a
   // WARN line, distinct from the ✓/✗ check lines, so it can never be mistaken for a blocking result.
   if (rep.advisory && rep.advisory.backfill_continuity) {
@@ -678,11 +1573,105 @@ function printSummary(rep) {
       out.push('  ✓ backfill continuity (advisory): ' + bc.applicableRuns + '/' + bc.checkedRuns + ' run(s) use dispatch_id · consistent');
     }
   }
+  // "pakket 2" (2026-08-01) — run-liveness advisory: a ledger that still claims "running" while the events
+  // prove otherwise. Same WARN-line posture as backfill continuity above: never a ✓/✗ check line, never part
+  // of the ALL GREEN / FAILURES verdict. The detail is capped at 3 named runs + a count so a project with a
+  // long history of stale ledgers still prints one readable line.
+  if (rep.advisory && rep.advisory.run_liveness) {
+    const rl = rep.advisory.run_liveness;
+    const fs_ = rl.findings || [];
+    if (fs_.length) {
+      const hrs = (ms) => (ms == null ? 'unknown' : Math.round(ms / 3600000) + 'h');
+      const shown = fs_.slice(0, 3).map((f) => f.run_id + ' (' + f.kind + ', silent ' + hrs(f.silent_ms) + ')');
+      out.push('  ⚠ run liveness (advisory, non-blocking): ' + fs_.length + ' run(s) still marked running but proven not alive: '
+        + shown.join('; ') + (fs_.length > 3 ? '; +' + (fs_.length - 3) + ' more' : ''));
+    } else {
+      out.push('  ✓ run liveness (advisory): ' + rl.checked + ' run(s) claiming "running" checked · '
+        + (rl.reason || 'each one is genuinely alive or honestly closed'));
+    }
+  }
+  // 2026-08-01: one compact context-budget line. ALWAYS printed (unlike the failure-only advisories above):
+  // the whole point is that the number is visible every run, because the failure mode being guarded is
+  // silent growth — a line that only appears once a threshold is already crossed would restore exactly the
+  // blindness this check exists to remove. The word "est." is in the line itself, not only in the JSON.
+  if (rep.advisory && rep.advisory.context_budget) {
+    const cbd = rep.advisory.context_budget;
+    // the per-source skill breakdown is rendered by forge-contextbudget's own skillSourceLine() so the doctor
+    // line and the tool's CLI can never quote different numbers (2026-08-01: the meter counted only this
+    // project's 57 skills while the session carries 278, and the doctor line repeated that figure as if it
+    // were the whole surface — one number, one renderer, from now on).
+    const breakdown = (contextBudgetTool && typeof contextBudgetTool.skillSourceLine === 'function')
+      ? contextBudgetTool.skillSourceLine(cbd) : '';
+    const head = (cbd.total_approx_tokens || 0) + ' est. tokens always-loaded across ' + ((cbd.posts || []).length)
+      + ' post(s)' + (breakdown ? ' · ' + breakdown : '');
+    const fnd = cbd.findings || [];
+    if (fnd.length) {
+      out.push('  ⚠ context budget (advisory, non-blocking): ' + head + ' · ' + fnd.length + ' finding(s): '
+        + fnd.slice(0, 3).map((f) => f.detail).join(' · ') + (fnd.length > 3 ? ' · +' + (fnd.length - 3) + ' more' : ''));
+    } else {
+      const notes = (cbd.notes || []).map((n) => n.detail);
+      out.push('  ✓ context budget (advisory): ' + head + ' · ' + (cbd.reason || 'within baseline')
+        + (notes.length ? ' · ' + notes.join(' · ') : ''));
+    }
+  }
+  // WAVE A / A2 (2026-07-18) + V9-INTEGRATE (2026-07-22): one compact "completeness" advisory line for the
+  // checks that remain advisory-only — never folded into ALL GREEN/FAILURES. unregistered_event/
+  // check_the_checks moved OUT of this block (2026-07-22) — they are now ordinary ✓/✗ checks-lines above,
+  // since they were promoted to ENFORCED (see the header doc's "V9-INTEGRATE enforcement" note).
+  if (rep.advisory && rep.advisory.completeness) {
+    const cm = rep.advisory.completeness;
+    const parts = [];
+    if (cm.sync_completeness && !cm.sync_completeness.ok) parts.push('sync-completeness: ' + (cm.sync_completeness.missing ? cm.sync_completeness.missing.length + ' file(s) not in FILES manifest' : (cm.sync_completeness.reason || 'unavailable')));
+    if (cm.memory_discipline && !cm.memory_discipline.ok) parts.push('memory-discipline: ' + (cm.memory_discipline.reason || 'unfilled placeholder(s)'));
+    if (cm.mcp_dormancy && !cm.mcp_dormancy.ok) parts.push('mcp-dormancy: ' + (cm.mcp_dormancy.violations ? cm.mcp_dormancy.violations.length + ' violation(s)' : (cm.mcp_dormancy.reason || 'unavailable')));
+    if (cm.run_contract && !cm.run_contract.ok) parts.push('run-contract: ' + (cm.run_contract.missing ? cm.run_contract.missing.length + ' rule(s) missing on latest dispatched run ' + (cm.run_contract.run_id || '') : (cm.run_contract.reason || 'unavailable')));
+    if (cm.skill_evals && !cm.skill_evals.ok) {
+      const se = cm.skill_evals;
+      const failNames = (se.skills || []).filter((s) => !s.ok).map((s) => s.error ? (s.skill + ' (config error: ' + s.error + ')') : (s.skill + ' (' + s.failed + '/' + s.total + ' assertion(s) failed: ' + s.results.filter((r) => !r.ok).map((r) => r.id).join(', ') + ')'));
+      parts.push('skill-evals: ' + (failNames.length ? failNames.join('; ') : (se.reason || 'unavailable')));
+    }
+    // wp-disclosure-ab (2026-07-31): skill_hygiene's clean-branch text carries a REAL count ("skill hygiene
+    // N/M") rather than a static phrase, per the work package's requested format — computed once so it is
+    // available to whichever branch below actually fires. An unhealthy result still names the failing
+    // skill(s) in `parts`, the exact same convention every other completeness sub-check above already uses.
+    let skillHygieneCleanText = '';
+    if (cm.skill_hygiene) {
+      const sh = cm.skill_hygiene;
+      if (!sh.ok) {
+        const failNames = (sh.skills || []).filter((s) => !s.ok).map((s) => s.skill + ' (' + s.issues.join('; ') + ')');
+        parts.push('skill-hygiene: ' + (failNames.length ? failNames.join('; ') : (sh.reason || 'unavailable')));
+      } else {
+        skillHygieneCleanText = ' · skill hygiene ' + sh.skills.filter((s) => s.ok).length + '/' + sh.checked;
+      }
+    }
+    out.push(parts.length
+      ? '  ⚠ completeness (advisory, non-blocking): ' + parts.join(' · ')
+      : '  ✓ completeness (advisory): sync manifest complete · memory populated · mcp dormant/least-privilege · run contract satisfied · skill evals green' + skillHygieneCleanText);
+  }
   out.push(rep.ok ? '  ⇒ ALL GREEN' : '  ⇒ FAILURES ABOVE');
   return out.join('\n');
 }
 
-module.exports = { nodeCheckAll, runTests, strictEventCheck, spaPresent, leakScan, agentsCheck, chainCheck, rebindingGuard, backfillContinuity, runDoctor, printSummary, secretLabel, parseFrontmatter, parseToolsList, loadToolPolicy, BOSS_NAMES, looksLikeRealSecret, secretPortion, STRONG_PLACEHOLDER_RE, isPatternDefinitionContext, parseEventsJsonlLenient, chainCanon, PATTERN_DEFINITION_PATHS, LEAK_SCAN_MAX_BYTES, LEAK_SCAN_MAX_LINE };
+module.exports = {
+  nodeCheckAll, runTests, strictEventCheck, spaPresent, leakScan, agentsCheck, chainCheck, rebindingGuard, backfillContinuity, runDoctor, printSummary, secretLabel, parseFrontmatter, parseToolsList, loadToolPolicy, BOSS_NAMES, looksLikeRealSecret, secretPortion, STRONG_PLACEHOLDER_RE, isPatternDefinitionContext, parseEventsJsonlLenient, chainCanon, PATTERN_DEFINITION_PATHS, LEAK_SCAN_MAX_BYTES, LEAK_SCAN_MAX_LINE,
+  // WAVE A / A2 (2026-07-18) — doctor completeness checks
+  listSkillFiles, syncCompleteness, countAssertionSites, checkTheChecks, memoryDiscipline, MEMORY_PLACEHOLDER_RE,
+  extractKnownEventTypesFromSource, stripJsComments, extractLoggedEventTypes, unregisteredEvent, ASSERTION_SITE_RE, EVENT_TYPE_SHAPE_RE,
+  // WAVE G / G-INTEGRATE (2026-07-19)
+  mcpDormancy,
+  // V9-INTEGRATE (2026-07-22) — run-contract wiring + the enforcement-override recovery path
+  latestRunIdFor, runContractDoctorCheck, loadDoctorCheckOverrides, applyDoctorOverride,
+  // V9 WAVE 2 (2026-07-22) — dispatched-run-only picker + its shared ranking core (see doc comments above)
+  rankRunCandidates, latestDispatchedRunIdFor,
+  // wp-skill-evals (2026-07-31) — per-skill binary-evals wiring, advisory-only (see doc comment above)
+  skillEvalsDoctorCheck,
+  // wp-disclosure-ab (2026-07-31) — progressive-disclosure hygiene, advisory-only (see doc comment above)
+  skillHygiene, extractSkillPathRefs, SKILL_DESCRIPTION_MAX_CHARS, SKILL_BODY_MAX_LINES,
+  // "pakket 2" (2026-08-01) — forge-runwatch.cjs wired in as an automatic advisory (see doc comment above)
+  runLiveness, LIVENESS_WINDOW_MS, LIVENESS_RUNNING_STATUSES,
+  // 2026-08-01 — forge-contextbudget.cjs wired in as an automatic advisory (see contextBudgetCheck above)
+  contextBudgetCheck,
+};
 
 // ---- CLI ----
 if (require.main === module) {

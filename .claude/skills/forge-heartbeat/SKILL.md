@@ -1,6 +1,6 @@
 ---
 name: forge-heartbeat
-description: Detect a dispatched agent that has gone silent mid-run — reads the run's events.jsonl and flags any started-but-not-finished agent that hasn't logged anything for longer than a window (default 10 minutes). Use during multi-agent runs, periodically or whenever a run feels quiet, and as a check forge-doctor can call later.
+description: Detects a dispatched agent gone silent mid-run from events.jsonl. Use during multi-agent runs or when a run feels quiet — silent agent, stalled run, heartbeat check, timeout.
 ---
 
 # forge-heartbeat — stall/silence watchdog

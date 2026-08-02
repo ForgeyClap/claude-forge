@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Offline tests for the usage-guard reset-rhythm auto-resume feature + forge-resume.cjs.
+ * Offline tests for the usage-guard reset-rhythm auto-resume feature + forge-resume.cjs + the
+ * NVIDIA-shift soft pressure threshold (owner policy: prefer NVIDIA agents over Claude agents at
+ * ~80% weekly usage, advisory-only, no quality downgrade, never pauses/blocks anything).
  * No network, no live OAuth key.
  *
  * usage-guard.cjs and the global hook are argv-driven CLI scripts that act immediately (usage-guard.cjs
  * even hits the live network for `status`/`check` on require()), so this test deliberately does NOT
  * require() them — it replicates the tiny PURE helpers (resumeAtEpoch math, creditsExhausted, the
- * hook's self-heal predicate) inline, mirroring the real implementations 1:1. forge-resume.cjs IS a
- * real CLI, so it is exercised as a genuine subprocess against a temp HOME, hermetically.
+ * hook's self-heal predicate, computePressureLevel/buildPressureData) inline, mirroring the real
+ * implementations 1:1. forge-resume.cjs IS a real CLI, so it is exercised as a genuine subprocess
+ * against a temp HOME, hermetically.
  *
  * Run: node usage-guard.test.cjs   (exit 0 = all pass, exit 1 = at least one failure)
  */
@@ -140,6 +143,76 @@ test('forge-resume never writes to the real global HOME during the isolated test
   const after = fs.existsSync(realStateFile) ? fs.readFileSync(realStateFile, 'utf8') : null;
   assert.strictEqual(before, after, 'real ~/.claude/FORGE_RESUME_STATE.json must be untouched by the hermetic test');
   if (after != null) assert.ok(!after.includes('ShouldNotLeak'), 'real state file must not contain test data');
+});
+
+// ---- 5) NVIDIA-shift soft pressure threshold (mirrors usage-guard.cjs computePressureLevel()/
+// buildPressureData()/writePressureFile() 1:1 — advisory-only routing signal, purely additive; the
+// real pause/resume decision is untouched and always wins independently of this classification) ----
+function computePressureLevel(weekPct, nvidiaShiftAt) {
+  if (!Number.isFinite(weekPct) || !Number.isFinite(nvidiaShiftAt)) return 'unknown';
+  return weekPct >= nvidiaShiftAt ? 'nvidia-preferred' : 'normal';
+}
+function buildPressureData(weekPct, nvidiaShiftAt, pauseAt) {
+  return {
+    level: computePressureLevel(weekPct, nvidiaShiftAt),
+    week: Number.isFinite(weekPct) ? weekPct : null,
+    nvidia_shift_at: nvidiaShiftAt,
+    pause_at: pauseAt,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+test('pressure boundary: week 79% (default nvidia-shift-at 80) -> normal', () => {
+  assert.strictEqual(computePressureLevel(79, 80), 'normal');
+});
+test('pressure boundary: week 80% (default nvidia-shift-at 80) -> nvidia-preferred (>= is inclusive)', () => {
+  assert.strictEqual(computePressureLevel(80, 80), 'nvidia-preferred');
+});
+test('pressure: 92% and 93% (inside the pause-at window) still classify nvidia-preferred — the pause decision ' +
+  'is a wholly separate, unaffected code path; this level never itself pauses/blocks anything', () => {
+  assert.strictEqual(computePressureLevel(92, 80), 'nvidia-preferred');
+  assert.strictEqual(computePressureLevel(93, 80), 'nvidia-preferred');
+});
+test('pressure: pause-at "winning" never suppresses the pressure-file write — buildPressureData() always ' +
+  'returns a complete object regardless of how high week% is (mirrors writePressureFile() being called ' +
+  'unconditionally in tick(), before any pause/resume branching)', () => {
+  const atPause = buildPressureData(93, 80, 93);
+  assert.strictEqual(atPause.level, 'nvidia-preferred');
+  assert.strictEqual(atPause.week, 93);
+  assert.strictEqual(atPause.pause_at, 93);
+});
+test('pressure: missing/non-numeric week% -> unknown (never fabricated)', () => {
+  assert.strictEqual(computePressureLevel(NaN, 80), 'unknown');
+  assert.strictEqual(computePressureLevel(undefined, 80), 'unknown');
+});
+test('pressure: missing/non-numeric threshold -> unknown', () => {
+  assert.strictEqual(computePressureLevel(85, NaN), 'unknown');
+});
+test('pressure: data object for a missing-data evaluation has week:null (not NaN, not fabricated)', () => {
+  const d = buildPressureData(NaN, 80, 93);
+  assert.strictEqual(d.level, 'unknown');
+  assert.strictEqual(d.week, null);
+});
+test('pressure: CLI --nvidia-shift-at override works (a custom, lower threshold flips the classification ' +
+  'for the same week% that would be "normal" under the 80 default)', () => {
+  assert.strictEqual(computePressureLevel(75, 80), 'normal');
+  assert.strictEqual(computePressureLevel(75, 70), 'nvidia-preferred');
+});
+test('pressure-file schema: exact keys, types and literal level values', () => {
+  const normal = buildPressureData(50, 80, 93);
+  assert.deepStrictEqual(Object.keys(normal).sort(), ['level', 'nvidia_shift_at', 'pause_at', 'updated_at', 'week'].sort());
+  assert.strictEqual(normal.level, 'normal');
+  assert.strictEqual(typeof normal.week, 'number');
+  assert.strictEqual(typeof normal.nvidia_shift_at, 'number');
+  assert.strictEqual(typeof normal.pause_at, 'number');
+  assert.ok(!Number.isNaN(Date.parse(normal.updated_at)), 'updated_at must be a parseable ISO timestamp');
+
+  const preferred = buildPressureData(85, 80, 93);
+  assert.strictEqual(preferred.level, 'nvidia-preferred');
+
+  const unknown = buildPressureData(NaN, 80, 93);
+  assert.strictEqual(unknown.level, 'unknown');
+  assert.strictEqual(unknown.week, null);
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

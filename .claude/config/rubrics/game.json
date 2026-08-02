@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for game tasks (browser + Godot). Owner-editable. Used by the forge-graded-verify skill: review-boss (or test-boss) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-game playbook.",
+  "domain": "game",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "playable_loop",
+      "descriptor": "1=static mockup / dead Play button, loop doesn't run; 2=loop runs but win or lose or restart is missing/unreachable; 3=core loop completes with reachable win, lose, and restart; 4=input->update->render->feedback loop is complete and satisfying, win AND lose AND restart all reachable and proven",
+      "raise": "make the core loop run end-to-end with reachable win, lose, and a working restart — not a static screen"
+    },
+    {
+      "id": "no_stuck_states",
+      "descriptor": "1=soft-locks / dead-ends where the player can't progress or restart; 2=some recoverable states but pause/resume or restart is flaky; 3=no known soft-lock, restart and pause/resume work; 4=every state is recoverable, input never stops responding, pause/resume + restart proven across the main paths",
+      "raise": "eliminate soft-locks: ensure every state can reach restart, input never freezes, and pause/resume + restart work reliably"
+    },
+    {
+      "id": "cross_viewport_input",
+      "descriptor": "1=cut-off UI or broken input outside one exact size; 2=works at one size, degrades elsewhere or one declared input is broken; 3=canvas scales at mobile + desktop (or desktop-only declared) and declared inputs work; 4=correct scaling/letterboxing across viewports with no cut-off, and every declared input (keyboard/mouse/touch/gamepad) verified",
+      "raise": "make the canvas scale/letterbox across mobile + desktop (or declare desktop-only) and verify every declared input method works"
+    },
+    {
+      "id": "runtime_health",
+      "descriptor": "1=console errors and/or unstable frame rate; 2=runs but with occasional errors, frame drops, or leaks on restart; 3=zero console errors, delta-time loop, listeners cleaned up on restart; 4=zero console errors across a full session, stable frame rate via delta-time (fixed timestep for physics), no leaks/double-fire on restart, and any zero-dependency constraint honored (CSP-safe if an artifact)",
+      "raise": "use a delta-time loop (fixed timestep for physics), clear the console of errors, clean up listeners/timers/audio on restart, and honor any zero-dependency/CSP constraint"
+    },
+    {
+      "id": "playtest_evidence",
+      "descriptor": "1=playability only claimed, no evidence; 2=a single screenshot or partial run; 3=recorded/screenshotted playtest showing the loop completing; 4=real driven playtest evidence (browser automation or recording) showing win + lose + restart with no console errors — evidence, not assertion",
+      "raise": "actually play or drive the game and attach screenshots/recording proving win + lose + restart with a clean console — don't assert playability"
+    }
+  ]
+}

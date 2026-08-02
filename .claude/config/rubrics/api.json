@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for contract-first API / backend-service tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-boss for the auth surface) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-api playbook.",
+  "domain": "api",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "contract_first",
+      "descriptor": "1=no contract, endpoints defined ad-hoc in code; 2=a spec exists but drifts from actual behavior; 3=a committed OpenAPI/JSON-Schema/SDL/proto is the source of truth and implementation matches it; 4=that plus drift is caught automatically (generated types or spec-conformance check) and versioned",
+      "raise": "write the OpenAPI/schema/proto contract first, commit it as the source of truth, and validate or generate the implementation against it so drift is caught"
+    },
+    {
+      "id": "input_validation",
+      "descriptor": "1=client input trusted / flows into queries unvalidated; 2=partial validation, inconsistent error shapes; 3=every request body/params/query/headers validated at the boundary with a consistent 4xx error envelope; 4=that plus type/size/range limits and normalization before any query/filesystem/downstream call",
+      "raise": "validate every request against the schema at the boundary, enforce type/size/range limits, and return a consistent 4xx error envelope before input reaches a query or downstream call"
+    },
+    {
+      "id": "auth_protected_routes",
+      "descriptor": "1=protected routes open or auth only assumed from the frontend/gateway; 2=auth present but inconsistent or no per-route scope check; 3=authN+authZ enforced server-side per protected route, deny-by-default; 4=that plus a negative test proving an unauthenticated/wrong-scope request is rejected (401/403) and tenant isolation holds",
+      "raise": "enforce authentication and authorization server-side on every protected route with deny-by-default and per-route scope checks, and add a negative test proving unauthorized requests are rejected"
+    },
+    {
+      "id": "versioning_idempotency",
+      "descriptor": "1=no versioning and unsafe writes double-apply on retry; 2=versioning or idempotency present but not both; 3=explicit versioning + idempotency on unsafe retryable writes; 4=that plus no breaking changes inside a shipped version, a stated deprecation path, and a replay proven not to double-write",
+      "raise": "add explicit API versioning, accept an Idempotency-Key on retryable POST creates, keep safe methods idempotent, and prove a replayed request does not duplicate the effect"
+    },
+    {
+      "id": "rate_limits_contract_tests",
+      "descriptor": "1=no rate limiting and tests cover only the 200 path; 2=one is present but weak; 3=per-client rate limiting with 429+Retry-After and contract tests over happy + auth-fail + validation-fail; 4=that plus pagination on list endpoints, no secrets in responses/logs, and spec-conformance/contract tests running in CI",
+      "raise": "add per-client rate limiting returning 429 + Retry-After, paginate list endpoints, and extend contract tests to cover auth-failure and validation-failure paths, not just 200"
+    }
+  ]
+}

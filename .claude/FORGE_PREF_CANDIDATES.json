@@ -1,0 +1,4 @@
+{
+  "_doc": "Forge V2 WAVE B / PIECE B1 (2026-07-18) — STAGE-ONLY store, project-local. A later `forge-reflect`-style distillation step MAY append proposed preference/rule candidates here (each carrying its own {value, source, confidence, scope, status:'proposed', ...}), but NOTHING in Forge may write here automatically yet in this piece — this file starts empty and forge-prefs.cjs (this piece) only READS it via listCandidates(), never writes it. A candidate becomes an ACTIVE pref ONLY via an explicit owner action (a future `/forge remember`/approve command) that promotes it into FORGE_OWNER_PROFILE.json with a real source quote — this file's contents are NEVER auto-promoted, NEVER treated as active preferences, and NEVER override or weaken the honesty_core.cannot_override_core invariant in FORGE_OWNER_PROFILE.json. Read via .claude/forge-bin/forge-prefs.cjs::listCandidates().",
+  "candidates": []
+}

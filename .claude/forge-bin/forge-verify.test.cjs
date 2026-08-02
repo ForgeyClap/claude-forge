@@ -14,6 +14,17 @@ process.env.FORGE_STORE_ROOT = CLAUDE_DIR;
 const V = require('./forge-verify.cjs');
 const store = require('./forge-store.cjs');
 
+// The CLI's --enforce path spawns the REAL .claude/forge-dashboard/log-event.cjs as a child process (never
+// re-implemented here — see forge-verify.cjs's own logEvent() helper). Copy the actual project script into
+// the hermetic root ONCE so a CLI --enforce test below exercises the SAME code production uses, not a stub.
+// log-event.cjs is self-contained (fs/path/crypto only; CLAUDE_DIR resolved from its own __dirname), so a
+// plain file copy is safe and stays hermetic (still never touches the real project's .claude/).
+{
+  const hermeticDashboardDir = path.join(CLAUDE_DIR, 'forge-dashboard');
+  fs.mkdirSync(hermeticDashboardDir, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), path.join(hermeticDashboardDir, 'log-event.cjs'));
+}
+
 let pass = 0, fail = 0;
 const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } else { fail++; console.error('  FAIL ' + name); } };
 
@@ -239,6 +250,490 @@ const routerGuardResult = V.verifyRun(routerGuardDir, {});
 const routerBoss = routerGuardResult.agents.find((a) => a.agent === 'Router Boss');
 t('7g1: a check_passed event carrying an explicit status:"failed" is NOT counted as done (explicit status wins over the terminal event_type)', routerBoss.tasksDone === 0 && routerBoss.tasksTotal === 1);
 t('7g2: Router Boss claims done but its one task is genuinely open (failed) -> mismatch=true (the gate must still block)', routerBoss.mismatch === true);
+
+// ================================================================================================
+// WAVE A (2026-07-18) — isolationTripwire + loop-until-dry (roundsFromEvents/loopConvergence)
+// ================================================================================================
+
+// ---- isolationTripwire ----
+// TMP is both the fixture "project root" (matches how the CLI derives projectRoot from --root) and the
+// parent of CLAUDE_DIR, so a real forge-runs/<id>/events.jsonl lives under it exactly like production.
+const isoCleanDir = writeEvents('run-iso-clean', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'file_changed', agent: 'Build Boss', path: 'src/app.js' }),
+  ev({ event_type: 'file_changed', agent: 'Build Boss', files_changed: ['src/a.js', 'src/b.js'] }),
+  ev({ event_type: 'command_run', agent: 'Build Boss', command: 'npm test', output_path: path.join(TMP, 'log.txt') }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+]);
+const isoClean = V.isolationTripwire(isoCleanDir, TMP);
+t('isolationTripwire: all-inside-root run is ok:true', isoClean.ok === true);
+t('isolationTripwire: checked counts every path-bearing field (1 + 2 + 1 = 4)', isoClean.checked === 4);
+t('isolationTripwire: zero violations on a clean run', isoClean.violations.length === 0);
+
+const isoEmptyDir = writeEvents('run-iso-empty', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'agent_note', agent: 'Build Boss', note: 'planning only, nothing written yet' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+]);
+const isoEmpty = V.isolationTripwire(isoEmptyDir, TMP);
+t('isolationTripwire: a run with zero path-bearing events is ok:true with checked:0 (labeled, not a false clean)', isoEmpty.ok === true && isoEmpty.checked === 0);
+
+const isoRelEscapeDir = writeEvents('run-iso-rel-escape', [
+  ev({ event_type: 'file_changed', agent: 'Build Boss', path: '../../outside-project/secret.txt' }),
+]);
+const isoRelEscape = V.isolationTripwire(isoRelEscapeDir, TMP);
+t('isolationTripwire: a ../ relative escape is flagged', isoRelEscape.ok === false && isoRelEscape.violations.length === 1);
+t('isolationTripwire: violation carries evIdx/event_type/field/path/reason', (() => {
+  const v = isoRelEscape.violations[0];
+  return v.evIdx === 0 && v.event_type === 'file_changed' && v.field === 'path' && /outside-project/.test(v.path) && /outside project root/.test(v.reason);
+})());
+
+const OUTSIDE_ABS = path.join(os.tmpdir(), 'forge-verify-outside-fixture-' + process.pid);
+const isoAbsEscapeDir = writeEvents('run-iso-abs-escape', [
+  ev({ event_type: 'file_changed', agent: 'Build Boss', path: OUTSIDE_ABS }),
+]);
+const isoAbsEscape = V.isolationTripwire(isoAbsEscapeDir, TMP);
+t('isolationTripwire: an absolute path outside root is flagged', isoAbsEscape.ok === false && isoAbsEscape.violations.length === 1);
+
+const isoArrayEscapeDir = writeEvents('run-iso-array-escape', [
+  ev({ event_type: 'file_changed', agent: 'Build Boss', files_changed: ['src/a.js', '../escaped.js'] }),
+]);
+const isoArrayEscape = V.isolationTripwire(isoArrayEscapeDir, TMP);
+t('isolationTripwire: an escape hiding inside files_changed[] (alongside a clean entry) is flagged', isoArrayEscape.violations.length === 1 &&
+  isoArrayEscape.violations[0].field === 'files_changed' && /escaped\.js/.test(isoArrayEscape.violations[0].path));
+
+const isoIgnoredTypeDir = writeEvents('run-iso-ignored-type', [
+  ev({ event_type: 'agent_note', agent: 'Build Boss', note: 'not a tracked type', path: '../../outside/should-be-ignored.txt' }),
+]);
+const isoIgnoredType = V.isolationTripwire(isoIgnoredTypeDir, TMP);
+t('isolationTripwire: a path field on a NON-tracked event_type is not scanned (only file_changed/file_read/command_run/custom_skill_* are)', isoIgnoredType.checked === 0 && isoIgnoredType.ok === true);
+
+t('isolationTripwire: reuses forge-actiongate.isPathEscape when available (same verdict as forge-actiongate directly)', (() => {
+  const actiongate = require('./forge-actiongate.cjs');
+  return V.isPathOutsideRoot(TMP, '../escape-check.txt') === actiongate.isPathEscape(TMP, '../escape-check.txt');
+})());
+
+// ---- isolationTripwire wired into the CLI ----
+const cliIsoViolation = runCli('run-iso-rel-escape', '--root', TMP);
+t('CLI: exits 1 on a run with an isolation violation (folds into the gate exit code)', cliIsoViolation.status === 1);
+t('CLI: prints the ISOLATION marker with the offending path', /ISOLATION file_changed path=".*outside-project.*secret\.txt"/.test(cliIsoViolation.stdout));
+
+const cliIsoClean = runCli('run-iso-clean', '--root', TMP, '--json');
+t('CLI: a run clean on mismatches/tickets/isolation exits 0', cliIsoClean.status === 0);
+t('CLI: prints the clean isolation line with a real checked count', /no isolation violations \(4 path\(s\) checked\)/.test(cliIsoClean.stdout));
+t('CLI --json: isolation block is present with ok:true and the real checked count', (() => {
+  try { const j = JSON.parse(cliIsoClean.stdout.slice(cliIsoClean.stdout.indexOf('{'))); return j.isolation && j.isolation.ok === true && j.isolation.checked === 4; } catch { return false; }
+})());
+
+// ---- roundsFromEvents ----
+const noBoundaryEvents = [
+  { event_type: 'rework_task_created', issue: 'lint fails' },
+  { event_type: 'check_failed', task: 'unit' },
+];
+t('roundsFromEvents: findings before any boundary all land in round 0', (() => {
+  const rounds = V.roundsFromEvents(noBoundaryEvents);
+  return rounds.length === 1 && rounds[0].length === 2;
+})());
+
+const boundaryEvents = [
+  { event_type: 'rework_task_created', issue: 'lint fails' },
+  { event_type: 'lead_review_started' },
+  { event_type: 'rework_task_created', issue: 'lint fails' }, // same finding recurring
+  { event_type: 'retest_started' },
+  { event_type: 'check_failed', task: 'e2e' }, // genuinely new
+];
+const splitRounds = V.roundsFromEvents(boundaryEvents);
+t('roundsFromEvents: lead_review_started/retest_started split into 3 rounds', splitRounds.length === 3);
+t('roundsFromEvents: round 0 has the initial finding, round 1 the recurrence, round 2 the new one', splitRounds[0].length === 1 && splitRounds[1].length === 1 && splitRounds[2].length === 1);
+t('roundsFromEvents: BACKBONE/unrelated event types (e.g. agent_progress) are not counted as findings', (() => {
+  const rounds = V.roundsFromEvents([{ event_type: 'agent_progress', note: 'working' }, { event_type: 'rework_task_created', issue: 'x' }]);
+  return rounds[0].length === 1;
+})());
+
+// ---- loopConvergence ----
+t('loopConvergence: empty rounds[] is never converged', V.loopConvergence([]).converged === false && V.loopConvergence([]).rounds === 0);
+t('loopConvergence: a single round with zero findings converges immediately (default dryStreak=1)', V.loopConvergence([[]]).converged === true);
+t('loopConvergence: a single round WITH findings does not converge', V.loopConvergence([['a']]).converged === false);
+
+const dryTail = V.loopConvergence([['a'], [], []]); // finding, then two genuinely clean rounds
+t('loopConvergence: [f, empty, empty] converges with default dryStreak=1 (last round is clean)', dryTail.converged === true && dryTail.dryStreak === 2);
+
+t('loopConvergence: dryStreak=2 requires TWO trailing clean rounds — [f, empty, empty] converges', V.loopConvergence([['a'], [], []], { dryStreak: 2 }).converged === true);
+t('loopConvergence: dryStreak=2 with only ONE trailing clean round does NOT converge yet', V.loopConvergence([['a'], []], { dryStreak: 2 }).converged === false);
+
+// dedup-by-signature: the SAME finding recurring in a later round must NOT count as "new" — this is the
+// core anti-fabrication logic (a real convergence check must not be fooled by an agent re-surfacing the
+// identical unresolved issue every round and calling that "clean").
+const recurring = V.loopConvergence([['dup-issue'], ['dup-issue']]);
+t('loopConvergence: a recurring IDENTICAL finding in round 2 counts as ZERO new findings (dedup, not blind "round is non-empty")', recurring.newFindingsByRound[1] === 0 && recurring.converged === true);
+
+const genuinelyNew = V.loopConvergence([['issue-a'], ['issue-b']]);
+t('loopConvergence: a DIFFERENT finding in round 2 counts as 1 new finding — does not converge', genuinelyNew.newFindingsByRound[1] === 1 && genuinelyNew.converged === false);
+
+t('loopConvergence: hitCap reports true once round count reaches max, independent of convergence', V.loopConvergence([['a'], ['b'], ['c']], { max: 3 }).hitCap === true);
+t('loopConvergence: hitCap stays false below max', V.loopConvergence([['a'], ['b']], { max: 3 }).hitCap === false);
+
+t('loopConvergence: never mutates its input rounds array', (() => {
+  const input = [['a'], []];
+  const snapshot = JSON.stringify(input);
+  V.loopConvergence(input, { dryStreak: 2 });
+  return JSON.stringify(input) === snapshot;
+})());
+
+// ---- end-to-end: real events -> roundsFromEvents -> loopConvergence, same recurring-issue scenario
+// a real rework loop would hit (agent reports the SAME unresolved finding twice, so it must not converge
+// as "dry" after only the recurrence — it converges only once a round genuinely adds nothing new).
+const e2eRounds = V.roundsFromEvents([
+  { event_type: 'check_failed', task: 'auth flow broken' },
+  { event_type: 'lead_review_started' },
+  { event_type: 'check_failed', task: 'auth flow broken' }, // still broken, same issue
+  { event_type: 'retest_started' },
+  { event_type: 'check_failed', task: 'auth flow broken' }, // still broken, same issue again
+]);
+const e2eConverged = V.loopConvergence(e2eRounds, { dryStreak: 2 });
+t('e2e: a finding that recurs unchanged across 3 rounds converges once 2 trailing rounds add nothing NEW (even though every round is non-empty)', e2eConverged.converged === true);
+t('e2e: newFindingsByRound is [1,0,0] — only the FIRST sighting of the recurring issue counts as new', JSON.stringify(e2eConverged.newFindingsByRound) === JSON.stringify([1, 0, 0]));
+
+// ================================================================================================
+// WAVE C / C-INTEGRATE (2026-07-18) — evidenceCheck() + --domain CLI wiring (required-evidence gate)
+// ================================================================================================
+
+// ---- evidenceCheck: unknown/falsy domain -> null (explicit "not applicable", never a fake pass) ----
+t('evidenceCheck: no domain -> null', V.evidenceCheck([], null, {}) === null);
+t('evidenceCheck: empty-string domain -> null', V.evidenceCheck([], '', {}) === null);
+t('evidenceCheck: unknown domain -> null (not a fake ok:true)', V.evidenceCheck([], 'not-a-real-domain', {}) === null);
+
+// ---- evidenceCheck: website domain, missing everything (no artifacts/events in this run) ----
+const webMissing = V.evidenceCheck([
+  { event_type: 'agent_started', agent: 'UI Boss' },
+  { event_type: 'agent_completed', agent: 'UI Boss' },
+], 'website', {});
+t('evidenceCheck: website with zero evidence -> ok:false, all 4 items missing', webMissing && webMissing.ok === false && webMissing.missing.length === 4);
+t('evidenceCheck: website missing includes the real evidence ids', webMissing && ['responsive-screenshot-mobile', 'responsive-screenshot-tablet', 'responsive-screenshot-desktop', 'zero-console-errors-note'].every((id) => webMissing.missing.includes(id)));
+
+// ---- evidenceCheck: website domain, evidence derived from REAL logged event fields (artifact substrings
+// + event types) — proves the run->artifacts/events projection actually works, not just a passthrough ----
+const webSatisfied = V.evidenceCheck([
+  { event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/mobile-390.png' },
+  { event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/tablet-768.png' },
+  { event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/desktop-1440.png' },
+  { event_type: 'zero_console_errors_noted', agent: 'UI Boss', note: 'zero console errors at all 3 breakpoints' },
+], 'website', {});
+t('evidenceCheck: website with real matching artifacts+event -> ok:true, 0 missing', webSatisfied && webSatisfied.ok === true && webSatisfied.missing.length === 0);
+t('evidenceCheck: website satisfied includes all 4 real ids', webSatisfied && webSatisfied.satisfied.length === 4);
+
+// ---- evidenceCheck: files_changed[] array field also counts as an artifact source ----
+const webViaFilesChanged = V.evidenceCheck([
+  { event_type: 'file_changed', agent: 'UI Boss', files_changed: ['screenshots/mobile-375.png', 'screenshots/tablet-768.png', 'screenshots/desktop-1920.png', 'reports/zero-console-errors.txt'] },
+], 'website', {});
+t('evidenceCheck: files_changed[] entries alone satisfy website evidence (artifact substrings only, no event needed)', webViaFilesChanged && webViaFilesChanged.ok === true);
+
+// ---- evidenceCheck: fullstack domain (artifact_or_event kind) ----
+const fullstackPartial = V.evidenceCheck([
+  { event_type: 'e2e_passed', agent: 'Test Boss', note: 'e2e suite green' },
+], 'fullstack', {});
+t('evidenceCheck: fullstack with only e2e_passed logged -> integration-gate-result still missing', fullstackPartial && fullstackPartial.ok === false
+  && fullstackPartial.satisfied.includes('e2e-test-result') && fullstackPartial.missing.includes('integration-gate-result'));
+
+// ---- evidenceCheck: tooling domain (2026-07-22 — closes the real "no tooling domain in required-evidence.json"
+// gap the forge-2026-07-22-v9-selfaudit self-audit run surfaced honestly). Proves the standard both ways on a
+// REALISTIC run-event shape (mirroring the real self-audit run's own event fields), not a toy fixture. ----
+const toolingLazy = V.evidenceCheck([
+  { event_type: 'agent_started', agent: 'Build Boss', runtime: 'internal' },
+  { event_type: 'agent_completed', agent: 'Build Boss' },
+], 'tooling', {});
+t('evidenceCheck: a lazy tooling run (dispatch only — no verified check, no report, no audit artifact) -> ok:false, all 3 items missing', toolingLazy && toolingLazy.ok === false && toolingLazy.missing.length === 3);
+
+const toolingGenuine = V.evidenceCheck([
+  { event_type: 'agent_started', agent: 'Build Boss', runtime: 'internal' },
+  { event_type: 'check_passed', agent: 'Build Boss', command: 'node .claude/forge-bin/forge-doctor.cjs', exit_code: 0, evidence: 'forge-doctor ALL GREEN 88 suites/4276 tests' },
+  { event_type: 'audit_iteration', agent: 'Build Boss', iteration: 1, note: 'real forge-audit-loop.cjs iteration' },
+  { event_type: 'report_generated', agent: 'Build Boss', path: 'final-report.md' },
+], 'tooling', {});
+t('evidenceCheck: a genuine tooling run (verified check_passed + real audit_iteration + a real final-report artifact ref) -> ok:true, nothing missing', toolingGenuine && toolingGenuine.ok === true && toolingGenuine.missing.length === 0);
+
+const toolingNoReport = V.evidenceCheck([
+  { event_type: 'check_passed', agent: 'Build Boss', command: 'node .claude/forge-bin/forge-doctor.cjs', exit_code: 0, evidence: 'ALL GREEN' },
+  { event_type: 'audit_iteration', agent: 'Build Boss', iteration: 1 },
+], 'tooling', {});
+t('evidenceCheck: a tooling run WITHOUT a real report artifact (only verification+audit) -> ok:false, final-report-artifact genuinely missing (the standard bites, not a rubber stamp)', toolingNoReport && toolingNoReport.ok === false
+  && toolingNoReport.missing.length === 1 && toolingNoReport.missing[0] === 'final-report-artifact');
+
+const toolingNoVerification = V.evidenceCheck([
+  { event_type: 'report_generated', agent: 'Build Boss', path: 'final-report.md' },
+  { event_type: 'audit_iteration', agent: 'Build Boss', iteration: 1 },
+], 'tooling', {});
+t('evidenceCheck: a tooling run WITHOUT any real verification signal (only report+audit) -> ok:false, verified-check-or-doctor-run genuinely missing', toolingNoVerification && toolingNoVerification.ok === false
+  && toolingNoVerification.missing.length === 1 && toolingNoVerification.missing[0] === 'verified-check-or-doctor-run');
+
+// ---- evidenceCheck: 'artifact_id' field gap fix (2026-07-26, fix-ronde wp5) — forge-artifact.cjs's real
+// `artifact_stored` event shape ({agent, artifact_id, kind, title}, see forge-artifact.cjs) carries NONE of
+// the pre-existing 5 EVIDENCE_ARTIFACT_FIELDS, so a genuinely-registered artifact was previously invisible
+// to this gate. These tests use the REAL event shape forge-artifact.cjs actually emits, not a toy fixture. ----
+const toolingArtifactStoredMatches = V.evidenceCheck([
+  { event_type: 'check_passed', agent: 'Build Boss', command: 'node .claude/forge-bin/forge-doctor.cjs', exit_code: 0, evidence: 'ALL GREEN' },
+  { event_type: 'audit_iteration', agent: 'Build Boss', iteration: 1 },
+  { event_type: 'artifact_stored', agent: 'report-writer', artifact_id: 'final-report-full-audit', kind: '', title: 'Final report' },
+], 'tooling', {});
+t("evidenceCheck: an artifact_stored event whose artifact_id CONTAINS the required substring ('final-report-full-audit' contains 'final-report') satisfies that evidence item", toolingArtifactStoredMatches
+  && toolingArtifactStoredMatches.ok === true && toolingArtifactStoredMatches.satisfied.includes('final-report-artifact'));
+
+// load-bearing anti-false-pass test: an artifact_stored event whose id does NOT contain the required
+// substring must NOT satisfy it — proves this is still real substring matching, not "any artifact_stored
+// event satisfies anything".
+const toolingArtifactStoredNoMatch = V.evidenceCheck([
+  { event_type: 'check_passed', agent: 'Build Boss', command: 'node .claude/forge-bin/forge-doctor.cjs', exit_code: 0, evidence: 'ALL GREEN' },
+  { event_type: 'audit_iteration', agent: 'Build Boss', iteration: 1 },
+  { event_type: 'artifact_stored', agent: 'report-writer', artifact_id: 'unrelated-scratch-note', kind: '', title: 'Something else entirely' },
+], 'tooling', {});
+t('evidenceCheck: an artifact_stored event whose artifact_id does NOT contain the required substring does NOT satisfy it (no blanket pass)', toolingArtifactStoredNoMatch
+  && toolingArtifactStoredNoMatch.ok === false && toolingArtifactStoredNoMatch.missing.includes('final-report-artifact')
+  && !toolingArtifactStoredNoMatch.satisfied.includes('final-report-artifact'));
+
+// empty/missing artifact_id must contribute nothing (no fabricated evidence from a blank/absent id)
+const toolingArtifactStoredEmptyId = V.evidenceCheck([
+  { event_type: 'artifact_stored', agent: 'report-writer', artifact_id: '', kind: '', title: 'final-report but empty id' },
+  { event_type: 'artifact_stored', agent: 'report-writer', kind: '', title: 'final-report but missing id field' },
+], 'tooling', {});
+t('evidenceCheck: artifact_stored with an empty or missing artifact_id contributes nothing (title is never harvested)', toolingArtifactStoredEmptyId
+  && !toolingArtifactStoredEmptyId.satisfied.includes('final-report-artifact') && toolingArtifactStoredEmptyId.missing.includes('final-report-artifact'));
+
+// regression: the pre-existing 5 scalar fields + 2 array fields still work exactly as before (unchanged
+// behavior) — re-run of the original webSatisfied/webViaFilesChanged/tooling fixtures already above cover
+// this too, but assert it directly here so a future field-list edit can't silently break the old fields.
+const regressionOldFields = V.evidenceCheck([
+  { event_type: 'report_generated', agent: 'Build Boss', path: 'final-report.md' },
+], 'tooling', {});
+t("evidenceCheck: regression — the pre-existing 'path' field still satisfies final-report-artifact unchanged", regressionOldFields
+  && regressionOldFields.satisfied.includes('final-report-artifact'));
+const regressionFilesChangedArray = V.evidenceCheck([
+  { event_type: 'file_changed', agent: 'Build Boss', files_changed: ['docs/final-report-draft.md'] },
+], 'tooling', {});
+t("evidenceCheck: regression — the pre-existing 'files_changed[]' array field still satisfies final-report-artifact unchanged", regressionFilesChangedArray
+  && regressionFilesChangedArray.satisfied.includes('final-report-artifact'));
+
+// ---- evidenceCheck: never throws on a malformed/empty events array ----
+t('evidenceCheck: empty events array + real domain -> ok:false, never throws', (() => {
+  try { const r = V.evidenceCheck([], 'website', {}); return r && r.ok === false; } catch { return false; }
+})());
+t('evidenceCheck: non-array events -> treated as empty, never throws', (() => {
+  try { const r = V.evidenceCheck(undefined, 'website', {}); return r && r.ok === false; } catch { return false; }
+})());
+
+// ---- CLI --domain wiring: advisory only, NEVER changes the exit code ----
+const cliDomainMissingOnCleanRun = runCli('run-clean-only', '--root', TMP, '--domain', 'website', '--json');
+t('CLI --domain on an otherwise-clean run still exits 0 (evidence is advisory, never gates)', cliDomainMissingOnCleanRun.status === 0);
+t('CLI --domain prints the loud MISSING EVIDENCE line', /MISSING EVIDENCE for domain "website"/.test(cliDomainMissingOnCleanRun.stdout));
+t('CLI --domain --json: evidence block present with ok:false and real missing ids', (() => {
+  try {
+    const j = JSON.parse(cliDomainMissingOnCleanRun.stdout.slice(cliDomainMissingOnCleanRun.stdout.indexOf('{')));
+    return j.evidence && j.evidence.ok === false && j.evidence.domain === 'website' && j.evidence.missing.length === 4;
+  } catch { return false; }
+})());
+
+const evidenceCleanDir = writeEvents('run-evidence-clean', [
+  ev({ event_type: 'agent_started', agent: 'UI Boss' }),
+  ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/mobile-390.png' }),
+  ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/tablet-768.png' }),
+  ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/desktop-1440.png' }),
+  ev({ event_type: 'zero_console_errors_noted', agent: 'UI Boss' }),
+  ev({ event_type: 'agent_completed', agent: 'UI Boss' }),
+]);
+const cliDomainSatisfied = runCli('run-evidence-clean', '--root', TMP, '--domain', 'website');
+t('CLI --domain with real satisfying evidence prints the OK line', /all required evidence present for domain "website"/.test(cliDomainSatisfied.stdout));
+t('CLI --domain with real satisfying evidence still exits 0 (also clean on mismatches/tickets/isolation)', cliDomainSatisfied.status === 0);
+
+const cliNoDomain = runCli('run-clean-only', '--root', TMP);
+t('CLI without --domain never prints an Evidence: section at all', !/Evidence \(advisory/.test(cliNoDomain.stdout));
+
+const cliUnknownDomain = runCli('run-clean-only', '--root', TMP, '--domain', 'not-a-real-domain');
+t('CLI with an unrecognized --domain prints the "not recognized" skip line, still exits 0', /not recognized by required-evidence\.json/.test(cliUnknownDomain.stdout) && cliUnknownDomain.status === 0);
+
+// ================================================================================================
+// BACKLOG ITEM 7 / spec-drift — checkAcceptanceCoverage() + buildAcceptanceEnforceEvents() (2026-07-31)
+// See .claude/forge-research/MINING-RONDE-1-2026-07-31.md section 2 for the mined design this implements.
+// ================================================================================================
+
+function writePrdMeta(prdId, criteria) {
+  const dir = path.join(CLAUDE_DIR, 'forge-prd');
+  fs.mkdirSync(dir, { recursive: true });
+  const meta = { prd_id: prdId, title: 'Test PRD ' + prdId, sections: { acceptance_criteria: criteria } };
+  fs.writeFileSync(path.join(dir, prdId + '.meta.json'), JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  return meta;
+}
+
+// ---- (a) full coverage -> 0 gaps ----
+writePrdMeta('prd-cov-full', [{ id: 'ac-1', text: 'First criterion' }, { id: 'ac-2', text: 'Second criterion' }]);
+store.putEntity('tickets', 'tk-prd-cov-full-1', { ticket_id: 'tk-prd-cov-full-1', prd_id: 'prd-cov-full', run_id: 'run-ac-full', title: 'First criterion', status: 'done', created: new Date().toISOString() });
+store.putEntity('tickets', 'tk-prd-cov-full-2', { ticket_id: 'tk-prd-cov-full-2', prd_id: 'prd-cov-full', run_id: 'run-ac-full', title: 'Second criterion', status: 'done', created: new Date().toISOString() });
+const acFullDir = writeEvents('run-ac-full', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-full', run_id: 'run-ac-full' }),
+  ev({ event_type: 'ticket_created', agent: 'orchestrator', ticket_id: 'tk-prd-cov-full-1', prd_id: 'prd-cov-full' }),
+  ev({ event_type: 'ticket_created', agent: 'orchestrator', ticket_id: 'tk-prd-cov-full-2', prd_id: 'prd-cov-full' }),
+  ev({ event_type: 'ticket_updated', agent: 'orchestrator', ticket_id: 'tk-prd-cov-full-1', note: 'closed with test_evidence' }),
+  ev({ event_type: 'ticket_updated', agent: 'orchestrator', ticket_id: 'tk-prd-cov-full-2', note: 'closed with test_evidence' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+]);
+const acFull = V.checkAcceptanceCoverage('run-ac-full', { runDir: acFullDir });
+t('checkAcceptanceCoverage (a): full coverage -> 0 gaps', acFull.acceptance_gaps.length === 0);
+t('checkAcceptanceCoverage (a): prds_checked includes prd-cov-full', acFull.prds_checked.includes('prd-cov-full'));
+t('checkAcceptanceCoverage (a): note is null (a real PRD IS linked)', acFull.note === null);
+const cliAcFull = runCli('run-ac-full', '--root', TMP);
+t('CLI (a): a fully-covered, otherwise-clean run exits 0', cliAcFull.status === 0);
+t('CLI (a): prints the clean acceptance-coverage line', /all acceptance criteria covered \(1 PRD\(s\) checked\)/.test(cliAcFull.stdout));
+
+// ---- (b) ticket deleted/never-created while the PRD still lists the criterion -> 1 blocker ----
+writePrdMeta('prd-cov-missing', [{ id: 'ac-1', text: 'Only criterion' }]);
+// tk-prd-cov-missing-1 intentionally NEVER created — the "dropped/deleted ticket" shape.
+const acMissingDir = writeEvents('run-ac-missing', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-missing', run_id: 'run-ac-missing' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+]);
+const acMissing = V.checkAcceptanceCoverage('run-ac-missing', { runDir: acMissingDir });
+t('checkAcceptanceCoverage (b): ticket deleted/never-created -> exactly 1 blocker gap', acMissing.acceptance_gaps.length === 1);
+t('checkAcceptanceCoverage (b): the gap names the right prd_id/ac_id/ticket_id + severity blocker', (() => {
+  const g = acMissing.acceptance_gaps[0];
+  return g.prd_id === 'prd-cov-missing' && g.ac_id === 'ac-1' && g.ticket_id === 'tk-prd-cov-missing-1' && g.severity === 'blocker';
+})());
+const cliAcMissing = runCli('run-ac-missing', '--root', TMP, '--json');
+t('CLI (b): a run with a dropped acceptance criterion exits 1 (existing gate EXTENDED, not replaced)', cliAcMissing.status === 1);
+t('CLI (b): prints the BLOCKER line naming ac-1/prd-cov-missing/tk-prd-cov-missing-1', /BLOCKER ac=ac-1 prd=prd-cov-missing ticket=tk-prd-cov-missing-1/.test(cliAcMissing.stdout));
+t('CLI (b) --json: acceptance_gaps carries the real gap', (() => {
+  try {
+    const j = JSON.parse(cliAcMissing.stdout.slice(cliAcMissing.stdout.indexOf('{')));
+    return Array.isArray(j.acceptance_gaps) && j.acceptance_gaps.length === 1 && j.acceptance_gaps[0].ac_id === 'ac-1';
+  } catch { return false; }
+})());
+
+// ---- (c) ticket still open, run claims completion -> 1 blocker ----
+writePrdMeta('prd-cov-open', [{ id: 'ac-1', text: 'Still open criterion' }]);
+store.putEntity('tickets', 'tk-prd-cov-open-1', { ticket_id: 'tk-prd-cov-open-1', prd_id: 'prd-cov-open', run_id: 'run-ac-open', title: 'Still open criterion', status: 'open', created: new Date().toISOString() });
+const acOpenDir = writeEvents('run-ac-open', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-open', run_id: 'run-ac-open' }),
+  ev({ event_type: 'ticket_created', agent: 'orchestrator', ticket_id: 'tk-prd-cov-open-1', prd_id: 'prd-cov-open' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss', status: 'done' }), // the run claims completion anyway
+]);
+const acOpen = V.checkAcceptanceCoverage('run-ac-open', { runDir: acOpenDir });
+t('checkAcceptanceCoverage (c): ticket still open + run claims completion -> exactly 1 blocker gap', acOpen.acceptance_gaps.length === 1);
+t('checkAcceptanceCoverage (c): the gap description says not marked done', /not marked done/.test(acOpen.acceptance_gaps[0].description));
+
+// ---- extra rigor pin: ticket says DONE in the store but THIS run never references it at all -> still a
+// gap. Proves the in-run-evidence half of rule (b) is load-bearing, not vacuous (a naive "trust the store
+// status field alone" implementation would wrongly report 0 gaps here). ----
+writePrdMeta('prd-cov-orphan', [{ id: 'ac-1', text: 'Orphan-done criterion' }]);
+store.putEntity('tickets', 'tk-prd-cov-orphan-1', { ticket_id: 'tk-prd-cov-orphan-1', prd_id: 'prd-cov-orphan', run_id: 'run-ac-orphan', title: 'Orphan-done criterion', status: 'done', created: new Date().toISOString() });
+const acOrphanDir = writeEvents('run-ac-orphan', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-orphan', run_id: 'run-ac-orphan' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+  // NOTE: no event anywhere in this run references tk-prd-cov-orphan-1.
+]);
+const acOrphan = V.checkAcceptanceCoverage('run-ac-orphan', { runDir: acOrphanDir });
+t('checkAcceptanceCoverage (rigor pin): store says done but THIS run never references the ticket -> still a gap', acOrphan.acceptance_gaps.length === 1);
+t('checkAcceptanceCoverage (rigor pin): description explains no completion event in this run', /never records a real completion event/.test(acOrphan.acceptance_gaps[0].description));
+
+// ---- (d) no PRD linked -> empty gaps + honest one-line note ----
+const acNoneDir = writeEvents('run-ac-none', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'lint' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+]);
+const acNone = V.checkAcceptanceCoverage('run-ac-none', { runDir: acNoneDir });
+t('checkAcceptanceCoverage (d): no PRD linked -> empty gaps', acNone.acceptance_gaps.length === 0);
+t('checkAcceptanceCoverage (d): no PRD linked -> honest one-line note', acNone.note === 'no PRD linked to this run');
+t('checkAcceptanceCoverage (d): no PRD linked -> prds_checked is empty', acNone.prds_checked.length === 0);
+const cliAcNone = runCli('run-ac-none', '--root', TMP);
+t('CLI (d): a run with no PRD linked still exits 0 when otherwise clean', cliAcNone.status === 0);
+t('CLI (d): prints the honest no-PRD-linked note', /\(no PRD linked to this run\)/.test(cliAcNone.stdout));
+
+// ---- (e) --enforce appends only the registered event trio, closes/edits nothing ----
+const beforeEnforceLineCount = fs.readFileSync(path.join(acMissingDir, 'events.jsonl'), 'utf8').trim().split('\n').length;
+const missingTicketPath = path.join(CLAUDE_DIR, 'forge-tickets', 'tk-prd-cov-missing-1.json');
+t('enforce-setup: the gap ticket genuinely does not exist before --enforce', !fs.existsSync(missingTicketPath));
+const cliEnforceAc = runCli('run-ac-missing', '--root', TMP, '--enforce');
+t('CLI --enforce (e): still exits 1 (enforce logs, never fixes)', cliEnforceAc.status === 1);
+t('CLI --enforce (e): prints an ENFORCED line mentioning 1 acceptance gap flagged', /1 acceptance gap\(s\) flagged/.test(cliEnforceAc.stdout));
+const afterEnforceLines = fs.readFileSync(path.join(acMissingDir, 'events.jsonl'), 'utf8').trim().split('\n');
+t('CLI --enforce (e): appended EXACTLY 3 new event lines (the registered trio, nothing else)', afterEnforceLines.length === beforeEnforceLineCount + 3);
+const newAcEvents = afterEnforceLines.slice(beforeEnforceLineCount).map((l) => JSON.parse(l));
+t('CLI --enforce (e): new events are exactly lead_review_completed, rework_task_created, rework_assigned, in order', newAcEvents.map((x) => x.event_type).join(',') === 'lead_review_completed,rework_task_created,rework_assigned');
+t('CLI --enforce (e): rework_task_created names the exact prd_id/ac_id/ticket_id', newAcEvents[1].prd_id === 'prd-cov-missing' && newAcEvents[1].ac_id === 'ac-1' && newAcEvents[1].ticket_id === 'tk-prd-cov-missing-1');
+t('CLI --enforce (e): rework_assigned also carries the ac_id', newAcEvents[2].ac_id === 'ac-1');
+t('CLI --enforce (e): closes nothing — the missing ticket still does not exist afterward', !fs.existsSync(missingTicketPath));
+const acMissingAfterEnforce = V.checkAcceptanceCoverage('run-ac-missing', { runDir: acMissingDir });
+t('CLI --enforce (e): re-checking right after still shows the SAME 1 gap (enforce never fixes anything)', acMissingAfterEnforce.acceptance_gaps.length === 1);
+
+// ---- buildAcceptanceEnforceEvents: pure payload builder, registered event types only (mirrors the
+// existing buildEnforceEvents tests above, reusing the same REGISTERED set) ----
+const sampleGap = { prd_id: 'prd-x', ac_id: 'ac-2', ticket_id: 'tk-prd-x-2', severity: 'blocker', description: 'criterion desc', fix_hint: 'do the fix' };
+const builtAc = V.buildAcceptanceEnforceEvents(sampleGap);
+t('buildAcceptanceEnforceEvents returns exactly 3 events', builtAc.length === 3);
+t('buildAcceptanceEnforceEvents uses ONLY registered event_type names', builtAc.every((e) => REGISTERED.has(e.event_type)));
+t('buildAcceptanceEnforceEvents never emits an invented done/closed event type', !builtAc.some((e) => /done|closed|resolve/i.test(e.event_type)));
+const acLrc = builtAc.find((e) => e.event_type === 'lead_review_completed');
+t('lead_review_completed names prd_id and ac_id in its note', acLrc.extra.note.includes('prd-x') && acLrc.extra.note.includes('ac-2'));
+const acRtc = builtAc.find((e) => e.event_type === 'rework_task_created');
+t('rework_task_created threads prd_id/ac_id/ticket_id + issue/required_fix', acRtc.extra.prd_id === 'prd-x' && acRtc.extra.ac_id === 'ac-2' && acRtc.extra.ticket_id === 'tk-prd-x-2' && acRtc.extra.issue === 'criterion desc' && acRtc.extra.required_fix === 'do the fix');
+const acRa = builtAc.find((e) => e.event_type === 'rework_assigned');
+t('rework_assigned carries the ac_id too', acRa.extra.ac_id === 'ac-2');
+t('buildAcceptanceEnforceEvents never marks anything as done (no status:done anywhere)', !builtAc.some((e) => e.extra.status === 'done'));
+
+// ---- explicit owner decision (requirement #1's "or an explicit owner decision event") ----
+writePrdMeta('prd-cov-decided', [{ id: 'ac-1', text: 'Manually covered criterion' }]);
+// tk-prd-cov-decided-1 intentionally never created — covered by an explicit owner decision instead.
+const acDecidedDir = writeEvents('run-ac-decided', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-decided', run_id: 'run-ac-decided' }),
+  ev({ event_type: 'decision_logged', agent: 'orchestrator', prd_id: 'prd-cov-decided', ac_id: 'ac-1', decision: 'covered by manual QA sign-off, no ticket needed', by: 'owner' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss' }),
+]);
+const acDecided = V.checkAcceptanceCoverage('run-ac-decided', { runDir: acDecidedDir });
+t('checkAcceptanceCoverage: an explicit, attributed owner decision clears a criterion with no ticket at all', acDecided.acceptance_gaps.length === 0);
+
+// negative pin: a decision_logged referencing the right ids but with NO real decision text/attribution
+// must NOT count — proves this is a real structured/attributed match, not a bare event_type+id hit.
+writePrdMeta('prd-cov-bare-decision', [{ id: 'ac-1', text: 'Needs a real decision' }]);
+const acBareDir = writeEvents('run-ac-bare-decision', [
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-bare-decision', run_id: 'run-ac-bare-decision' }),
+  ev({ event_type: 'decision_logged', agent: '', prd_id: 'prd-cov-bare-decision', ac_id: 'ac-1', decision: '   ', by: '' }),
+]);
+const acBare = V.checkAcceptanceCoverage('run-ac-bare-decision', { runDir: acBareDir });
+t('checkAcceptanceCoverage: a blank/unattributed decision_logged does NOT clear the criterion (still 1 gap)', acBare.acceptance_gaps.length === 1);
+
+// ---- isolated gate-mutation pin (mirrors the existing 7d1/7d2 pins above): a run clean on EVERYTHING
+// (mismatches, tickets, isolation) except ONE acceptance gap must still flip the exit code — kills a
+// future "forgot to add acceptance_gaps.length===0 to the && chain" regression. ----
+writePrdMeta('prd-cov-gate-only', [{ id: 'ac-1', text: 'Gate isolation criterion' }]);
+const gateOnlyDir = writeEvents('run-ac-gate-only', [
+  ev({ event_type: 'agent_started', agent: 'Clean Boss 3' }),
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-gate-only', run_id: 'run-ac-gate-only' }),
+  ev({ event_type: 'check_passed', agent: 'Clean Boss 3' }),
+  ev({ event_type: 'agent_completed', agent: 'Clean Boss 3' }),
+]);
+const gateOnly = V.verifyRun(gateOnlyDir, {});
+const gateOnlyTix = V.verifyTickets({ run_id: 'run-ac-gate-only' });
+const gateOnlyIso = V.isolationTripwire(gateOnlyDir, TMP);
+t('gate-pin setup: run-ac-gate-only has ZERO agent mismatches, ZERO tickets, ZERO isolation violations (isolates the acceptance-gap axis)', gateOnly.mismatches === 0 && gateOnlyTix.tickets.length === 0 && gateOnlyIso.violations.length === 0);
+const cliGateOnly = runCli('run-ac-gate-only', '--root', TMP);
+t('gate-pin: CLI exits 1 purely because of the acceptance gap (kills a dropped acceptance_gaps clause in the exit-code &&)', cliGateOnly.status === 1);
+
+// ---- FOUND BY THE COMMAND AUDIT (2026-08-02): the SILENT FALSE PASS on the honesty gate itself ----
+// The public quick-reference documented `forge-verify.cjs --run <run_id>`. parseArgs knew no --run, so
+// pos[0] became the literal string "--run", which PASSED the old /^[A-Za-z0-9_-]+$/ guard (hyphen is in
+// the class), opened .claude/forge-runs/--run, found nothing, printed "0 mismatch(es)" and exited 0.
+// Forge's own honesty gate greenlit a run it never looked at. Three pins, each one direction of the fix:
+const cliDashRun = runCli('--run', 'run-combo', '--root', TMP, '--json');
+t('FALSE-PASS pin 1: the documented `--run <id>` form now works and sees the REAL run (mismatches=1, exit 1)', (() => {
+  // same human-header-then-JSON parse the cliMismatch test above uses
+  try { return cliDashRun.status === 1 && JSON.parse(cliDashRun.stdout.slice(cliDashRun.stdout.indexOf('{'))).mismatches === 1; } catch { return false; }
+})());
+const cliFlagAsId = runCli('--bogus-flag', '--root', TMP);
+t('FALSE-PASS pin 2: a token starting with "-" is REJECTED as a run_id, never silently verified', cliFlagAsId.status !== 0 && /invalid|usage/i.test(cliFlagAsId.stderr));
+const cliGhost = runCli('run-that-was-never-created', '--root', TMP);
+t('FALSE-PASS pin 3: a run directory that does not exist is LOUD (non-zero + names the path), never "0 mismatches"', cliGhost.status !== 0 && /does not exist|no such run/i.test(cliGhost.stderr + cliGhost.stdout) && !/0 mismatch/.test(cliGhost.stdout));
 
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

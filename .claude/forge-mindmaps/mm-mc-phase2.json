@@ -1,0 +1,105 @@
+{
+  "map_id": "mm-mc-phase2",
+  "title": "Mission Control",
+  "nodes": [
+    {
+      "id": "mission-control-0",
+      "label": "Mission Control",
+      "kind": "root",
+      "parent": null
+    },
+    {
+      "id": "visibility-1",
+      "label": "Visibility",
+      "kind": "branch",
+      "parent": "mission-control-0"
+    },
+    {
+      "id": "task-graph-2",
+      "label": "Task Graph",
+      "kind": "leaf",
+      "parent": "visibility-1"
+    },
+    {
+      "id": "mind-map-3",
+      "label": "Mind Map",
+      "kind": "leaf",
+      "parent": "visibility-1"
+    },
+    {
+      "id": "capabilities-4",
+      "label": "Capabilities",
+      "kind": "branch",
+      "parent": "mission-control-0"
+    },
+    {
+      "id": "prd-5",
+      "label": "PRD",
+      "kind": "leaf",
+      "parent": "capabilities-4"
+    },
+    {
+      "id": "deep-learn-6",
+      "label": "Deep Learn",
+      "kind": "leaf",
+      "parent": "capabilities-4"
+    },
+    {
+      "id": "safety-7",
+      "label": "Safety",
+      "kind": "branch",
+      "parent": "mission-control-0"
+    },
+    {
+      "id": "doctor-8",
+      "label": "Doctor",
+      "kind": "leaf",
+      "parent": "safety-7"
+    },
+    {
+      "id": "leak-scan-9",
+      "label": "Leak Scan",
+      "kind": "leaf",
+      "parent": "safety-7"
+    }
+  ],
+  "edges": [
+    {
+      "from": "mission-control-0",
+      "to": "visibility-1"
+    },
+    {
+      "from": "visibility-1",
+      "to": "task-graph-2"
+    },
+    {
+      "from": "visibility-1",
+      "to": "mind-map-3"
+    },
+    {
+      "from": "mission-control-0",
+      "to": "capabilities-4"
+    },
+    {
+      "from": "capabilities-4",
+      "to": "prd-5"
+    },
+    {
+      "from": "capabilities-4",
+      "to": "deep-learn-6"
+    },
+    {
+      "from": "mission-control-0",
+      "to": "safety-7"
+    },
+    {
+      "from": "safety-7",
+      "to": "doctor-8"
+    },
+    {
+      "from": "safety-7",
+      "to": "leak-scan-9"
+    }
+  ],
+  "_generated": "2026-07-10T11:15:21.338Z"
+}

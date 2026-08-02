@@ -1,0 +1,75 @@
+/*
+ * Waiting chip (feat-live-visibility, Gap A).
+ *
+ * Same sizing/shape convention as `.fw-cc` (topbar.css) — this file exists only because `.fw-cc`
+ * is a static, `cursor: help` tooltip carrier while this is a real clickable button, so it needs
+ * its own hover/focus/active states. No new tokens: every value below is an existing
+ * `var(--forge-*)` already used elsewhere in this file's sibling stylesheets. Severity is carried
+ * by the SAME `--forge-status-waiting` token `connection-banner.css` already uses for its
+ * CONNECTING accent — reused here for a different but equally real "something needs you" signal,
+ * never a new hue.
+ */
+
+.fw-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  border-inline-start: var(--forge-border-thick) solid var(--forge-status-waiting);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  cursor: pointer;
+  transition-property: background-color, border-color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-waiting:hover {
+  background: var(--forge-color-hover);
+  border-color: var(--forge-color-line-loud);
+}
+
+.fw-waiting:focus-visible {
+  outline: none;
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-waiting:active {
+  background: var(--forge-color-selected);
+}
+
+.fw-waiting__icon {
+  flex: none;
+  color: var(--forge-status-waiting);
+}
+
+.fw-waiting__text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  white-space: nowrap;
+}
+
+.fw-waiting__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-4);
+  padding-inline: var(--forge-space-1);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-status-waiting);
+  color: var(--forge-color-canvas);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-waiting {
+    transition: none;
+  }
+}

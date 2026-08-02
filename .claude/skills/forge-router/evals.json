@@ -1,0 +1,17 @@
+{
+  "skill": "forge-router",
+  "assertions": [
+    { "id": "skillmd-exists", "type": "file_exists", "path": ".claude/skills/forge-router/SKILL.md",
+      "why": "the skill file itself must exist for forge-router to be usable at all" },
+    { "id": "description-budget", "type": "frontmatter_field", "field": "description", "max_length": 200,
+      "why": "2026-07-31 skill-load-budget fix (FORGE_MEMORY.md): every description must stay <=200 chars or the skill picker truncates it" },
+    { "id": "skill-discovery-section", "type": "contains", "path": ".claude/skills/forge-router/SKILL.md", "needle": "Skill Discovery",
+      "why": "Step 0b Skill Discovery is a required routing step (dynamic skill selection, not a fixed menu)" },
+    { "id": "hotspot-lock-protocol", "type": "contains", "path": ".claude/skills/forge-router/SKILL.md", "needle": "Hotspot lock protocol",
+      "why": "the one-writer-per-hotspot mechanical lock protocol (2026-07-26) must stay documented in the router" },
+    { "id": "prompt-template-exists", "type": "file_exists", "path": ".claude/skills/forge-router/PROMPT_TEMPLATE.md",
+      "why": "the high-end work-package prompt format this skill references must actually exist" },
+    { "id": "learnings-wiring", "type": "contains", "path": ".claude/skills/forge-router/SKILL.md", "needle": "learnings.md",
+      "why": "wp-skill-evals: the skill must instruct reading its own learnings.md before use and appending corrections after" }
+  ]
+}

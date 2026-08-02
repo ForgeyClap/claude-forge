@@ -1,0 +1,299 @@
+/*
+ * Forge Workspace — global application stylesheet.
+ *
+ * Load order is load-bearing. Tokens first (they define every --forge-* custom
+ * property), then the shared brand base layer, then the rules below, which only
+ * ever refine what those two established. Component and view stylesheets are
+ * imported by their own modules and land after this file.
+ *
+ * Path note: this file lives at src/styles/app.css, so ../../brand/ resolves to
+ * <project-root>/brand/. Verified against the real tree.
+ *
+ * Nothing in here invents a colour. Every value is a var(--forge-*) token.
+ */
+
+@import '../../brand/forge-tokens.css';
+@import '../../brand/forge-base.css';
+
+/* =========================================================================
+   1. Reset
+   forge-base.css already sets box-sizing, body type and ::selection. What is
+   repeated below is repeated on purpose: the shell needs a fixed-height,
+   non-scrolling document, which the shared base layer deliberately does not
+   assume (it is also used by the standalone registry page).
+   ========================================================================= */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  block-size: 100%;
+  background: var(--forge-color-canvas);
+  accent-color: var(--forge-color-accent);
+}
+
+body {
+  block-size: 100%;
+  margin: 0;
+  /* The app shell owns scrolling. Nothing scrolls the document itself. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--forge-color-bg);
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-normal);
+  letter-spacing: var(--forge-tracking-tight);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  block-size: 100%;
+  overflow: hidden;
+  /* Keeps modal/overlay z-indices from leaking into the page behind the app. */
+  isolation: isolate;
+}
+
+/*
+ * Provenance: .fg-machine (monospace) is defined once, in brand/forge-base.css,
+ * and is NOT redefined here. Same for .fg-eyebrow, .fg-prose and .fg-muted.
+ * The sans face is set on body above; machine-recorded text opts into mono by
+ * carrying .fg-machine or by using the <Machine> primitive.
+ */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-size: inherit;
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+  letter-spacing: var(--forge-tracking-tight);
+}
+
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+button {
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-inline-size: 100%;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* =========================================================================
+   2. Focus
+   One ring, everywhere, drawn with the focus-ring token so it reads against
+   both the dark canvas and the light canvas. Keyboard only — pointer focus
+   stays silent.
+   ========================================================================= */
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* =========================================================================
+   3. Scrollbars
+   Thin, unobtrusive, present in both themes. Track stays transparent so a
+   scrollbar never draws a second edge next to a panel border.
+   ========================================================================= */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--forge-color-scrollbar) transparent;
+}
+
+*::-webkit-scrollbar {
+  inline-size: 10px;
+  block-size: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--forge-color-scrollbar);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--forge-radius-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--forge-color-scrollbar-hover);
+  background-clip: padding-box;
+}
+
+/* =========================================================================
+   4. Theme transition
+   Only background-color and border-color, only at the fast step. Long enough
+   to stop a theme flip from snapping, short enough that a hover still feels
+   immediate. Never transform, never opacity, never longer than motion-base.
+   ========================================================================= */
+
+*,
+*::before,
+*::after {
+  transition-property: background-color, border-color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+/* =========================================================================
+   5. Reduced motion
+   Global, unconditional, and it wins.
+   ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* =========================================================================
+   6. Density hook
+   The shell writes data-density="comfortable" | "compact" on <html>. Every
+   component reads these --fw-* properties instead of hard-coding a height or a
+   gutter, so density is one switch rather than a hundred media queries.
+   ========================================================================= */
+
+:root {
+  /* Heights — all snapped to the control scale. */
+  --fw-control-h: var(--forge-control-md); /* 30px — default control */
+  --fw-control-h-sm: var(--forge-control-sm); /* 26px — small control */
+  --fw-row-h: var(--forge-control-lg); /* 36px — list / tree row */
+  --fw-header-h: var(--forge-layout-header); /* 52px — view header strip */
+
+  /* Spacing rhythm. */
+  --fw-gutter: var(--forge-space-4);
+  --fw-gutter-tight: var(--forge-space-3);
+  --fw-gap: var(--forge-space-3);
+  --fw-gap-tight: var(--forge-space-2);
+  --fw-panel-pad: var(--forge-space-4);
+  --fw-section-gap: var(--forge-space-6);
+}
+
+:root[data-density='compact'] {
+  --fw-control-h: var(--forge-control-sm); /* 26px */
+  --fw-control-h-sm: var(--forge-control-xs); /* 22px */
+  --fw-row-h: var(--forge-control-md); /* 30px */
+  --fw-header-h: var(--forge-control-xl); /* 42px */
+
+  --fw-gutter: var(--forge-space-3);
+  --fw-gutter-tight: var(--forge-space-2);
+  --fw-gap: var(--forge-space-2);
+  --fw-gap-tight: var(--forge-space-1);
+  --fw-panel-pad: var(--forge-space-3);
+  --fw-section-gap: var(--forge-space-4);
+}
+
+/* =========================================================================
+   7. Utilities
+   Four. Deliberately four. If a fifth feels necessary it probably belongs in a
+   component stylesheet.
+   ========================================================================= */
+
+/* Scroll container: contains overscroll so a panel never scrolls the shell. */
+.fw-scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  min-block-size: 0;
+}
+
+/* Single-line ellipsis. min-inline-size:0 makes it work inside flex rows. */
+.fw-truncate {
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Available to assistive tech, invisible to everyone else. */
+.fw-visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A precise line. Use <hr class="fw-divider"> or a bare span. */
+.fw-divider {
+  flex: none;
+  border: 0;
+  margin: 0;
+  background: var(--forge-color-line-subtle);
+  block-size: var(--forge-border-hair);
+  inline-size: 100%;
+}
+
+.fw-divider--vertical {
+  inline-size: var(--forge-border-hair);
+  block-size: auto;
+  align-self: stretch;
+  min-block-size: var(--forge-space-4);
+}
+
+.fw-divider--strong {
+  background: var(--forge-color-line);
+}

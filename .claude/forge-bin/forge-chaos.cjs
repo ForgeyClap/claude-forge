@@ -95,7 +95,7 @@ const REAL = {
   nvidiaProvider: path.join(FORGE_BIN, 'nvidia-provider.cjs'),
   logEvent: path.join(FORGE_BIN, '..', 'forge-dashboard', 'log-event.cjs'),
 };
-const FAKE_KEY = '\x6Evapi-CHAOS-FAKE-KEY-0000000000000000';
+const FAKE_KEY = 'nvapi-CHAOS-FAKE-KEY-0000000000000000';
 
 // ---- hermetic tmpdir tracking (proof, not just a claim — mirrors forge-sync.test.cjs addendum G) ----
 const TMP_ROOTS = [];
@@ -317,8 +317,8 @@ function scenarioSecretRedaction() {
   // but forge-doctor's leak-scan STRONG_PLACEHOLDER_RE recognises the FAKE marker as a test fixture and does
   // not cry wolf. (5th fix round: the nvapi key formerly used an XXXX run as its marker, but XXXX is now only
   // a WEAK signal — an incidental run no longer exempts a real-looking key — so it carries an explicit FAKE.)
-  const fakeSecret = '\x73k-FAKETHISISACHAOSTESTSECRETVALUE1234567890';
-  const fakeNvidiaKey = '\x6Evapi-FAKE-CHAOSTESTKEYVALUE-DONOTUSE-000';
+  const fakeSecret = 'sk-FAKETHISISACHAOSTESTSECRETVALUE1234567890';
+  const fakeNvidiaKey = 'nvapi-FAKE-CHAOSTESTKEYVALUE-DONOTUSE-000';
   const plainPassword = 'plain-unformatted-secret-chaos-value';
   const scriptDir = freshDir('forge-chaos-secret-script');
   const scriptPath = path.join(scriptDir, 'inject.cjs');

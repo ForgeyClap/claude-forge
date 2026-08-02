@@ -28,7 +28,7 @@ const idxPath = path.join(TMP, 'forge-artifacts', 'index.jsonl');
 t('storeArtifact appends a row to forge-artifacts/index.jsonl', fs.existsSync(idxPath) && fs.readFileSync(idxPath, 'utf8').includes('a1'));
 
 // 2) secret redaction — a fake secret is ABSENT from the written file
-const FAKE_SECRET = '\x6Evapi-FAKEFAKEFAKEFAKE1234567890';
+const FAKE_SECRET = 'nvapi-FAKEFAKEFAKEFAKE1234567890';
 storeArtifact('a2', { title: 'Secret artifact', note: 'leaked key: ' + FAKE_SECRET });
 const secretFilePath = path.join(TMP, 'forge-artifacts', 'a2.json');
 const secretText = fs.readFileSync(secretFilePath, 'utf8');

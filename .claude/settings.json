@@ -1,0 +1,49 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/forge-bin/forge-snapshot-marker.cjs",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/forge-bin/forge-snapshot-marker.cjs",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/forge-bin/forge-snapshot-reinject.cjs",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/forge-bin/forge-toolhook.cjs",
+            "timeout": 8000
+          }
+        ]
+      }
+    ]
+  }
+}

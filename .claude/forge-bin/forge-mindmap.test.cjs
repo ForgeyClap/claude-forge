@@ -70,7 +70,7 @@ t('toMermaid starts with "graph TD"', mmd.startsWith('graph TD'));
 t('toMermaid never crashes on a malformed map', (() => { try { toMermaid({}); toMermaid(null); toMermaid({ nodes: 'x', edges: 'y' }); return true; } catch { return false; } })());
 
 // 5) a fake secret in a label is ABSENT from the written json (redacted)
-const FAKE_SECRET = '\x6Evapi-FAKEFAKEFAKEFAKE1234567890';
+const FAKE_SECRET = 'nvapi-FAKEFAKEFAKEFAKE1234567890';
 const secretOutline = 'Root Idea\n  leaked key: ' + FAKE_SECRET;
 const secretBuilt = buildFromOutline(secretOutline);
 const secretMap = { map_id: 'mm-secret-001', title: secretBuilt.nodes[0].label, nodes: secretBuilt.nodes, edges: secretBuilt.edges };

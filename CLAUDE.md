@@ -4,9 +4,18 @@ This project runs **Forge V2**: a universal, dynamic multi-agent build / automat
 
 Standing rules, not a procedure — the procedure lives in `/forge` and the skills.
 
-## How Forge works
-**Orchestrator (you) → dynamic ECC agent pool → per-task specialists → optional Codex review → honest forge-report.**
-Per task, pick the *smallest relevant* team via the **`forge-router`** skill. Small task = small team; large task = larger swarm. Don't over-spawn agents to look impressive. Don't lock to a fixed number of agents.
+## Forge Studio v7 (how Forge works)
+> This is the clearly-marked Forge section. When Forge safe-merges into an existing `CLAUDE.md`, only this `## Forge Studio v7` section is added/updated — existing project rules are preserved.
+
+**Lead Agent (you) → Mission Blueprint + Skill Discovery → dynamic role-based subagents (ECC-first, incl. custom roles) → outputs → Lead Review → bounded rework/fix loop → merge → optional Codex → quality gate → honest forge-report.**
+Plan before executing. Pick the *smallest relevant* team via **`forge-router`**; the role/skill examples are **guidance, not limits** — create **custom subagent roles + safe project-local custom skills** for gaps, and a custom taxonomy for unknown project types. Small task = small team; large/high-end = larger swarm. Don't over-spawn; don't lock to a fixed number.
+
+- **ECC-first (ECC Normal Mode — default ON):** prefer real ECC agents/skills; native only as a labeled fallback. **ECC Full Test Mode** is opt-in only (default OFF) via `.claude/FORGE_ECC_MODE.json`.
+- **Forge Session Mode:** `/forge` / `gebruik Forge` start a project-local session (`.claude/FORGE_SESSION_STATE.json`) so follow-ups auto-use Forge until `stop Forge`/`pause Forge`. No extra permission granted.
+- **Project agent strategy:** see `FORGE_PROJECT_PROFILE.md` for the project type, recommended + custom subagent roles, role mapping, and rework-loop rules.
+- **Project skill strategy:** Skill Discovery selects skill packs + creates project-local custom skills (`.claude/skills/<name>/SKILL.md`); fallback = labeled native or BLOCKED. Every executable subagent gets an assigned skill/method.
+- **Quality gates:** advisory review only unless you ask for blocking gates; Codex optional (logged real/blocked/not-invoked); QA/retest in the rework loop.
+- **Forge maintains four things:** this `CLAUDE.md` (project brain) · `.claude/skills/*/SKILL.md` (capabilities) · Forge memory · the dashboard.
 
 ## Project isolation (REQUIRED — always on)
 1. **Only this folder.** Forge works only in *this* project folder. Never edit other projects or unrelated directories.
@@ -29,10 +38,14 @@ This project keeps local memory in `.claude/`:
 **Before** every `/forge` task read the profile + memory + task history; **after**, update memory, task history, and the agent ledger. Only write what's supported by real files/git/user instruction; mark `inferred`/`unknown`. Memory is project-local only — never wipe it without reason.
 
 ## Agent Activity Ledger (proof, no fake claims)
-Every task records which agents really worked in `FORGE_AGENT_LEDGER.md` with evidence. Statuses ONLY: `REAL INVOKED` · `REAL TOOL/SKILL USED` · `INTERNAL ROLE ONLY` · `NOT USED` · `FAILED`. Never claim an agent/Codex/test/preview that didn't actually run.
+Every task records which agents really worked in `FORGE_AGENT_LEDGER.md` with evidence (Runtime + status). Statuses ONLY: `ECC REAL INVOKED` · `ECC SKILL LOADED` · `NATIVE AGENT INVOKED` · `INTERNAL ROLE ONLY` · `NOT USED` · `FAILED` · `BLOCKED`. Mark **custom** subagents and the **skill / skill_source** each used. Never claim an agent/custom skill/Codex/test/preview that didn't actually run.
 
-## Dashboard + event logs (Forge Control Center — per-project, isolated)
-This project has its **own** local-only dashboard in `.claude/forge-dashboard/` on its **own stable port** (3737–3999, deterministic from the project path, stored in `.claude/forge-dashboard/PORT`; falls back to the next free port if busy). Start: `node .claude/forge-dashboard/server.cjs` (or `start-forge-dashboard.bat`, or `/forge dashboard`) → it prints the actual `http://localhost:<port>`, writes `DASHBOARD_STATE.json`, and exposes `GET /api/health`. Each `/forge` run writes `.claude/forge-runs/<run_id>/{run.json, events.jsonl, final-report.md}`; append real events with `node .claude/forge-dashboard/log-event.cjs`. The dashboard reads these read-only and shows real activity only — **never a shared/global dashboard; never read another project's `.claude/`**. Commands: `/forge dashboard` · `/forge start` · `/forge use` · `/forge status` · `/forge runs` · `/forge open-report`. NL triggers: "use Forge system" / "gebruik Forge systeem" / "start Forge dashboard". **Never claim the dashboard is running unless a health check passed.**
+## Dashboard + event logs
+**The Forge Command Center is the dashboard** — one dashboard on `http://127.0.0.1:4100` that auto-discovers your projects and shows strictly per-project data (owner decision 2026-07-31). `/forge dashboard` looks for `command-center/gateway/bin.mjs` in this project; if it lives here, start it (long sessions: `node command-center/gateway/supervisor.mjs`, which restarts the gateway automatically) — otherwise just health-check the central instance, because one running Command Center already covers this project. Either way the rule is the same: **never claim the dashboard is running unless `GET http://127.0.0.1:4100/api/health` actually passed.**
+
+Event logging is unchanged and stays per-project: every run writes `.claude/forge-runs/<run_id>/{run.json, events.jsonl, final-report.md}` and appends real events with `node .claude/forge-dashboard/log-event.cjs` — the Command Center reads those. **Tasks exist before the work does:** log your plan as `agent_work_package_created` events BEFORE dispatching, and run `node .claude/forge-bin/forge-runcontract.cjs check --run <run_id> --log-event` before claiming the run is done (exit 3 = the listed rules are unfinished work).
+
+The old per-project **Control Center** (`.claude/forge-dashboard/server.cjs`, ports 3737–3999) is **RETIRED — never started automatically**. It still works on an explicit `legacy dashboard` request, and its `log-event.cjs` remains in full service as the run-event writer. Commands: `/forge dashboard` · `/forge start` · `/forge use` · `/forge status` · `/forge runs` · `/forge open-report`. NL triggers: "use Forge system" / "gebruik Forge systeem" / "start Forge dashboard". **Never read another project's `.claude/`.**
 
 ## Terminal command pack (project-local, no global install)
 `.claude/forge-bin/` has cross-platform wrappers: PowerShell `.\.claude\forge-bin\forge-dashboard.ps1`, CMD `.claude\forge-bin\forge-dashboard.cmd`, Bash `bash .claude/forge-bin/forge-dashboard.sh` (also `forge-status`/`forge-runs`/`forge-open-report`/`forge-log-event` + a `forge` dispatcher). If `package.json` exists: `npm run forge:dashboard|forge:status|forge:runs|forge:open-report`. Dashboard CLI: `node .claude/forge-dashboard/server.cjs [--status|--runs|--open-report|--health|--assign-only]`. No global PATH changes; everything runs from this folder only.

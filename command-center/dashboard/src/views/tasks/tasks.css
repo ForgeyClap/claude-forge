@@ -1,0 +1,890 @@
+/*
+ * Tasks view — kanban board, table, work packages, phases.
+ *
+ * Rules obeyed here, without exception:
+ *   - no raw hex / rgb() / hsl(). Every value is a var(--forge-*) token or a
+ *     local --fw-* property derived from one.
+ *   - the board and the table scroll inside their own containers. The page
+ *     itself must never scroll sideways at any of the review widths.
+ *   - status is carried by the status token trio plus an icon and an uppercase
+ *     label. The drop target is signalled with weight and a dashed outline,
+ *     not with a colour, because there is no second colour to spend.
+ *   - the ember accent appears only where the primitives ration it: the focus
+ *     ring and a running progress meter.
+ */
+
+/* =========================================================================
+   View shell
+   ========================================================================= */
+
+.fw-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: var(--fw-gutter);
+  overflow: hidden;
+
+  --fw-tasks-col: 17rem;
+  --fw-tasks-pad: var(--forge-space-3);
+}
+
+:root[data-density='compact'] .fw-tasks {
+  --fw-tasks-col: 15rem;
+  --fw-tasks-pad: var(--forge-space-2);
+}
+
+.fw-tasks__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--fw-gap);
+  flex-wrap: wrap;
+  flex: none;
+  min-inline-size: 0;
+}
+
+.fw-tasks__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 22rem;
+  min-inline-size: 0;
+}
+
+.fw-tasks__title {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-tasks__subtitle {
+  max-inline-size: 52ch;
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-tasks__toolbar {
+  flex: none;
+  padding-inline: 0;
+  min-block-size: 0;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.fw-tasks__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-inline-size: 0;
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-tasks__note .fw-icon {
+  flex: none;
+  margin-block-start: calc(var(--forge-space-px) * 2);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-tasks__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-tasks-empty-line {
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   Kanban board
+   The board is the scroll container. The page is not.
+   ========================================================================= */
+
+.fw-tasks-board {
+  display: flex;
+  align-items: stretch;
+  gap: var(--fw-gap);
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding-block-end: var(--forge-space-2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+}
+
+.fw-tasks-board__col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  flex: 0 0 var(--fw-tasks-col);
+  inline-size: var(--fw-tasks-col);
+  min-block-size: 0;
+  max-block-size: 100%;
+  padding: var(--fw-tasks-pad);
+  background: var(--forge-color-sunken);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+}
+
+/* Drop target: weight and a dashed outline, never a colour change. */
+.fw-tasks-board__col.is-over {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line-loud);
+  outline: var(--forge-border-hair) dashed var(--forge-color-line-loud);
+  outline-offset: calc(var(--forge-space-1) * -1);
+}
+
+.fw-tasks-board__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-inline-size: 0;
+  padding-block-end: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-tasks-board__title {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-semibold);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-secondary);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-tasks-board__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-inline-size: var(--forge-space-5);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tasks-board__cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fw-tasks-board__empty {
+  padding: var(--forge-space-3) var(--forge-space-2);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+  text-align: center;
+}
+
+/* =========================================================================
+   Task card
+   No overlay hit target here: the card itself is the drag source, so the
+   title is a plain full-width button and the move control stays reachable.
+   ========================================================================= */
+
+.fw-tasks-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+  padding: var(--forge-space-2);
+  padding-inline-start: var(--forge-space-3);
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  cursor: grab;
+}
+
+.fw-tasks-card::before {
+  content: '';
+  position: absolute;
+  inset-block: var(--forge-space-2);
+  inset-inline-start: 0;
+  inline-size: 0;
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-color);
+}
+
+.fw-tasks-card:hover {
+  background: var(--forge-color-surface-2);
+}
+
+.fw-tasks-card.is-selected {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-tasks-card.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.fw-tasks-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-tasks-card__id {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-tasks-card__hit,
+.fw-tasks-row__hit,
+.fw-tasks-table__hit {
+  display: block;
+  max-inline-size: 100%;
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-snug);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-tasks-card__hit:hover,
+.fw-tasks-row__hit:hover,
+.fw-tasks-table__hit:hover {
+  color: var(--forge-color-text);
+  text-decoration: underline;
+  text-underline-offset: calc(var(--forge-space-px) * 2);
+}
+
+.fw-tasks-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-tasks-card__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-tasks-card__meta-item .fg-machine {
+  font-size: var(--forge-text-2xs);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-tasks-card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-tasks-card__move {
+  margin-inline-start: auto;
+}
+
+/* =========================================================================
+   Proof / repair marks
+   ========================================================================= */
+
+.fw-tasks-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-tasks-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  block-size: var(--forge-control-xs);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  white-space: nowrap;
+}
+
+.fw-tasks-stat .fg-machine {
+  font-size: var(--forge-text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tasks-stat__word {
+  color: var(--forge-color-text-faint);
+}
+
+/* A repair loop is worth more weight than a proof count. */
+.fw-tasks-stat.is-repair {
+  border-color: var(--forge-color-line-strong);
+  border-style: dashed;
+  color: var(--forge-color-text-secondary);
+}
+
+/* fix-run-visibility: a task caught by the unrecognized-column fallback (TasksView.tsx's own
+   `ColumnFallbackFlag`) — the same dashed, secondary treatment `.is-repair` already uses for "this
+   needs a second look", never a new colour. */
+.fw-tasks-stat.is-unknown-column {
+  border-color: var(--forge-color-line-strong);
+  border-style: dashed;
+  color: var(--forge-color-text-secondary);
+}
+
+/* =========================================================================
+   Task row — used by the work-package and phase layouts
+   ========================================================================= */
+
+.fw-tasks-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-tasks-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  padding: var(--forge-space-2);
+  padding-inline-start: var(--forge-space-3);
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+}
+
+.fw-tasks-row::before {
+  content: '';
+  position: absolute;
+  inset-block: var(--forge-space-2);
+  inset-inline-start: 0;
+  inline-size: 0;
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-color);
+}
+
+.fw-tasks-row:hover {
+  background: var(--forge-color-surface-2);
+}
+
+.fw-tasks-row.is-selected {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-tasks-row__id {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-tasks-row__hit {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+}
+
+.fw-tasks-row__column,
+.fw-tasks-row__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  min-inline-size: 0;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-tasks-row__column .fg-machine,
+.fw-tasks-row__agent .fg-machine {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-tasks-row__meter {
+  display: block;
+  flex: 0 1 8rem;
+  min-inline-size: 5rem;
+}
+
+.fw-tasks-row__move {
+  margin-inline-start: auto;
+}
+
+/* =========================================================================
+   Table
+   ========================================================================= */
+
+.fw-tasks-table-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-tasks-table-wrap {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.fw-tasks-table {
+  inline-size: 100%;
+  min-inline-size: 78rem;
+  font-size: var(--forge-text-xs);
+}
+
+.fw-tasks-table th,
+.fw-tasks-table td {
+  padding: var(--forge-space-2) var(--forge-space-3);
+  text-align: start;
+  vertical-align: middle;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-tasks-table thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--forge-z-sticky);
+  padding: 0;
+  background: var(--forge-color-surface-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line);
+  white-space: nowrap;
+}
+
+.fw-tasks-table__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  inline-size: 100%;
+  block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-3);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-semibold);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.fw-tasks-table__sort:hover {
+  color: var(--forge-color-text);
+  background: var(--forge-color-hover);
+}
+
+.fw-tasks-table__sort .fw-icon {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-tasks-table tbody tr:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-tasks-table tbody tr.is-selected {
+  background: var(--forge-color-selected);
+}
+
+.fw-tasks-table td .fg-machine {
+  font-size: var(--forge-text-2xs);
+  white-space: nowrap;
+}
+
+.fw-tasks-table__num {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tasks-table__detail span {
+  display: block;
+  max-inline-size: 26rem;
+  color: var(--forge-color-text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fw-tasks-table td:has(.fw-meter) {
+  min-inline-size: 8rem;
+}
+
+/* The mobile sort control. Hidden while the real sortable header row is
+   visible — it only exists for the stacked-card breakpoint below. */
+.fw-tasks-table__mobile-sort {
+  display: none;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-tasks-table__sort-label {
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-tasks-table__select {
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-sm);
+}
+
+/* =========================================================================
+   Work packages
+   ========================================================================= */
+
+.fw-tasks-wps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  min-inline-size: 0;
+}
+
+/* Work-package titles are long and load-bearing — they wrap instead of
+   truncating, unlike the default panel heading. */
+.fw-tasks-wp .fw-panel__title {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+.fw-tasks-wp .fw-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  min-inline-size: 0;
+}
+
+.fw-tasks-wp__facts {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-6);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-tasks-wp__fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-tasks-wp__fact .fg-machine {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-tasks-wp__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-tasks-wp__section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-tasks-wp__acceptance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-tasks-wp__criterion {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-tasks-wp__criterion .fw-icon {
+  flex: none;
+  margin-block-start: calc(var(--forge-space-px) * 3);
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   Phases
+   ========================================================================= */
+
+.fw-tasks-phases {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-section-gap);
+  min-inline-size: 0;
+}
+
+.fw-tasks-phase {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-tasks-phase__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  padding-block-end: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-tasks-phase__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-tasks-phase__title {
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-semibold);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-tasks-phase__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-5);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-full);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tasks-phase__note {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   Move dialog — the keyboard path out of the board
+   ========================================================================= */
+
+.fw-tasks-move {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-tasks-move__task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text);
+}
+
+.fw-tasks-move__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fw-tasks-move__option {
+  justify-content: flex-start;
+}
+
+/* =========================================================================
+   Narrow shells
+   Under 48rem the table stops being a table and becomes stacked cards, with
+   the sort control moving to a real <select>.
+   ========================================================================= */
+
+@media (max-width: 48rem) {
+  .fw-tasks-table__mobile-sort {
+    display: flex;
+  }
+
+  .fw-tasks-table-wrap {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow-x: visible;
+  }
+
+  .fw-tasks-table {
+    display: block;
+    min-inline-size: 0;
+  }
+
+  .fw-tasks-table thead {
+    display: none;
+  }
+
+  .fw-tasks-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--forge-space-2);
+  }
+
+  .fw-tasks-table tbody tr {
+    display: block;
+    padding: var(--forge-space-3);
+    background: var(--forge-color-surface-1);
+    border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+    border-radius: var(--forge-radius-md);
+  }
+
+  .fw-tasks-table tbody td {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--forge-space-2);
+    padding: var(--forge-space-1) 0;
+    border-block-end: 0;
+  }
+
+  .fw-tasks-table tbody td::before {
+    content: attr(data-label);
+    font-family: var(--forge-font-mono);
+    font-size: var(--forge-text-2xs);
+    letter-spacing: var(--forge-tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--forge-color-text-faint);
+  }
+
+  .fw-tasks-table__num {
+    text-align: start;
+  }
+
+  .fw-tasks-table__detail span {
+    max-inline-size: none;
+    white-space: normal;
+  }
+
+  .fw-tasks-table td .fg-machine {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 34rem) {
+  .fw-tasks__toolbar {
+    inline-size: 100%;
+  }
+
+  /* Keep the accessible name — hide the label visually, never from the tree. */
+  .fw-tasks__layout .fw-segmented__label {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    padding: 0;
+    margin: -1px;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .fw-tasks-stat__word {
+    display: none;
+  }
+
+  .fw-tasks-row__meter {
+    flex: 1 1 100%;
+  }
+}
+
+/* =========================================================================
+   Reduced motion
+   The global rule in src/styles/app.css already disables transitions; this
+   block is the local, explicit promise for anything added here later.
+   ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-tasks *,
+  .fw-tasks *::before,
+  .fw-tasks *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -1,0 +1,192 @@
+{
+  "_doc": "Forge V2 — FORGE_HARD_RULES.json (P1 / V9-build, 2026-07-21; override model hardened V9-fix 2026-07-22). THE single source of truth for the owner's #1 ask: a small, fixed set of non-negotiables that 'cannot be skipped' on a real run, checkable PURELY from a run's real events.jsonl + the real files actually sitting in that run's directory — never assumed, never inferred from a self-report. Read only via .claude/forge-bin/forge-runcontract.cjs::check() — no other file may re-implement this matching logic (same single-source-of-truth discipline hard-gates.json/forge-actiongate.cjs, required-evidence.json/forge-evidence.cjs and run-checklist.json/forge-orchestrate.cjs already established). Advisory-shaped output (a run-contract violation is reported loudly with ok:false + a named missing rule), but unlike this project's other advisory checks this one is DESIGNED to be wired as a real gate by a caller (V9-integrate) — the CLI's exit code 3 on a missing block-rule is the enforcement surface.\n\nRULE SHAPE: { id, rule, trigger, check:{type, key, domain_aware?}, severity, override, source, cannot_override? }.\n  id       — stable kebab-case identifier, unique across the file.\n  rule     — the human-readable non-negotiable statement.\n  trigger  — when this rule applies to a run: 'always' (every run) | 'web' (domain is 'web' or 'website') |\n             'correctness-critical' (domain is one of forge-fixtures.cjs's CRITICAL_DOMAINS: finance, parser,\n             ocr, data, prediction) | 'domain:<x>' (an exact-match single domain, reserved for future rules —\n             none seeded yet, validated by the schema so a future addition needs no new trigger vocabulary).\n  check    — type:'event-present' (satisfied when ANY event in the run's events.jsonl has an event_type\n             matching (case-insensitive) any string in `key`, which may be a single string or an array) |\n             type:'artifact-present' (satisfied when ANY real file actually sitting in the run's directory —\n             fs.readdirSync of that directory, excluding events.jsonl itself — contains (case-insensitive)\n             any substring in `key` AND is genuinely non-empty, i.e. its real content is not just 0 bytes or\n             whitespace — V9-fix 2026-07-22, DEFECT 1: a 0-byte placeholder file used to satisfy this on\n             filename alone; see forge-runcontract.cjs::listRunArtifacts()/hasArtifact()) | type:'doctor-check'\n             (forward-declared minimal support: satisfied when a 'doctor_run' event is present in the run;\n             `key` is documentation-only for now — no seeded rule below uses this type yet, same\n             forward-declaration convention log-event.cjs already uses for\n             mcp_tool_loaded/repomap_generated/bead_added). An optional `domain_aware:true` on an\n             'event-present' check means: when the caller's real domain is a required-evidence.json domain\n             key, forge-runcontract.cjs ALSO tries forge-verify.cjs::evidenceCheck(events, domain) (reused,\n             never re-implemented) and treats an ok:true result there as satisfying too — the rule passes on\n             EITHER the generic event-present signal OR real domain-specific proof.\n  severity — 'block' (an unmet, non-overridden rule makes the whole contract ok:false — 'NOT DONE') | 'warn'\n             (an unmet rule is reported but never flips ok to false). Every rule seeded below is 'block' — the\n             schema also accepts 'warn' for a future genuinely-optional addition; the generic warn-path itself\n             is proven by forge-runcontract.test.cjs's own hermetic fixture rules (not by any seeded rule\n             here — there is currently no non-negotiable the owner wants advisory-only).\n  override — human-readable description of the ONE convention every OVERRIDABLE rule shares (V9-fix,\n             2026-07-22 — break-swarm DEFECT 2/3, REPLACES the retired 'agent_note substring' convention: any\n             dispatched subagent could freely log an agent_note containing 'override:<rule id>' and clear the\n             very rules meant to police that agent's own honesty — proven by a break-swarm repro). An override\n             is now recognized ONLY from an explicit, structured, attributed, affirmative owner act: a real\n             event shaped EXACTLY like { event_type:'owner_override', rule:'<exact-rule-id>',\n             reason:'<non-empty, non-bare-token reason>', by:'<owner id>' }. `rule` must EXACT-match the rule\n             id (no substring/prefix/negation matching of any kind); `reason` must be non-blank and more than\n             just the bare rule id/token repeated; `by` must match a configured owner id — see this file's own\n             top-level `owners_allowlist` array and/or FORGE_OWNER_PROFILE.json (forge-runcontract.cjs's\n             loadOwnerAllowlist()) — an empty/missing allow-list means NO override can ever be recognized\n             (fails closed, never 'anyone is the owner'). A rule with `cannot_override:true` (see below) never\n             even consults this mechanism, regardless of how a matching event is shaped.\n  source   — which existing capability/config this rule is grounded in (never a bare assertion).\n  cannot_override — optional boolean, default false/absent. true marks a rule as UN-OVERRIDABLE: no\n             owner_override event, however validly structured/attributed, can ever clear it — an unsatisfied\n             cannot_override rule is ALWAYS reported as genuinely missing (severity permitting). Seeded on the\n             honesty-core subset (memory-read, dispatch-logged, evidence-satisfied, verify-checked,\n             report-present, V9-fix 2026-07-22) — the rules that police the agents' OWN honesty must never be\n             clearable by an act that is itself only as trustworthy as the honesty this contract exists to\n             verify.\n\nHONEST GAPS (documented, not hidden — same discipline run-checklist.json's own _doc already applies):\n  (1) 'research-done' relies on a BRAND NEW event_type, research_done (declared here, registered by\n      V9-integrate in log-event.cjs KNOWN_EVENT_TYPES) — no historical run before this piece ever logged it,\n      so every pre-existing run will show this rule as genuinely missing until the research step that emits it\n      is actually wired into the intake flow. This is intentional, not a bug: the whole point of this piece is\n      to make a previously-invisible gap (research skipped) visible and blockable going forward.\n  (2) 'correctness-critical-fixtures' can only automatically recognize the EXPLICIT-WAIVER half of\n      forge-fixtures.cjs's model (the registered fixtures_waived event) — there is currently no dedicated\n      event_type for 'real fixtures were genuinely attached to this run' (real fixtures live in the project's\n      shared .claude/forge-fixtures/ vault, not per-run, so a per-run artifact-present check cannot see them\n      either). A run that genuinely used real fixtures but logged neither fixtures_waived nor a matching\n      owner_override event will be honestly flagged missing — favors under-claiming over over-claiming (same\n      bias run-checklist.json's own 'update-memory' gap documents). A real future improvement would add a\n      dedicated 'fixtures_provided' event_type.\n  (3) 'web-responsive-evidence' degrades to the weaker single-event signal (browser_screenshot_captured\n      logged at least once) when the caller does not pass a real domain of 'web'/'website' to check() — the\n      strong 3-breakpoint proof only fires via the domain_aware forge-verify.cjs::evidenceCheck() path.\n  (4) 'owner_override' is (like 'research_done' in gap #1 above) a BRAND NEW event_type — it is not yet\n      registered in log-event.cjs's KNOWN_EVENT_TYPES (+ forge-verify.cjs's mirror), so an owner attempting to\n      log one through the standard strict CLI write path today would currently be STRICT-REJECTED (exit 2).\n      forge-runcontract.cjs's check() itself already recognizes the event purely by reading events.jsonl\n      content (proven by forge-runcontract.test.cjs), so it works the moment the event is present in the file\n      by any means; registering the type in log-event.cjs so it can be written through the normal CLI path is\n      an explicit, separate, in-scope-elsewhere follow-up (same honestly-declared-gap pattern as (1) above).\n  (5) the `by` provenance check is a CONFIG-MATCH, not a cryptographic signature: this project has no\n      out-of-band agent-identity authentication anywhere (no run here is ever cryptographically signed), so\n      `by` matching the configured owner id is the 'strongest realistic' provenance available in an\n      events.jsonl-based system — a determined, dishonest subagent could still fabricate an owner_override\n      event claiming by:'owner'. What this fix closes is the SPECIFIC proven gap (a free-text agent_note\n      substring, which ANY normal event trivially satisfies with no deliberate impersonation at all); a\n      structured, exact-match, falsely-attributed owner_override event is a categorically more deliberate and\n      more detectable act of dishonesty, and the cannot_override honesty-core subset is immune to this vector\n      entirely regardless.",
+  "_doc_doctor_check_overrides": "V9-INTEGRATE (2026-07-22) — doctor_check_overrides is a SEPARATE, SIBLING array to `rules` above (not a rule; forge-runcontract.cjs's loadRules()/check() never reads or validates this key, only `rules`/`owners_allowlist`). It is the owner-recovery path for forge-doctor.cjs's ENFORCED completeness checks (currently: unregistered_event, check_the_checks — see forge-doctor.cjs header doc 'V9-INTEGRATE enforcement' note for exactly which checks are enforced and why). Shape: [{check, reason, by, ts}, ...]. `check` must match a real forge-doctor.cjs checks-key id; `reason` must be a real, non-blank, non-templated explanation (a blank/whitespace-only reason is silently dropped by loadDoctorCheckOverrides() — never treated as a valid override). `by`/`ts` are optional context (defaults to 'owner' when absent). An override NEVER changes what actually happened — it only lets a genuinely-reviewed, explained false-red pass VISIBLY (forge-doctor.cjs's printSummary() still prints the check as ✓ but tags it '[OVERRIDDEN by <by>: <reason>]', never a silent bypass). This is deliberately the SAME file the run-contract per-run overrides above already live in, reused rather than inventing a second override mechanism/file.",
+  "_doc_owners_allowlist": "owners_allowlist (V9-fix, 2026-07-22 — break-swarm DEFECT 2) is the primary, in-repo source of truth forge-runcontract.cjs::loadOwnerAllowlist() reads for the set of `by` identifiers a per-run owner_override event is allowed to claim. Every entry must be a real, non-blank string (matched case-insensitively). Seeded with the SAME literal identifier ('owner') this project's own doctor_check_overrides entries already use throughout (their `by` field's documented default) — reusing an existing convention rather than inventing a new one. This array is additive to (never a replacement for) any owner_id FORGE_OWNER_PROFILE.json may itself declare in the future (see that reader's own doc). An EMPTY array here (and no FORGE_OWNER_PROFILE.json owner_id) means NO owner_override event can ever be recognized — the fix's fail-closed default; do not clear this array to 'disable' the honesty gate, that would only make every OVERRIDABLE rule un-overridable, never the reverse.",
+  "version": 1,
+  "doctor_check_overrides": [],
+  "owners_allowlist": [
+    "owner"
+  ],
+  "rules": [
+    {
+      "id": "memory-read",
+      "rule": "Project memory (FORGE_PROJECT_PROFILE.md / FORGE_MEMORY.md / FORGE_TASK_HISTORY.md / FORGE_AGENT_LEDGER.md) must be read before routing a run — never start blind.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": [
+          "memory_loaded",
+          "project_scanned"
+        ]
+      },
+      "severity": "block",
+      "override": "UN-OVERRIDABLE — see cannot_override below (part of the honesty core an owner_override can never clear)",
+      "source": "run-checklist.json step \"read-memory\" (reused verbatim — same event set, no parallel logic)",
+      "cannot_override": true
+    },
+    {
+      "id": "owner-prefs-loaded",
+      "rule": "The owner-profile prefs + active standing-rules ECHO must be composed and logged before a run proceeds — the owner's applied preferences must be visible, not assumed.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": "owner_prefs_loaded"
+      },
+      "severity": "block",
+      "override": "a real event {event_type:'owner_override', rule:'owner-prefs-loaded', reason:'<real, non-bare-token reason>', by:'<configured owner id>'} — see this file's top-level owners_allowlist",
+      "source": "forge-echo.cjs::emitEcho() + run-checklist.json step \"load-owner-prefs\""
+    },
+    {
+      "id": "research-done",
+      "rule": "A genuine research/reuse pass (existing implementations, library docs, adaptable open-source approaches — CLAUDE.md \"Research & Reuse\") must happen before new implementation work, not be skipped straight to writing code.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": "research_done"
+      },
+      "severity": "block",
+      "override": "a real event {event_type:'owner_override', rule:'research-done', reason:'<real, non-bare-token reason>', by:'<configured owner id>'} — see this file's top-level owners_allowlist",
+      "source": "NEW event_type (declared here, registered by V9-integrate) — CLAUDE.md \"Feature Implementation Workflow\" Research & Reuse step, which previously had no logged proof at all"
+    },
+    {
+      "id": "plan-or-prd-present",
+      "rule": "A run must produce a real plan/PRD/work-package artifact before dispatch — no team is spawned against an unwritten plan.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": [
+          "prd_generated",
+          "mission_blueprint_created",
+          "agent_work_package_created"
+        ]
+      },
+      "severity": "block",
+      "override": "a real event {event_type:'owner_override', rule:'plan-or-prd-present', reason:'<real, non-bare-token reason, e.g. a genuinely trivial 1-line fix with no plan needed>', by:'<configured owner id>'} — see this file's top-level owners_allowlist",
+      "source": "log-event.cjs KNOWN_EVENT_TYPES (prd_generated/mission_blueprint_created/agent_work_package_created) + forge-prd.cjs"
+    },
+    {
+      "id": "dispatch-logged",
+      "rule": "Real Agent-tool subagents must actually be dispatched and logged — REAL AGENTS ONLY, never a simulated/claimed swarm.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": [
+          "agent_started",
+          "subagent_started",
+          "custom_subagent_created"
+        ]
+      },
+      "severity": "block",
+      "override": "UN-OVERRIDABLE — see cannot_override below (part of the honesty core an owner_override can never clear)",
+      "source": "run-checklist.json step \"dispatch\" (reused verbatim — same event set)",
+      "cannot_override": true
+    },
+    {
+      "id": "evidence-satisfied",
+      "rule": "A run must show real required-evidence proof — either a generic evidence-fact event, or (when a real domain is known) the domain's full required-evidence.json set — before being called done.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": [
+          "zero_console_errors_noted",
+          "e2e_passed",
+          "e2e_result",
+          "integration_gate_passed",
+          "validate_workflow_passed",
+          "workflow_validated",
+          "workflow_imported_inactive",
+          "robots_checked",
+          "source_compliance_noted",
+          "citation_verified",
+          "ingestion_idempotency_verified",
+          "backtest_completed",
+          "uncertainty_labels_applied",
+          "webhook_auth_verified",
+          "outreach_drafted_only_noted",
+          "browser_screenshot_captured"
+        ],
+        "domain_aware": true
+      },
+      "severity": "block",
+      "override": "UN-OVERRIDABLE — see cannot_override below (part of the honesty core an owner_override can never clear)",
+      "source": "required-evidence.json (all domains' any_of_events, unioned) + forge-verify.cjs::evidenceCheck() (reused via domain_aware, never re-implemented)",
+      "cannot_override": true
+    },
+    {
+      "id": "verify-checked",
+      "rule": "A claimed check/quality-gate must be verified against real evidence — a check must actually pass, not just be claimed.",
+      "trigger": "always",
+      "check": {
+        "type": "event-present",
+        "key": [
+          "check_passed",
+          "quality_gate_passed",
+          "retest_completed"
+        ]
+      },
+      "severity": "block",
+      "override": "UN-OVERRIDABLE — see cannot_override below (part of the honesty core an owner_override can never clear)",
+      "source": "run-checklist.json step \"verify\" (reused verbatim — same event set)",
+      "cannot_override": true
+    },
+    {
+      "id": "report-present",
+      "rule": "A real final-report artifact must actually exist in the run's own directory before the run is called done.",
+      "trigger": "always",
+      "check": {
+        "type": "artifact-present",
+        "key": [
+          "final-report"
+        ]
+      },
+      "severity": "block",
+      "override": "UN-OVERRIDABLE — see cannot_override below (part of the honesty core an owner_override can never clear)",
+      "source": "CLAUDE.md run-artifact contract: .claude/forge-runs/<run_id>/{run.json, events.jsonl, final-report.md}",
+      "cannot_override": true
+    },
+    {
+      "id": "web-responsive-evidence",
+      "rule": "A web/website-domain run must show real responsive screenshot evidence (mobile + tablet + desktop) and a zero-console-errors note before being called done.",
+      "trigger": "web",
+      "check": {
+        "type": "event-present",
+        "key": "browser_screenshot_captured",
+        "domain_aware": true
+      },
+      "severity": "block",
+      "override": "a real event {event_type:'owner_override', rule:'web-responsive-evidence', reason:'<real, non-bare-token reason>', by:'<configured owner id>'} — see this file's top-level owners_allowlist",
+      "source": "required-evidence.json \"website\" domain (3 responsive-screenshot items + zero-console-errors item) + forge-verify.cjs::evidenceCheck() (reused via domain_aware)"
+    },
+    {
+      "id": "correctness-critical-fixtures",
+      "rule": "Correctness-critical domains (finance, parser, OCR, data/ETL, prediction) must prove real fixtures were used, or carry an explicit logged waiver, before being called done — no silent synthetic-only fallback.",
+      "trigger": "correctness-critical",
+      "check": {
+        "type": "event-present",
+        "key": "fixtures_waived"
+      },
+      "severity": "block",
+      "override": "a real event {event_type:'owner_override', rule:'correctness-critical-fixtures', reason:'<real, non-bare-token reason, e.g. real fixtures WERE genuinely used but no dedicated fixtures-provided event exists yet — see _doc HONEST GAPS #2>', by:'<configured owner id>'} — see this file's top-level owners_allowlist",
+      "source": "forge-fixtures.cjs (WAVE D / D2) — CRITICAL_DOMAINS + check()/requirement()"
+    }
+  ],
+  "orchestration_hard_rules": [
+    {
+      "id": "no-overlapping-hotspot-writes",
+      "rule": "Never launch a workflow/agent that writes shared/hotspot files (sync/build manifests, event registries, the doctor/config, dashboards, a project core files) while another still-running run touches those same files. One writer per hotspot at a time. Confirm the prior run ACTUALLY finished (real task-completion notification or a non-empty journal.jsonl result line — never a 0-byte/placeholder output or an assumption) before launching an overlapping one. If an overlap/conflict happens anyway, DETECT + FIX it before continuing (no duplicate/lost edits, coherent manifest/registry, doctor GREEN) — never leave a half-clobbered state.",
+      "trigger": "always",
+      "enforcement": "Lead/orchestrator behavioral — via ~/.claude/CLAUDE.md \"Orchestration safety\" hard rule; not a per-run event check.",
+      "severity": "block",
+      "source": "real conflict 2026-07-22: a second workflow was launched while the first was still editing the same hotspots; owner asked to encode it globally so it cannot recur and must be fixed if it does."
+    },
+    {
+      "id": "reorganise-never-deletes",
+      "rule": "A restructure MOVES files, it never deletes them. When an agent reorganises a shared area (agent-memory, docs, config, test fixtures), the content must survive: move or merge, never replace-with-index. Before finishing any cleanup, run git status and treat every D (deleted) line as a defect to justify or undo — especially in a shared working tree where parallel agents write. An agent must never delete another agent memory or artifacts as a side effect of tidying its own.",
+      "trigger": "always",
+      "enforcement": "Lead/orchestrator behavioral — verify git status for D-lines after any agent that reorganises a shared directory; restore from the last commit and re-apply the new structure with content intact.",
+      "severity": "block",
+      "source": "real incident 2026-07-29 (run forge-2026-07-29-cc-finish): an agent converted command-center/.claude/agent-memory/build-boss/MEMORY.md into a topics/ index and DELETED the six existing topic files plus test-boss/MEMORY.md — 417 lines of real lessons — instead of moving them. Detected via a parallel agent honest git-status note, restored from commit d76a30f, better topics/ structure kept, content intact (497 lines)."
+    }
+  ],
+  "_doc_orchestration_hard_rules": "Lead/orchestrator BEHAVIORAL hard rules — enforced via ~/.claude/CLAUDE.md (read every session), NOT by forge-runcontract (there is no run event that proves them, so they are honestly not machine-verifiable here; forge-runcontract only iterates the \"rules\" array)."
+}

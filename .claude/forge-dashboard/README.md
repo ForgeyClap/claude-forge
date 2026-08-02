@@ -1,4 +1,12 @@
-# Forge Control Center (project-local dashboard)
+# Forge Control Center — RETIRED (kept for `log-event.cjs`)
+
+> **Read this first (2026-07-31/08-02).** The Control Center described below is **no longer the dashboard**. The
+> **Forge Command Center** on `http://127.0.0.1:4100` is — one dashboard that auto-discovers every project.
+> This server is **never started automatically**; it still runs on an explicit `legacy dashboard` request.
+> **`log-event.cjs` in this directory is NOT retired** — it remains the per-project run-event writer that the
+> Command Center reads. Everything below documents the legacy UI as it still exists on disk.
+
+## Legacy: Forge Control Center (project-local dashboard)
 
 A lightweight, local-only **Agent Swarm command center** that shows what Forge is **actually** doing in *this* project as a live node graph. A **3-column workbench**: left **AGENT GROUPS** sidebar (Control · Context · Planning · Domain · Execution · Review · Memory·Report, each agent with a status dot + 6-state legend) · center **node-graph canvas** (pan by dragging left↔right + vertical, wheel zoom, minimap) · right **SELECTED AGENT** work-package inspector (9 tabs) + **LIVE ACTIVITY** feed. Along the bottom: a dock (**Live Log / Files Changed / Memory Status / Final Report / Preview**) + **Summary Metrics** (build progress · critical path · next step · est. completion). Top stat strip shows Events / Agents / Files / Port + Copy URL.
 

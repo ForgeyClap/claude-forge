@@ -1,0 +1,61 @@
+{
+  "_doc": "Forge V2 WAVE B / PIECE B1 (2026-07-18) — project-local canonical SEED of durable owner defaults that pre-fill intake. This is THIS project's own copy; the global ~/.claude/FORGE_OWNER_PROFILE.json copy is deployed in a later, separate step and is owner-write-only (never written automatically by any tool). Read via .claude/forge-bin/forge-prefs.cjs::resolve() — do not change this file's shape without updating that reader's validateEntry(). Every pref is {value, source, confidence, scope}: value is the actual default; source is the verbatim owner quote or policy filename that evidences it (never fabricated — omit a pref entirely rather than invent one); confidence is 'evidenced' (directly grounded in a real quote/policy, as every pref below is) or 'inferred' (a reasonable but not directly-quoted extrapolation — none seeded here); scope is 'global' (applies regardless of project/task type) or 'domain:<x>' (applies only when the task/project matches that domain). honesty_core.cannot_override_core:true is the untouchable invariant — no later rule/candidate may weaken it, only reinforce it (enforced by future forge-doctor wiring, not yet built in this piece). NOT YET WIRED into intake/router — that is a later piece (B4); this file + forge-prefs.cjs only resolve/read it so far.",
+  "version": 1,
+  "seeded_at": "2026-07-18",
+  "prefs": {
+    "never_auto_push": {
+      "value": true,
+      "source": "recurring owner rule \"NIET gepusht\" / \"Commit or push only when the user asks\"",
+      "confidence": "evidenced",
+      "scope": "global"
+    },
+    "language": {
+      "value": { "ui": "match-owner (nl when owner writes Dutch)", "code_docs": "en" },
+      "source": "owner writes Dutch + \"ook wil ik dat de gehele app ook internationaal word\" + project CLAUDE.md English-default",
+      "confidence": "evidenced",
+      "scope": "global"
+    },
+    "deep_research_first": {
+      "value": true,
+      "source": "\"/deep-research\", \"start een loop van 2 uur onderzoek, stop niet eerder\"",
+      "confidence": "evidenced",
+      "scope": "domain:research"
+    },
+    "real_file_testing_for_correctness_critical": {
+      "value": true,
+      "source": "honesty core + \"Never claim a check/test ran if it didn't\"",
+      "confidence": "evidenced",
+      "scope": "global"
+    },
+    "codex_on_high_risk": {
+      "value": "optional-on-request",
+      "source": "CODEX_GLOBAL_POLICY (read-only, not a blocker)",
+      "confidence": "evidenced",
+      "scope": "global"
+    },
+    "ui_quality_default": {
+      "value": true,
+      "source": "web design-quality rules + repeated \"fix de UI/animaties\" asks (screenshot-loop + no-template-look + tasteful motion for web/full-stack)",
+      "confidence": "evidenced",
+      "scope": "domain:website"
+    },
+    "autonomy_default": {
+      "value": "continue-within-mission",
+      "source": "owner AskUserQuestion answer this session",
+      "confidence": "evidenced",
+      "scope": "global"
+    },
+    "outreach_draft_only": {
+      "value": true,
+      "source": "per-domain principles \"outreach drafted-only unless owner approves\"",
+      "confidence": "evidenced",
+      "scope": "global"
+    },
+    "honesty_core": {
+      "value": { "cannot_override_core": true },
+      "source": "FORGE honesty core (untouchable)",
+      "confidence": "evidenced",
+      "scope": "global"
+    }
+  }
+}

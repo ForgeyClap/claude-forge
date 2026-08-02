@@ -1,0 +1,1525 @@
+/*
+ * Forge Workspace — chat workspace stylesheet.
+ *
+ * Every value here is a var(--forge-*) token. There is no hex, no rgb() and no
+ * hsl() in this file, and there is no colour anywhere except the rationed ember
+ * accent, which appears exactly twice: the composer border while the field has
+ * focus, and the streaming caret. Both are "the one active thing on screen".
+ *
+ * The two speakers are separated by alignment, surface step, border and label —
+ * never by hue. Machine-recorded text (timestamps, agent names, model labels,
+ * file names, code) carries .fg-machine; prose stays in the sans face.
+ */
+
+/* =========================================================================
+   1. View frame
+   ========================================================================= */
+
+.fw-chat {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  background: var(--forge-color-bg);
+}
+
+/* =========================================================================
+   2. Header — breadcrumb, title, controls
+   Constrained to the same reading column as the thread so the page reads as
+   one document rather than a header floating over a centred conversation.
+   ========================================================================= */
+
+.fw-chat__head {
+  flex: none;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-bg);
+}
+
+.fw-chat__head-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  max-inline-size: var(--forge-layout-reading);
+  margin-inline: auto;
+  padding: var(--forge-space-4) var(--fw-gutter);
+  min-inline-size: 0;
+}
+
+.fw-chat__crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-xs);
+}
+
+.fw-chat__crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-1) var(--forge-space-1);
+  border-radius: var(--forge-radius-xs);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-xs);
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.fw-chat__crumb:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat__crumb.is-current {
+  cursor: default;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat__crumb-sep {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat__titlerow {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-chat__title {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+}
+
+.fw-chat__toolbar {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  padding-inline: 0;
+  min-block-size: 0;
+}
+
+.fw-chat__subtitle {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  /* Not 0: flex blockifies its children, which strips the leading and trailing
+     whitespace inside each span. The literal spaces in the markup vanish and the
+     line renders as "9messages · updated4 min ago". The gap restores the rhythm. */
+  gap: 0.32em;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   3. Thread
+   ========================================================================= */
+
+.fw-chat__body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-chat-thread {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-chat-thread__scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.fw-chat-thread__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-6);
+  inline-size: 100%;
+  max-inline-size: var(--forge-layout-reading);
+  margin: 0 auto;
+  padding: var(--forge-space-6) var(--fw-gutter) var(--forge-space-8);
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.fw-chat-thread__item {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.fw-chat-thread__start {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  padding-block-end: var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-chat-thread__start-text {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat-thread__jump {
+  position: absolute;
+  inset-block-end: var(--forge-space-4);
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  z-index: var(--forge-z-sticky);
+  box-shadow: var(--forge-shadow-md);
+}
+
+/* =========================================================================
+   4. Message
+   User: right, narrow, raised card with a hairline box.
+   Forge: full column, on the canvas, one leading rule. No bubbles, no hue.
+   ========================================================================= */
+
+.fw-chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-chat-msg--user {
+  align-self: flex-end;
+  max-inline-size: 85%;
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-chat-msg--forge {
+  align-self: stretch;
+  padding-inline-start: var(--forge-space-4);
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xs);
+}
+
+.fw-chat-msg__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-control-h-sm);
+  min-inline-size: 0;
+}
+
+.fw-chat-msg__author {
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-msg--forge .fw-chat-msg__author {
+  color: var(--forge-color-text);
+}
+
+.fw-chat-msg__time,
+.fw-chat-msg__edited {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-chat-msg__edited::before {
+  content: '· ';
+}
+
+/* fix-ui-clutter (item 7; widened composer-modes-ui): a small, real (non-dashed — this is a
+   genuine recorded fact, not an example/fixture marker) chip on an assistant turn whose own meta
+   says it ran in a non-default mode, or with a chosen effort level. One rule, reused for every
+   mode chip (PLAN/ACCEPT EDITS/BYPASS) and the effort chip alike — same visual weight for all. */
+.fw-chat-msg__mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding: 0 var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-xs);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-secondary);
+  white-space: nowrap;
+}
+
+/* feat-live-stream (item 1): the live badge on the one synthetic still-running placeholder —
+   reuses the shared `StatusBadge` primitive (same component every step/todo row already uses),
+   no bespoke chip styling of its own needed beyond spacing next to the other header chips. */
+.fw-chat-msg__live-badge {
+  flex: none;
+}
+
+.fw-chat-msg__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-chat-msg:hover .fw-chat-msg__actions,
+.fw-chat-msg:focus-within .fw-chat-msg__actions {
+  opacity: 1;
+}
+
+/* No hover on touch: the actions stay visible rather than unreachable. */
+@media (hover: none) {
+  .fw-chat-msg__actions {
+    opacity: 1;
+  }
+}
+
+.fw-chat-msg__body {
+  min-inline-size: 0;
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text);
+  overflow-wrap: anywhere;
+}
+
+.fw-chat-msg--user .fw-chat-msg__body {
+  color: var(--forge-color-text-secondary);
+}
+
+/* ------------------------------------------------------------ meta footer */
+
+.fw-chat-msg__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex-wrap: wrap;
+  padding-block-start: var(--forge-space-2);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-chat-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-chat-meta .fw-machine {
+  font-size: var(--forge-text-2xs);
+}
+
+/* =========================================================================
+   5. Steps — a collapsible progress block
+   ========================================================================= */
+
+.fw-chat-steps {
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-chat-steps__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-3);
+  list-style: none;
+  cursor: pointer;
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-steps__summary::-webkit-details-marker {
+  display: none;
+}
+
+.fw-chat-steps__summary:hover {
+  background: var(--forge-color-hover);
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-chat-steps__chevron {
+  flex: none;
+  color: var(--forge-color-text-muted);
+  transition: transform var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-chat-steps[open] > .fw-chat-steps__summary .fw-chat-steps__chevron {
+  transform: rotate(90deg);
+}
+
+.fw-chat-steps__count {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-steps__hint {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat-steps__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  margin: 0;
+  padding: var(--forge-space-2) var(--forge-space-3) var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  list-style: none;
+}
+
+.fw-chat-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+  padding: var(--forge-space-2);
+  padding-inline-start: var(--forge-space-3);
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: 0 var(--forge-radius-sm) var(--forge-radius-sm) 0;
+  background: var(--forge-color-surface-2);
+}
+
+.fw-chat-step__badge {
+  flex: none;
+  margin-block-start: var(--forge-space-px);
+}
+
+.fw-chat-step__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-chat-step__label {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-chat-step__detail {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-chat-step__agent {
+  flex: none;
+  align-self: flex-start;
+  font-size: var(--forge-text-2xs);
+  white-space: nowrap;
+}
+
+/* fix-stream-insights (checkup #6): a real per-file change row, reusing the SAME
+   `.fw-chat-steps`/`.fw-chat-steps__*` collapsible chrome above (one shared block shape for both
+   "task progress" and "files changed") — only the leaf row differs, since a file/diff has no
+   status badge. No colour carries meaning here (added/removed read from the +/- prefix inside the
+   monospace text, never from a red/green hue) — this project's own rule, stated at this
+   stylesheet's own header. */
+.fw-chat-file {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  padding: var(--forge-space-2);
+  padding-inline-start: var(--forge-space-3);
+  border-inline-start: var(--forge-border-thick) solid var(--forge-color-line-strong);
+  border-radius: 0 var(--forge-radius-sm) var(--forge-radius-sm) 0;
+  background: var(--forge-color-surface-2);
+}
+
+.fw-chat-file__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-chat-file__path {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.fw-chat-file__tool {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+.fw-chat-file__diff {
+  margin: 0;
+  max-block-size: var(--forge-space-20);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-sunken);
+}
+
+.fw-chat-file__diff code {
+  display: block;
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+  white-space: pre;
+  font-variant-ligatures: none;
+}
+
+/* feat-live-stream (item 3): a real per-command row, reusing the SAME `.fw-chat-file`-style
+   leaf-row chrome above (border-inline-start + surface-2 background) — a command has no diff, so
+   it gets its own command/result panes instead of a single `.fw-chat-file__diff`. */
+.fw-chat-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  padding: var(--forge-space-2);
+  padding-inline-start: var(--forge-space-3);
+  border-inline-start: var(--forge-border-thick) solid var(--forge-color-line-strong);
+  border-radius: 0 var(--forge-radius-sm) var(--forge-radius-sm) 0;
+  background: var(--forge-color-surface-2);
+}
+
+.fw-chat-shell__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-chat-shell__description {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.fw-chat-shell__status {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+.fw-chat-shell__command,
+.fw-chat-shell__result {
+  margin: 0;
+  max-block-size: var(--forge-space-20);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-sunken);
+}
+
+.fw-chat-shell__command code,
+.fw-chat-shell__result code {
+  display: block;
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+  white-space: pre;
+  font-variant-ligatures: none;
+}
+
+/* =========================================================================
+   6. Attachments
+   ========================================================================= */
+
+.fw-chat-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-chat-att {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+  cursor: pointer;
+  max-inline-size: 100%;
+}
+
+.fw-chat-att:hover {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+}
+
+.fw-chat-att__name {
+  font-size: var(--forge-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-inline-size: 0;
+}
+
+.fw-chat-att__size {
+  font-size: var(--forge-text-2xs);
+  white-space: nowrap;
+}
+
+/* =========================================================================
+   7. Markdown
+   ========================================================================= */
+
+.fw-chat-md > * + * {
+  margin-block-start: var(--forge-space-3);
+}
+
+.fw-chat-md__h {
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-chat-md > .fw-chat-md__h {
+  margin-block-start: var(--forge-space-5);
+}
+
+.fw-chat-md > .fw-chat-md__h:first-child {
+  margin-block-start: 0;
+}
+
+.fw-chat-md__h--1 {
+  font-size: var(--forge-text-xl);
+}
+
+.fw-chat-md__h--2 {
+  font-size: var(--forge-text-lg);
+}
+
+.fw-chat-md__h--3 {
+  font-size: var(--forge-text-md);
+}
+
+.fw-chat-md__h--4,
+.fw-chat-md__h--5,
+.fw-chat-md__h--6 {
+  font-size: var(--forge-text-base);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-md__p {
+  min-inline-size: 0;
+}
+
+.fw-chat-md__ul,
+.fw-chat-md__ol {
+  margin: 0;
+  padding-inline-start: var(--forge-space-5);
+}
+
+.fw-chat-md__li + .fw-chat-md__li {
+  margin-block-start: var(--forge-space-2);
+}
+
+.fw-chat-md__li::marker {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat-md__quote {
+  padding-inline-start: var(--forge-space-4);
+  border-inline-start: var(--forge-border-thick) solid var(--forge-color-line-strong);
+  color: var(--forge-color-text-muted);
+  font-style: italic;
+}
+
+.fw-chat-md__rule {
+  border: 0;
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line);
+  margin-block: var(--forge-space-4);
+}
+
+.fw-chat-md__link {
+  color: var(--forge-color-text);
+  text-decoration: underline;
+  text-decoration-color: var(--forge-color-line-loud);
+  text-underline-offset: 2px;
+}
+
+.fw-chat-md__link:hover {
+  text-decoration-color: var(--forge-color-text);
+}
+
+.fw-chat-md__code-inline {
+  padding: 0 var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ code blocks */
+
+.fw-chat-md__code {
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  overflow: hidden;
+}
+
+.fw-chat-md__code-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-chat-md__code-lang {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+}
+
+.fw-chat-md__code-body {
+  margin: 0;
+  padding: var(--forge-space-3);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.fw-chat-md__code-body code {
+  display: block;
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+  white-space: pre;
+  font-variant-ligatures: none;
+}
+
+/* ----------------------------------------------------------------- tables */
+
+.fw-chat-md__tablewrap {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-chat-md__table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-chat-md__table th,
+.fw-chat-md__table td {
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  text-align: start;
+  vertical-align: top;
+}
+
+.fw-chat-md__table thead th {
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+  white-space: nowrap;
+}
+
+.fw-chat-md__table tbody td {
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-md__table tbody tr:last-child td {
+  border-block-end: 0;
+}
+
+.fw-chat-md__table [data-align='center'] {
+  text-align: center;
+}
+
+.fw-chat-md__table [data-align='right'] {
+  text-align: end;
+}
+
+/* ------------------------------------------------------------------ caret */
+
+.fw-chat-caret {
+  display: inline-block;
+  inline-size: var(--forge-border-thick);
+  block-size: 1em;
+  margin-inline-start: var(--forge-space-1);
+  vertical-align: text-bottom;
+  background: var(--forge-color-accent);
+  animation: fw-chat-blink var(--forge-motion-slower) steps(2, jump-none) infinite;
+}
+
+@keyframes fw-chat-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-chat-caret {
+    animation: none !important;
+    opacity: 1;
+  }
+}
+
+/* =========================================================================
+   8. Composer
+   ========================================================================= */
+
+.fw-chat__dock {
+  flex: none;
+  padding: var(--forge-space-3) var(--fw-gutter) var(--forge-space-4);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-bg);
+}
+
+.fw-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  max-inline-size: var(--forge-layout-composer);
+  margin-inline: auto;
+  min-inline-size: 0;
+}
+
+.fw-chat-composer__shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2) var(--forge-space-3) var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xl);
+  background: var(--forge-color-surface-1);
+  box-shadow: var(--forge-shadow-sm);
+  min-inline-size: 0;
+}
+
+/* The composer is the one active control while it holds focus. */
+.fw-chat-composer__shell:focus-within {
+  border-color: var(--forge-color-accent);
+}
+
+.fw-chat-composer__shell:has(.fw-chat-composer__field:focus-visible) {
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-chat-composer__field {
+  inline-size: 100%;
+  min-block-size: var(--forge-space-10);
+  /* Grows to roughly eight lines, then hands over to its own scrollbar.
+     No --forge-layout-composer-max token exists yet; noted in the handover. */
+  max-block-size: calc(var(--forge-space-20) + var(--forge-space-12));
+  padding: var(--forge-space-2) var(--forge-space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-normal);
+  letter-spacing: var(--forge-tracking-tight);
+  resize: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.fw-chat-composer__field::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat-composer__field:focus,
+.fw-chat-composer__field:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.fw-chat-composer__row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  /* Lead fix (2026-07-30), measured not eyeballed: this row grew from 3 controls to 10 over this
+     run (attach, @-mention, skills, Auto-plan switch, Effort menu, the 4-way send-mode control,
+     Send/Stop/Queue). On a 375px viewport it overflowed its own container by 267px and clipped
+     five controls out of reach — Execute, Plan, Accept edits, Bypass and SEND ITSELF. An
+     unreachable Send button is a functional break, not a taste question, and it was introduced by
+     these additions, not by the owner's frozen design.
+     `flex-wrap` lets the controls flow onto a second line only when they genuinely do not fit;
+     at 768px and up the row is measurably unchanged (0px overflow, nothing clipped), so no wide
+     layout moves a pixel. `row-gap` keeps the two lines from touching when wrapping does happen. */
+  flex-wrap: wrap;
+  row-gap: var(--forge-space-1);
+}
+
+.fw-chat-composer__hint {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex-wrap: wrap;
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-chat-composer__hint-sep {
+  color: var(--forge-color-line-strong);
+  padding-inline: var(--forge-space-1);
+}
+
+/* composer-modes-ui: the Auto-plan switch and the Effort menu's labelled trigger sit in the same
+   flex row as the fixed-size icon buttons and the SegmentedControl (both already `flex: none`) —
+   without this they could shrink under a tight composer width instead of holding their content. */
+.fw-chat-composer__autoplan,
+.fw-chat-composer__labelled-trigger {
+  flex: none;
+}
+
+/* composer-modes-ui: the "Run this plan" prompt, directly above the field — same surface/border/
+   radius/shadow language as the composer shell itself (one step lighter: no focus treatment, it is
+   never the focused control), never a new colour. */
+.fw-chat-composer__plan-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-xs);
+}
+
+/* feat-composer-power: the queue of messages held back while a run is active — same surface/
+   border language as the plan banner above (one more step of the same "sitting above the shell,
+   not the focused control" family). No colour carries "waiting" vs "not sent" — this stylesheet's
+   own rule (see file header): the status word itself, in `fw-machine` letter-spacing, is the only
+   signal. */
+.fw-chat-composer__queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-chat-composer__queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-chat-composer__queue-item--error {
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-chat-composer__queue-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-chat-composer__queue-body {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-chat-composer__queue-error {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-chat-composer__queue-status {
+  flex: none;
+  align-self: center;
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+/* feat-composer-power: the field wrapper that anchors the `@`-mention / `/`-command popovers to
+   the textarea rather than to a trigger button. */
+.fw-chat-composer__field-wrap {
+  position: relative;
+}
+
+/* Reuses `.fw-chat-menu__panel`'s own surface/border/shadow/scroll rules wholesale — only the
+   width behaviour differs: a suggestion list should track the field's own width, not shrink to
+   its content like the Context/Skills/Effort popovers do. */
+.fw-chat-composer__suggest-panel {
+  inset-inline-end: 0;
+  inline-size: auto;
+  min-inline-size: 100%;
+}
+
+/* ------------------------------------------------------------ menu popover */
+
+.fw-chat-menu {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.fw-chat-menu__panel {
+  position: absolute;
+  inset-block-end: calc(100% + var(--forge-space-2));
+  inset-inline-start: 0;
+  z-index: var(--forge-z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  inline-size: max-content;
+  min-inline-size: var(--forge-layout-minimap-w);
+  max-inline-size: var(--forge-layout-inspector);
+  /* fix-ui-clutter (item 5): unbounded height let a long list (e.g. every skill registered on
+     a project) grow the popover past the top of the viewport, covering the thread behind it —
+     the panel is already positioned ABOVE the composer (inset-block-end above); bounding its
+     height and letting IT scroll (not the thread) keeps that positioning honest instead of
+     letting the panel's own content push it over everything else. */
+  max-block-size: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-lg);
+}
+
+.fw-chat-menu__title {
+  padding-inline: var(--forge-space-2);
+  padding-block-end: var(--forge-space-1);
+}
+
+.fw-chat-menu__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  background: transparent;
+  color: var(--forge-color-text-secondary);
+  text-align: start;
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.fw-chat-menu__item:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-chat-menu__item-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-chat-menu__item-label {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text);
+}
+
+/* fix-ui-clutter (item 5): an item with no recorded description renders only its name — a
+   touch smaller than a labelled item's name, since it is standing in alone for what would
+   otherwise be a label + detail pair. */
+.fw-chat-menu__item-label--solo {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-menu__item-detail {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+/* composer-modes-ui: the trailing check mark on the CURRENT choice in a single-select menu
+   (the Effort picker) — pinned to the end of the row, never shifting the icon/label pair before it. */
+.fw-chat-menu__item-check {
+  flex: none;
+  align-self: center;
+  margin-inline-start: auto;
+  color: var(--forge-color-text);
+}
+
+.fw-chat-menu__note {
+  padding: var(--forge-space-2) var(--forge-space-2) 0;
+  margin-block-start: var(--forge-space-1);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   9. Claude Code chip
+   Dashed, muted, the same treatment as the EXAMPLE chip — because that is what
+   it is. It states that nothing is connected, and nothing on this screen ever
+   asks for anything to be entered.
+   ========================================================================= */
+
+.fw-chat-cc {
+  position: relative;
+  display: inline-flex;
+  min-inline-size: 0;
+}
+
+.fw-chat-cc__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-full);
+  background: transparent;
+  color: var(--forge-color-text-faint);
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.fw-chat-cc__chip:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text-secondary);
+  border-color: var(--forge-color-line-loud);
+}
+
+.fw-chat-cc__glyph,
+.fw-chat-cc__caret {
+  flex: none;
+}
+
+.fw-chat-cc__text {
+  font-size: var(--forge-text-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-inline-size: 0;
+}
+
+.fw-chat-cc__panel {
+  position: absolute;
+  inset-block-start: calc(100% + var(--forge-space-2));
+  inset-inline-end: 0;
+  z-index: var(--forge-z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  inline-size: var(--forge-layout-inspector);
+  max-inline-size: calc(100vw - var(--forge-space-8));
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-lg);
+  text-align: start;
+}
+
+.fw-chat-cc__panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+}
+
+.fw-chat-cc__lead {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-chat-cc__state {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+}
+
+.fw-chat-cc__state-title {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-chat-cc__detail,
+.fw-chat-cc__hint {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-chat-cc__hint {
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   10. Density
+   ========================================================================= */
+
+:root[data-density='compact'] .fw-chat__head-inner {
+  padding-block: var(--forge-space-3);
+  gap: var(--forge-space-1);
+}
+
+:root[data-density='compact'] .fw-chat__title {
+  font-size: var(--forge-text-lg);
+}
+
+:root[data-density='compact'] .fw-chat-thread__list {
+  gap: var(--forge-space-4);
+  padding-block: var(--forge-space-4) var(--forge-space-6);
+}
+
+:root[data-density='compact'] .fw-chat-msg {
+  gap: var(--forge-space-1);
+}
+
+:root[data-density='compact'] .fw-chat-msg--user {
+  padding: var(--forge-space-2) var(--forge-space-3);
+}
+
+:root[data-density='compact'] .fw-chat-msg__body {
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-normal);
+}
+
+:root[data-density='compact'] .fw-chat-md > * + * {
+  margin-block-start: var(--forge-space-2);
+}
+
+:root[data-density='compact'] .fw-chat-composer__field {
+  min-block-size: var(--forge-space-8);
+  font-size: var(--forge-text-base);
+}
+
+:root[data-density='compact'] .fw-chat__dock {
+  padding-block: var(--forge-space-2) var(--forge-space-3);
+}
+
+/* =========================================================================
+   11. Narrow viewports
+   ========================================================================= */
+
+@media (max-width: 40rem) {
+  .fw-chat-msg--user {
+    max-inline-size: 94%;
+  }
+
+  .fw-chat-cc__text {
+    max-inline-size: var(--forge-space-20);
+  }
+
+  .fw-chat-md__table th,
+  .fw-chat-md__table td {
+    padding: var(--forge-space-1) var(--forge-space-2);
+  }
+}
+
+/* =========================================================================
+   12. Ask-owner question box — click-wizard (feat-ask-ui, forge-2026-07-30-cc-finish)
+   Rendered inside the shared Modal primitive — no new accent colour is
+   introduced here (the ember accent stays rationed to its existing four
+   spots: focus ring, Button variant="primary", the segmented-control
+   marker, Meter tone="accent"). A selected option row reads via surface
+   step + border weight only, mirroring .fw-segmented__option.is-selected
+   minus its own accent underline. One question renders at a time; Previous/
+   Next/Back/Send live in the Modal footer via `.fw-ask__footer-row`, not in
+   this body — see AskQuestionsDialog.tsx's own file-header comment for why.
+   ========================================================================= */
+
+.fw-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-5);
+}
+
+.fw-ask__question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  padding: 0;
+  border: none;
+  margin: 0;
+}
+
+.fw-ask__pager {
+  display: block;
+}
+
+.fw-ask__header {
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--forge-color-text-muted);
+}
+
+/* The one question on screen — deliberately a step up from the old
+   --forge-text-base: isolating it to its own page is the whole point of the
+   wizard, so it should read with more weight than a line in a crowded list. */
+.fw-ask__text {
+  padding: 0;
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-lg);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-ask__hint {
+  margin: 0;
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-ask__options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+}
+
+/* A full-width, fully clickable ROW (not a chip) — the numbered-row shape the
+   owner asked for, matched against the reference. The leading KeyHint digit
+   doubles as a literal usage hint: pressing that number key selects the row. */
+.fw-ask__option {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  min-block-size: var(--fw-row-h);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-secondary);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  text-align: start;
+  cursor: pointer;
+  transition: background var(--forge-motion-fast) var(--forge-motion-ease-standard), border-color var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-ask__option:hover:not(:disabled):not(.is-selected) {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-ask__option:active:not(:disabled) {
+  background: var(--forge-color-active);
+}
+
+.fw-ask__option.is-selected {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+
+.fw-ask__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.fw-ask__option-num {
+  flex: none;
+}
+
+.fw-ask__option-num--plain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-5);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-ask__option-label {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The always-present free-text row: pen icon + input inside ONE bordered
+   shell, mirroring the reference's icon-plus-placeholder "Something else"
+   row. The real <label> stays screen-reader only (.fw-visually-hidden) —
+   the icon and placeholder carry the sighted-user meaning, same tradeoff
+   this codebase already made for other icon-led controls. */
+.fw-ask__other {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-bg);
+}
+
+.fw-ask__other:has(.fw-ask__other-input:focus-visible) {
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-ask__other-icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-ask__other-input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-sm);
+}
+
+.fw-ask__other-input:focus,
+.fw-ask__other-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.fw-ask__other-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.fw-ask__skip-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* =========================================================================
+   12b. Ask-owner footer + review screen
+   ========================================================================= */
+
+.fw-ask__footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+}
+
+.fw-ask__summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+}
+
+.fw-ask__summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-ask__summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  padding-block: var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-ask__summary-item:last-child {
+  border-block-end: 0;
+}
+
+.fw-ask__summary-q {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-ask__summary-a {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+  overflow-wrap: anywhere;
+}
+
+/* feat-ask-recommended: the session's genuine advice, visible on exactly one option row. Existing
+ * tokens only — the quiet dashed treatment this design system already uses for secondary truth
+ * (same family as the IDLE chip): advice is information, never emphasis that pushes a choice. */
+.fw-ask__option-recommended {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  margin-inline-start: auto;
+  flex: none;
+  padding: 0 var(--forge-space-2);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-full);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-secondary);
+  white-space: nowrap;
+}

@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for e-commerce/store tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions. ADAPT per project; do not drop-in blindly. Pairs with the forge-ecommerce playbook (card handling is scored by payments.json).",
+  "domain": "ecommerce",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "real_catalog",
+      "descriptor": "1=lorem/placeholder products shown as real, or fabricated sales/metrics; 2=mostly real data, some placeholders; 3=real catalog with a basic empty state; 4=real product data throughout with honest empty/loading/error states and no fabricated inventory or metrics",
+      "raise": "replace placeholder products with real data; render an honest empty state instead of fake inventory; never invent sales figures"
+    },
+    {
+      "id": "inventory_safety",
+      "descriptor": "1=read-then-write stock, oversell possible; 2=some guarding but a race remains; 3=atomic conditional decrement or reservation; 4=atomic/reservation decrement proven oversell-safe under a concurrent-buyer test (exactly one wins the last unit)",
+      "raise": "make stock decrement an atomic conditional update or reservation row and test two concurrent buyers of the last unit"
+    },
+    {
+      "id": "order_idempotency",
+      "descriptor": "1=double-submit creates duplicate orders; 2=partial guard; 3=idempotency key on order creation; 4=unique idempotency key so a double-tap/retry returns the same order, proven by test",
+      "raise": "add a unique Idempotency-Key to order/checkout submit and test that a duplicate submit returns one order"
+    },
+    {
+      "id": "flow_integrity",
+      "descriptor": "1=flow broken or only unit-tested; 2=pieces work in isolation; 3=cart->checkout->order works in test mode; 4=one real purchase flow works end-to-end in test mode (integration test) with money reconciling in minor units",
+      "raise": "run one real cart->checkout->payment->order flow end-to-end in test mode and reconcile the totals"
+    },
+    {
+      "id": "connector_safety",
+      "descriptor": "1=live store/marketplace push or spend without approval; 2=connector active but unclear gating; 3=connectors gated until keys+approval; 4=connectors inactive-by-default, no live publish/push/spend done, order notifications idempotent + draft-gated",
+      "raise": "keep store/marketplace connectors disabled until keys+owner approval; make order notifications idempotent and draft-gated"
+    }
+  ]
+}

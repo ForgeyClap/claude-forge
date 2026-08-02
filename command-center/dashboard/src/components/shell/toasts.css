@@ -1,0 +1,124 @@
+/*
+ * Toasts.
+ *
+ * A fixed stack in the bottom-right corner, bottom-centre on narrow screens.
+ * The container never eats pointer events; the individual toasts do.
+ */
+
+.fw-toasts {
+  --fw-toast-life: 4200ms; /* mirrored by LIFETIME_MS in Toasts.tsx */
+
+  position: fixed;
+  inset-block-end: var(--forge-space-4);
+  inset-inline-end: var(--forge-space-4);
+  z-index: var(--forge-z-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--forge-space-2);
+  inline-size: min(24rem, calc(100vw - var(--forge-space-8)));
+  pointer-events: none;
+}
+
+.fw-toast {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--forge-icon-sm) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  padding: var(--forge-space-3);
+  padding-block-end: calc(var(--forge-space-3) + var(--forge-border-hair));
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-md);
+  overflow: hidden;
+  pointer-events: auto;
+  animation: fw-toast-in var(--forge-motion-base) var(--forge-motion-ease-enter) both;
+}
+
+.fw-toast__icon {
+  margin-block-start: 2px;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-toast__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-toast__title {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+}
+
+.fw-toast__detail {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+/* The countdown. Neutral, hairline, and it stops when the toast is held. */
+.fw-toast__timer {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 0;
+  block-size: var(--forge-border-hair);
+  inline-size: 100%;
+  transform-origin: 0 50%;
+  background: var(--forge-color-line-loud);
+  animation: fw-toast-timer var(--fw-toast-life) linear both;
+}
+
+.fw-toast[data-paused='true'] .fw-toast__timer {
+  animation-play-state: paused;
+}
+
+.fw-toast[data-paused='true'] {
+  border-color: var(--forge-color-line-strong);
+}
+
+/* ----------------------------------------------------------------- narrow */
+
+@media (max-width: 640px) {
+  .fw-toasts {
+    inset-inline: var(--forge-space-3);
+    inset-block-end: var(--forge-space-3);
+    align-items: stretch;
+    inline-size: auto;
+  }
+}
+
+/* ----------------------------------------------------------------- motion */
+
+@keyframes fw-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--forge-space-3));
+  }
+}
+
+@keyframes fw-toast-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-toast {
+    animation: none !important;
+  }
+
+  /* A bar that cannot animate would read as a finished countdown. Hide it. */
+  .fw-toast__timer {
+    display: none;
+  }
+}

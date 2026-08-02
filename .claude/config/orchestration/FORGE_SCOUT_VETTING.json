@@ -1,0 +1,139 @@
+{
+  "_doc": "Forge V2 PIECE P5 (2026-07-22) — persistent Scout vetting ledger. Append-only: a HARD-PASS verdict for a capability PERSISTS and is never silently overwritten by a later approve attempt. Written/read by forge-bin/forge-scout.cjs only.",
+  "version": 1,
+  "entries": [
+    {
+      "capability": "skill-creator (anthropics/skills)",
+      "verdict": "approve",
+      "reason": "Official Anthropic meta-skill (8-step interview->draft->test->iterate workflow, eval-viewer human review) — directly validates and should strengthen Forge's own forge-genesis self-authoring flow; adopt the pattern, not a new dependency (forge-genesis already exists).",
+      "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/skill-creator/SKILL.md",
+      "ts": "2026-07-22T11:15:31.468Z"
+    },
+    {
+      "capability": "/slide HTML-deck skill (Peter Yang pattern)",
+      "verdict": "approve",
+      "reason": "Opt-in, high-wow presentation option (animated HTML deck, live charts, slide transitions) that complements forge-docs' existing python-pptx generator rather than replacing it — genuinely useful for client-facing decks, never auto-installed, owner opts in per use.",
+      "source": "https://www.youtube.com/watch?v=vbChRIIlSPE",
+      "ts": "2026-07-22T11:15:31.471Z"
+    },
+    {
+      "capability": "webapp-testing (anthropics/skills, Playwright-based)",
+      "verdict": "hard-pass",
+      "reason": "Overlaps this project's existing forge-website screenshot-loop QA doctrine (render-then-visually-verify pattern already adopted there) — duplication of an existing Forge capability. Reuse the pattern already folded into forge-website; don't add a second Playwright-driven testing skill.",
+      "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/webapp-testing/SKILL.md",
+      "ts": "2026-07-22T11:15:31.472Z"
+    },
+    {
+      "capability": "frontend-design (anthropics/skills)",
+      "verdict": "hard-pass",
+      "reason": "Overlaps this project's existing frontend-design skill / FRONTEND_WEBSITE_RULES anti-generic guardrails (owner's own global ruleset already covers the same AI-slop aesthetic guardrails) — duplication of an existing Forge capability, not adopted as a second parallel skill.",
+      "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md",
+      "ts": "2026-07-22T11:15:31.472Z"
+    },
+    {
+      "capability": "docx/pdf/pptx (anthropics/skills document skills)",
+      "verdict": "approve",
+      "reason": "Validates this project's existing forge-docs.cjs office-document generator (docx/xlsx/pptx/pdf) — same render-then-visually-verify QA gate the official skills use; confirms forge-docs' existing approach rather than introducing a new one.",
+      "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/pptx/SKILL.md",
+      "ts": "2026-07-22T11:15:31.473Z"
+    },
+    {
+      "capability": "mcp-builder (anthropics/skills)",
+      "verdict": "approve",
+      "reason": "Reference-only doctrine for building an MCP server (4-phase research->implement->Inspector-review->evaluate; TypeScript+SDK or Python+FastMCP) — kept as a reviewed reference for this project's MCP-keystone (forge-mcp-clients doctrine) if the owner ever asks Forge to build a server; does not itself add a live dependency (Forge stays zero-dep/no-MCP by default).",
+      "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/mcp-builder/SKILL.md",
+      "ts": "2026-07-22T11:15:31.474Z"
+    },
+    {
+      "capability": "MCP Inspector (@modelcontextprotocol/inspector)",
+      "verdict": "approve",
+      "reason": "Opt-in candidate: the official review/test tool for any MCP server (used by the mcp-builder skill's own review phase) — local, no persistent write, genuinely useful only if the owner ever approves building/reviewing an MCP server; not installed by default, routes through the existing forge-mcp-clients dormant/opt-in doctrine before any live use.",
+      "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/mcp-builder/SKILL.md",
+      "ts": "2026-07-22T11:15:31.474Z"
+    },
+    {
+      "capability": "Composio Connect MCP (78+ SaaS integrations)",
+      "verdict": "approve",
+      "reason": "Opt-in candidate flagged by research as a genuinely useful bulk-integration MCP (HubSpot/Salesforce/Jira/Linear/Notion/GitHub/GitLab/Slack/Gmail/Sentry/PagerDuty/Vercel) for a project that needs one of those integrations — credentialed and tier-3-shaped for any write scope, so it must clear mcp-registry.json/mcp-grants.json least-privilege review and an explicit owner opt-in before ever being wired live; not installed by default.",
+      "source": "https://github.com/ComposioHQ/awesome-claude-skills",
+      "ts": "2026-07-22T11:15:31.475Z"
+    },
+    {
+      "capability": "postmark-mcp (npm)",
+      "verdict": "hard-pass",
+      "reason": "Confirmed malicious MCP server in the wild — silently BCC'd every AI-agent-sent email to an attacker address. Canonical cautionary reference; never install.",
+      "source": "https://www.ayautomate.com/blog/claude-code-security-risks",
+      "ts": "2026-07-22T11:15:31.475Z"
+    },
+    {
+      "capability": "Sandworm_Mode / npm typosquat MCP campaign",
+      "verdict": "hard-pass",
+      "reason": "Weaponized npm typosquatting targeting Claude Code + AI coding assistants to install rogue MCP servers and exfiltrate SSH/AWS/npm credentials via prompt injection — justifies this project's allowlist + no-obscure-package rule; attack-pattern reference only, never install.",
+      "source": "https://checkmarx.com/learn/ai-security/claude-code-security-top-6-risks-controls-and-best-practices/",
+      "ts": "2026-07-22T11:15:31.476Z"
+    },
+    {
+      "capability": "bulk unreviewed community skill marketplaces (ComposioHQ/VoltAgent-style 1000+ catalogs)",
+      "verdict": "hard-pass",
+      "reason": "Snyk's Feb 2026 ToxicSkills audit found 1,467 malicious payloads across 3,984 scanned skills (36% flaw rate, 76 confirmed malicious with active payloads) — never bulk-adopt from an unreviewed marketplace; mine these catalogs for patterns only, adopt individual skills only after the same source-review discipline as the official anthropics/skills repo.",
+      "source": "https://www.ayautomate.com/blog/claude-code-security-risks",
+      "ts": "2026-07-22T11:15:31.477Z"
+    },
+    {
+      "capability": "sales@knowledge-work-plugins",
+      "verdict": "hard-pass",
+      "reason": "Independent test found it fabricated data (wrong subscriber counts, misaligned competitor tier) — fabrication risk directly conflicts with this project's honesty core.",
+      "source": "https://buildtolaunch.substack.com/p/best-claude-code-plugins-tested-review",
+      "ts": "2026-07-22T11:15:31.477Z"
+    },
+    {
+      "capability": "productivity@knowledge-work-plugins",
+      "verdict": "hard-pass",
+      "reason": "Independent test found it redundant with existing task-management/memory — overlaps this project's own FORGE_MEMORY/ledger discipline; adds a second layer managing the same information.",
+      "source": "https://buildtolaunch.substack.com/p/best-claude-code-plugins-tested-review",
+      "ts": "2026-07-22T11:15:31.478Z"
+    },
+    {
+      "capability": "brand-voice@knowledge-work-plugins",
+      "verdict": "hard-pass",
+      "reason": "Overlaps this project's existing per-business brand-guideline flow (owner's FRONTEND_WEBSITE_RULES already generates a unique brand guideline per business) — adopt the one-time discovery+guidelines pattern it demonstrated, not the plugin itself, to stay zero-dep.",
+      "source": "https://buildtolaunch.substack.com/p/best-claude-code-plugins-tested-review",
+      "ts": "2026-07-22T11:15:31.478Z"
+    },
+    {
+      "capability": "explanatory-output-style@claude-plugins-official",
+      "verdict": "hard-pass",
+      "reason": "An always-on global output style over-applies to every response — this project's compact-by-default report policy (Token-Efficiency governance) already covers sizing output to the task; adopting a second, competing global verbosity default would conflict with it.",
+      "source": "https://buildtolaunch.substack.com/p/best-claude-code-plugins-tested-review",
+      "ts": "2026-07-22T11:15:31.479Z"
+    },
+    {
+      "capability": "claude-plugins-official marketplace (browse-only)",
+      "verdict": "approve",
+      "reason": "Safe as a read-only recommendation catalog — already governed by the owner's existing ANTHROPIC_CLAUDE_CODE_SETUP_PLUGIN_POLICY (nothing auto-installed); approved for browsing patterns only, never auto-enabled.",
+      "source": "https://hidekazu-konishi.com/entry/claude_code_plugins_complete_guide.html",
+      "ts": "2026-07-22T11:15:31.480Z"
+    },
+    {
+      "capability": "Checkmarx Developer Assist (and similar paid SCA add-ons)",
+      "verdict": "hard-pass",
+      "reason": "Adds a paid external dependency + a second scanning surface — this project's security posture is deliberately light/non-blocking; keep the existing native deny-rules + secret-hygiene (leak scan) instead of a paid vendor layer.",
+      "source": "https://checkmarx.com/learn/ai-security/claude-code-security-top-6-risks-controls-and-best-practices/",
+      "ts": "2026-07-22T11:15:31.480Z"
+    },
+    {
+      "capability": "external agent-observability SaaS (Langfuse/Braintrust/AgentOps/Arize Phoenix)",
+      "verdict": "hard-pass",
+      "reason": "Adds a paid/external service + data-egress surface. Claude Code already provides native OpenTelemetry exporters (OTEL_* env vars) and this project already has its own events.jsonl + dashboard — zero-dep native tracing covers the same need; adopt only as an explicit, self-hosted, owner-approved exception for a client project that demands it.",
+      "source": "https://latitude.so/blog/best-ai-agent-observability-tools-2026-comparison",
+      "ts": "2026-07-22T11:15:31.481Z"
+    },
+    {
+      "capability": "external agent-memory frameworks (Mem0/Letta/Zep/LangGraph-LangMem)",
+      "verdict": "hard-pass",
+      "reason": "Every option adds a service/vector-store dependency. This project's project-local .claude/ markdown memory (FORGE_MEMORY.md/FORGE_DECISIONS.md/ledger/task-history) is deliberately simpler and zero-dep; borrow the CoALA working/episodic/semantic/procedural taxonomy and staleness envelope, never the frameworks themselves.",
+      "source": "https://atlan.com/know/best-ai-agent-memory-frameworks-2026/",
+      "ts": "2026-07-22T11:15:31.482Z"
+    }
+  ]
+}

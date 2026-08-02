@@ -1,0 +1,17 @@
+{
+  "name": "forge-discord-canary",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Canary-lab: Discord <-> Forge/Claude Code remote control. Durable queue, router, scheduler, outbox + pluggable transport (mock eerst, echt Discord owner-gated).",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\"",
+    "demo": "node src/demo-mock.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
+  }
+}

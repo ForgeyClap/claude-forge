@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for Electron/desktop tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-reviewer) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions. ADAPT per project; do not drop-in blindly. Pairs with the forge-electron playbook.",
+  "domain": "electron",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "renderer_hardening",
+      "descriptor": "1=nodeIntegration:true or contextIsolation:false in a renderer; 2=partly hardened, some window misses a flag; 3=contextIsolation:true + nodeIntegration:false on all windows; 4=all of contextIsolation:true, nodeIntegration:false, sandbox:true (where feasible), webSecurity:true verified with cited file:line",
+      "raise": "set contextIsolation:true, nodeIntegration:false, sandbox:true on every BrowserWindow and cite the exact config lines"
+    },
+    {
+      "id": "ipc_safety",
+      "descriptor": "1=raw ipcRenderer exposed on window; 2=contextBridge used but wide/unvalidated surface; 3=minimal exposed API via contextBridge; 4=minimal allow-listed API, every IPC channel validates payload (and sender where relevant), no raw passthrough",
+      "raise": "expose only a minimal contextBridge API, validate every IPC payload, and remove any raw ipcRenderer from window"
+    },
+    {
+      "id": "csp_and_secrets",
+      "descriptor": "1=no CSP and/or secrets in the bundle; 2=weak CSP (unsafe-eval/wildcards) or plaintext secret files; 3=strict CSP + no secrets in bundle; 4=strict CSP (no unsafe-eval/wildcard sources) + secrets in OS-secure storage, none in the asar",
+      "raise": "set a strict CSP without unsafe-eval/wildcards and move secrets to OS-secure storage, not the bundle"
+    },
+    {
+      "id": "installer_reality",
+      "descriptor": "1=no build or build fails; 2=build produces an artifact, not verified to run; 3=installer built and launches; 4=installer built, installs and launches on a clean machine (real output shown), auto-update signature-verified + rollback-capable if in scope",
+      "raise": "build the installer and actually install+launch it on a clean machine; attach the real output as evidence"
+    },
+    {
+      "id": "no_mock_data",
+      "descriptor": "1=test/demo/mock data shipped in the build; 2=some placeholder data remains; 3=no obvious mock data; 4=shipped artifact verified free of test/demo/mock/placeholder data, offline behavior works where promised",
+      "raise": "remove all test/demo/mock/placeholder data from the packaged build and verify offline paths"
+    }
+  ]
+}

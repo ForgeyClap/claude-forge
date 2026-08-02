@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for payment/checkout/billing tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-reviewer) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-payments playbook.",
+  "domain": "payments",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "no_raw_pan",
+      "descriptor": "1=raw card/PAN/CVV handled, stored, or logged server-side; 2=tokenization used but card data still transits or is logged somewhere; 3=hosted/tokenized capture, no PAN on server, minor leak risk; 4=card data never touches the server/logs/DB (hosted fields/checkout), PCI SAQ A/A-EP scope held and evidenced",
+      "raise": "move card capture to the gateway's hosted fields/checkout; grep the diff + logs for card-shaped literals, cardNumber/cvv/pan and remove any"
+    },
+    {
+      "id": "money_integrity",
+      "descriptor": "1=float money math / no currency; 2=integers in places but floats leak into tax/discount/display; 3=integer minor units with currency, rounding mostly bounded; 4=integer minor units + explicit ISO-4217 everywhere, rounding only at defined boundaries, totals reconcile",
+      "raise": "convert all money to integer minor units + a currency code; remove float arithmetic from totals/tax/discount/conversion"
+    },
+    {
+      "id": "idempotency",
+      "descriptor": "1=no idempotency key on charges; 2=key sent inconsistently or not persisted; 3=key on every charge/refund, stored; 4=deterministic key per logical op, persisted with a uniqueness guarantee, retries proven not to double-charge",
+      "raise": "attach an Idempotency-Key to every charge/refund call, persist it, and test a duplicate submit returns the same result"
+    },
+    {
+      "id": "webhook_security",
+      "descriptor": "1=webhook acted on without signature check; 2=signature checked but body manipulated or no dedupe; 3=signature verified on raw body + event.id dedupe; 4=raw-body signature verify + unique event.id dedupe + fast 2xx before heavy logic + duplicate/out-of-order tolerant",
+      "raise": "verify the provider HMAC on the raw body using the official library, dedupe on event.id with a unique constraint, return 2xx before processing"
+    },
+    {
+      "id": "test_live_safety",
+      "descriptor": "1=live keys/charges used without approval; 2=test/live mixed or unclear; 3=test mode separated, no live action taken; 4=test/live fully separated, sandbox scenarios (success/decline/3DS/duplicate) exercised, any live action explicitly owner-approved",
+      "raise": "separate test from live keys, exercise sandbox test-card + duplicate-webhook scenarios, and keep any live charge behind explicit owner approval"
+    }
+  ]
+}

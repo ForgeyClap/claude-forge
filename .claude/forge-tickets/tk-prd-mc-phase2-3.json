@@ -1,0 +1,16 @@
+{
+  "ticket_id": "tk-prd-mc-phase2-3",
+  "prd_id": "prd-mc-phase2",
+  "run_id": "forge-2026-07-10-mc-checkup",
+  "title": "All lenses render without stacking",
+  "description": "Acceptance criterion ac-3 for PRD prd-mc-phase2",
+  "owner": "UI Boss",
+  "status": "done",
+  "required_tests": [],
+  "related_files": [],
+  "risk_level": "med",
+  "created": "2026-07-10T11:15:21.160Z",
+  "_stored": "2026-07-10T17:34:18.463Z",
+  "note": "verify-loop: still open at verification",
+  "test_evidence": "forge-all-lens 33/33 no-overlap + mindmap-lens 15/15 + screenshots 1440/768/320"
+}

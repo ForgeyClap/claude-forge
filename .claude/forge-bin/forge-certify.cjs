@@ -80,8 +80,8 @@
  *
  * Module API: { certifyRun, verifyChain, realDispatchEvidence, claimProofViolations, checksVerifiedCount,
  *   completionClaimCoverage, anyCompletionClaimPresent, freeTextPassClaims, timestampsInOrder,
- *   registryCheck, GENERIC_AGENTS, DISPATCH_EVENT_TYPES, PROOF_NEED, EXIT_CODE_ASSERTION_EVENTS,
- *   FREE_TEXT_PASS_PATTERNS, printSummary }
+ *   registryCheck, loadProjectAgentNames, GENERIC_AGENTS, DISPATCH_EVENT_TYPES, PROOF_NEED,
+ *   EXIT_CODE_ASSERTION_EVENTS, FREE_TEXT_PASS_PATTERNS, printSummary }
  */
 const fs = require('fs');
 const path = require('path');
@@ -269,16 +269,51 @@ function loadRegistryNames(root) {
   }
   return names;
 }
+// loadProjectAgentNames (2026-08-01, "pakket 1") — MIRRORS log-event.cjs's loadProjectAgents() (read that
+// file's comment first). The 12 permanent Bosses are not the only agents that really exist: `.claude/agents/
+// *.md` also defines optional on-request specialists (verify-boss, codex-reviewer, data-scientist, …). Since
+// log-event.cjs now ACCEPTS a dispatch event from one of those (backed by a real definition file on disk),
+// this criterion had to learn the same fact — otherwise the very act of letting verify-boss record its
+// verdict would flip its run to NOT CERTIFIED for an "unregistered agent name" that is demonstrably a real,
+// on-disk agent. The check is NOT weakened: a name with no registry entry AND no agent file (a fabricated
+// "phantom-boss") still fails exactly as before, and a real definition file is real evidence, not a claim.
+function loadProjectAgentNames(root) {
+  const dir = path.join(path.resolve(root), '.claude', 'agents');
+  const names = new Set();
+  let files = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.md')); } catch { return names; }
+  for (const f of files) {
+    const base = f.replace(/\.md$/i, '');
+    let declared = null;
+    try {
+      const text = fs.readFileSync(path.join(dir, f), 'utf8');
+      const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (fm) { const n = fm[1].match(/^name:\s*(.+)$/m); if (n) declared = n[1].trim().replace(/^["']|["']$/g, ''); }
+    } catch { /* unreadable agent file — fall back to the filename, never guess a different agent */ }
+    const display = declared || base;
+    for (const alias of [base, display, String(display).replace(/-/g, ' ')]) {
+      const key = String(alias).toLowerCase();
+      if (key) names.add(key);
+    }
+  }
+  return names;
+}
 function registryCheck(root, dispatchHits) {
   const names = loadRegistryNames(root);
   if (!names) return { ok: true, skipped: true, reason: 'agent-registry.json unavailable — optional cross-check skipped', unknown: [] };
+  const projectAgents = loadProjectAgentNames(root);
   const unknown = [];
+  const projectAgentHits = [];
   for (const h of dispatchHits) {
     const key = String(h.agent).toLowerCase();
-    if (!names.has(key)) unknown.push(h.agent);
+    if (names.has(key)) continue;
+    if (projectAgents.has(key)) { projectAgentHits.push(h.agent); continue; } // real agent file on disk, not a permanent Boss
+    unknown.push(h.agent);
   }
   const uniqueUnknown = Array.from(new Set(unknown));
-  return { ok: uniqueUnknown.length === 0, skipped: false, unknown: uniqueUnknown };
+  // project_agents is reported, never hidden: a run whose work was done by optional specialists rather than
+  // permanent Bosses is certifiable, but a reader can still see that from the certificate.
+  return { ok: uniqueUnknown.length === 0, skipped: false, unknown: uniqueUnknown, project_agents: Array.from(new Set(projectAgentHits)) };
 }
 
 // ---- the certificate ----
@@ -384,7 +419,7 @@ function printSummary(cert) {
 module.exports = {
   certifyRun, verifyChain, chainCanon, realDispatchEvidence, claimProofViolations, checksVerifiedCount,
   completionClaimCoverage, anyCompletionClaimPresent, freeTextPassClaims, timestampsInOrder, registryCheck,
-  loadRegistryNames, readEventsJsonl,
+  loadRegistryNames, loadProjectAgentNames, readEventsJsonl,
   GENERIC_AGENTS, DISPATCH_EVENT_TYPES, PROOF_NEED, EXIT_CODE_ASSERTION_EVENTS, FREE_TEXT_PASS_PATTERNS, printSummary,
 };
 

@@ -41,7 +41,7 @@ const LOG_EVENT = path.join(CLAUDE_DIR, 'forge-dashboard', 'log-event.cjs');
 const BASE = process.env.PAPERCLIP_URL || 'http://127.0.0.1:3100';
 // Portable defaults (deep-scan: template must not hardcode one machine). Prefer explicit env, then the
 // owner's existing lab home if it already exists (preserve their data), else a project-local home.
-const LAB_HOME = 'C:/Users/YOUR_USERNAME/paperclip-lab/pc-home';
+const LAB_HOME = 'C:/Users/YOU/Documents/Paperclip-Test/forge-paperclip-lab/pc-home';
 const PC_HOME = process.env.PAPERCLIP_HOME || (fs.existsSync(LAB_HOME) ? LAB_HOME : path.join(CLAUDE_DIR, 'paperclip-home'));
 // Default OS lookup for `claude` on PATH (win: where, posix: which) — the ONLY part of
 // resolveClaudeBin() that touches a real process; kept as an injectable default (opts.lookup) so
@@ -60,7 +60,7 @@ function resolveClaudeBin(opts) {
     const hit = String(lookup()).split(/\r?\n/).find((x) => x.trim());
     if (hit && hit.trim()) return hit.trim();
   } catch {}
-  return 'C:/Users/YOUR_USERNAME/.local/bin/claude.exe'; // last-resort fallback (this machine's known path)
+  return 'C:/Users/YOU/.local/bin/claude.exe'; // last-resort fallback (this machine's known path)
 }
 let CLAUDE_BIN = null; // resolved lazily by the require.main guard below (guard #3) — keeps a plain
                         // `require()` of this module side-effect-free (no OS process spawned on load)

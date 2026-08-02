@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.1.0] - 2026-08-02
+
+This release closes three defect classes that were **measured**, not guessed, in the system this repo is cut from.
+
+### Added
+
+- **The Forge Command Center now ships** (`command-center/`) — one zero-dependency Node gateway + React dashboard on `http://127.0.0.1:4100` that auto-discovers your Forge projects and shows strictly per-project data. It is the only layer allowed to spawn the real `claude` CLI. Build the SPA once (`cd command-center/dashboard && npm install && npm run build`), then run `node command-center/gateway/supervisor.mjs` (it restarts the gateway if it dies).
+- **Run-contract gate with proof** — `forge-runcontract.cjs check --run <id> --log-event` now emits a `gate_evaluated` event through the one real writer, in the same act as the check. A gate that evaluates silently is indistinguishable from one that never ran.
+- **`VENDORED-SKILLS.md`** — third-party skills this system uses internally are listed with their source and pinned commit instead of being redistributed here.
+
+### Fixed
+
+- **Agents did not create tasks.** Measured across 857 events in 29 runs: `gate_evaluated` had fired **0 times ever**, the run contract failed on 28 of 29 runs, and the system prompt appended to every dashboard-driven execution contained no obligation to create a work package, ticket, PRD or run id. Three layers each assumed another was enforcing. The gateway preamble now carries a **mission-ledger obligation** (mint a run id → log work packages *before* the work → log real events → run the contract gate before claiming done), the `/forge` command actually invokes the gate at completion, and the router's PRD step is a numbered obligation with a runnable command instead of a noun.
+- **Documented commands that did not run as printed.** `forge-verify.cjs --run <id>` was documented but unparsed; `forge-heartbeat.cjs`, `forge-report.cjs`, `forge-sync.cjs` and `forge-intake.cjs` examples in the quick reference were missing required subcommands or arguments. A run id may no longer begin with `-`.
+- **The retired dashboard was still advertised as current.** The per-project Control Center (ports 3737–3999) was being auto-started as a fallback in the very same tree whose rules call it retired, and the copy-paste mission template pointed users at it. It now starts only on an explicit `legacy dashboard` request. Its `log-event.cjs` is *not* retired and remains the per-project run-event writer.
+- **Kill switch reported success as failure.** Stopping the supervisor cascades to its children, so their own `taskkill` answered "process not found" — and the switch printed `FAILED` for processes it had just stopped. The verdict now comes from whether the PID is actually gone. `restore` also never returned, because it started a long-lived daemon with a blocking call; it now spawns detached and clears its ledger.
+- **README claimed screenshots that were not in the repo.**
+
+### Known limitations — measured on this exact release tree, not estimated
+
+Some tests in this repo pin facts about *a populated installation*. In a fresh clone they fail honestly rather than being silently skipped. None of them indicates broken code — each is listed here with its real cause so you can tell a genuine regression from an expected gap.
+
+- **Gateway suite: 935 of 971 pass.** The 36 failures are integration tests that expect a real Forge workspace (e.g. *"at least the known ~15 real projects"*, real run artifacts). They pass in a real installation.
+- **`forge-doctor` / `forge-configdrift` / `forge-contextbudget`: 5 failures** that all pin *"this project has 57 skills"*. This distribution ships 47, because 9 third-party skills are listed in `VENDORED-SKILLS.md` instead of redistributed. The number is right for the tree it was written against, not for this one.
+- **`forge-run-budget`: 2 failures** referencing `maand-sweep.cmd` — a machine-specific scheduled-task wrapper that is deliberately not shipped.
+- **Leak scan: 8 hits, all verified fixtures or pattern definitions**, and all inside `command-center/` — code this scanner had never seen before. In the development tree `command-center` is a nested git repository, so `git ls-files` never listed it and the scan reported "clean" over a tree that excluded the gateway entirely. Shipping it here as one repository is what made it visible. Each hit was read and confirmed: two redaction *patterns* (`attachments/policy.ts`, `projects/git.ts`), three test fixtures with obvious filler (`chat-run-diff.test.tsx`), a JWT-shaped fixture in the redaction-order test, and a mock PEM generator plus a comment quoting a marker (`exec-argv.mjs`, `exec-lifecycle.mjs`). The scanner's own way for a fixture to declare itself is to carry `FAKE`/`EXAMPLE`/`SAMPLE` inside the value — which a JWT fixture cannot do without ceasing to be JWT-shaped, so a blanket fix is not available. These are documented rather than silenced: bending a leak scanner to make a release look green is the exact reflex this project exists to avoid.
+- **Everything else is green**, including `node --check` on all 203 sources, the honesty gate, the agent validation, and the no-op-test detector.
+
+Fixing the first three properly means separating installation pins from unit tests, which is a real piece of work rather than a line in a changelog.
+
 ## [2.0.0] - 2026-07-18
 
 First public open-source release of Forge V2 — a zero-dependency, multi-agent

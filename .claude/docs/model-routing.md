@@ -12,7 +12,7 @@
 ## Role slots (env-overridable; defaults corrected from LIVE probes 2026-07-07 — the 07-05 picks hung/404'd)
 | Slot | Model | Why |
 |---|---|---|
-| default | minimaxai/minimax-m3 | fast+clean general (probe 647ms) — drafts/summaries/classification |
+| default | nvidia/nemotron-3-nano-30b-a3b | REMAPPED 2026-07-26 (was minimaxai/minimax-m3 — now unused, see Consolidation note below); fast+clean general, ~0.6s pings — drafts/summaries/classification |
 | fast / coding-fast | nvidia/nemotron-3-nano-30b-a3b | cheap, 1M ctx (probe 1s) — routing/formatting/bulk first-pass |
 | reasoning | moonshotai/kimi-k2.6 | best working single-shot reasoner (probe 623ms) |
 | review | mistralai/mistral-large-3-675b-instruct-2512 | frontier 675B, fast (probe 347ms) — 2nd-opinion QA |
@@ -37,3 +37,9 @@ node .claude/forge-bin/nvidia-provider.test.cjs              # offline tests (46
 - **Fallback chain:** NVIDIA role model → NVIDIA fallback role → the agent just does the work on its Claude runtime model (labeled `nvidia-skipped`). NVIDIA down ≠ blocked work; mocks are never presented as real output.
 - **Premium rule:** Boss decides when Opus 4.8/Sonnet 5 outweighs cost (security/architecture/final QA are ALWAYS premium per FORGE_MODEL_ROUTING.json).
 - **No live calls without key**; with key, live verification only via the explicit commands above.
+
+## Function fit (WP-NVIDIA-FIT, 2026-07-26 — LAW for bulk offload, not advisory)
+An agent's default NVIDIA role (above) is a starting point, not the last word: a Boss's bulk work must be routed by **function strength**, not just its flat role. `config/models/function-model-fit.json` maps each bulk-work function (code-draft, doc-draft, research-digest, data-extract, summarize, translate-rewrite, test-sketch) to the model *judged good at it by a real live probe* — pass `--function <fn>` to `chat`/`route` (`nvidia-provider.cjs`) to use it; omitting `--function` keeps the old role/model behavior unchanged. **A function with no fit model (all probes judged wrong) routes to NONE — Claude keeps that work, full stop; never force a bad-fit model onto NVIDIA.** `claudeWinsSkipNvidia` Bosses stay hard-blocked from NVIDIA regardless of `--function` — function-fit can never bypass that gate. Every fit judgment's literal probe evidence lives in `function-model-fit.json` itself (evidence field + verdict: correct / correct-but-slow / partial / none) — the same honesty discipline as `model-capability-matrix.json`. Re-probe function fit on the same ~1-week cadence as the role matrix; a model's function fit can drift the same way its role fit does.
+
+## Consolidation (WP-NVIDIA-CONSOLIDATE, 2026-07-26)
+Cross-probing every function's weak spot against `nemotron-3-nano`/`nemotron-3-super`/`deepseek-v4-flash` on the same real tasks found 2 models now cover all 7 bulk-work functions at fit="correct" — `nemotron-3-nano` (doc-draft, data-extract, summarize) and `nemotron-3-super` (code-draft, test-sketch, research-digest, translate-rewrite) — so `minimax-m3` and `mistral-small-4-119b-2603` are no longer needed by any function, and the `default` ROLE was remapped from `minimax-m3` to `nemotron-3-nano` (~16.7x faster on a real summarize task, same correctness). Full evidence (including every losing candidate) is in `function-model-fit.json`'s `consolidation` block; `deepseek-v4-flash`/`mistral-small-4-119b-2603` remain the `reasoning`/`review` ROLE defaults for non-function-routed calls, unchanged.

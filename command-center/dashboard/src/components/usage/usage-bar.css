@@ -1,0 +1,560 @@
+/*
+ * Forge Workspace — the live usage bar stylesheet.
+ *
+ * Monochrome, tokens only. There is no hex, no rgb() and no hsl() in this file:
+ * every value is a var(--forge-*) token, so it inherits both themes and the
+ * density switch for free. The one place a value earns emphasis is a context
+ * alert, and it earns it with border WEIGHT, never a hue — in keeping with the
+ * workspace's status treatment.
+ *
+ * Accuracy is carried by a small mono chip whose border STYLE encodes the class
+ * (solid EXACT/DERIVED, dashed ESTIMATED, dotted UNAVAILABLE), so a value can
+ * never be read as a bare fact.
+ */
+
+/* =========================================================================
+   1. Frame
+   Constrained to the same reading column as the chat header and thread, so the
+   bar reads as part of the one document rather than a strip floating over it.
+   ========================================================================= */
+
+.fw-usage {
+  flex: none;
+  position: relative;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-bg);
+}
+
+.fw-usage__inner {
+  inline-size: 100%;
+  max-inline-size: var(--forge-layout-reading);
+  margin-inline: auto;
+  padding: var(--forge-space-2) var(--fw-gutter);
+  min-inline-size: 0;
+}
+
+/* The clickable summary. A real button so Enter/Space and focus work; it holds
+   only non-interactive content (text, chips, a decorative track) so it never
+   nests an interactive control. */
+.fw-usage__summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  inline-size: 100%;
+  padding: var(--forge-space-1) var(--forge-space-2);
+  border: var(--forge-border-hair) solid transparent;
+  border-radius: var(--forge-radius-md);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.fw-usage__summary:hover {
+  background: var(--forge-color-hover);
+  border-color: var(--forge-color-line-subtle);
+}
+
+/* =========================================================================
+   2. Rows
+   ========================================================================= */
+
+.fw-usage__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--forge-space-1) var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-usage__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+  white-space: nowrap;
+}
+
+.fw-usage__brand-icon {
+  color: var(--forge-color-text-muted);
+}
+
+/* One key/value cluster: a muted uppercase key, then a machine value + chip. */
+.fw-usage__group {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-usage__k {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+  white-space: nowrap;
+}
+
+.fw-usage__pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-usage__v {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-inline-size: 14rem;
+}
+
+.fw-usage__v--muted {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-usage__v--strong {
+  color: var(--forge-color-text);
+}
+
+.fw-usage__sub {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* Secondary rows collapse on narrow viewports until the bar is expanded. */
+.fw-usage__row--secondary {
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   3. Connection chip
+   ========================================================================= */
+
+.fw-usage__conn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding-inline: var(--forge-space-1);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  color: var(--forge-color-text-muted);
+  white-space: nowrap;
+}
+
+.fw-usage__conn-dot {
+  inline-size: var(--forge-space-2);
+  block-size: var(--forge-space-2);
+  border-radius: var(--forge-radius-full);
+  border: var(--forge-border-hair) solid var(--forge-color-line-loud);
+  background: transparent;
+  flex: none;
+}
+
+.fw-usage__conn[data-status='CONNECTED'] .fw-usage__conn-dot {
+  background: var(--forge-color-text-secondary);
+  border-color: var(--forge-color-text-secondary);
+}
+
+.fw-usage__conn[data-status='DEGRADED'] .fw-usage__conn-dot {
+  border-style: dashed;
+  border-color: var(--forge-color-text-muted);
+}
+
+.fw-usage__conn[data-status='CONNECTING'] .fw-usage__conn-dot {
+  border-style: dotted;
+}
+
+.fw-usage__conn[data-status='DISCONNECTED'] .fw-usage__conn-dot {
+  border-style: dotted;
+  border-color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   4. Context track — decorative; the numbers beside it carry the meaning.
+   ========================================================================= */
+
+.fw-usage__ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-usage__track {
+  inline-size: clamp(3.5rem, 12vw, 7rem);
+  block-size: var(--forge-space-1);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-sunken);
+  box-shadow: var(--forge-shadow-inset);
+  overflow: hidden;
+  flex: none;
+}
+
+.fw-usage__track-fill {
+  block-size: 100%;
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-text-muted);
+  transition: inline-size var(--forge-motion-base) var(--forge-motion-ease-standard);
+}
+
+.fw-usage[data-context-severity='85'] .fw-usage__track-fill,
+.fw-usage[data-context-severity='95'] .fw-usage__track-fill {
+  background: var(--forge-color-text-secondary);
+}
+
+/* =========================================================================
+   5. Accuracy + state chips
+   ========================================================================= */
+
+.fw-usage-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 0 var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-xs);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+  white-space: nowrap;
+}
+
+.fw-usage-chip[data-accuracy='EXACT'] {
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-usage-chip[data-accuracy='DERIVED'] {
+  border-style: solid;
+  border-color: var(--forge-color-line);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-usage-chip[data-accuracy='ESTIMATED'] {
+  border-style: dashed;
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-usage-chip[data-accuracy='UNAVAILABLE'] {
+  border-style: dotted;
+  border-color: var(--forge-color-line);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-usage__stale {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding: 0 var(--forge-space-1);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-xs);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-muted);
+  white-space: nowrap;
+}
+
+/* =========================================================================
+   6. Expand toggle — a sibling of the summary button, so no button nests.
+   Shown only where the secondary rows are collapsed.
+   ========================================================================= */
+
+.fw-usage__expand {
+  display: none;
+  position: absolute;
+  inset-block-start: var(--forge-space-2);
+  inset-inline-end: var(--fw-gutter);
+  z-index: var(--forge-z-sticky);
+}
+
+.fw-usage__spacer {
+  flex: 1 1 auto;
+  min-inline-size: var(--forge-space-2);
+}
+
+/* =========================================================================
+   7. Context alert — a quiet inline warning. Weight, not hue, carries severity.
+   ========================================================================= */
+
+.fw-usage__alert {
+  margin-block-start: var(--forge-space-1);
+  margin-inline: var(--forge-space-2);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  border-radius: 0 var(--forge-radius-sm) var(--forge-radius-sm) 0;
+  background: var(--forge-color-surface-1);
+}
+
+.fw-usage__alert[data-severity='85'] {
+  border-inline-start-width: var(--forge-border-thick);
+}
+
+.fw-usage__alert[data-severity='95'] {
+  border-inline-start-width: var(--forge-border-thick);
+  border-inline-start-color: var(--forge-color-line-loud);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-usage__alert-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-usage__alert-icon {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-usage__alert-msg {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+  min-inline-size: 0;
+}
+
+.fw-usage__alert-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-1) var(--forge-space-2);
+  margin-block-start: var(--forge-space-2);
+  padding-inline-start: calc(var(--forge-icon-sm) + var(--forge-space-2));
+}
+
+.fw-usage__alert-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-usage__alert-action-icon {
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   8. Plan-usage / hint footnote
+   ========================================================================= */
+
+.fw-usage__note {
+  margin-block-start: var(--forge-space-1);
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+}
+
+/* =========================================================================
+   9. Details modal
+   ========================================================================= */
+
+.fw-usage-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-5);
+  min-inline-size: 0;
+}
+
+.fw-usage-details__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-usage-details__section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+}
+
+.fw-usage-details__dl {
+  display: grid;
+  grid-template-columns: minmax(9rem, auto) 1fr;
+  gap: var(--forge-space-1) var(--forge-space-3);
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.fw-usage-details__row {
+  display: contents;
+}
+
+.fw-usage-details__k {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+  min-inline-size: 0;
+}
+
+.fw-usage-details__cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+  padding-block-end: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-usage-details__val {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  min-inline-size: 0;
+}
+
+.fw-usage-details__num {
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text);
+  overflow-wrap: anywhere;
+}
+
+.fw-usage-details__num--muted {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-usage-details__src {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+  overflow-wrap: anywhere;
+}
+
+.fw-usage-details__plan {
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) dotted var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-1);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-usage-details__warnings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  margin: 0;
+  padding-inline-start: var(--forge-space-4);
+}
+
+.fw-usage-details__warning {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   10. History sparkline — drawn only from real stored points.
+   ========================================================================= */
+
+.fw-usage-spark {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-usage-spark__svg {
+  inline-size: 100%;
+  block-size: 88px;
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-usage-spark__line {
+  fill: none;
+  stroke: var(--forge-color-text-muted);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.fw-usage-spark__area {
+  fill: var(--forge-color-hover);
+  stroke: none;
+}
+
+.fw-usage-spark__dot {
+  fill: var(--forge-color-text-secondary);
+}
+
+.fw-usage-spark__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 88px;
+  border: var(--forge-border-hair) dashed var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-usage-spark__legend {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--forge-space-1) var(--forge-space-3);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-usage-spark__legend-name {
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   11. Responsive — collapse the secondary rows on narrow viewports.
+   ========================================================================= */
+
+@media (max-width: 40rem) {
+  .fw-usage__row--secondary {
+    display: none;
+  }
+
+  .fw-usage[data-expanded='true'] .fw-usage__row--secondary {
+    display: flex;
+  }
+
+  .fw-usage__expand {
+    display: inline-flex;
+  }
+
+  .fw-usage__summary {
+    padding-inline-end: calc(var(--forge-control-sm) + var(--forge-space-2));
+  }
+
+  .fw-usage__v {
+    max-inline-size: 9rem;
+  }
+}
+
+/* =========================================================================
+   12. Density
+   ========================================================================= */
+
+:root[data-density='compact'] .fw-usage__inner {
+  padding-block: var(--forge-space-1);
+}

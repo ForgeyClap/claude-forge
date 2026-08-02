@@ -1,0 +1,17 @@
+{
+  "skill": "forge-code-review",
+  "assertions": [
+    { "id": "skillmd-exists", "type": "file_exists", "path": ".claude/skills/forge-code-review/SKILL.md",
+      "why": "the skill file itself must exist for forge-code-review to be usable at all" },
+    { "id": "description-budget", "type": "frontmatter_field", "field": "description", "max_length": 200,
+      "why": "2026-07-31 skill-load-budget fix (FORGE_MEMORY.md): this description was rewritten from a long keyword-stuffed version to <=200 chars" },
+    { "id": "review-order-section", "type": "contains", "path": ".claude/skills/forge-code-review/SKILL.md", "needle": "## Review order",
+      "why": "the fixed review order (correctness before style) is the core of this skill and must stay documented" },
+    { "id": "severity-table", "type": "contains", "path": ".claude/skills/forge-code-review/SKILL.md", "needle": "| CRITICAL |",
+      "why": "the CRITICAL/HIGH/MEDIUM/LOW severity table drives the BLOCK/WARN/INFO/NOTE action and must stay present" },
+    { "id": "codex-handoff-section", "type": "contains", "path": ".claude/skills/forge-code-review/SKILL.md", "needle": "## Codex handoff",
+      "why": "the optional, never-blocking Codex handoff must stay documented so it is never mistaken for a mandatory gate" },
+    { "id": "learnings-wiring", "type": "contains", "path": ".claude/skills/forge-code-review/SKILL.md", "needle": "learnings.md",
+      "why": "wp-skill-evals: the skill must instruct reading its own learnings.md before use and appending corrections after" }
+  ]
+}

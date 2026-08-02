@@ -1,0 +1,670 @@
+/*
+ * Home view.
+ *
+ * A reading surface first: one centred column, generous vertical rhythm, and
+ * surfaces that step by a single luminance level rather than by colour. Every
+ * value below is a var(--forge-*) token — there is no hex in this file.
+ */
+
+.fw-home {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  background: var(--forge-color-bg);
+}
+
+.fw-home__scroll {
+  flex: 1 1 auto;
+}
+
+.fw-home__inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-12);
+  max-inline-size: 74rem;
+  margin-inline: auto;
+  padding: var(--forge-space-10) var(--forge-space-8) var(--forge-space-16);
+}
+
+:root[data-density='compact'] .fw-home__inner {
+  gap: var(--forge-space-8);
+  padding: var(--forge-space-6) var(--forge-space-5) var(--forge-space-10);
+}
+
+/* ================================================================ greeting */
+
+.fw-home__greeting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  max-inline-size: var(--forge-layout-reading);
+}
+
+.fw-home__title {
+  font-size: var(--forge-text-3xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  letter-spacing: var(--forge-tracking-tight);
+  color: var(--forge-color-text);
+}
+
+:root[data-density='compact'] .fw-home__title {
+  font-size: var(--forge-text-2xl);
+}
+
+.fw-home__lead {
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-home__disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* ================================================================== search */
+
+.fw-home__search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  max-inline-size: 46rem;
+}
+
+.fw-home__search-field {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  padding-inline: var(--forge-space-4);
+  padding-block: var(--forge-space-1);
+  min-block-size: var(--forge-control-xl);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xl);
+  background: var(--forge-color-surface-1);
+  transition-property: border-color, background-color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+:root[data-density='compact'] .fw-home__search-field {
+  min-block-size: var(--forge-control-lg);
+  border-radius: var(--forge-radius-lg);
+}
+
+.fw-home__search-field:hover {
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-home__search-field:focus-within {
+  border-color: var(--forge-color-accent);
+}
+
+.fw-home__search-icon {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-home__search-input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-home__search-input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-home__matches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-home__matches-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-3);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-home__matches-empty {
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-home__matches-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-home__match {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-secondary);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-home__match:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-home__match-label {
+  flex: 1 1 auto;
+  font-size: var(--forge-text-base);
+}
+
+/* ========================================================= system overview */
+
+.fw-home__system {
+  border-block: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-home__system-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--forge-space-2) var(--forge-space-6);
+  margin: 0;
+  padding-block: var(--forge-space-4);
+  list-style: none;
+}
+
+:root[data-density='compact'] .fw-home__system-list {
+  padding-block: var(--forge-space-3);
+  gap: var(--forge-space-1) var(--forge-space-4);
+}
+
+.fw-home__system-cell {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+}
+
+/* A precise separator instead of a card edge. */
+.fw-home__system-cell + .fw-home__system-cell::before {
+  content: '';
+  align-self: center;
+  inline-size: var(--forge-border-hair);
+  block-size: var(--forge-space-3);
+  margin-inline-end: var(--forge-space-4);
+  background: var(--forge-color-line);
+}
+
+:root[data-density='compact'] .fw-home__system-cell + .fw-home__system-cell::before {
+  margin-inline-end: var(--forge-space-2);
+}
+
+.fw-home__system-value {
+  font-size: var(--forge-text-md);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-home__system-label {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+/* ================================================================ sections */
+
+/* Flush panels carry their own rhythm: heading, a hairline of air, content. */
+.fw-home__section {
+  gap: var(--forge-space-3);
+}
+
+.fw-home__pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(21rem, 100%), 1fr));
+  gap: var(--forge-space-10);
+}
+
+:root[data-density='compact'] .fw-home__pair {
+  gap: var(--forge-space-6);
+}
+
+/* ======================================================= continue working */
+
+.fw-home__resume {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(23rem, 100%), 1fr));
+  gap: var(--forge-space-4);
+}
+
+.fw-home__resume-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-5);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+  box-shadow: var(--forge-shadow-inset);
+}
+
+:root[data-density='compact'] .fw-home__resume-card {
+  padding: var(--forge-space-4);
+  gap: var(--forge-space-2);
+}
+
+.fw-home__resume-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-3);
+}
+
+.fw-home__resume-title {
+  font-size: var(--forge-text-lg);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+}
+
+.fw-home__resume-body {
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fw-home__resume-meter {
+  padding-block: var(--forge-space-1);
+}
+
+.fw-home__resume-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2) var(--forge-space-4);
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-home__resume-foot > :last-child {
+  margin-inline-start: auto;
+}
+
+.fw-home__resume-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+/* ==================================================================== rows */
+
+.fw-home__list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-home__list > li + li {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-home__row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  padding: var(--forge-space-3) var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+:root[data-density='compact'] .fw-home__row {
+  padding-block: var(--forge-space-2);
+}
+
+.fw-home__row:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-home__row-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-home__row-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-home__row-title {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-home__row-detail {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-home__row-side {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex: none;
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-home__row-pin {
+  color: var(--forge-color-text-faint);
+}
+
+/* Hide the timestamp column before it starts squeezing the title. */
+@media (max-width: 640px) {
+  .fw-home__row-side > .fw-machine {
+    display: none;
+  }
+}
+
+/* ================================================================ missions */
+
+.fw-home__missions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-home__mission {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-home__mission-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+/* A run id is one token; it must not break across two lines. */
+.fw-home__mission-head .fw-machine {
+  white-space: nowrap;
+}
+
+.fw-home__mission-project {
+  margin-inline-start: auto;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-home__mission-goal {
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fw-home__mission-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding-block-start: var(--forge-space-1);
+}
+
+.fw-home__mission-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-3);
+  font-size: var(--forge-text-2xs);
+}
+
+/* =============================================================== templates */
+
+/* Six cards want an even split, so the minimum is tuned to land on three
+   columns at the reading width rather than four-plus-two. */
+.fw-home__templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-home__template {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  block-size: 100%;
+  padding: var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-1);
+  text-align: start;
+  cursor: pointer;
+  transition-property: background-color, border-color, transform;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-home__template:hover {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-home__template:active {
+  background: var(--forge-color-active);
+}
+
+.fw-home__template-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--forge-control-lg);
+  block-size: var(--forge-control-lg);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-home__template-name {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-home__template-detail {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+/* ============================================== verification and blockers */
+
+.fw-home__stack-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-3) var(--forge-space-2);
+}
+
+.fw-home__stack-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-home__stack-title {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-home__stack-claim {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-home__stack-claim--clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fw-home__stack-machine {
+  font-size: var(--forge-text-2xs);
+}
+
+/* ================================================================ timeline */
+
+.fw-home__timeline {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-home__event {
+  display: flex;
+  gap: var(--forge-space-3);
+  padding-block: var(--forge-space-2);
+}
+
+.fw-home__event-rail {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-sm);
+  block-size: var(--forge-control-sm);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text-muted);
+}
+
+/* The connecting hairline, drawn between marks rather than through them. */
+.fw-home__event:not(:last-child) .fw-home__event-rail::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 100%;
+  inline-size: var(--forge-border-hair);
+  block-size: var(--forge-space-4);
+  background: var(--forge-color-line-subtle);
+}
+
+.fw-home__event-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-home__event-message {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-home__event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-3);
+  font-size: var(--forge-text-2xs);
+}
+
+/* ============================================================== responsive */
+
+@media (max-width: 900px) {
+  .fw-home__inner {
+    gap: var(--forge-space-8);
+    padding: var(--forge-space-6) var(--forge-space-4) var(--forge-space-12);
+  }
+
+  /* Once the strip wraps, an inline separator lands at the start of a line and
+     reads as a stray mark. Below this width the gap does the separating. */
+  .fw-home__system-cell + .fw-home__system-cell::before {
+    display: none;
+  }
+
+  .fw-home__system-list {
+    gap: var(--forge-space-2) var(--forge-space-5);
+  }
+
+  .fw-home__title {
+    font-size: var(--forge-text-2xl);
+  }
+
+  .fw-home__pair {
+    gap: var(--forge-space-8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-home__template,
+  .fw-home__search-field {
+    transition: none;
+  }
+}

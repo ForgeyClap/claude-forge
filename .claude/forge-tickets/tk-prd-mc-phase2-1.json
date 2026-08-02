@@ -1,0 +1,16 @@
+{
+  "ticket_id": "tk-prd-mc-phase2-1",
+  "prd_id": "prd-mc-phase2",
+  "run_id": "forge-2026-07-10-mc-checkup",
+  "title": "Every subagent + task shows as a node",
+  "description": "Acceptance criterion ac-1 for PRD prd-mc-phase2",
+  "owner": "UI Boss",
+  "status": "done",
+  "required_tests": [],
+  "related_files": [],
+  "risk_level": "med",
+  "created": "2026-07-10T11:15:21.158Z",
+  "_stored": "2026-07-10T17:34:18.459Z",
+  "note": "verify-loop: still open at verification",
+  "test_evidence": "forge-all-lens.test.cjs: 33/33 (agent+task+summary nodes) + live screenshot 10-ALL-1440.png"
+}

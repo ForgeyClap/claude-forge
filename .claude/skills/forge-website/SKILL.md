@@ -1,6 +1,6 @@
 ---
 name: forge-website
-description: "Forge playbook for websites, landing pages, and frontend UI. Use when building or improving a website, landing page, marketing site, dashboard UI, or frontend — keywords: website, landing page, hero, CTA, responsive, mobile layout, UI, UX, accessibility, a11y, SEO, page speed, Lighthouse, frontend, React, Vue, Tailwind. Covers UI/UX, responsiveness, accessibility, SEO, performance, forms, and screenshot-loop review."
+description: Forge playbook for websites, landing pages, and frontend UI. Use for website, landing page, responsive, mobile layout, SEO, accessibility, Lighthouse, React, Vue, Tailwind.
 ---
 
 # Forge playbook — Website / landing / frontend

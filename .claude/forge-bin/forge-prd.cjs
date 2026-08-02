@@ -20,6 +20,21 @@
  *   test_plan, roadmap, and acceptance_criteria (array of {id?, text, owner?, required_tests?[]} or
  *   plain strings). A missing section renders as "_(not specified)_" — never crashes.
  *
+ * FAILURE CONDITIONS (2026-08-01). `failure_conditions` is the mirror of `acceptance_criteria`: the same
+ * shape (array of {id?, text} or plain strings, ids defaulting to `fc-<n>` exactly as criteria default to
+ * `ac-<n>`), rendered directly after them. It exists because measured on 2026-08-01 this project had a rich
+ * vocabulary for "this must be true" and NONE for "this result is unacceptable" — the words
+ * `failure_conditions`, `on_stuck`, `requires_inputs` and `result_caveat` returned zero hits repo-wide. A
+ * spec that only lists successes cannot describe a run that technically passed every check and still produced
+ * something nobody would accept ("looks like a generic template", "broken on mobile", "a file over 500 lines").
+ *
+ * The verify side lives in forge-verify.cjs::checkFailureConditions — a HIT condition is a blocker exactly
+ * like a silently dropped acceptance criterion, and it gates. It is DELIBERATELY not created as tickets the
+ * way criteria are: a ticket is work to do, while a failure condition is a state to stay out of, and minting
+ * "tickets" nobody can ever close would make the board lie. NOTHING here is mandatory — a PRD without
+ * failure_conditions renders "_(not specified)_" like any other absent section and no existing run changes
+ * behaviour.
+ *
  * CLI:
  *   node forge-prd.cjs render '<prd-json>'
  *     -> prints the rendered markdown to stdout. DRY — never writes anything.
@@ -44,14 +59,22 @@ const SECTION_ORDER = [
   ['Goal', 'goal'], ['Users', 'users'], ['Problem', 'problem'], ['Solution', 'solution'],
   ['Modules', 'modules'], ['User Stories', 'user_stories'], ['MVP Scope', 'mvp_scope'],
   ['Non-Goals', 'non_goals'], ['Architecture', 'architecture'], ['Risks', 'risks'],
-  ['Acceptance Criteria', 'acceptance_criteria'], ['Test Plan', 'test_plan'], ['Roadmap', 'roadmap'],
+  ['Acceptance Criteria', 'acceptance_criteria'],
+  // directly after the criteria it mirrors — a reader who has just read what must be true reads what must
+  // never be true in the same breath, which is the whole point of writing the failure side down
+  ['Failure Conditions', 'failure_conditions'],
+  ['Test Plan', 'test_plan'], ['Roadmap', 'roadmap'],
 ];
+/** ITEM_SECTIONS — sections whose entries are id-bearing items rather than free prose, with the id PREFIX
+ *  each one defaults to. Kept as data so the renderer treats criteria and failure conditions identically
+ *  (they are the two halves of one spec) and so a third such section is one line, not a copied branch. */
+const ITEM_SECTIONS = { acceptance_criteria: 'ac-', failure_conditions: 'fc-' };
 const NOT_SPECIFIED = '_(not specified)_';
 
-function renderCriterion(c, idx) {
+function renderCriterion(c, idx, prefix) {
   if (typeof c === 'string') { const s = c.trim(); return '- ' + (s || '(empty criterion)'); }
   if (c && typeof c === 'object') {
-    const id = c.id || ('ac-' + (idx + 1));
+    const id = c.id || ((prefix || 'ac-') + (idx + 1));
     const text = (typeof c.text === 'string' && c.text.trim()) || '(no text)';
     let line = '- **' + id + '** — ' + text;
     if (c.owner) line += ' _(owner: ' + c.owner + ')_';
@@ -61,9 +84,10 @@ function renderCriterion(c, idx) {
   return '- (invalid criterion)';
 }
 function renderSectionBody(key, value) {
-  if (key === 'acceptance_criteria') {
-    if (!Array.isArray(value) || !value.length) return NOT_SPECIFIED;
-    return value.map(renderCriterion).join('\n');
+  if (Object.prototype.hasOwnProperty.call(ITEM_SECTIONS, key)) {
+    const arr = Array.isArray(value) ? value : (value ? [value] : []);
+    if (!arr.length) return NOT_SPECIFIED;
+    return arr.map((c, i) => renderCriterion(c, i, ITEM_SECTIONS[key])).join('\n');
   }
   if (Array.isArray(value)) {
     if (!value.length) return NOT_SPECIFIED;

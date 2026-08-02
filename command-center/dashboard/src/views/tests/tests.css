@@ -1,0 +1,654 @@
+/*
+ * Tests & proof — view stylesheet.
+ *
+ * House rules held here:
+ *   - no raw hex, rgb() or hsl(). Every colour is a var(--forge-*) token.
+ *   - status is carried by the .fw-status token trio (value / style / width)
+ *     on top of the icon and the uppercase label the badge already renders.
+ *   - the ember accent appears nowhere in this file. Selection is drawn with
+ *     line-loud and the selected surface step, not with hue.
+ *   - the only animation is a chevron rotation, disabled under reduced motion.
+ *
+ * The column widths below are local layout properties, not colours. There is no
+ * token for "the width of a duration column", so they live here and retune once
+ * under the compact density hook.
+ */
+
+.fw-tests {
+  --fw-gate-col-status: 7rem;
+  --fw-gate-col-dur: 4.5rem;
+  --fw-gate-col-run: 9rem;
+  --fw-gate-col-ev: 3.5rem;
+  --fw-tests-reading: 74ch;
+
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  /* The view owns its background so sticky chrome inside it never mismatches. */
+  background: var(--forge-color-bg);
+}
+
+:root[data-density='compact'] .fw-tests {
+  --fw-gate-col-status: 6.5rem;
+  --fw-gate-col-dur: 4rem;
+  --fw-gate-col-run: 8.5rem;
+  --fw-gate-col-ev: 3.25rem;
+}
+
+/* ============================================================ page header */
+
+.fw-tests__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--fw-gap);
+  flex: none;
+  padding: var(--fw-gutter);
+  padding-block-end: var(--fw-gutter-tight);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-tests__title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-tests__h1 {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+.fw-tests__lede {
+  max-inline-size: 62ch;
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-tests__toolbar {
+  padding-inline: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ============================================================== view body */
+
+.fw-tests__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-section-gap);
+  padding: var(--fw-gutter);
+}
+
+.fw-tests__panel {
+  flex: none;
+  /* Keeps a selected row or a wide console block inside the panel radius. */
+  overflow: hidden;
+}
+
+/* ============================================================ summary strip
+   Restrained typography: a value and a label, separated by hairlines. No
+   cards, no tiles, no dials.
+   ========================================================================= */
+
+.fw-tests__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--forge-space-2) 0;
+  padding: var(--fw-panel-pad);
+  padding-block-end: var(--forge-space-3);
+}
+
+.fw-tests__stat {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--forge-space-1);
+  padding-inline: var(--forge-space-5);
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-tests__stat:first-child {
+  padding-inline-start: 0;
+  border-inline-start: 0;
+}
+
+.fw-tests__stat-value {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tests__stat--quiet .fw-tests__stat-value {
+  color: var(--forge-color-text-muted);
+  font-weight: var(--forge-weight-regular);
+}
+
+.fw-tests__stat-label {
+  white-space: nowrap;
+}
+
+/* ============================================================== gate board */
+
+.fw-gates {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.fw-gates__legend {
+  display: grid;
+  grid-template-columns:
+    var(--fw-gate-col-status)
+    minmax(0, 1fr)
+    max-content
+    var(--forge-icon-md);
+  align-items: center;
+  gap: var(--forge-space-3);
+  padding-inline: var(--fw-panel-pad);
+  padding-block: var(--forge-space-2);
+  border-block: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-gates__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fw-gate {
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  /*
+   * The status treatment tokens do real work here: width and style differ per
+   * status, so a row is readable with the colour removed entirely.
+   */
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+}
+
+.fw-gate:last-child {
+  border-block-end: 0;
+}
+
+.fw-gate[data-selected='true'] {
+  background: var(--forge-color-selected);
+  border-inline-start-color: var(--fw-status-color);
+}
+
+.fw-gate__head {
+  display: grid;
+  grid-template-columns:
+    var(--fw-gate-col-status)
+    minmax(0, 1fr)
+    max-content
+    var(--forge-icon-md);
+  align-items: center;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--fw-panel-pad);
+  padding-block: var(--forge-space-2);
+  text-align: start;
+  cursor: pointer;
+  color: inherit;
+}
+
+.fw-gate__head:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-gate__badge {
+  display: inline-flex;
+  min-inline-size: 0;
+}
+
+.fw-gate__name {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-gate__meta {
+  display: grid;
+  grid-template-columns: var(--fw-gate-col-dur) var(--fw-gate-col-run) var(--fw-gate-col-ev);
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-gate__cell {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  white-space: nowrap;
+}
+
+.fw-gate__cell-icon {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-gate__chev {
+  justify-self: end;
+  color: var(--forge-color-text-faint);
+  transition: transform var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-gate__head[aria-expanded='true'] .fw-gate__chev {
+  transform: rotate(180deg);
+}
+
+/* ------------------------------------------------------------ gate output */
+
+.fw-gate__output {
+  padding-inline: var(--fw-panel-pad);
+  padding-block-end: var(--forge-space-4);
+}
+
+.fw-gate__output-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding-block: var(--forge-space-2);
+}
+
+.fw-gate__pre {
+  margin: 0;
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  /* Wide console lines scroll inside this block, never the page. */
+  white-space: pre;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  tab-size: 2;
+}
+
+/* ============================================================ proof ledger */
+
+.fw-proof {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.fw-proof__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--fw-gap);
+  padding: var(--fw-panel-pad);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-proof__filter {
+  flex: none;
+}
+
+.fw-proof__select {
+  block-size: var(--fw-control-h-sm);
+  min-inline-size: 12rem;
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-xs);
+  cursor: pointer;
+}
+
+.fw-proof__select:hover {
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-proof__count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- the table */
+
+.fw-proof__scroll {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.fw-proof__table {
+  inline-size: 100%;
+  min-inline-size: 62rem;
+  border-collapse: collapse;
+  font-size: var(--forge-text-sm);
+}
+
+.fw-proof__thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--forge-z-base);
+  padding-inline: var(--forge-space-3);
+  padding-block: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.fw-proof__group {
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-inline-start: var(--forge-border-hair) solid transparent;
+}
+
+/*
+ * Verdict has no --forge-verdict-* token trio, so it borrows the closest
+ * status treatments: completed for accepted, failed for rejected, waiting for
+ * pending. The border style and width differ per verdict, so the row still
+ * reads correctly in greyscale.
+ */
+.fw-proof__group[data-verdict='accepted'] {
+  --fw-verdict-color: var(--forge-status-completed);
+  --fw-verdict-line: var(--forge-status-completed-line);
+  --fw-verdict-style: var(--forge-status-completed-style);
+  --fw-verdict-width: var(--forge-status-completed-width);
+}
+
+.fw-proof__group[data-verdict='rejected'] {
+  --fw-verdict-color: var(--forge-status-failed);
+  --fw-verdict-line: var(--forge-status-failed-line);
+  --fw-verdict-style: var(--forge-status-failed-style);
+  --fw-verdict-width: var(--forge-status-failed-width);
+}
+
+.fw-proof__group[data-verdict='pending'] {
+  --fw-verdict-color: var(--forge-status-waiting);
+  --fw-verdict-line: var(--forge-status-waiting-line);
+  --fw-verdict-style: var(--forge-status-waiting-style);
+  --fw-verdict-width: var(--forge-status-waiting-width);
+}
+
+.fw-proof__group[data-verdict='rejected'] {
+  border-inline-start: var(--fw-verdict-width) var(--fw-verdict-style) var(--fw-verdict-line);
+}
+
+.fw-proof__group[data-selected='true'] {
+  background: var(--forge-color-selected);
+  border-inline-start: var(--forge-border-thick) solid var(--forge-color-line-loud);
+}
+
+.fw-proof__row {
+  cursor: pointer;
+}
+
+.fw-proof__row:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-proof__cell {
+  padding-inline: var(--forge-space-3);
+  padding-block: var(--forge-space-2);
+  vertical-align: baseline;
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-proof__cell--time,
+.fw-proof__cell--verdict {
+  white-space: nowrap;
+}
+
+.fw-proof__cell--command {
+  max-inline-size: 26rem;
+  font-size: var(--forge-text-xs);
+}
+
+.fw-proof__none {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-proof__claim {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  text-align: start;
+  cursor: pointer;
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-snug);
+}
+
+.fw-proof__claim:hover .fw-proof__claim-text {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.fw-proof__chev {
+  flex: none;
+  align-self: center;
+  color: var(--forge-color-text-faint);
+  transition: transform var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-proof__claim[aria-expanded='true'] .fw-proof__chev {
+  transform: rotate(180deg);
+}
+
+.fw-proof__claim-text {
+  min-inline-size: 0;
+}
+
+/* -------------------------------------------- the reason (the main event) */
+
+.fw-proof__detail {
+  padding: 0;
+}
+
+.fw-proof__detail-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin-inline: var(--forge-space-3);
+  margin-block-end: var(--forge-space-3);
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border-inline-start: var(--fw-verdict-width, var(--forge-border-thick))
+    var(--fw-verdict-style, solid) var(--fw-verdict-color, var(--forge-color-line-strong));
+  border-radius: 0 var(--forge-radius-md) var(--forge-radius-md) 0;
+  background: var(--forge-color-surface-2);
+}
+
+.fw-proof__reason {
+  max-inline-size: var(--fw-tests-reading);
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text);
+}
+
+.fw-proof__detail-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-proof__note {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-3) var(--fw-panel-pad);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-proof__note-icon {
+  flex: none;
+}
+
+/* ================================================================= verdict */
+
+.fw-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding: 2px var(--forge-space-2);
+  border: var(--fw-verdict-width, var(--forge-border-hair)) var(--fw-verdict-style, solid)
+    var(--fw-verdict-line, var(--forge-color-line));
+  border-radius: var(--forge-radius-sm);
+  color: var(--fw-verdict-color, var(--forge-color-text-secondary));
+  white-space: nowrap;
+}
+
+.fw-verdict__icon {
+  flex: none;
+}
+
+.fw-verdict__label {
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+/* ============================================================== responsive
+   Below the breakpoint the gate row drops its column grid and the ledger
+   becomes stacked cards. Neither ever pushes the page sideways.
+   ========================================================================= */
+
+@media (max-width: 60rem) {
+  .fw-gates__legend {
+    display: none;
+  }
+
+  .fw-gate__head {
+    grid-template-columns: minmax(0, 1fr) var(--forge-icon-md);
+    grid-template-areas:
+      'name  chev'
+      'badge chev'
+      'meta  chev';
+    row-gap: var(--forge-space-1);
+    align-items: center;
+  }
+
+  .fw-gate__badge {
+    grid-area: badge;
+  }
+
+  .fw-gate__name {
+    grid-area: name;
+  }
+
+  .fw-gate__meta {
+    grid-area: meta;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--forge-space-1) var(--forge-space-4);
+  }
+
+  .fw-gate__chev {
+    grid-area: chev;
+    align-self: center;
+  }
+}
+
+@media (max-width: 48rem) {
+  .fw-proof__scroll {
+    overflow-x: visible;
+  }
+
+  .fw-proof__table,
+  .fw-proof__group,
+  .fw-proof__row,
+  .fw-proof__detail-row,
+  .fw-proof__cell,
+  .fw-proof__detail {
+    display: block;
+    inline-size: auto;
+    min-inline-size: 0;
+    max-inline-size: none;
+  }
+
+  .fw-proof__thead {
+    display: none;
+  }
+
+  .fw-proof__group {
+    margin-block-end: var(--forge-space-3);
+    border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+    border-radius: var(--forge-radius-md);
+    background: var(--forge-color-surface-2);
+  }
+
+  .fw-proof__group[data-verdict='rejected'] {
+    border-inline-start: var(--fw-verdict-width) var(--fw-verdict-style) var(--fw-verdict-line);
+  }
+
+  .fw-proof__cell {
+    display: flex;
+    align-items: baseline;
+    gap: var(--forge-space-3);
+    padding-block: var(--forge-space-1);
+  }
+
+  .fw-proof__cell::before {
+    content: attr(data-label);
+    flex: none;
+    inline-size: 9rem;
+    font-family: var(--forge-font-mono);
+    font-size: var(--forge-text-2xs);
+    letter-spacing: var(--forge-tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--forge-color-text-faint);
+  }
+
+  .fw-proof__cell--claim {
+    padding-block-start: var(--forge-space-3);
+  }
+
+  .fw-proof__cell--claim::before {
+    display: none;
+  }
+
+  .fw-proof__cell--verdict {
+    padding-block-end: var(--forge-space-3);
+  }
+
+  .fw-proof__detail-inner {
+    margin-inline: var(--forge-space-3);
+  }
+}
+
+/* ========================================================= reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-gate__chev,
+  .fw-proof__chev {
+    transition: none;
+  }
+}

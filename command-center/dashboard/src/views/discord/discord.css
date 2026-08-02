@@ -1,0 +1,297 @@
+/*
+ * DiscordView — the Discord↔Forge remote-control bot tab (WP-D2).
+ *
+ * House rules held here, same as every other per-view stylesheet:
+ *   - no raw hex, rgb() or hsl(). Every colour is a var(--forge-*) token.
+ *   - status is never carried by colour alone — the Present/Missing env-key chip
+ *     is told apart by icon + text + a dashed border on Missing, mirroring
+ *     agents.css's own `.fw-agents-chip[data-live='dispatched']` dashed treatment
+ *     rather than inventing a new hue signal.
+ *   - `.fw-discord__row` / `__row-text` / `__row-label` / `__row-hint` /
+ *     `__row-control` mirror settings.css's own `.fw-settings__row*` family
+ *     structurally (same gap/min-block-size/border rhythm) — a fresh copy under
+ *     this view's own prefix, not a shared import, matching this codebase's
+ *     established per-view CSS convention.
+ */
+
+.fw-discord {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding: var(--fw-gutter);
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ head */
+
+.fw-discord__head {
+  flex: none;
+  min-inline-size: 0;
+}
+
+.fw-discord__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-discord__title {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-discord__subtitle {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+/* ------------------------------------------------------------------ body */
+
+/*
+ * MEASURED bug (WP-D2, real Playwright probe against a fixture-backed render — see this WP's
+ * report for the getBoundingClientRect() evidence): `.fw-discord__body` used to be
+ * `display:flex; flex-direction:column;` AND the `fw-scroll` overflow:auto container on the SAME
+ * element. Under a definite ancestor height, flexbox's default `flex-shrink:1` silently compresses
+ * a flex item (a `<Panel>`) below its real content height to fit the container — and because
+ * `.fw-panel` is `overflow:visible`, the compressed panel's own content spilled out and bled onto
+ * the panel stacked after it (visually confirmed: a Panel's `scrollHeight` measured ~300px taller
+ * than its `offsetHeight`). `.fw-settings__content` / `.fw-tasks__body` avoid this by keeping the
+ * `fw-scroll` element a PLAIN block container (never itself `display:flex`) and doing the actual
+ * flex-column stacking one level deeper, in a nested, unconstrained wrapper — `.fw-discord__panels`
+ * below mirrors that exact nesting.
+ */
+.fw-discord__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-discord__panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  min-inline-size: 0;
+}
+
+.fw-discord__transport-error,
+.fw-discord__alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  flex: none;
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-md);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-discord__pending {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  margin-block-end: var(--forge-space-2);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+/* ------------------------------------------------------------------ rows */
+
+.fw-discord__rows {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.fw-discord__row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-4);
+  min-block-size: var(--forge-control-xl);
+  padding-block: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-discord__row + .fw-discord__row {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+/*
+ * MEASURED bug (WP-D2, real Playwright probe at 768px): this used to be `flex: 1 1 auto` — a
+ * two-word label ("Log file") shared the flex-grow priority with the long-value control side and
+ * lost the width tug-of-war, wrapping onto two lines even though the row had plenty of width.
+ * A fixed cap gives the label column a stable, predictable width (never wrapping a short label)
+ * while the control side (below) takes the rest and wraps its own long value via
+ * `overflow-wrap: anywhere` on `.fw-discord__row-path`.
+ */
+.fw-discord__row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 0 0 auto;
+  max-inline-size: 11rem;
+  min-inline-size: 0;
+}
+
+.fw-discord__row-label {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+  white-space: nowrap;
+}
+
+.fw-discord__row-hint {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-discord__row-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.fw-discord__row-path {
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+
+/* -------------------------------------------------------------- env keys */
+
+.fw-discord__env-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-discord__env-item {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-1) var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.fw-discord__env-name {
+  max-inline-size: 16rem;
+}
+
+.fw-discord__env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  padding-inline: var(--forge-space-1);
+  block-size: var(--forge-control-xs);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xs);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-discord__env-chip.is-missing {
+  border-style: dashed;
+}
+
+/* ---------------------------------------------------------------- health */
+
+.fw-discord__health-empty {
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-discord__health-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-discord__health-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--forge-space-3);
+  padding-block: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-discord__health-item + .fw-discord__health-item {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-discord__health-key {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-discord__health-value {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 60%;
+  overflow-wrap: anywhere;
+  text-align: end;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+/* ---------------------------------------------------------------- narrow */
+
+@media (max-width: 620px) {
+  .fw-discord__row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--forge-space-2);
+  }
+
+  .fw-discord__row-text {
+    max-inline-size: 100%;
+  }
+
+  .fw-discord__row-control {
+    justify-content: flex-start;
+    inline-size: 100%;
+  }
+
+  .fw-discord__row-path {
+    text-align: start;
+  }
+
+  .fw-discord__health-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--forge-space-1);
+  }
+
+  .fw-discord__health-value {
+    max-inline-size: 100%;
+    text-align: start;
+  }
+}

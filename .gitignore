@@ -45,3 +45,7 @@ NVIDIA Build and NIM Model Mapping for Permanent Forge Agent Roles.pdf
 .env.forge-tmp
 .claude/.forge-setup.json
 .forge-global.json
+
+# Derived, local-only: the tool-index is rebuilt from your own events.jsonl. A committed copy would
+# publish local run text and go stale the moment you run anything.
+.claude/forge-index/

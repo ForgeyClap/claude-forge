@@ -84,7 +84,7 @@ function resolveEntityFile(store, id) {
 // redaction (tickets/artifacts/prd/mindmaps), so completeness here is defense-in-depth for the dashboard.
 const SECRET_PATTERNS = [
   /nvapi-[A-Za-z0-9_-]+/g,                                            // NVIDIA Build/NIM key
-  /sk-[A-Za-z0-9_-]{20,}/g,                                           // OpenAI-style secret key (hyphen)
+  /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/g,                           // OpenAI-style secret key (hyphen) — boundary-anchored: no match mid-word ("task-orchestrator…" false positives, fix 2026-07-25); real keys (after quote/space/=/start) still match
   /sk_(?:live|test)_[A-Za-z0-9]{10,}/g,                              // Stripe secret key (underscore)
   /rk_(?:live|test)_[A-Za-z0-9]{10,}/g,                              // Stripe restricted key
   /gh[oprsu]_[A-Za-z0-9]{20,}/g,                                      // GitHub tokens (ghp_/gho_/ghr_/ghs_/ghu_)

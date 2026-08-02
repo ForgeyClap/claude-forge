@@ -1,0 +1,67 @@
+{
+  "_doc": "Forge V2 WAVE C / C5 (2026-07-18) — the SINGLE source of truth for the canonical, ORDERED per-run checklist. Read only via .claude/forge-bin/forge-orchestrate.cjs (plan()/audit()) — no other file may re-derive this ordering or a parallel step list (same 'single source of truth, no parallel logic' discipline hard-gates.json/forge-actiongate.cjs and FORGE_STANDING_RULES.json/forge-standing.cjs already established). Advisory/loud, not a hook — matches this project's light-security governance (CLAUDE.md: 'no mandatory security gates'): a skipped or out-of-order step is SURFACED, never silently blocked. Directly answers the 'a check was silently skipped / doctor said 10/10 but a step was actually missed' complaint by making step completion PROVABLE from real logged events.jsonl content instead of trusted from a self-report.\n\nSTEP SHAPE: { id, label, required, produces_event, match? }. `produces_event` is the event_type (string) or event_types (array of strings, any-of) that forge-dashboard/log-event.cjs's KNOWN_EVENT_TYPES already registers — this file invents NO new event_type name; a step with no realistic 1:1 event is still given the closest honest real event, and any disambiguation need is expressed via the optional `match: {field, includes}` (case-insensitive substring match against that event's field) rather than inventing a new event_type. A step is considered to have RUN when at least one logged event in the run matches its event_type(s) AND its `match` condition (if any) AND — the 'required-evidence' rule — is not itself marked _forge_verify.proof_verified:false by log-event.cjs's own CONTENT ORACLE (a claimed pass with disproven evidence never counts as a completed step).\n\nHONEST GAPS (documented, not hidden): (1) the 'intake' step's only real signal is a forge-intake.cjs agent_note — disambiguated via match.includes:'forge-intake' on the note text, since agent_note is otherwise used for many unrelated notes; a run that logs an unrelated agent_note containing the literal substring 'forge-intake' would false-positive (considered acceptable — no dedicated event_type exists for intake yet, a real future improvement would be a registered intake_completed event). (2) the 'update-memory' step's ledger half (FORGE_AGENT_LEDGER.md) has no dedicated event_type — only the memory_updated half is checked; a run that updates the ledger file without also logging memory_updated will show this step as skipped even though the ledger was updated (favors under-claiming over over-claiming, matching this project's honesty-core bias). (3) 'route' and 'dispatch' share no built-in ordering enforcement beyond audit()'s general out-of-order detection — a route event logged AFTER a dispatch event for the SAME run is exactly the kind of drift audit() is built to catch. (4) 'arm-manifest' (added 2026-08-01) is the ONLY step deliberately marked required:false. It was added because a measurement found 0 manifest.json files across 32 run directories: forge-manifest.cjs::arm() was fully built and tested, but no step here ever told a run to call it, so /forge resume, forge-briefing.cjs and — most importantly — forge-manifest.cjs::waves(), the MECHANICAL guarantee behind the owner's 'one writer per hotspot at a time' HARD MUST, all ran on nothing. It sits between 'route' and 'dispatch' because arming BEFORE dispatch is the invariant (the narrowed_prompt/deps must be recorded before the work goes out), and audit()'s out-of-order detection now catches a manifest_armed logged after the first agent_started. It is advisory rather than required so that neither the 32 historical runs nor a trivial single-package run is retroactively reported as failing a REQUIRED step — a skipped advisory step still appears BY NAME in audit()'s `skipped` list (visible, never silent) but does not flip the audit exit code. Its produces_event, manifest_armed, is an event type log-event.cjs already registers and forge-verify.cjs already treats as a run-level one-shot fact — no new event_type is invented here either; arm()'s own --log-event flag now emits it in the same act as the write, so the manifest and its proof can no longer disagree.",
+  "version": 1,
+  "steps": [
+    {
+      "id": "read-memory",
+      "label": "Read project memory (FORGE_PROJECT_PROFILE.md / FORGE_MEMORY.md / FORGE_TASK_HISTORY.md / FORGE_AGENT_LEDGER.md) before routing",
+      "required": true,
+      "produces_event": ["memory_loaded", "project_scanned"]
+    },
+    {
+      "id": "load-owner-prefs",
+      "label": "Load owner-profile prefs (forge-prefs.cjs) + active standing-rules (forge-standing.cjs) and emit the applied-prefs ECHO (Step 0-owner, precedence.md order)",
+      "required": true,
+      "produces_event": "owner_prefs_loaded"
+    },
+    {
+      "id": "autonomy-decide",
+      "label": "Decide continue-within-mission autonomy (forge-autonomy.cjs::decide()), always deferring to the live hard-gate classifier first",
+      "required": true,
+      "produces_event": "decision_logged"
+    },
+    {
+      "id": "intake",
+      "label": "Run Prompt Master intake (forge-intake.cjs) and capture the owner's real goal before any team is spawned",
+      "required": true,
+      "produces_event": "agent_note",
+      "match": { "field": "note", "includes": "forge-intake" }
+    },
+    {
+      "id": "route",
+      "label": "Classify domain + complexity and select the team (forge-router SKILL, + domain-presets where applicable)",
+      "required": true,
+      "produces_event": "agent_selected"
+    },
+    {
+      "id": "arm-manifest",
+      "label": "ARM the run's dispatch manifest BEFORE any work package goes out (node .claude/forge-bin/forge-manifest.cjs arm --run <run_id> --wps <file.json> --log-event) so wp_id/agent/narrowed_prompt/deps are recorded, /forge resume can re-dispatch only the unfinished work, and forge-manifest.cjs::waves() can compute a one-writer-per-hotspot dispatch order instead of the Lead judging it by eye",
+      "required": false,
+      "produces_event": "manifest_armed"
+    },
+    {
+      "id": "dispatch",
+      "label": "Dispatch the selected team as real Agent-tool subagents (REAL AGENTS ONLY)",
+      "required": true,
+      "produces_event": ["agent_started", "subagent_started", "custom_subagent_created"]
+    },
+    {
+      "id": "verify",
+      "label": "Verify claimed work against real evidence — a check/quality-gate must carry required proof, not just a claim",
+      "required": true,
+      "produces_event": ["check_passed", "quality_gate_passed", "retest_completed"]
+    },
+    {
+      "id": "report",
+      "label": "Generate the final, honest forge-report",
+      "required": true,
+      "produces_event": "report_generated"
+    },
+    {
+      "id": "update-memory",
+      "label": "Update project memory + the agent activity ledger with what actually happened",
+      "required": true,
+      "produces_event": "memory_updated"
+    }
+  ]
+}

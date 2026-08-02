@@ -1,0 +1,40 @@
+{
+  "chars_per_token": 4,
+  "max_skill_depth": 8,
+  "thresholds": {
+    "post_growth_pct": 10,
+    "post_growth_min_tokens": 50,
+    "total_growth_pct": 5,
+    "total_growth_min_tokens": 200
+  },
+  "paths": {},
+  "baseline": {
+    "generated_at": "2026-08-01T11:51:32.566Z",
+    "chars_per_token": 4,
+    "max_skill_depth": 8,
+    "estimate_note": "ESTIMATE ONLY: tokens are characters / chars_per_token. No tokenizer ran — these are not exact token counts. Calibrate against a real /context reading before treating any of them as a hard budget.",
+    "total_approx_tokens": 33262,
+    "total_chars": 133045,
+    "posts": {
+      "global_claude_md": 3595,
+      "include:FRONTEND_WEBSITE_RULES.md": 1263,
+      "include:ECC_GLOBAL_POLICY.md": 1299,
+      "include:CODEX_GLOBAL_POLICY.md": 1547,
+      "include:TOKEN_EFFICIENCY_GLOBAL_POLICY.md": 2155,
+      "include:FABLE5_SAFE_GLOBAL_POLICY.md": 3582,
+      "include:ANTHROPIC_CLAUDE_CODE_SETUP_PLUGIN_POLICY.md": 638,
+      "include:GLOBAL_RESEARCH_RECOVERY_POLICY.md": 1419,
+      "ecc_rules_common": 4193,
+      "workspace_claude_md": 321,
+      "project_claude_md": 1818,
+      "skill_catalog_project": 2982,
+      "skill_catalog_global": 6748,
+      "skill_catalog_plugins": 1705
+    },
+    "skill_sources": {
+      "skill_catalog_project": 57,
+      "skill_catalog_global": 109,
+      "skill_catalog_plugins": 40
+    }
+  }
+}

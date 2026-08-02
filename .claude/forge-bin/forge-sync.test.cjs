@@ -78,6 +78,57 @@ function makeProject(root, name, doctorExit) {
   if (doctorExit != null) writeDoctorStub(p, doctorExit);
   return p;
 }
+
+// ---- section 63 (wp4 canary fix) helpers ----
+// writeStubLogEvent — a MINIMAL, fully hermetic stand-in for forge-dashboard/log-event.cjs: same CLI shape
+// (<run_id> <event_type> [json]) and the same "resolve forge-runs/ relative to the SCRIPT'S OWN location, not
+// cwd" contract seedCanaryRun's doc comment relies on, but WITHOUT the real file's strict-mode vocabulary
+// machinery — this section is testing seedCanaryRun's OWN mechanics (does it spawn the right command, does it
+// report ok based on the real exit code, does the resulting events.jsonl really land under the JUST-SYNCED
+// project's own forge-runs/), not re-testing log-event.cjs itself (that has its own dedicated test file).
+function writeStubLogEvent(dashboardDir) {
+  fs.mkdirSync(dashboardDir, { recursive: true });
+  const src = [
+    '#!/usr/bin/env node',
+    'var fs = require("fs"), path = require("path");',
+    'var CLAUDE_DIR = path.resolve(__dirname, "..");',
+    'var args = process.argv.slice(2);',
+    'var runId = args[0], eventType = args[1];',
+    'if (!runId || !eventType) { console.error("run_id/event_type required"); process.exit(1); }',
+    'var extra = {};',
+    'if (args[2]) { try { extra = JSON.parse(args[2]); } catch (e) { console.error("bad json"); process.exit(1); } }',
+    'var ev = Object.assign({ run_id: runId, event_type: eventType, timestamp: new Date().toISOString() }, extra);',
+    'var runDir = path.join(CLAUDE_DIR, "forge-runs", runId);',
+    'fs.mkdirSync(runDir, { recursive: true });',
+    'fs.appendFileSync(path.join(runDir, "events.jsonl"), JSON.stringify(ev) + "\\n");',
+    'process.exit(0);',
+  ].join('\n');
+  fs.writeFileSync(path.join(dashboardDir, 'log-event.cjs'), src, 'utf8');
+}
+// writeRequiresRealRunDoctor — a small, deterministic repro of the EXACT real-world defect class (2026-07-26,
+// forge-capabilities-panel.test.cjs's genuine "at least one real run with events.jsonl exists" precondition):
+// reports tests.ok true ONLY when <root>/.claude/forge-runs/ contains at least one directory with a real
+// events.jsonl file. opts.alsoBreakNodeCheck simulates a template that is ALSO genuinely broken for an
+// unrelated reason, to prove seeding a run never masks a real regression.
+function writeRequiresRealRunDoctor(dir, opts) {
+  opts = opts || {};
+  fs.mkdirSync(dir, { recursive: true });
+  const src = [
+    '#!/usr/bin/env node',
+    'var fs = require("fs"), path = require("path");',
+    'var args = process.argv.slice(2);',
+    'var ri = args.indexOf("--root"); var root = ri !== -1 ? args[ri + 1] : process.cwd();',
+    'var runsDir = path.join(root, ".claude", "forge-runs");',
+    'var hasReal = false;',
+    'try { var ents = fs.readdirSync(runsDir, { withFileTypes: true }); hasReal = ents.some(function (e) { return e.isDirectory() && fs.existsSync(path.join(runsDir, e.name, "events.jsonl")); }); } catch (e) {}',
+    'var nodeCheckOk = ' + (opts.alsoBreakNodeCheck ? 'false' : 'true') + ';',
+    'var testsOk = hasReal;',
+    'var overallOk = nodeCheckOk && testsOk;',
+    'if (args.indexOf("--json") !== -1) { console.log(JSON.stringify({ ok: overallOk, checks: { node_check: { ok: nodeCheckOk, total: 50, failed: nodeCheckOk ? 0 : 1 }, tests: { ok: testsOk, suites: 1, passed: hasReal ? 5 : 4, failed: testsOk ? 0 : 1 } } })); }',
+    'process.exit(overallOk ? 0 : 1);',
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'forge-doctor.cjs'), src, 'utf8');
+}
 function makeRealProjectMarker(projectDir) { // findForgeProjects() only counts a dir with .claude/forge-dashboard
   fs.mkdirSync(path.join(projectDir, '.claude', 'forge-dashboard'), { recursive: true });
 }
@@ -2022,6 +2073,104 @@ console.log('\n62) MEDIUM FIX ROUND 2: regressionCheck flags a previously-green 
   const r62b = sync.safeSyncProject(tpl62b, p62b, { batchId: 'b62-control', nowIso: '2026-07-15T00:00:00.000Z', centralBackupRoot: null });
   t('62k CONTROL: no check vanished (identical check shape both times) -> sync still ok:true (NOT a false positive from this fix)', r62b.ok === true);
   t('62l CONTROL: FORGE_VERSION.json WAS stamped (legitimate sync completed, not blocked)', fs.existsSync(path.join(p62b, '.claude', 'FORGE_VERSION.json')));
+}
+
+// =====================================================================================
+// 63) WP4 FIX (2026-07-26): the dedicated canary was aborting stage 0 on EVERY sync-all run, regardless of
+//     template health. Real repro (see forge-sync.cjs's own 2026-07-26 header note): one genuine, non-
+//     fabricated doctor test has a real precondition of "at least one real run with events.jsonl exists in
+//     this project" — true for every actual Forge project, structurally impossible for a canary that is
+//     wiped and recreated empty on every single canary-init/sync-all run. seedCanaryRun (canary-only, opt-in
+//     via opts.seedRunForValidation) logs one honest run_started event into the canary's own just-synced
+//     forge-runs/ before validation runs. This section proves: (a) the mechanism itself, (b) the exact bug
+//     reproduces without the fix, (c) the fix resolves it, (d) the gate still bites a genuinely broken
+//     template even with the fix active, (e) end-to-end via runSyncAll's real stage-0 flow, and (f) real
+//     (non-canary) projects are completely unaffected — the same doctor requirement still fails them exactly
+//     as before, since they never receive opts.seedRunForValidation.
+// =====================================================================================
+console.log('\n63) WP4 FIX: dedicated canary seeds one real run before validation (forge-capabilities-panel-class precondition)');
+{
+  // 63a: no forge-dashboard/log-event.cjs synced at all -> clean, silent no-op (never crashes, never fabricates)
+  const p63a = makeProject(freshDir('t63a-root'), 'proj', null);
+  const r63a = sync.seedCanaryRun(p63a, 'b63a', '2026-01-01T00:00:00.000Z');
+  t('63a: ok:false, skipped:true when the project has no log-event.cjs', r63a.ok === false && r63a.skipped === true);
+  t('63a: no forge-runs dir was fabricated', !fs.existsSync(path.join(p63a, '.claude', 'forge-runs')));
+
+  // 63b: a real (stubbed but contract-faithful) log-event.cjs present -> seedCanaryRun writes ONE honest,
+  // real run_started event through it (never a hand-crafted events.jsonl line bypassing the tool itself).
+  const p63b = makeProject(freshDir('t63b-root'), 'proj', null);
+  writeStubLogEvent(path.join(p63b, '.claude', 'forge-dashboard'));
+  const r63b = sync.seedCanaryRun(p63b, 'b63b', '2026-01-01T00:00:00.000Z');
+  t('63b: seedCanaryRun reports ok:true', r63b.ok === true);
+  t('63b: exitCode 0 (log-event.cjs accepted the event)', r63b.exitCode === 0);
+  t('63b: runId is derived from batchId and sanitized to the allowed run_id charset', /^canary-init-b63b$/.test(r63b.runId));
+  const runsDir63b = path.join(p63b, '.claude', 'forge-runs');
+  const realRunIds63b = fs.existsSync(runsDir63b)
+    ? fs.readdirSync(runsDir63b, { withFileTypes: true }).filter((e) => e.isDirectory() && fs.existsSync(path.join(runsDir63b, e.name, 'events.jsonl'))).map((e) => e.name)
+    : [];
+  t('63b: a real run directory with a real events.jsonl now exists, matching the returned runId', realRunIds63b.length === 1 && realRunIds63b[0] === r63b.runId);
+  const ev63b = JSON.parse(fs.readFileSync(path.join(runsDir63b, r63b.runId, 'events.jsonl'), 'utf8').trim());
+  t('63b: the logged event is a real, honest run_started event (never a fabricated pass-claiming type)', ev63b.event_type === 'run_started' && ev63b.run_id === r63b.runId && ev63b.canary === true);
+
+  // 63c: REPRO — a canary-shaped fresh project (no prior forge-runs/ at all), synced WITHOUT
+  // opts.seedRunForValidation (mirrors the pre-fix code path / a real project's own syncOpts), against a
+  // doctor that has forge-capabilities-panel.test.cjs's exact real precondition -> validation genuinely
+  // fails, exactly matching the observed real-world "DEDICATED CANARY FAILED" symptom.
+  const tpl63 = freshDir('t63-tpl');
+  writeRequiresRealRunDoctor(path.join(tpl63, 'forge-bin'));
+  writeStubLogEvent(path.join(tpl63, 'forge-dashboard'));
+  const root63c = freshDir('t63c-root');
+  const p63c = makeProject(root63c, 'proj', null);
+  const r63c = sync.safeSyncProject(tpl63, p63c, { batchId: 'b63c', nowIso: '2026-01-01T00:00:00.000Z', allowDegraded: true });
+  t('63c REPRO: without seedRunForValidation, a fresh project with this real precondition doctor FAILS validation (the exact pre-fix bug)', r63c.ok === false);
+  t('63c REPRO: rolled back cleanly (no half-applied canary left behind)', r63c.rolledBack === true);
+  t('63c REPRO: no run was ever seeded (forge-runs stays absent — proves the failure is genuinely the missing precondition, not something else)', !fs.existsSync(path.join(p63c, '.claude', 'forge-runs')));
+
+  // 63d: FIX — the exact SAME setup, but WITH opts.seedRunForValidation:true (mirrors canarySyncOpts) -> the
+  // precondition is now honestly satisfied and validation PASSES unconditionally (not merely "exempted as
+  // pre-existing" — a real, evidence-backed green).
+  const root63d = freshDir('t63d-root');
+  const p63d = makeProject(root63d, 'proj', null);
+  const r63d = sync.safeSyncProject(tpl63, p63d, { batchId: 'b63d', nowIso: '2026-01-01T00:00:00.000Z', allowDegraded: true, seedRunForValidation: true });
+  t('63d FIX: WITH seedRunForValidation, the same doctor now PASSES validation', r63d.ok === true);
+  t('63d FIX: canarySeed reports ok:true', !!(r63d.canarySeed && r63d.canarySeed.ok === true));
+  t('63d FIX: validation.ok is a genuine, unconditional pass (not an alreadyRedSkipped exemption)', r63d.validation.ok === true && !r63d.outcome.alreadyRedSkipped);
+  t('63d FIX: FORGE_VERSION.json was stamped (the project is genuinely considered synced)', fs.existsSync(sync.versionFilePath(p63d)));
+
+  // 63e: GATE STILL BITES — WITH seedRunForValidation:true, a template that is ALSO genuinely broken for an
+  // unrelated reason (node_check hard-fails) still FAILS. Seeding a run must never become a blanket bypass.
+  const tpl63e = freshDir('t63e-tpl-broken');
+  writeRequiresRealRunDoctor(path.join(tpl63e, 'forge-bin'), { alsoBreakNodeCheck: true });
+  writeStubLogEvent(path.join(tpl63e, 'forge-dashboard'));
+  const root63e = freshDir('t63e-root');
+  const p63e = makeProject(root63e, 'proj', null);
+  const r63e = sync.safeSyncProject(tpl63e, p63e, { batchId: 'b63e', nowIso: '2026-01-01T00:00:00.000Z', allowDegraded: true, seedRunForValidation: true });
+  t('63e GATE STILL BITES: a genuinely broken template (unrelated node_check failure) still FAILS even with the run seeded', r63e.ok === false);
+  t('63e GATE STILL BITES: rolled back cleanly', r63e.rolledBack === true);
+  t('63e GATE STILL BITES: the run WAS seeded (proves this is a real regression, not the precondition gap)', !!(r63e.canarySeed && r63e.canarySeed.ok === true));
+
+  // 63f: END-TO-END via runSyncAll's REAL stage-0 (dedicated canary) flow — projects:[] so only stage 0 runs
+  // (no real project touched), proving the fix works through the actual production call path, not just
+  // safeSyncProject in isolation.
+  const root63f = freshDir('t63f-root');
+  const r63f = sync.runSyncAll(tpl63, root63f, { projects: [], batchId: 'b63f', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('63f END-TO-END: overall batch ok:true (stage 0 no longer aborts)', r63f.ok === true);
+  t('63f END-TO-END: dedicated canary itself is ok:true', r63f.dedicatedCanary.ok === true);
+  t('63f END-TO-END: dedicated canary carries a successful canarySeed', !!(r63f.dedicatedCanary.canarySeed && r63f.dedicatedCanary.canarySeed.ok === true));
+  t('63f END-TO-END: dedicated canary validation.ok is true', r63f.dedicatedCanary.validation.ok === true);
+
+  // 63g: REGRESSION SAFETY — a REAL (non-canary) project, synced through runSyncAll's own representative
+  // stage (plain syncOpts, no seedRunForValidation), is completely unaffected by this fix: the exact same
+  // "requires a real run" doctor still fails it exactly as it always would have, proving the seed is
+  // canary-exclusive and real projects' forge-runs/ history is never touched by this tool.
+  const root63g = freshDir('t63g-root');
+  const rep63g = makeProject(root63g, 'rep', null);
+  makeRealProjectMarker(rep63g);
+  const r63g = sync.runSyncAll(tpl63, root63g, { projects: [rep63g], batchId: 'b63g', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('63g REGRESSION SAFETY: dedicated canary still passes (seeded)', r63g.dedicatedCanary.ok === true);
+  t('63g REGRESSION SAFETY: batch aborts at the REPRESENTATIVE stage (real project never seeded, doctor genuinely fails it)', r63g.ok === false && r63g.aborted === true && r63g.stage === 'representative');
+  t('63g REGRESSION SAFETY: the representative result itself is not ok', r63g.projects.length === 1 && r63g.projects[0].ok === false);
+  t('63g REGRESSION SAFETY: the real project never had a run seeded into it', !fs.existsSync(path.join(rep63g, '.claude', 'forge-runs')));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

@@ -12,7 +12,7 @@ Turn Claude Code into a coordinated **team of agents** that builds, automates, r
 [![Node >=18](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](#requirements)
 [![GitHub stars](https://img.shields.io/github/stars/ForgeyClap/claude-forge?style=social)](https://github.com/ForgeyClap/claude-forge/stargazers)
 
-<sub>▶ `/forge build me a landing page` fans out a right-sized team while the localhost dashboard updates live — *animated demo (`screenshots/demo.gif`) recorded before launch.*</sub>
+<sub>▶ `/forge build me a landing page` fans out a right-sized team while the localhost dashboard updates live</sub>
 
 <br>
 
@@ -127,7 +127,7 @@ Honest and non-adversarial — only rows that actually ship.
 |---|---|
 | 🤖 **18 built-in agents** | 12 permanent Bosses (boss, head-chef, build, review, test, UI, SEO, search, security, integration, docs, skill) + 6 specialists — see [AGENTS.md](AGENTS.md) |
 | 🧠 **23 skills** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md) |
-| 📊 **Per-project dashboard** | isolated, localhost-only, shows *real* activity |
+| 📊 **Command Center dashboard** | one localhost app (`:4100`) that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |
 | 🪶 **Zero dependencies** | plain Node `.cjs` — no `npm install`, ever |
@@ -202,22 +202,21 @@ You pay through your existing Claude Code plan (no separate billing), and Forge 
 
 Keys are **optional** — Forge runs fine without any.
 
-<sub>*Screenshot of the `/setup-forge` Q&A + safe key flow added before launch → `screenshots/`.*</sub>
-
 ---
 
 ## 📊 The dashboard
 
-Each project gets its **own** local Control Center on a deterministic port (3737–3999):
+The **Forge Command Center** is the dashboard — one local app on `http://127.0.0.1:4100` that auto-discovers your Forge projects and shows strictly per-project data. It ships in `command-center/`:
 
 ```bash
-node .claude/forge-dashboard/server.cjs
-# prints the real http://localhost:<port>, exposes GET /api/health
+cd command-center/dashboard && npm install && npm run build   # build the SPA once
+cd ../.. && node command-center/gateway/supervisor.mjs        # start it (restarts the gateway if it dies)
+# then open http://127.0.0.1:4100 — GET /api/health must answer before you trust it
 ```
 
-It reads each run's event log **read-only** and shows **real activity only** — never fabricated, never shared, never global. It never reads another project's `.claude/`.
+The gateway is zero-dependency Node and is the **only** layer allowed to spawn the real `claude` CLI. Run events stay per-project: every run writes `.claude/forge-runs/<run_id>/events.jsonl` via `.claude/forge-dashboard/log-event.cjs`, and the Command Center reads those **read-only**. It shows **real activity only** — never fabricated, never shared across projects.
 
-<sub>*Dashboard screenshot added before launch → `screenshots/dashboard.png`.*</sub>
+> **The old per-project Control Center is retired.** `.claude/forge-dashboard/server.cjs` still exists and still works on an explicit `legacy dashboard` request, but nothing starts it automatically any more. Its `log-event.cjs` is *not* retired — that remains the run-event writer described above.
 
 ---
 

@@ -1,0 +1,8 @@
+{
+  "type": "audit-report",
+  "title": "WP0 audit-evidence (health + integrations + skills/agents)",
+  "path": "forge-runs/forge-2026-07-25-full-audit/artifacts/",
+  "agent": "orchestrator",
+  "summary": "3 audit-artifacts: wp0-health-report.md, wp0-integrations-report.md, wp0-skills-agents-report.md + wp0.1 inventaris in run-events",
+  "_stored": "2026-07-25T22:34:38.970Z"
+}

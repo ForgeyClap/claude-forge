@@ -61,7 +61,7 @@ Once the full system is installed in a project, `/forge <sub-command>` drives th
 
 | Sub-command | What it does |
 |---|---|
-| `/forge dashboard` | Start THIS project's Control Center (`node .claude/forge-dashboard/server.cjs`), health-check `GET /api/health`, and report the **real** `http://localhost:<port>`. Never claims a start it can't prove. |
+| `/forge dashboard` | Find/start the **Command Center** (`node command-center/gateway/supervisor.mjs`), health-check `GET http://127.0.0.1:4100/api/health`, and report `http://127.0.0.1:4100`. Never claims a start it can't prove. |
 | `/forge start` | Same as `dashboard`, then begin a new run. |
 | `/forge use` | Load project memory/profile, start (or show how to start) the dashboard, then continue the task. |
 | `/forge status` | Summarize project status, the latest run, and the dashboard URL (reads `FORGE_MEMORY.md` + `DASHBOARD_STATE.json` + newest `run.json`). |
@@ -69,7 +69,7 @@ Once the full system is installed in a project, `/forge <sub-command>` drives th
 | `/forge open-report` | Print this project's newest `final-report.md`. |
 
 > [!TIP]
-> Each project gets its **own** dashboard on its **own** deterministic port in **3737–3999** (derived from the project path, stored in `.claude/forge-dashboard/PORT`). Never a shared/global dashboard; Forge never reads another project's `.claude/`.
+> One Command Center on **127.0.0.1:4100** serves every project — it auto-discovers them and shows strictly per-project data. Run events stay per-project (`.claude/forge-runs/<run_id>/events.jsonl`, written by `.claude/forge-dashboard/log-event.cjs`). Forge never reads another project's `.claude/` for anything else. The retired per-project Control Center (ports 3737–3999) starts only on an explicit `legacy dashboard` request.
 
 ---
 
@@ -133,7 +133,7 @@ You don't have to type a slash command. These plain-language phrases activate Fo
 
 | Say | Effect |
 |---|---|
-| `start Forge dashboard` · `open Forge dashboard` | Start this project's Control Center, health-check it, report the real URL. |
+| `start Forge dashboard` · `open Forge dashboard` | Find/start the Command Center, health-check it, report the real URL. |
 
 </details>
 
@@ -155,7 +155,7 @@ You don't have to type a slash command. These plain-language phrases activate Fo
 
 ## Dashboard commands
 
-The Control Center is a zero-dependency Node server that reads each run's event log **read-only** and shows **real activity only**.
+The Command Center gateway is a zero-dependency Node server that reads each run's event log **read-only** and shows **real activity only**. (The retired per-project Control Center below still works on request.)
 
 ```bash
 # Start (foreground) — prints the real http://localhost:<port>
@@ -175,9 +175,9 @@ node .claude/forge-dashboard/log-event.cjs '<json>'
 
 | Endpoint / control | Purpose |
 |---|---|
-| `http://localhost:<port>/` | Live Control Center SPA (FLOW: Lead → Subagents → Merge → Codex → Final). |
+| `http://127.0.0.1:4100/` | Live Command Center SPA (projects, runs, agents, missions, proof). |
 | `GET /api/health` | Health probe — Forge never claims the dashboard is up unless this passes. |
-| `.claude/forge-dashboard/PORT` | This project's stable port (3737–3999, from the project path). |
+| `.claude/forge-dashboard/PORT` | Port of the RETIRED per-project Control Center (3737–3999) — only used by `legacy dashboard`. |
 | `start-forge-dashboard.bat` | Windows one-click start. |
 
 ---
@@ -191,7 +191,7 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 | Tool | Purpose | Example |
 |---|---|---|
 | `forge` | Dispatcher — routes to the sub-tools below. | `.\.claude\forge-bin\forge.ps1 dashboard` |
-| `forge-dashboard` | Start / health-check the Control Center. | `.claude\forge-bin\forge-dashboard.cmd` |
+| `forge-dashboard` | Start / health-check the Command Center. | `.claude\forge-bin\forge-dashboard.cmd` |
 | `forge-status` | Print project + latest-run status. | `bash .claude/forge-bin/forge-status.sh` |
 | `forge-runs` | List runs newest-first. | `npm run forge:runs` |
 | `forge-open-report` | Print the newest final report. | `npm run forge:open-report` |
@@ -206,11 +206,12 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 |---|---|---|
 | `forge-setup.cjs` | Onboarding + safe-key engine behind `/setup-forge`. Sub-actions: `status · guard · init-keys · place-keys · mark · self-heal · doctor · lang`. | `node .claude/forge-bin/forge-setup.cjs status --json` |
 | `forge-doctor.cjs` | **Self-test + leak scan** — `node --check` every source, run every test suite, verify the honesty gate, confirm the dashboard SPA is intact, scan tracked files for leaked secrets, validate agents. | `node .claude/forge-bin/forge-doctor.cjs` |
-| `forge-sync.cjs` | Safe installer / template sync — backup + canary + validation + rollback before touching a project file. | `node .claude/forge-bin/forge-sync.cjs` |
-| `forge-report.cjs` | Parse, validate, and ingest a dispatched agent's structured completion-report block. | `node .claude/forge-bin/forge-report.cjs` |
+| `forge-sync.cjs` | Safe installer / template sync — backup + canary + validation + rollback before touching a project file. Bare = `status`; use `install` to actually sync. | `node .claude/forge-bin/forge-sync.cjs status` |
+| `forge-report.cjs` | Parse, validate, and ingest a dispatched agent's structured completion-report block. Requires a subcommand. | `node .claude/forge-bin/forge-report.cjs validate <file>` |
 | `forge-verify.cjs` | The "verify-loop" — checks a DONE claim against the real `events.jsonl`; `--enforce` reopens mismatches. | `node .claude/forge-bin/forge-verify.cjs --run <run_id>` |
-| `forge-heartbeat.cjs` | Stall watchdog — flags an agent that started but has gone silent past a window. | `node .claude/forge-bin/forge-heartbeat.cjs <run_id>` |
-| `forge-intake.cjs` | Prompt-Master intake — renders the one big clarifying-question list before a build. | `node .claude/forge-bin/forge-intake.cjs` |
+| `forge-heartbeat.cjs` | Stall watchdog — flags an agent that started but has gone silent past a window. | `node .claude/forge-bin/forge-heartbeat.cjs check <run_id>` |
+| `forge-intake.cjs` | Prompt-Master intake — renders the one big clarifying-question list before a build. `--type` is required. | `node .claude/forge-bin/forge-intake.cjs --type website --task "<task>"` |
+| `forge-runcontract.cjs` | **Run-contract gate** — checks a run against `FORGE_HARD_RULES.json` before it may be called done. Exit 3 = NOT DONE (the listed rules are unfinished work). `--log-event` writes the `gate_evaluated` proof in the same act. | `node .claude/forge-bin/forge-runcontract.cjs check --run <run_id> --log-event` |
 | `usage-guard.cjs` | Subscription usage watchdog — reads the official Anthropic OAuth usage endpoint; pauses at a threshold. | `node .claude/forge-bin/usage-guard.cjs start` |
 
 ### `forge-setup.cjs` sub-actions (used by the wizard)

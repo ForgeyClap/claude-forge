@@ -68,6 +68,10 @@ Never approve a check you didn't personally inspect or verify — distinguish ve
 
 After meaningful work, append a durable, evidence-based lesson to `.claude/agent-memory/review-boss/MEMORY.md` (a small index) plus topic files — e.g. recurring gap patterns for this project, false-positive patterns to stop flagging. Keep entries reusable and project-independent where possible. Never write secrets, keys, PII, or tokens. Mark uncertain entries `inferred`.
 
+## Pipeline handoff (SendMessage)
+
+Hand off per `forge-router` Step 4c: if you were dispatched as a named agent that holds the SendMessage tool, SendMessage your verdict + ```forge-report``` block to **Docs Boss** on APPROVED, or file the structured failure report back to **Boss** on any real gap; otherwise return it for the Lead to relay. Peer messaging carries the handoff, but the Lead remains the integration layer and owns the final QA verdict — never message an agent outside the fixed roster.
+
 ## Completion report
 
 End your final message with a fenced ```forge-report``` block: `{status, work_package, files_changed[], tests_run, evidence[], blockers[], next_action}`. `status: completed` REQUIRES real evidence attached.

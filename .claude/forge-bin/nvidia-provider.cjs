@@ -17,11 +17,15 @@
  * CLI:
  *   node .claude/forge-bin/nvidia-provider.cjs health                 # connectivity check (GET /models)
  *   node .claude/forge-bin/nvidia-provider.cjs models [--verify]      # live model list; --verify = compare with capability matrix
- *   node .claude/forge-bin/nvidia-provider.cjs route <agent>          # resolve+validate agent -> nvidia model (agent-model-map)
- *   node .claude/forge-bin/nvidia-provider.cjs chat --role <role>|--model <id> --prompt "<text>" [--system "<text>"] [--max-tokens N]
+ *   node .claude/forge-bin/nvidia-provider.cjs route <agent> [--function <fn>] [--force-override]   # resolve+validate agent -> nvidia model
+ *                                            # (agent-model-map); --function overrides the model via function-model-fit.json. For a
+ *                                            # claudeWinsSkipNvidia agent the previewed "model" is null unless --force-override is passed
+ *                                            # (this is a PREVIEW nuance only — chat() itself is unaffected and still hard-blocks + requires
+ *                                            # a real --reason before ever calling NVIDIA for such an agent).
+ *   node .claude/forge-bin/nvidia-provider.cjs chat --role <role>|--model <id>|--function <fn> --prompt "<text>" [--system "<text>"] [--max-tokens N]
  *                                              [--agent <boss-slug>] [--force-override --reason "<why>"]
  *
- * Module API: require(...)  ->  { chat, health, listModels, routeFor, loadEnv, CONFIG }
+ * Module API: require(...)  ->  { chat, health, listModels, routeFor, resolveFunction, loadEnv, CONFIG }
  *
  * USAGE POLICY IS ENFORCED IN CODE (forced per owner decision 2026-07-08; was advisory-only before).
  * Pass `agent` (the Boss slug, e.g. "boss"/"build-boss") to chat()/route so the adapter can apply
@@ -29,11 +33,21 @@
  *   - claudeWinsSkipNvidia roles (boss, head-chef, review-boss, security-boss, integration-boss, ui-boss):
  *     the call is HARD-BLOCKED before any network request — {skipped:true, reason}. Override only with
  *     `forceOverride:true` + a non-empty `overrideReason` (CLI: --force-override --reason "..."), which
- *     is stamped `policyOverridden:true` on the result so it stays auditable, never silent.
+ *     is stamped `policyOverridden:true` on the result so it stays auditable, never silent. This block
+ *     fires BEFORE function-fit resolution, so passing --function never bypasses it (no loophole).
  *   - nvidiaForBulkOnly roles (docs-boss, seo-boss, search-boss, skill-boss, test-boss, build-boss):
  *     the call proceeds, stamped `bulkOffload:true`; a coding/coding-fast role additionally stamps
  *     `codeGateRequired:true` — Forge MUST route that output through the build+test gate before it counts.
  *   - No `agent` passed → unclassified, call proceeds unchanged (back-compat for manual/role-only calls).
+ *
+ * FUNCTION FIT (added 2026-07-26, WP-NVIDIA-FIT — owner directive: a Boss's bulk work must be routed by
+ * FUNCTION strength, not just its pre-wired NVIDIA role). Pass `func` (chat: --function <fn>, e.g.
+ * "code-draft"/"doc-draft"/"research-digest"/"data-extract"/"summarize"/"translate-rewrite"/"test-sketch")
+ * and the adapter resolves the model from `config/models/function-model-fit.json` instead of `role`,
+ * using the model judged (by real live probes) to actually be GOOD at that function. An unknown function
+ * key is a hard ERROR (never a silent default); a function with fit="none" (no model judged good enough)
+ * is HARD-SKIPPED like a policy-blocked call — Claude keeps that work rather than forcing a bad-fit model.
+ * `role`/`model` still work unchanged when `--function` is omitted (fully backward-compatible).
  */
 const fs = require('fs');
 const path = require('path');
@@ -42,6 +56,7 @@ const CLAUDE_DIR = path.resolve(__dirname, '..');
 const PROJECT_DIR = path.resolve(__dirname, '..', '..');
 const MATRIX_FILE = path.join(CLAUDE_DIR, 'config', 'models', 'model-capability-matrix.json');
 const MODEL_MAP_FILE = path.join(CLAUDE_DIR, 'config', 'agents', 'agent-model-map.json');
+const FUNCTION_FIT_FILE = path.join(CLAUDE_DIR, 'config', 'models', 'function-model-fit.json');
 
 // ---- env loader (simple KEY=VALUE; never logs values) ----
 // Precedence: real environment > project .env > GLOBAL ~/.claude/nvidia.env (user decision 2026-07-05:
@@ -67,6 +82,10 @@ loadEnv();
 function readJson(f, fallback) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; } }
 const MATRIX = readJson(MATRIX_FILE, { roles: {}, catalog: [], provider: {} });
 const MODEL_MAP = readJson(MODEL_MAP_FILE, { agents: {} });
+// Function-fit table (WP-NVIDIA-FIT 2026-07-26) — maps a bulk-work FUNCTION to the model judged (by live
+// probes, see the file's own evidence fields) to actually be good at it; independent of an agent's default
+// nvidia role so a Boss's bulk call can be routed by task-function instead of a flat per-Boss role.
+const FUNCTION_FIT = readJson(FUNCTION_FIT_FILE, { functions: {}, agentAllowedFunctions: {} });
 // usagePolicy sets (forced 2026-07-08) — the Claude-first / NVIDIA-bulk-only split, read from the
 // SAME file the "layout" table was generated from, so code and doc can never silently drift apart.
 const USAGE_POLICY = MODEL_MAP.usagePolicy || {};
@@ -165,20 +184,51 @@ function validateModel(role, model, warnings, label) {
     if (!needs.some((n) => cat.caps.includes(n))) warnings.push(label + ': model "' + model + '" lacks required capability [' + needs.join('|') + '] for role "' + role + '"');
   }
 }
-function routeFor(agent) {
+// Resolve a bulk-work FUNCTION (e.g. "code-draft", "data-extract") to the model judged good at it.
+// `fitMap` is injectable (defaults to the loaded FUNCTION_FIT) purely so tests can exercise the
+// unknown-function and no-fit-model branches deterministically without touching real config on disk.
+function resolveFunction(func, fitMap) {
+  const m = fitMap || FUNCTION_FIT;
+  const entry = (m.functions || {})[func];
+  if (!entry) return { error: 'unknown function "' + func + '" — see config/models/function-model-fit.json functions (' + Object.keys(m.functions || {}).join('|') + ')' };
+  if (!entry.model || entry.fit === 'none') return { skip: true, reason: 'function "' + func + '" has NO fit NVIDIA model (fit="' + (entry.fit || 'none') + '") — Claude keeps this work; never force a bad-fit model onto NVIDIA' };
+  return { model: entry.model, role: entry.role, fit: entry.fit };
+}
+// Codex F13: routeFor() is a PREVIEW of what chat() would actually do — it must not show a real
+// model for a claudeWinsSkipNvidia agent unless the caller explicitly passes forceOverride:true,
+// matching chat()'s own hard-block. This is a nuance in the PREVIEW's honesty, not a new bypass:
+// chat() itself is completely unchanged (it already enforces this, plus a mandatory overrideReason,
+// before ever calling NVIDIA). validateModel() still runs against the internally-resolved model
+// either way, so a broken/avoid-tier env override still warns even when the final `model` field is
+// nulled out for a blocked agent.
+function routeFor(agent, func, forceOverride) {
   const a = (MODEL_MAP.agents || {})[agent];
   if (!a) return { error: 'unknown agent "' + agent + '" — see config/agents/agent-registry.json' };
-  const primary = modelForRole(a.nvidia);
+  let nvidiaRoleUsed = a.nvidia;
+  let primary = modelForRole(a.nvidia);
   const fallback = modelForRole(a.nvidiaFallback);
   const warnings = [];
-  validateModel(a.nvidia, primary, warnings, 'primary');
+  let funcNote = null;
+  if (func) {
+    const fr = resolveFunction(func);
+    if (fr.error) return { error: fr.error, agent, func };
+    if (fr.skip) { funcNote = fr.reason; nvidiaRoleUsed = null; primary = null; }
+    else {
+      nvidiaRoleUsed = fr.role; primary = fr.model;
+      funcNote = 'function "' + func + '" resolves to nvidia role "' + fr.role + '" (fit=' + fr.fit + '), overriding this agent\'s default nvidia role "' + a.nvidia + '" for this call';
+    }
+    const allowedFns = (FUNCTION_FIT.agentAllowedFunctions || {})[agent];
+    if (Array.isArray(allowedFns) && !allowedFns.includes(func)) warnings.push('function "' + func + '" is not in agentAllowedFunctions for "' + agent + '" (advisory only — call still resolves; see function-model-fit.json)');
+  }
+  if (primary) validateModel(nvidiaRoleUsed, primary, warnings, 'primary');
   if (a.nvidiaFallback) validateModel(a.nvidiaFallback, fallback, warnings, 'fallback');
   const policy = policyFor(agent);
   const allowed = policy !== 'claude-first-skip';
   if (!allowed) warnings.push('usagePolicy.claudeWinsSkipNvidia: "' + agent + '" is Claude-first — NVIDIA calls for this agent are BLOCKED unless forceOverride is used with a reason.');
-  return { agent, claudeTier: a.claudeTier, nvidiaRole: a.nvidia, model: primary, fallbackModel: fallback, premium: a.premium, why: a.why, prohibited: a.prohibited || [], policy, allowed, warnings };
+  const blocked = !allowed && !forceOverride;
+  return { agent, claudeTier: a.claudeTier, nvidiaRole: nvidiaRoleUsed, model: blocked ? null : primary, fallbackModel: fallback, premium: a.premium, why: a.why, prohibited: a.prohibited || [], policy, allowed, func: func || null, funcNote, warnings };
 }
-async function chat({ role, model, prompt, system, maxTokens, agent, forceOverride, overrideReason }) {
+async function chat({ role, model, prompt, system, maxTokens, agent, func, forceOverride, overrideReason }) {
   // usagePolicy enforcement (forced 2026-07-08; hardened 2026-07-09) — checked BEFORE model resolution / any network call.
   const na = normAgent(agent);
   // close the asymmetric hole: a PASSED-but-unknown agent slug (typo of a real Boss) must ERROR, not
@@ -195,17 +245,29 @@ async function chat({ role, model, prompt, system, maxTokens, agent, forceOverri
       return { error: 'forceOverride requires a non-empty overrideReason (CLI: --reason "...") — silent policy bypass is not allowed', agent: na, policy };
     }
   }
-  const id = model || (role && modelForRole(role));
-  if (!id) return { error: 'no model resolved (pass --model <id> or --role ' + Object.keys(MATRIX.roles || {}).join('|') + ')' };
+  // Function-fit resolution (WP-NVIDIA-FIT 2026-07-26) — checked AFTER the usagePolicy skip-block above,
+  // so a claudeWinsSkipNvidia agent (boss/head-chef/review-boss/security-boss/integration-boss/ui-boss)
+  // stays hard-blocked no matter what --function is passed; there is no function-based bypass.
+  let funcResolved = null;
+  if (func) {
+    const fr = resolveFunction(func);
+    if (fr.error) return { error: fr.error, agent: na, func };
+    if (fr.skip) return { skipped: true, agent: na, func, functionUnfit: true, reason: fr.reason };
+    funcResolved = fr;
+  }
+  const id = model || (funcResolved && funcResolved.model) || (role && modelForRole(role));
+  if (!id) return { error: 'no model resolved (pass --model <id>, --function <fn>, or --role ' + Object.keys(MATRIX.roles || {}).join('|') + ')' };
+  const roleForGate = role || (funcResolved && funcResolved.role);
   const policyStamp = {};
+  if (func) policyStamp.func = func;
   if (policy === 'claude-first-skip') { policyStamp.policyOverridden = true; policyStamp.overrideReason = overrideReason; }
   else if (policy === 'nvidia-bulk-only') { policyStamp.bulkOffload = true;
-    // code-gate marker regardless of whether the caller used --role coding or --model <id> directly.
-    // Keyed on the ROLE or the AGENT's mapped codegen role (build-boss/test-boss use nvidia role "coding"),
-    // NOT on the model's raw caps — nano-30b is coding-capable but docs-boss uses it for prose (fix 2026-07-09).
+    // code-gate marker regardless of whether the caller used --role coding, --function <coding-family fn>, or --model <id> directly.
+    // Keyed on the ROLE (explicit or function-resolved) or the AGENT's mapped codegen role (build-boss/test-boss use nvidia role
+    // "coding"), NOT on the model's raw caps — nano-30b is coding-capable but docs-boss uses it for prose (fix 2026-07-09).
     const amap = na && (MODEL_MAP.agents || {})[na];
     const agentIsCodegen = !!(amap && (CODE_ROLES.has(amap.nvidia) || CODE_ROLES.has(amap.nvidiaFallback)));
-    if (CODE_ROLES.has(role) || agentIsCodegen) policyStamp.codeGateRequired = true; }
+    if (CODE_ROLES.has(roleForGate) || agentIsCodegen) policyStamp.codeGateRequired = true; }
   if (!hasKey()) return { mock: true, model: id, agent: na, policy, ...policyStamp, content: '[mock — no NVIDIA_API_KEY; no live call made. This is NOT a model response.]' };
   const body = {
     model: id,
@@ -220,7 +282,7 @@ async function chat({ role, model, prompt, system, maxTokens, agent, forceOverri
 }
 
 // Exported CONFIG is a REDACTED copy — the key never leaves this module (Fable security hardening).
-module.exports = { chat, health, listModels, routeFor, loadEnv, CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '' }, modelForRole, mask };
+module.exports = { chat, health, listModels, routeFor, resolveFunction, loadEnv, CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '' }, modelForRole, mask };
 
 // ---- CLI ----
 if (require.main === module) {
@@ -250,15 +312,15 @@ if (require.main === module) {
       return;
     }
     if (cmd === 'route') {
-      const out = routeFor(args[1]);
+      const out = routeFor(args[1], arg('function'), args.includes('--force-override'));
       console.log(JSON.stringify(out, null, 2)); process.exitCode = out.error ? 1 : 0; return;
     }
     if (cmd === 'chat') {
       const out = await chat({ role: arg('role'), model: arg('model'), prompt: arg('prompt', 'Say: ok'), system: arg('system'), maxTokens: arg('max-tokens'),
-        agent: arg('agent'), forceOverride: args.includes('--force-override'), overrideReason: arg('reason') });
-      if (out.skipped) { console.log('SKIPPED (usagePolicy) — ' + out.reason); process.exitCode = 3; return; }
+        agent: arg('agent'), func: arg('function'), forceOverride: args.includes('--force-override'), overrideReason: arg('reason') });
+      if (out.skipped) { console.log('SKIPPED (' + (out.functionUnfit ? 'function-fit' : 'usagePolicy') + ') — ' + out.reason); process.exitCode = 3; return; }
       if (out.error) { console.error(mask(out.error)); process.exitCode = 1; return; }
-      const tags = [out.policyOverridden ? 'POLICY-OVERRIDDEN' : '', out.bulkOffload ? 'BULK-OFFLOAD' : '', out.codeGateRequired ? 'CODE-GATE-REQUIRED' : ''].filter(Boolean);
+      const tags = [out.policyOverridden ? 'POLICY-OVERRIDDEN' : '', out.bulkOffload ? 'BULK-OFFLOAD' : '', out.codeGateRequired ? 'CODE-GATE-REQUIRED' : '', out.func ? 'FUNC:' + out.func : ''].filter(Boolean);
       console.log((out.mock ? '[MOCK] ' : '[' + out.model + '] ') + (tags.length ? '[' + tags.join(' ') + '] ' : '') + out.content);
       if (out.usage) console.log('usage: ' + JSON.stringify(out.usage)); return;
     }

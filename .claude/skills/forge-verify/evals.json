@@ -1,0 +1,19 @@
+{
+  "skill": "forge-verify",
+  "assertions": [
+    { "id": "skillmd-exists", "type": "file_exists", "path": ".claude/skills/forge-verify/SKILL.md",
+      "why": "the skill file itself must exist for forge-verify to be usable at all" },
+    { "id": "description-budget", "type": "frontmatter_field", "field": "description", "max_length": 200,
+      "why": "2026-07-31 skill-load-budget fix (FORGE_MEMORY.md): every description must stay <=200 chars or the skill picker truncates it" },
+    { "id": "verify-cjs-exists", "type": "file_exists", "path": ".claude/forge-bin/forge-verify.cjs",
+      "why": "the actual verify-loop tool this skill instructs the Lead to invoke" },
+    { "id": "verify-test-exists", "type": "file_exists", "path": ".claude/forge-bin/forge-verify.test.cjs",
+      "why": "forge-verify.cjs must carry a real hermetic test suite, not just an untested tool" },
+    { "id": "acceptance-coverage-exported", "type": "contains", "path": ".claude/forge-bin/forge-verify.cjs", "needle": "checkAcceptanceCoverage",
+      "why": "backlog item 7 (2026-07-31, GSD mining): spec-drift / dropped-requirement detection must stay exported from forge-verify.cjs" },
+    { "id": "enforce-flag-documented", "type": "contains", "path": ".claude/skills/forge-verify/SKILL.md", "needle": "--enforce",
+      "why": "the --enforce flag is how a mismatch actually becomes rework, not just a report" },
+    { "id": "learnings-wiring", "type": "contains", "path": ".claude/skills/forge-verify/SKILL.md", "needle": "learnings.md",
+      "why": "wp-skill-evals: the skill must instruct reading its own learnings.md before use and appending corrections after" }
+  ]
+}

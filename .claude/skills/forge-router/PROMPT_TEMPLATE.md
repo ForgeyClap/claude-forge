@@ -1,6 +1,6 @@
 # High-End Forge Prompt Template
 
-Paste this and fill the brackets. Forge's Lead Agent will analyze + improve it into a Mission Packet, decompose it into executable subagent work packages, run the swarm, merge, Codex-review + fix-loop, and deliver an honest report — all visible live in the Control Center (FLOW lens: Lead → Subagents → Merge → Codex → Final).
+Paste this and fill the brackets. Forge's Lead Agent will analyze + improve it into a Mission Packet, decompose it into executable subagent work packages, run the swarm, merge, Codex-review + fix-loop, and deliver an honest report — all visible live in the Command Center dashboard (http://127.0.0.1:4100, run/agent/mission views).
 
 ```
 gebruik Forge systeem
@@ -68,4 +68,4 @@ Include: mission packet summary · prompt improvements made · agents used · wh
 - **Honesty is mandatory.** Forge marks agents `NOT USED` / `INTERNAL ROLE ONLY`, reviews `Codex not invoked` when not run, and event-derived data `derived from event log`. It never fakes agents, execution, reviews, tests, files, artifacts, or progress.
 - **Quality loop is bounded:** max 2 iterations (3 for high-end). Never loops forever.
 - **Project isolation always on:** Forge works only in the active project folder; per-project dashboard, memory, runs, logs and port.
-- Open the Control Center to watch it live (no refresh): `node .claude/forge-dashboard/server.cjs` → the printed `http://localhost:<port>`. Default lens **FLOW (AGENT EXECUTION)**; switch lenses with the top bar or keys 1–8 (also REVIEW, ARTIFACTS).
+- Watch it live in the **Command Center** (the one dashboard for every project): `http://127.0.0.1:4100` — if it isn't running, start the supervisor from the Command Center home project (`node command-center/gateway/supervisor.mjs`) and health-check `/api/health` first. The retired per-project Control Center only starts on an explicit `legacy dashboard` request.

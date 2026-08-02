@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for browser-extension (Chrome MV3) tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-boss) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-extension playbook.",
+  "domain": "extension",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "least_privilege_permissions",
+      "descriptor": "1=blanket <all_urls>/broad permissions, none justified; 2=some unused permissions or missing justification; 3=permissions mostly minimal and used; 4=only permissions/host_permissions the code uses are requested, activeTab/optional preferred over <all_urls>, each permission justifiable in one sentence",
+      "raise": "trim the manifest to only the permissions and host_permissions the code actually uses, prefer activeTab/optional_permissions over <all_urls>, and justify each"
+    },
+    {
+      "id": "no_remote_code_and_csp",
+      "descriptor": "1=remote script/eval used or CSP weakened; 2=no remote script but unsafe-eval/inline present; 3=all JS bundled, default MV3 CSP kept; 4=zero remote code (no eval/new Function/remote <script>), strict MV3 CSP (script-src 'self', no unsafe-eval/inline) verified",
+      "raise": "bundle all JS, remove eval/new Function/remote scripts, and keep the strict MV3 CSP (script-src 'self') without unsafe-eval or unsafe-inline"
+    },
+    {
+      "id": "messaging_safety",
+      "descriptor": "1=page/postMessage data trusted or eval'd, no sender check; 2=some validation but wide externally_connectable / web_accessible_resources; 3=runtime messages validate payload + sender; 4=every onMessage validates sender + payload, page data never eval'd, externally_connectable and web_accessible_resources scoped to specific matches",
+      "raise": "validate sender + payload on every chrome.runtime.onMessage, never eval page-supplied data, and scope externally_connectable / web_accessible_resources to specific matches"
+    },
+    {
+      "id": "service_worker_resilience",
+      "descriptor": "1=relies on persistent in-memory global state; 2=listeners registered late / partial persistence; 3=event-driven worker, durable state in chrome.storage; 4=listeners registered at top level, no reliance on global state surviving termination, all durable state in chrome.storage, verified across an idle/wake cycle",
+      "raise": "register listeners at the top level, persist durable state to chrome.storage, and stop relying on in-memory globals surviving service-worker termination"
+    },
+    {
+      "id": "load_test_and_store_policy",
+      "descriptor": "1=never loaded, secrets in package; 2=loads but core flow unverified, or store prerequisites ignored; 3=loads unpacked with the core flow exercised, no secrets in package; 4=loads unpacked with the core flow proven (real output), production zip built, no secrets in package, and store prerequisites (single purpose, privacy disclosure, per-permission justifications) prepared for owner submission",
+      "raise": "load the unpacked extension and exercise the core flow with evidence, build the production zip, keep secrets out of the package, and prepare the store-listing prerequisites for the owner"
+    }
+  ]
+}

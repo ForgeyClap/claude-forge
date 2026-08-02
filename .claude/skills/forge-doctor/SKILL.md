@@ -1,6 +1,6 @@
 ---
 name: forge-doctor
-description: Run Forge's self-test + secret/leak scan — node --check every source, run all test suites, verify the honesty gate still rejects unknown events, confirm the dashboard SPA is intact, and scan git-tracked files for leaked secrets. Use before shipping, after big changes, or when the owner asks "test everything / does it execute / find leaks".
+description: Runs Forge's self-test + secret-leak scan across source, tests, and dashboard. Use before shipping or when asked to test everything, check it executes, or find leaks.
 ---
 
 # forge-doctor — self-test + leak scan

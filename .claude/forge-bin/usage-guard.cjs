@@ -19,7 +19,8 @@
  *   node .claude/forge-bin/usage-guard.cjs check                    # one-shot: print real usage %
  *   node .claude/forge-bin/usage-guard.cjs status                   # guard state + live %
  *   node .claude/forge-bin/usage-guard.cjs watch [--interval 120] [--pause-at 95] [--resume-at 0]
- *                                          [--grace-min 5] [--companies a,b] [--once] [--state <file>] [--dry-run]
+ *                                          [--nvidia-shift-at 80] [--grace-min 5] [--companies a,b]
+ *                                          [--once] [--state <file>] [--dry-run]
  *   node .claude/forge-bin/usage-guard.cjs start                    # detached watch (single instance)
  *   node .claude/forge-bin/usage-guard.cjs stop                     # stop the detached watcher
  *   node .claude/forge-bin/usage-guard.cjs credits                  # print purchased usage-credit balance (extra_usage)
@@ -36,6 +37,17 @@
  * reset instant rather than racing it. While paused, tick() resumes on EITHER the real utilization
  * dropping to <= resume-at (existing behavior) OR wall-clock time reaching resumeAtEpoch — whichever
  * comes first. resumeAtEpoch is cleared on every resume and recomputed fresh from the next pause.
+ *
+ * NVIDIA-SHIFT SOFT THRESHOLD (owner policy, advisory only — never pauses/blocks anything): at
+ * `--nvidia-shift-at` (default 80) weekly usage %, the guard signals that NVIDIA agents should be
+ * PREFERRED over Claude agents for new routing decisions, without any quality downgrade. This is
+ * purely a routing hint for callers (e.g. forge-router) — the existing pause behavior at `--pause-at`
+ * is completely unchanged and always wins above it (nothing here alters pause/resume semantics). On
+ * every `status` and `watch` (tick) evaluation, the guard writes `FORGE_USAGE_PRESSURE.json` next to
+ * the other guard state files: {"level":"nvidia-preferred"|"normal"|"unknown","week":<n|null>,
+ * "nvidia_shift_at":<n>,"pause_at":<n>,"updated_at":"<iso>"} — always written (even when usage data is
+ * missing/unreadable, as level "unknown") so a reader never sees a stale flag. `status` additionally
+ * prints a one-line `pressure: ...` summary. Real week% only — never fabricated.
  */
 const fs = require('fs');
 const os = require('os');
@@ -45,6 +57,7 @@ const { spawn, execSync } = require('child_process');
 const HOME = path.join(os.homedir(), '.claude');
 const CRED_FILE = path.join(HOME, '.credentials.json');
 const STATE_FILE = process.env.FORGE_USAGE_GUARD_STATE || argv('state', path.join(HOME, 'FORGE_USAGE_GUARD_STATE.json'));
+const PRESSURE_FILE = process.env.FORGE_USAGE_PRESSURE_FILE || path.join(HOME, 'FORGE_USAGE_PRESSURE.json');
 const PID_FILE = path.join(HOME, 'forge-usage-guard.pid');
 const LOG_FILE = path.join(HOME, 'forge-usage-guard.log');
 const PC_BASE = process.env.PAPERCLIP_URL || 'http://127.0.0.1:3100';
@@ -56,6 +69,10 @@ function argv(name, dflt) { const a = process.argv.slice(2); const i = a.indexOf
 const has = (f) => args.includes('--' + f);
 const PAUSE_AT = Number(argv('pause-at', 93)); // owner 2026-07-09: pause at 93% (headroom before rate-limit)
 const RESUME_AT = Number(argv('resume-at', 0));
+// owner policy: at ~80% weekly usage, PREFER NVIDIA agents over Claude agents (no quality downgrade) —
+// purely advisory (see NVIDIA-SHIFT SOFT THRESHOLD doc above). Same config mechanism as PAUSE_AT
+// (CLI arg + default; never itself read back from state — only recorded there for observability).
+const NVIDIA_SHIFT_AT = Number(argv('nvidia-shift-at', 80));
 const INTERVAL = Math.max(30, Number(argv('interval', 120)));
 const _graceMinRaw = Number(argv('grace-min', 5));
 const GRACE_MIN = Number.isFinite(_graceMinRaw) && _graceMinRaw >= 0 ? _graceMinRaw : 5; // reset-rhythm grace period (minutes)
@@ -69,6 +86,29 @@ function log(msg) {
 }
 function readState() { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return { mode: 'ok' }; } }
 function writeState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2) + '\n'); }
+
+// ---- NVIDIA-shift soft threshold — pure, advisory-only classification (never fabricates a %) ----
+function computePressureLevel(weekPct, nvidiaShiftAt) {
+  if (!Number.isFinite(weekPct) || !Number.isFinite(nvidiaShiftAt)) return 'unknown';
+  return weekPct >= nvidiaShiftAt ? 'nvidia-preferred' : 'normal';
+}
+function buildPressureData(weekPct, nvidiaShiftAt, pauseAt) {
+  return {
+    level: computePressureLevel(weekPct, nvidiaShiftAt),
+    week: Number.isFinite(weekPct) ? weekPct : null,
+    nvidia_shift_at: nvidiaShiftAt,
+    pause_at: pauseAt,
+    updated_at: new Date().toISOString(),
+  };
+}
+// writes unconditionally (even level:"unknown") so a reader never sees a stale flag — advisory only,
+// never pauses/blocks anything and never influences the real pause/resume decision above.
+function writePressureFile(weekPct, nvidiaShiftAt, pauseAt) {
+  const data = buildPressureData(weekPct, nvidiaShiftAt, pauseAt);
+  try { fs.writeFileSync(PRESSURE_FILE, JSON.stringify(data, null, 2) + '\n'); }
+  catch (e) { log('pressure-file write failed (no action taken): ' + e.message); }
+  return data;
+}
 
 // ---- real usage (official endpoint; token in-memory only, never logged) ----
 function readToken() {
@@ -188,8 +228,13 @@ async function tick() {
   let u;
   try { u = await fetchUsage(); } catch (e) {
     const st = readState(); st.lastError = String(e.message); st.lastCheckAt = new Date().toISOString(); writeState(st);
+    writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); // level "unknown" — write on EVERY evaluation, no stale flag
     log('CHECK FAILED (no action taken — fail-safe): ' + e.message); return;
   }
+  // advisory NVIDIA-shift pressure signal — written on every watch evaluation, before any pause/resume
+  // branching below, so it fires regardless of which branch this tick takes (pause always wins for the
+  // real pause/resume decision; this file never influences it).
+  writePressureFile(u.week.pct, NVIDIA_SHIFT_AT, PAUSE_AT);
   if (!Number.isFinite(u.session.pct) || !Number.isFinite(u.week.pct)) { log('CHECK: non-numeric utilization (no action)'); return; }
   const st = readState();
   // OWNER OVERRIDE (usage credits): while purchased credits remain, do NOT pause on the plan limit.
@@ -218,7 +263,7 @@ async function tick() {
     // keep pauseAt/resumeAt fresh on every tick (fix 2026-07-08) — otherwise a running watchdog started
     // with a different --pause-at than the last actual pause event leaves a stale threshold in the
     // state file, even though the real in-process trigger (PAUSE_AT, checked above) is already correct.
-    st.mode = 'ok'; st.pauseAt = PAUSE_AT; st.resumeAt = RESUME_AT; st.percents = { session: u.session.pct, week: u.week.pct }; st.lastCheckAt = new Date().toISOString(); delete st.lastError; writeState(st);
+    st.mode = 'ok'; st.pauseAt = PAUSE_AT; st.resumeAt = RESUME_AT; st.nvidiaShiftAt = NVIDIA_SHIFT_AT; st.percents = { session: u.session.pct, week: u.week.pct }; st.lastCheckAt = new Date().toISOString(); delete st.lastError; writeState(st);
     log('ok — session ' + u.session.pct + '% · week ' + u.week.pct + '% (pause-at ' + PAUSE_AT + '%)');
   } else {
     const stillHigh = (st.trigger || []).some((t) => (t.metric === 'session' ? u.session.pct : u.week.pct) > RESUME_AT);
@@ -236,10 +281,15 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { retu
 
 (async () => {
   if (cmd === 'check' || cmd === 'status') {
+    let u;
     try {
-      const u = await fetchUsage();
+      u = await fetchUsage();
       console.log('REAL usage (official endpoint) — sessie(5h): ' + u.session.pct + '% (reset ' + fmtReset(u.session.resetsAt) + ') · week: ' + u.week.pct + '% (reset ' + fmtReset(u.week.resetsAt) + ')');
-    } catch (e) { console.error('usage fetch failed: ' + e.message); process.exitCode = 1; return; }
+    } catch (e) {
+      console.error('usage fetch failed: ' + e.message); process.exitCode = 1;
+      if (cmd === 'status') { writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); console.log('pressure: unknown (usage data unavailable — fetch failed)'); }
+      return;
+    }
     if (cmd === 'status') {
       const st = readState();
       const ovr = st.ownerOverride && st.ownerOverride.active !== false ? ' · OVERRIDE ACTIVE (credits mode)' : '';
@@ -247,6 +297,11 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { retu
       console.log('guard state: ' + (st.mode || 'ok') + ' · pauseAt ' + (st.pauseAt != null ? st.pauseAt : '?') + '%' + ovr + cr + (st.lastPauseAt ? ' · lastPause ' + st.lastPauseAt : '') + (st.lastResumeAt ? ' · lastResume ' + st.lastResumeAt : ''));
       const pid = Number((fs.existsSync(PID_FILE) && fs.readFileSync(PID_FILE, 'utf8').trim()) || 0);
       console.log('watcher: ' + (pid && pidAlive(pid) ? 'RUNNING (pid ' + pid + ')' : 'not running'));
+      // NVIDIA-shift soft pressure signal — advisory only, real week% only, written on every status evaluation.
+      const pressure = writePressureFile(u.week.pct, NVIDIA_SHIFT_AT, PAUSE_AT);
+      if (pressure.level === 'nvidia-preferred') console.log('pressure: nvidia-preferred (week ' + u.week.pct + '% >= ' + NVIDIA_SHIFT_AT + '%)');
+      else if (pressure.level === 'unknown') console.log('pressure: unknown (week usage data missing/unreadable)');
+      else console.log('pressure: normal (week ' + u.week.pct + '% < ' + NVIDIA_SHIFT_AT + '%)');
     }
     return; // clean exit (process.exit after pending fetch handles triggers a libuv assertion on Windows)
   }
@@ -281,7 +336,7 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { retu
     // refuse a 2nd concurrent watcher — two would race the same non-atomic state file (fix 2026-07-09 checkup)
     const existing = Number((fs.existsSync(PID_FILE) && fs.readFileSync(PID_FILE, 'utf8').trim()) || 0);
     if (existing && existing !== process.pid && pidAlive(existing)) { console.error('another usage-guard watcher already running (pid ' + existing + ') — refusing to start a second'); process.exit(1); }
-    log('usage-guard watch started — interval ' + INTERVAL + 's · pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '%' + (ONLY_COMPANIES.length ? ' · companies: ' + ONLY_COMPANIES.join(',') : ''));
+    log('usage-guard watch started — interval ' + INTERVAL + 's · pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '% · nvidia-shift-at ' + NVIDIA_SHIFT_AT + '%' + (ONLY_COMPANIES.length ? ' · companies: ' + ONLY_COMPANIES.join(',') : ''));
     fs.writeFileSync(PID_FILE, String(process.pid));
     await tick();
     setInterval(tick, INTERVAL * 1000);
@@ -297,9 +352,9 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { retu
     if (DRY) extra.push('--dry-run');
     // stdout → ignore (log() already appendFileSync's to LOG_FILE; redirecting stdout too double-logged every line);
     // keep stderr → LOG_FILE so a crash is still captured (fix 2026-07-09 checkup).
-    const child = spawn(process.execPath, [__filename, 'watch', '--interval', String(INTERVAL), '--pause-at', String(PAUSE_AT), '--resume-at', String(RESUME_AT), ...extra], { detached: true, stdio: ['ignore', 'ignore', out], windowsHide: true });
+    const child = spawn(process.execPath, [__filename, 'watch', '--interval', String(INTERVAL), '--pause-at', String(PAUSE_AT), '--resume-at', String(RESUME_AT), '--nvidia-shift-at', String(NVIDIA_SHIFT_AT), ...extra], { detached: true, stdio: ['ignore', 'ignore', out], windowsHide: true });
     child.unref();
-    console.log('usage-guard started (pid ' + child.pid + ') — pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '% · log: ' + LOG_FILE);
+    console.log('usage-guard started (pid ' + child.pid + ') — pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '% · nvidia-shift-at ' + NVIDIA_SHIFT_AT + '% · log: ' + LOG_FILE);
     process.exit(0);
   }
   if (cmd === 'stop') {

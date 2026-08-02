@@ -1,0 +1,174 @@
+/*
+ * Forge Command Center — account-wide usage-pressure strip (WP7c).
+ *
+ * A small, ALWAYS-ON, read-only status pill — never a modal, never a
+ * blocker, never inserted into the existing CSS grid (`app-shell.css`'s
+ * `.fw-shell` template is untouched by this file). It renders via
+ * `position: fixed`, exactly the same technique `toasts.css` and
+ * `connection-banner.css` already use for their own overlays in this
+ * codebase — reusing an existing pattern, not inventing a new one.
+ *
+ * Placement: bottom-inline-start. `toasts.css` already owns bottom-inline-end
+ * (`.fw-toasts`) and `connection-banner.css` already owns the top-center
+ * strip (`.fw-conn`) — this sits in the one corner neither already claims, so
+ * the three overlays never collide.
+ *
+ * Monochrome, tokens only — no hex/rgb()/hsl() literal anywhere in this file,
+ * mirroring `usage-bar.css`'s own rule. Staleness is carried by border STYLE
+ * (dashed), never a hue, the same convention `usage-bar.css` /
+ * `connection-banner.css` already use for severity.
+ */
+
+.fw-acct-usage {
+  /* The Dock (`Dock.tsx`) is a normal grid-flow region, not an overlay — it
+     can grow to `--forge-layout-dock` (260px) when open. This pill is fixed
+     (see header), so it does not shift with the grid; this custom property
+     is the ONE place its bottom clearance is computed, overridden below by
+     `[data-dock-open]` and the narrow-viewport query, so both conditions
+     compose correctly instead of one silently overwriting the other. */
+  --fw-acct-usage-clear: calc(var(--forge-layout-dock-collapsed) + var(--forge-space-2));
+
+  position: fixed;
+  inset-block-end: var(--fw-acct-usage-clear);
+  inset-inline-start: var(--forge-space-4);
+  z-index: var(--forge-z-sticky);
+  transition: inset-block-end var(--forge-motion-base) var(--forge-motion-ease-standard);
+
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--forge-space-1) var(--forge-space-3);
+
+  max-inline-size: min(28rem, calc(100vw - var(--forge-space-6)));
+  padding: var(--forge-space-1) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-md);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-acct-usage[data-stale='true'] {
+  border-style: dashed;
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-acct-usage[data-dock-open='true'] {
+  --fw-acct-usage-clear: calc(var(--forge-layout-dock) + var(--forge-space-2));
+}
+
+.fw-acct-usage__icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-acct-usage__label {
+  flex: none;
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text-secondary);
+  white-space: nowrap;
+}
+
+.fw-acct-usage__pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--forge-space-1);
+  white-space: nowrap;
+}
+
+.fw-acct-usage__k {
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-acct-usage__v {
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-acct-usage__v--muted {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-acct-usage__v[data-guard='paused'] {
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+
+.fw-acct-usage__level-dot {
+  inline-size: var(--forge-space-2);
+  block-size: var(--forge-space-2);
+  border-radius: var(--forge-radius-full);
+  border: var(--forge-border-hair) solid var(--forge-color-line-loud);
+  background: transparent;
+  flex: none;
+}
+
+.fw-acct-usage__level-dot[data-level='nvidia-preferred'] {
+  background: var(--forge-color-text-secondary);
+  border-color: var(--forge-color-text-secondary);
+}
+
+.fw-acct-usage__level-dot[data-level='unknown'] {
+  border-style: dotted;
+  border-color: var(--forge-color-text-faint);
+}
+
+.fw-acct-usage__age {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  color: var(--forge-color-text-faint);
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------- narrow */
+
+@media (max-width: 640px) {
+  .fw-acct-usage {
+    /* A smaller gap than desktop, but still clearing the dock's own real
+       height — never the flat small offset a narrow-viewport query would
+       otherwise reach for, which regressed straight back into the dock's
+       collapsed row on a real 375px screenshot before this fix. */
+    --fw-acct-usage-clear: calc(var(--forge-layout-dock-collapsed) + var(--forge-space-1));
+    inset-inline-start: var(--forge-space-3);
+    max-inline-size: calc(100vw - var(--forge-space-6));
+  }
+
+  .fw-acct-usage[data-dock-open='true'] {
+    --fw-acct-usage-clear: calc(var(--forge-layout-dock) + var(--forge-space-1));
+  }
+
+  .fw-acct-usage__age {
+    display: none;
+  }
+}
+
+/* ----------------------------------------------------------------- motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-acct-usage {
+    transition: none;
+  }
+}
+
+/*
+ * fix-pill-overlap (2026-07-30, full-screenshot sweep — owner: "ik vind nog bugs in de ui"):
+ * this pill is fixed bottom-inline-start, which is exactly where the sidebar's own scrolling list
+ * ends (desktop) and where every view's last content row sits above the dock (narrow viewports).
+ * Measured on the sweep screenshots: it covered sidebar project rows on Home/Mission/Agents and the
+ * last card/hint on every mobile view. An overlay may float, but it may never make real content
+ * unreachable — so the two scroll regions it can cover now RESERVE the pill's own footprint as
+ * end-padding. Scrolled to the end, the last row clears the pill; nothing is ever hidden under it.
+ * The reserve mirrors the pill's own clearance variable so dock-open/narrow states stay consistent.
+ */
+.fw-shell__sidebar .fw-sidebar__scroll {
+  padding-block-end: calc(var(--forge-space-8) + var(--forge-space-4));
+}
+
+.fw-shell__main {
+  scroll-padding-block-end: calc(var(--forge-space-8) + var(--forge-space-4));
+  padding-block-end: calc(var(--forge-space-8) + var(--forge-space-4));
+}

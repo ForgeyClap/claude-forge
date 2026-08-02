@@ -1,6 +1,6 @@
 ---
 name: forge-integration
-description: "Forge playbook for business automation and API integrations — Gmail, Calendar, CRM, webhooks, Slack, payments. Use when connecting services, automating a business process, or wiring webhooks/OAuth between apps — keywords: integration, API, Gmail, Google Calendar, CRM, HubSpot, webhook, OAuth, Slack, sync, notification, automation. Enforces secret hygiene, webhook auth, input validation, and draft-only outreach."
+description: Forge playbook for business automation and API integrations — Gmail, Calendar, CRM, webhooks, Slack, payments. Use for integration, OAuth, sync, notification, automation.
 ---
 
 # Forge playbook — Business automation / API integration

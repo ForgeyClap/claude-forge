@@ -92,7 +92,7 @@ function runCli(args, root) {
 // ---- 6) secret in quote -> persisted lesson is redacted, never the raw secret ----
 {
   const root = makeFixture('case6');
-  const secret = '\x73k_live_abc123456789012345';
+  const secret = 'sk_live_abc123456789012345';
   const r = runCli(['add', 'build-boss', '--text', 'do not log API keys in examples', '--quote', `owner said: never paste ${secret} in a lesson`], root);
   t('case6: CLI exits 0', r.status === 0);
   const lessons = lessonsFor(root, 'build-boss');

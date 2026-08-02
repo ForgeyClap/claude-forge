@@ -1,0 +1,1107 @@
+/*
+ * Forge Workspace — primitive layer stylesheet.
+ *
+ * Rules of this file:
+ *   - no raw hex, rgb() or hsl(). Every value is a var(--forge-*) token.
+ *   - every interactive control snaps to a --fw-control-h / --fw-control-h-sm
+ *     height, which the density hook in src/styles/app.css retunes.
+ *   - status never leans on colour: greyscale value + border style + border
+ *     width + icon + uppercase label, all at once.
+ *   - the ember accent appears in exactly four places: the focus ring (global),
+ *     Button variant="primary", the selected segment marker, and Meter
+ *     tone="accent". Nothing else is coloured.
+ */
+
+/* =========================================================================
+   Icon
+   ========================================================================= */
+
+.fw-icon {
+  flex: none;
+  display: block;
+  inline-size: var(--forge-icon-md);
+  block-size: var(--forge-icon-md);
+}
+
+.fw-icon--xs {
+  inline-size: var(--forge-icon-xs);
+  block-size: var(--forge-icon-xs);
+}
+.fw-icon--sm {
+  inline-size: var(--forge-icon-sm);
+  block-size: var(--forge-icon-sm);
+}
+.fw-icon--md {
+  inline-size: var(--forge-icon-md);
+  block-size: var(--forge-icon-md);
+}
+.fw-icon--lg {
+  inline-size: var(--forge-icon-lg);
+  block-size: var(--forge-icon-lg);
+}
+.fw-icon--xl {
+  inline-size: var(--forge-icon-xl);
+  block-size: var(--forge-icon-xl);
+}
+
+.fw-icon--spin {
+  animation: fw-spin var(--forge-motion-slower) linear infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes fw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-icon--spin {
+    animation: none !important;
+  }
+}
+
+/* =========================================================================
+   Status carrier
+   .fw-status resolves the five status tokens into local custom properties.
+   Any component — not just the badge — can wear it to inherit the treatment.
+   ========================================================================= */
+
+.fw-status {
+  --fw-status-color: var(--forge-status-internal);
+  --fw-status-soft: var(--forge-status-internal-soft);
+  --fw-status-line: var(--forge-status-internal-line);
+  --fw-status-style: var(--forge-status-internal-style);
+  --fw-status-width: var(--forge-status-internal-width);
+}
+
+.fw-status[data-status='running'] {
+  --fw-status-color: var(--forge-status-running);
+  --fw-status-soft: var(--forge-status-running-soft);
+  --fw-status-line: var(--forge-status-running-line);
+  --fw-status-style: var(--forge-status-running-style);
+  --fw-status-width: var(--forge-status-running-width);
+}
+.fw-status[data-status='completed'] {
+  --fw-status-color: var(--forge-status-completed);
+  --fw-status-soft: var(--forge-status-completed-soft);
+  --fw-status-line: var(--forge-status-completed-line);
+  --fw-status-style: var(--forge-status-completed-style);
+  --fw-status-width: var(--forge-status-completed-width);
+}
+.fw-status[data-status='waiting'] {
+  --fw-status-color: var(--forge-status-waiting);
+  --fw-status-soft: var(--forge-status-waiting-soft);
+  --fw-status-line: var(--forge-status-waiting-line);
+  --fw-status-style: var(--forge-status-waiting-style);
+  --fw-status-width: var(--forge-status-waiting-width);
+}
+.fw-status[data-status='verify'] {
+  --fw-status-color: var(--forge-status-verify);
+  --fw-status-soft: var(--forge-status-verify-soft);
+  --fw-status-line: var(--forge-status-verify-line);
+  --fw-status-style: var(--forge-status-verify-style);
+  --fw-status-width: var(--forge-status-verify-width);
+}
+.fw-status[data-status='review'] {
+  --fw-status-color: var(--forge-status-review);
+  --fw-status-soft: var(--forge-status-review-soft);
+  --fw-status-line: var(--forge-status-review-line);
+  --fw-status-style: var(--forge-status-review-style);
+  --fw-status-width: var(--forge-status-review-width);
+}
+.fw-status[data-status='failed'] {
+  --fw-status-color: var(--forge-status-failed);
+  --fw-status-soft: var(--forge-status-failed-soft);
+  --fw-status-line: var(--forge-status-failed-line);
+  --fw-status-style: var(--forge-status-failed-style);
+  --fw-status-width: var(--forge-status-failed-width);
+}
+.fw-status[data-status='idle'] {
+  --fw-status-color: var(--forge-status-idle);
+  --fw-status-soft: var(--forge-status-idle-soft);
+  --fw-status-line: var(--forge-status-idle-line);
+  --fw-status-style: var(--forge-status-idle-style);
+  --fw-status-width: var(--forge-status-idle-width);
+}
+
+.fw-status[data-status='blocked'] {
+  --fw-status-color: var(--forge-status-blocked);
+  --fw-status-soft: var(--forge-status-blocked-soft);
+  --fw-status-line: var(--forge-status-blocked-line);
+  --fw-status-style: var(--forge-status-blocked-style);
+  --fw-status-width: var(--forge-status-blocked-width);
+}
+
+/* -------------------------------------------------------------- badge */
+
+.fw-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  block-size: var(--forge-control-sm);
+  padding-inline: var(--forge-space-2);
+  border: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--fw-status-soft);
+  color: var(--fw-status-color);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.fw-status-badge--sm {
+  block-size: var(--forge-control-xs);
+  gap: var(--forge-space-1);
+  padding-inline: var(--forge-space-1);
+  border-radius: var(--forge-radius-xs);
+}
+
+.fw-status-badge--icon-only {
+  inline-size: var(--forge-control-sm);
+  padding-inline: 0;
+  justify-content: center;
+}
+
+.fw-status-badge--sm.fw-status-badge--icon-only {
+  inline-size: var(--forge-control-xs);
+}
+
+.fw-status-badge__label {
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+  line-height: var(--forge-leading-none);
+}
+
+.fw-status-badge--sm .fw-status-badge__label {
+  letter-spacing: var(--forge-tracking-normal);
+}
+
+/* ---------------------------------------------------------------- dot */
+
+.fw-status-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-icon-lg);
+  block-size: var(--forge-icon-lg);
+  border: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-full);
+  background: var(--fw-status-soft);
+  color: var(--fw-status-color);
+  vertical-align: middle;
+}
+
+/* =========================================================================
+   Panel
+   ========================================================================= */
+
+.fw-panel {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+}
+
+.fw-panel--flush {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.fw-panel__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--forge-space-3);
+  padding-inline: var(--fw-panel-pad);
+  padding-block: var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-panel--flush .fw-panel__head {
+  padding-inline: 0;
+  padding-block-start: 0;
+  border-block-end: 0;
+}
+
+.fw-panel__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.fw-panel__title {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-panel__subtitle {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  align-self: center;
+}
+
+.fw-panel__body {
+  min-block-size: 0;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.fw-panel--padded > .fw-panel__body {
+  padding: var(--fw-panel-pad);
+}
+
+.fw-panel--flush.fw-panel--padded > .fw-panel__body {
+  padding-inline: 0;
+}
+
+/* =========================================================================
+   Control base — every button-shaped thing starts here
+   ========================================================================= */
+
+.fw-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid transparent;
+  border-radius: var(--forge-radius-md);
+  background: transparent;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-none);
+  letter-spacing: var(--forge-tracking-tight);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+/* =========================================================================
+   Button
+   ========================================================================= */
+
+.fw-button--md {
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-3);
+}
+
+.fw-button--sm {
+  block-size: var(--fw-control-h-sm);
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-sm);
+  gap: var(--forge-space-1);
+  border-radius: var(--forge-radius-sm);
+}
+
+.fw-button--block {
+  display: flex;
+  inline-size: 100%;
+}
+
+.fw-button__label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ghost — the neutral default */
+.fw-button--ghost {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line);
+  color: var(--forge-color-text);
+}
+.fw-button--ghost:hover:not(:disabled) {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-line-strong);
+}
+.fw-button--ghost:active:not(:disabled) {
+  background: var(--forge-color-active);
+  border-color: var(--forge-color-line-loud);
+}
+
+/* quiet — transparent until touched */
+.fw-button--quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--forge-color-text-secondary);
+}
+.fw-button--quiet:hover:not(:disabled) {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+.fw-button--quiet:active:not(:disabled) {
+  background: var(--forge-color-active);
+}
+
+/* primary — an inverted surface, not an accent fill.
+   A solid ember button makes the accent the loudest thing on every screen,
+   which is exactly what the monochrome direction rules out. Weight and
+   inversion carry the emphasis instead; ember stays reserved for focus, the
+   active-control indicator and running progress. */
+.fw-button--primary {
+  background: var(--forge-color-solid);
+  border-color: var(--forge-color-solid);
+  color: var(--forge-color-solid-text);
+  font-weight: var(--forge-weight-semibold);
+}
+.fw-button--primary:hover:not(:disabled) {
+  background: var(--forge-color-solid-hover);
+  border-color: var(--forge-color-solid-hover);
+}
+.fw-button--primary:active:not(:disabled) {
+  background: var(--forge-color-solid-active);
+  border-color: var(--forge-color-solid-active);
+}
+
+/* danger — weight, not hue */
+.fw-button--danger {
+  background: var(--forge-color-surface-2);
+  border-width: var(--forge-status-failed-width);
+  border-style: var(--forge-status-failed-style);
+  border-color: var(--forge-status-failed);
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+.fw-button--danger:hover:not(:disabled) {
+  background: var(--forge-status-failed-soft);
+}
+.fw-button--danger:active:not(:disabled) {
+  background: var(--forge-color-active);
+}
+
+/* =========================================================================
+   IconButton
+   ========================================================================= */
+
+.fw-icon-button {
+  padding: 0;
+  color: var(--forge-color-text-secondary);
+  border-color: transparent;
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-icon-button--md {
+  inline-size: var(--fw-control-h);
+  block-size: var(--fw-control-h);
+}
+
+.fw-icon-button--sm {
+  inline-size: var(--fw-control-h-sm);
+  block-size: var(--fw-control-h-sm);
+  border-radius: var(--forge-radius-sm);
+}
+
+.fw-icon-button:hover:not(:disabled) {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-icon-button:active:not(:disabled) {
+  background: var(--forge-color-active);
+}
+
+.fw-icon-button.is-active {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+}
+
+/* =========================================================================
+   Toolbar
+   ========================================================================= */
+
+.fw-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--fw-gutter);
+  min-inline-size: 0;
+}
+
+.fw-toolbar--bordered {
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-toolbar__group--divided {
+  padding-inline-start: var(--forge-space-2);
+  margin-inline-start: var(--forge-space-1);
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-spacer {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+/* =========================================================================
+   SegmentedControl
+   ========================================================================= */
+
+.fw-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-px);
+  flex: none;
+  padding: var(--forge-space-px);
+  background: var(--forge-color-sunken);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-segmented__option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h-sm);
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid transparent;
+  border-radius: var(--forge-radius-sm);
+  background: transparent;
+  color: var(--forge-color-text-muted);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-none);
+  white-space: nowrap;
+  cursor: pointer;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-segmented--sm .fw-segmented__option {
+  block-size: var(--forge-control-xs);
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-xs);
+  gap: var(--forge-space-1);
+}
+
+.fw-segmented--icon-only .fw-segmented__option {
+  padding-inline: var(--forge-space-2);
+}
+
+.fw-segmented__option:hover:not(.is-selected) {
+  color: var(--forge-color-text-secondary);
+  background: var(--forge-color-hover);
+}
+
+.fw-segmented__option.is-selected {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+
+/* The rationed accent: a 2px bar under the one active segment. */
+.fw-segmented__option.is-selected::after {
+  content: '';
+  position: absolute;
+  inset-block-end: var(--forge-border-thick);
+  inset-inline: 30%;
+  block-size: var(--forge-border-thick);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-accent);
+}
+
+/* =========================================================================
+   Meter
+   ========================================================================= */
+
+.fw-meter {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-meter__label {
+  flex: none;
+  max-inline-size: 40%;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-meter__track {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  block-size: var(--forge-space-1);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-sunken);
+  box-shadow: var(--forge-shadow-inset);
+  overflow: hidden;
+}
+
+.fw-meter__fill {
+  block-size: 100%;
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-text-muted);
+  transition: inline-size var(--forge-motion-base) var(--forge-motion-ease-standard);
+}
+
+.fw-meter[data-tone='accent'] .fw-meter__fill {
+  background: var(--forge-color-accent);
+}
+
+.fw-meter__value {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* =========================================================================
+   Machine / Eyebrow
+   .fg-machine and .fg-eyebrow themselves live in brand/forge-base.css and are
+   not redefined here — these classes only add layout behaviour.
+   ========================================================================= */
+
+.fw-machine {
+  overflow-wrap: anywhere;
+}
+
+.fw-machine--muted {
+  color: var(--forge-color-text-muted);
+}
+
+.fw-eyebrow {
+  display: inline-block;
+}
+
+/* =========================================================================
+   EmptyState
+   ========================================================================= */
+
+.fw-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-10) var(--forge-space-6);
+  text-align: center;
+}
+
+.fw-empty--compact {
+  padding: var(--forge-space-6) var(--forge-space-4);
+  gap: var(--forge-space-1);
+}
+
+.fw-empty__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--forge-control-xl);
+  block-size: var(--forge-control-xl);
+  margin-block-end: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-full);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-empty--compact .fw-empty__glyph {
+  inline-size: var(--forge-control-lg);
+  block-size: var(--forge-control-lg);
+}
+
+.fw-empty__title {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-empty__detail {
+  max-inline-size: 34ch;
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-empty__action {
+  margin-block-start: var(--forge-space-2);
+}
+
+/* =========================================================================
+   Field
+   ========================================================================= */
+
+.fw-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-field__label {
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-field__control {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-field__hint {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   Switch
+   ========================================================================= */
+
+.fw-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-control-h-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+  text-align: start;
+  cursor: pointer;
+  border-radius: var(--forge-radius-sm);
+}
+
+.fw-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.fw-switch__track {
+  position: relative;
+  flex: none;
+  display: inline-block;
+  inline-size: var(--forge-space-8);
+  block-size: var(--forge-space-4);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-3);
+}
+
+.fw-switch--sm .fw-switch__track {
+  inline-size: var(--forge-space-6);
+  block-size: var(--forge-space-3);
+}
+
+.fw-switch__thumb {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: var(--forge-space-px);
+  inline-size: var(--forge-space-3);
+  block-size: var(--forge-space-3);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-text-muted);
+  transform: translate(0, -50%);
+  transition: transform var(--forge-motion-fast) var(--forge-motion-ease-standard),
+    background-color var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-switch--sm .fw-switch__thumb {
+  inline-size: var(--forge-space-2);
+  block-size: var(--forge-space-2);
+}
+
+.fw-switch.is-checked .fw-switch__track {
+  background: var(--forge-color-text);
+  border-color: var(--forge-color-text);
+}
+
+.fw-switch.is-checked .fw-switch__thumb {
+  background: var(--forge-color-bg);
+  transform: translate(var(--forge-space-4), -50%);
+}
+
+.fw-switch--sm.is-checked .fw-switch__thumb {
+  transform: translate(var(--forge-space-3), -50%);
+}
+
+.fw-switch:hover:not(:disabled) .fw-switch__track {
+  border-color: var(--forge-color-line-loud);
+}
+
+.fw-switch__label {
+  min-inline-size: 0;
+  font-size: var(--forge-text-base);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-switch.is-checked .fw-switch__label {
+  color: var(--forge-color-text);
+}
+
+/* =========================================================================
+   Tabs
+   ========================================================================= */
+
+.fw-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-tabs__tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-3);
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text-muted);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-none);
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: var(--forge-radius-sm) var(--forge-radius-sm) 0 0;
+  transition-property: background-color, color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-tabs--sm .fw-tabs__tab {
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-sm);
+}
+
+.fw-tabs__tab:hover:not(.is-selected) {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-tabs__tab.is-selected {
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+
+.fw-tabs__tab.is-selected::after {
+  content: '';
+  position: absolute;
+  inset-block-end: calc(var(--forge-border-hair) * -1);
+  inset-inline: var(--forge-space-2);
+  block-size: var(--forge-border-thick);
+  background: var(--forge-color-text);
+}
+
+.fw-tabs__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--forge-space-5);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-full);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tabs__tab.is-selected .fw-tabs__count {
+  color: var(--forge-color-text-secondary);
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-tabpanel {
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-tabpanel:focus {
+  outline: none;
+}
+
+/* =========================================================================
+   KeyHint
+   ========================================================================= */
+
+.fw-keyhint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-family: var(--forge-font-mono);
+  vertical-align: middle;
+}
+
+.fw-keyhint__key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  block-size: var(--forge-control-xs);
+  min-inline-size: var(--forge-control-xs);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-block-end-width: var(--forge-border-thick);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+}
+
+.fw-keyhint--md .fw-keyhint__key {
+  block-size: var(--forge-control-sm);
+  min-inline-size: var(--forge-control-sm);
+  font-size: var(--forge-text-xs);
+}
+
+.fw-keyhint__sep {
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+}
+
+/* =========================================================================
+   Avatar
+   ========================================================================= */
+
+.fw-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-lg);
+  block-size: var(--forge-control-lg);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-3);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+  line-height: var(--forge-leading-none);
+  user-select: none;
+  overflow: hidden;
+}
+
+.fw-avatar--sm {
+  inline-size: var(--forge-control-sm);
+  block-size: var(--forge-control-sm);
+  border-radius: var(--forge-radius-sm);
+  font-size: var(--forge-text-2xs);
+}
+
+/* Agent group tempers the border. Luminance, never hue. */
+.fw-avatar[data-group='control'] {
+  border-color: var(--forge-group-control-line);
+}
+.fw-avatar[data-group='context'] {
+  border-color: var(--forge-group-context-line);
+}
+.fw-avatar[data-group='planning'] {
+  border-color: var(--forge-group-planning-line);
+}
+.fw-avatar[data-group='domain'] {
+  border-color: var(--forge-group-domain-line);
+}
+.fw-avatar[data-group='execution'] {
+  border-color: var(--forge-group-execution-line);
+}
+.fw-avatar[data-group='review'] {
+  border-color: var(--forge-group-review-line);
+}
+.fw-avatar[data-group='memory'] {
+  border-color: var(--forge-group-memory-line);
+}
+
+/* =========================================================================
+   Modal
+   Widths are derived from layout tokens because no --forge-layout-modal-*
+   token exists yet. Noted in the handover.
+   ========================================================================= */
+
+.fw-modal {
+  position: fixed;
+  inset: 0;
+  z-index: var(--forge-z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--forge-space-6);
+}
+
+.fw-modal__scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--forge-color-overlay);
+  animation: fw-fade-in var(--forge-motion-fast) var(--forge-motion-ease-enter) both;
+}
+
+.fw-modal__dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  max-block-size: calc(100vh - var(--forge-space-12));
+  max-block-size: calc(100dvh - var(--forge-space-12));
+  inline-size: 100%;
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xl);
+  box-shadow: var(--forge-shadow-lg);
+  animation: fw-modal-in var(--forge-motion-base) var(--forge-motion-ease-enter) both;
+}
+
+.fw-modal__dialog:focus {
+  outline: none;
+}
+
+.fw-modal__dialog--sm {
+  max-inline-size: var(--forge-layout-inspector);
+}
+
+.fw-modal__dialog--md {
+  max-inline-size: calc(var(--forge-layout-sidebar) * 2);
+}
+
+.fw-modal__dialog--lg {
+  max-inline-size: var(--forge-layout-reading);
+}
+
+.fw-modal__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-4) var(--forge-space-4) var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-modal__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-modal__title {
+  font-size: var(--forge-text-lg);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-modal__description {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-modal__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: var(--forge-space-4);
+  font-size: var(--forge-text-base);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-modal__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-3) var(--forge-space-4);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+@keyframes fw-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fw-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--forge-space-2));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-modal__scrim,
+  .fw-modal__dialog {
+    animation: none !important;
+  }
+}
+
+/* =========================================================================
+   ExampleTag
+   ========================================================================= */
+
+.fw-example-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  block-size: var(--forge-control-xs);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-xs);
+  background: transparent;
+  color: var(--forge-color-text-faint);
+  vertical-align: middle;
+  cursor: help;
+}
+
+.fw-example-tag__icon {
+  opacity: 0.85;
+}
+
+.fw-example-tag__text {
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+  line-height: var(--forge-leading-none);
+}

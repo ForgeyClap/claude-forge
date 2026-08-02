@@ -1,0 +1,493 @@
+/*
+ * Dock — the bottom panel.
+ *
+ * Collapsed it is exactly --forge-layout-dock-collapsed tall (the rail), open it
+ * is --forge-layout-dock. The rail never disappears, so the dock can always be
+ * brought back without hunting for a control.
+ *
+ * Rows carry the status treatment on their leading edge — width and style from
+ * the --forge-status-* tokens through the .fw-status carrier — so state reads in
+ * pure greyscale next to the icon and the uppercase label.
+ */
+
+.fw-dock {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  inline-size: 100%;
+  min-inline-size: 0;
+  block-size: var(--forge-layout-dock);
+  max-block-size: 60vh;
+  background: var(--forge-color-surface-1);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line);
+  transition:
+    block-size var(--forge-motion-base) var(--forge-motion-ease-standard),
+    background-color var(--forge-motion-fast) var(--forge-motion-ease-standard),
+    border-color var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-dock[data-open='false'] {
+  block-size: var(--forge-layout-dock-collapsed);
+}
+
+/* ------------------------------------------------------------------- rail */
+
+.fw-dock__rail {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  block-size: var(--forge-layout-dock-collapsed);
+  padding-inline: var(--forge-space-2);
+  background: var(--forge-color-surface-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-dock[data-open='false'] .fw-dock__rail {
+  border-block-end: 0;
+}
+
+.fw-dock__rail-tabs {
+  min-inline-size: 0;
+  flex: 0 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.fw-dock__rail-tabs::-webkit-scrollbar {
+  block-size: 0;
+}
+
+/* The rail draws its own divider; the tablist must not draw a second one. */
+.fw-dock__rail-tabs .fw-tabs {
+  border-block-end: 0;
+}
+
+.fw-dock__rail-tabs .fw-tabs__tab {
+  block-size: calc(var(--forge-layout-dock-collapsed) - var(--forge-border-hair));
+}
+
+/* ------------------------------------------------------------------- body */
+
+.fw-dock__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-dock__panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-dock__panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-block-size: var(--fw-control-h);
+  padding-inline: var(--fw-gutter);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-dock__panel-note {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-dock__rows {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: var(--forge-space-1) var(--forge-space-2);
+}
+
+/* ------------------------------------------------------------ generic row */
+
+.fw-dock__event,
+.fw-dock__gate,
+.fw-dock__proof {
+  display: grid;
+  align-items: center;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid transparent;
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-sm);
+  background: transparent;
+  color: var(--forge-color-text-secondary);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-xs);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-dock__event:hover,
+.fw-dock__gate:hover,
+.fw-dock__proof:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-dock__event {
+  grid-template-columns: 4.75rem var(--forge-icon-lg) 8.5rem minmax(0, 1fr) 6rem;
+}
+
+.fw-dock__time,
+.fw-dock__kind,
+.fw-dock__agent {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-dock__message {
+  min-inline-size: 0;
+}
+
+.fw-dock__kind {
+  text-align: end;
+}
+
+/* ------------------------------------------------------------------ gates */
+
+.fw-dock__gate {
+  grid-template-columns: 6.5rem minmax(0, 1fr) 5rem 9.5rem 7rem;
+}
+
+.fw-dock__gate-name {
+  color: var(--forge-color-text);
+}
+
+.fw-dock__gate-duration,
+.fw-dock__gate-run,
+.fw-dock__gate-evidence {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-dock__gate-evidence {
+  text-align: end;
+}
+
+/* ------------------------------------------------------------------ proof */
+
+.fw-dock__proof {
+  grid-template-columns: 6.5rem minmax(0, 1.2fr) minmax(0, 1fr) 8rem 5rem;
+}
+
+.fw-dock__proof-claim {
+  color: var(--forge-color-text);
+}
+
+.fw-dock__proof-command,
+.fw-dock__proof-agent,
+.fw-dock__proof-task {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-dock__proof-task {
+  text-align: end;
+}
+
+/* ----------------------------------------------------------- event stream */
+
+.fw-dock__stream {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--forge-color-sunken);
+}
+
+.fw-dock__stream-inner {
+  min-inline-size: 62rem;
+  padding-block: var(--forge-space-1);
+}
+
+.fw-dock__stream-row {
+  display: grid;
+  grid-template-columns: 11rem 6.5rem 9rem 6rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--forge-space-3);
+  padding-inline: var(--forge-space-3);
+  padding-block: 2px;
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  white-space: nowrap;
+}
+
+.fw-dock__stream-row:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-dock__stream-status {
+  color: var(--fw-status-color);
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+.fw-dock__stream-message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------- terminal */
+
+.fw-dock__terminal {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  min-block-size: 0;
+}
+
+.fw-dock__transcripts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-block-size: 0;
+  padding: var(--forge-space-2);
+  border-inline-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-dock__transcripts-label {
+  padding-inline: var(--forge-space-1);
+  padding-block-end: var(--forge-space-1);
+}
+
+.fw-dock__transcript {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  min-block-size: var(--fw-control-h-sm);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid transparent;
+  border-radius: var(--forge-radius-sm);
+  background: transparent;
+  color: var(--forge-color-text-muted);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-xs);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-dock__transcript:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-dock__transcript.is-selected {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+}
+
+.fw-dock__terminal-main {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-dock__log {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  margin: 0;
+  padding: var(--forge-space-3) var(--fw-gutter);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  white-space: pre;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.fw-dock__log-line[data-line='command'] {
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-medium);
+}
+
+.fw-dock__prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-block-size: var(--fw-control-h);
+  padding-inline: var(--fw-gutter);
+  border-block-start: var(--forge-border-hair) dashed var(--forge-color-line);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.fw-dock__prompt-mark {
+  color: var(--forge-color-line-loud);
+}
+
+.fw-dock__prompt-icon {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-dock__prompt-text {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- notices */
+
+.fw-dock__notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: var(--forge-space-3) var(--fw-gutter);
+}
+
+.fw-dock__notice {
+  display: grid;
+  grid-template-columns: var(--forge-icon-md) minmax(0, 1fr);
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-dock__notice-icon {
+  margin-block-start: 2px;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-dock__notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-dock__notice-title {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+  font-size: var(--forge-text-xs);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-dock__notice-detail {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+/* --------------------------------------------------------------- narrower */
+
+@media (max-width: 1100px) {
+  .fw-dock__event {
+    grid-template-columns: 4.75rem var(--forge-icon-lg) minmax(0, 1fr) 5rem;
+  }
+
+  .fw-dock__agent {
+    display: none;
+  }
+
+  .fw-dock__gate {
+    grid-template-columns: 6.5rem minmax(0, 1fr) 5rem 9.5rem;
+  }
+
+  .fw-dock__gate-evidence {
+    display: none;
+  }
+
+  .fw-dock__proof {
+    grid-template-columns: 6.5rem minmax(0, 1fr) 8rem 5rem;
+  }
+
+  .fw-dock__proof-command {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .fw-dock__event {
+    grid-template-columns: 4.5rem var(--forge-icon-lg) minmax(0, 1fr);
+  }
+
+  .fw-dock__kind,
+  .fw-dock__gate-run,
+  .fw-dock__proof-agent {
+    display: none;
+  }
+
+  .fw-dock__gate {
+    grid-template-columns: 6.5rem minmax(0, 1fr) 4.5rem;
+  }
+
+  .fw-dock__proof {
+    grid-template-columns: 6.5rem minmax(0, 1fr) 4.5rem;
+  }
+
+  .fw-dock__terminal {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .fw-dock__transcripts {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--forge-space-1);
+    overflow-x: auto;
+    border-inline-end: 0;
+    border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  }
+
+  .fw-dock__transcripts-label {
+    display: none;
+  }
+
+  .fw-dock__transcript {
+    inline-size: auto;
+    flex: none;
+    padding-inline: var(--forge-space-2);
+  }
+}
+
+/* ---------------------------------------------------------------- density */
+
+:root[data-density='compact'] .fw-dock__notices {
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-2);
+}
+
+:root[data-density='compact'] .fw-dock__notice {
+  padding: var(--forge-space-2);
+}
+
+:root[data-density='compact'] .fw-dock__rows {
+  padding-block: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-dock {
+    transition: none !important;
+  }
+}

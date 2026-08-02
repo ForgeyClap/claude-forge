@@ -1,0 +1,558 @@
+/*
+ * ArtifactsView — the gallery and its preview panel.
+ *
+ * House rules observed here:
+ *   - no raw hex, rgb() or hsl(). Every value is a var(--forge-*) token, or a
+ *     --fw-* density hook from src/styles/app.css which resolves to one.
+ *   - kind is carried by a lucide glyph plus an uppercase machine-set label,
+ *     never by colour. There is no per-kind hue and there never will be.
+ *   - the screenshot placeholder is a dashed frame with a written caption. It
+ *     is not styled to look like a photograph, because there is no photograph.
+ *   - the grid reflows to a single column on a phone, and the preview moves
+ *     above the gallery so a tap does not scroll the selection off-screen.
+ */
+
+/* =========================================================================
+   Shell
+   ========================================================================= */
+
+.fw-artifacts {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  background: var(--forge-color-bg);
+}
+
+/* ------------------------------------------------------------------ head */
+
+.fw-artifacts__head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  padding: var(--fw-gutter) var(--fw-gutter) var(--fw-gutter-tight);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-artifacts__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-artifacts__title {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__subtitle {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-artifacts__toolbar {
+  padding-inline: 0;
+  flex-wrap: wrap;
+  row-gap: var(--forge-space-2);
+}
+
+.fw-artifacts__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--forge-color-text-secondary);
+}
+
+/* ----------------------------------------------------------- kind filter */
+
+.fw-artifacts__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-artifacts__filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h-sm);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-1);
+  color: var(--forge-color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fw-artifacts__filter:hover {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-artifacts__filter[aria-checked='true'] {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__filter-glyph {
+  flex: none;
+}
+
+.fw-artifacts__filter-label {
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+  line-height: var(--forge-leading-none);
+}
+
+.fw-artifacts__filter-count {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-artifacts__filter[aria-checked='true'] .fw-artifacts__filter-count {
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   Body — gallery, plus the preview column once something is selected
+   ========================================================================= */
+
+.fw-artifacts__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.fw-artifacts__body[data-preview='true'] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--forge-layout-inspector));
+}
+
+.fw-artifacts__gallery {
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding: var(--fw-gutter);
+}
+
+.fw-artifacts__list {
+  display: grid;
+  gap: var(--fw-gap);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+/* No --forge-layout-card token exists; the sidebar width is the closest
+   existing measure and gives a card that holds a file name without wrapping. */
+.fw-artifacts__list[data-layout='grid'] {
+  grid-template-columns: repeat(auto-fill, minmax(var(--forge-layout-sidebar), 1fr));
+}
+
+.fw-artifacts__list[data-layout='list'] {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--forge-space-2);
+}
+
+/* ------------------------------------------------------------------ card */
+
+.fw-artifacts__card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  min-inline-size: 0;
+  block-size: 100%;
+  padding: var(--fw-panel-pad);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-1);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-artifacts__card:hover {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line);
+}
+
+.fw-artifacts__card[aria-pressed='true'] {
+  background: var(--forge-color-surface-2);
+  border-color: var(--forge-color-line-loud);
+}
+
+.fw-artifacts__card-top {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-artifacts__card-glyph {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-artifacts__card-name {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__kind {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  block-size: var(--forge-control-xs);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-xs);
+  color: var(--forge-color-text-faint);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  line-height: var(--forge-leading-none);
+}
+
+/* Prose, so the sans face — this is the only human-written text on a card. */
+.fw-artifacts__card-summary {
+  min-inline-size: 0;
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fw-artifacts__card-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+  margin-block-start: auto;
+  padding-block-start: var(--forge-space-2);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-artifacts__card-foot .fg-machine {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-artifacts__sep {
+  flex: none;
+  inline-size: var(--forge-space-px);
+  block-size: var(--forge-space-3);
+  background: var(--forge-color-line);
+}
+
+/* The list layout puts the summary beside the name rather than under it. */
+.fw-artifacts__list[data-layout='list'] .fw-artifacts__card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--forge-space-1);
+  padding: var(--fw-gutter-tight) var(--fw-panel-pad);
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-artifacts__list[data-layout='list'] .fw-artifacts__card-summary {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.fw-artifacts__list[data-layout='list'] .fw-artifacts__card-foot {
+  margin-block-start: 0;
+  padding-block-start: 0;
+  border-block-start: 0;
+}
+
+/* =========================================================================
+   Preview panel
+   ========================================================================= */
+
+.fw-artifacts__preview {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  min-inline-size: 0;
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-artifacts__preview-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-header-h);
+  min-inline-size: 0;
+  padding-inline: var(--fw-gutter-tight);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-artifacts__preview-glyph {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-artifacts__preview-name {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__preview-scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-section-gap);
+  padding: var(--fw-gutter);
+}
+
+/* ------------------------------------------------------------- metadata */
+
+.fw-artifacts__meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.fw-artifacts__meta-row {
+  display: grid;
+  grid-template-columns: minmax(0, var(--forge-space-16)) minmax(0, 1fr);
+  gap: var(--forge-space-3);
+  align-items: baseline;
+  min-inline-size: 0;
+}
+
+.fw-artifacts__meta-row dd {
+  margin: 0;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-artifacts__preview-body {
+  min-inline-size: 0;
+}
+
+/* ------------------------------------------------------------- markdown */
+
+.fw-artifacts__md {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-artifacts__md-h1 {
+  font-size: var(--forge-text-md);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+  padding-block-end: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-artifacts__md-h2 {
+  margin-block-start: var(--forge-space-2);
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__md-h3 {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-artifacts__md-p {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.fw-artifacts__md-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding-inline-start: var(--forge-space-5);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-artifacts__md-list li::marker {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-artifacts__md strong {
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__md em {
+  font-style: italic;
+  color: var(--forge-color-text);
+}
+
+.fw-artifacts__md .fg-machine {
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-surface-2);
+  font-size: var(--forge-text-xs);
+}
+
+/* ---------------------------------------------------------- placeholder */
+
+.fw-artifacts__frame {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.fw-artifacts__frame-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--forge-space-2);
+  aspect-ratio: var(--fw-artifacts-ratio, 16 / 10);
+  max-block-size: var(--forge-layout-dock);
+  padding: var(--forge-space-4);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-faint);
+  text-align: center;
+}
+
+.fw-artifacts__frame-dims {
+  font-size: var(--forge-text-xs);
+  letter-spacing: var(--forge-tracking-wide);
+}
+
+.fw-artifacts__frame-note {
+  max-inline-size: 34ch;
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-artifacts__frame-caption {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+}
+
+/* ------------------------------------------------------- console output */
+
+.fw-artifacts__output {
+  margin: 0;
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  white-space: pre;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+/* ---------------------------------------------------------------- foot */
+
+.fw-artifacts__preview-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  padding: var(--fw-gutter-tight) var(--fw-gutter);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-artifacts__inert {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   Density
+   ========================================================================= */
+
+:root[data-density='compact'] .fw-artifacts__title {
+  font-size: var(--forge-text-lg);
+}
+
+:root[data-density='compact'] .fw-artifacts__card {
+  gap: var(--forge-space-1);
+}
+
+:root[data-density='compact'] .fw-artifacts__md {
+  gap: var(--forge-space-2);
+}
+
+/* =========================================================================
+   Narrow layout — one column, preview above the gallery
+   ========================================================================= */
+
+@media (max-width: 1000px) {
+  .fw-artifacts__body[data-preview='true'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .fw-artifacts__preview {
+    order: -1;
+    border-inline-start: 0;
+    border-block-end: var(--forge-border-hair) solid var(--forge-color-line);
+  }
+
+  .fw-artifacts__preview-head {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--forge-z-sticky);
+    background: var(--forge-color-surface-1);
+  }
+}
+
+@media (max-width: 620px) {
+  .fw-artifacts__list[data-layout='grid'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

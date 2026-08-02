@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for production ML / MLOps tasks (OPT-IN Python). Owner-editable. Used by the forge-graded-verify skill: review-boss (or ml-engineer / data-scientist) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; promotion to production is always a separate explicit owner decision. ADAPT per project; do not drop-in blindly. Pairs with the forge-mlops playbook.",
+  "domain": "mlops",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "reproducible_training",
+      "descriptor": "1=notebook run, no seed/pinning, metric not reproducible; 2=some pinning but data/config unversioned, rerun drifts; 3=seeds fixed + deps pinned + data/code/config versioned, metric regenerates; 4=fully reproducible (same code+data -> same metric with real command output), tracked in MLflow/DVC with the run captured",
+      "raise": "fix seeds, pin dependencies, version data+code+config (DVC/MLflow), and prove the same run regenerates the same metric"
+    },
+    {
+      "id": "model_versioning_rollback",
+      "descriptor": "1=model artifact overwritten in place, no version, no rollback; 2=versioned but no tested rollback or no fallback; 3=immutable versioned artifact in a registry with metrics + a rollback path; 4=registry with data/metric provenance, an exercised rollback, and a fallback model / graceful degradation on serve failure",
+      "raise": "register each model as an immutable version with its data+metrics, and actually exercise a rollback plus a fallback/graceful-degradation path"
+    },
+    {
+      "id": "eval_offline_online",
+      "descriptor": "1=single train score, no holdout, no baseline; 2=a holdout metric but no comparison to the incumbent or wrong validation scheme; 3=proper holdout/backtest with the right metric compared against the incumbent; 4=offline eval vs incumbent (correct scheme, no leakage) AND an online shadow/canary/A-B before any promotion",
+      "raise": "evaluate on a proper holdout/backtest with the task-appropriate metric against the incumbent, then run a shadow/canary before promoting"
+    },
+    {
+      "id": "drift_monitoring",
+      "descriptor": "1=no monitoring, no train/serve parity; 2=basic logging but no drift/decay detection or a train/serve skew exists; 3=feature+prediction drift and performance decay monitored with alerts, feature parity held; 4=drift+decay monitors with alert thresholds + defined retrain triggers, no train/serve skew, serving has health checks/timeouts/bounded retries",
+      "raise": "add feature+prediction drift and decay monitoring with alert thresholds and retrain triggers, and prove feature parity between training and serving"
+    },
+    {
+      "id": "safe_rollout_no_auto_action",
+      "descriptor": "1=model auto-triggers a real-money/irreversible/outward action, or hard-cutover onto a critical path; 2=rollout is abrupt or the promotion path is unclear; 3=gradual rollout, no autonomous irreversible action, promotion is manual; 4=shadow/canary rollout, promotion explicitly owner-gated, provably no autonomous real-money/irreversible/outward action, no secrets in artifacts",
+      "raise": "roll out via shadow/canary, remove any autonomous real-money/irreversible action path, and make production promotion an explicit owner-gated step"
+    }
+  ]
+}

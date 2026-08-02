@@ -1,0 +1,80 @@
+{
+  "_doc": "Forge V2 — Required-evidence gate, piece C2 (2026-07-18). Per project-type NON-NEGOTIABLE deliverables/checks to auto-inject into the PRD and Boss dispatch prompts, so a build can't quietly skip a domain's baseline (the repeated real ask: 'prove it, don't just say done'). Every entry is grounded in a REAL source: either FABLE5_SAFE_GLOBAL_POLICY.md's per-domain working-principles bullet (quoted verbatim per requirement, same evidence discipline FORGE_STANDING_RULES.json uses) or ~/.claude/rules/ecc/.web-backup-prescope/{design-quality,testing}.md for the website anti-template + breakpoint detail. This file does NOT enforce anything by itself — it is read by the Lead/PRD step (forge-intake / forge-prd) to seed requirements text, and by required-evidence.json's companion forge-evidence.cjs to know what 'done' must be able to point to. Domain keys match forge-router SKILL.md Step 1's domain slugs exactly (website, fullstack, n8n, scraping, rag, prediction, integration) — do not invent a new slug here without also adding it to forge-router. Advisory/injection-only, matches this project's light-security governance (CLAUDE.md: 'no mandatory security gates') — nothing here blocks a run by itself; required-evidence.json + forge-evidence.cjs is the (also advisory) proof-side check.",
+  "version": 1,
+  "domains": {
+    "website": {
+      "playbook": "forge-website",
+      "requirements": [
+        { "id": "real-content", "text": "No lorem ipsum or placeholder copy anywhere in the shipped build — real, final content only.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"real content (no lorem/placeholder)\"." },
+        { "id": "responsive-breakpoints", "text": "Responsive layout verified at desktop, tablet, and mobile — minimum breakpoints 320, 768, 1024, 1440.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"responsive desktop + tablet + mobile\"; breakpoint set from ~/.claude/rules/ecc/.web-backup-prescope/testing.md 'Responsive' section, verbatim: \"Test 320, 375, 768, 1024, 1440, 1920\"." },
+        { "id": "interactive-states", "text": "Nav, forms, and search implement loading, empty, and error states, not just the happy path.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"working nav/forms/search with loading + empty + error states\"." },
+        { "id": "zero-console-errors", "text": "Zero console errors in the browser at any verified breakpoint.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"zero console errors\"." },
+        { "id": "accessibility-basics", "text": "Accessibility basics covered: semantic HTML, color contrast, keyboard navigation.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"accessibility basics\"." },
+        { "id": "anti-template-design", "text": "Intentional, non-template visual design — not a default Tailwind/shadcn/bootstrap look.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"intentional non-template design\"; detail from ~/.claude/rules/ecc/.web-backup-prescope/design-quality.md 'Anti-Template Policy' section." },
+        { "id": "screenshot-check", "text": "A real responsive screenshot check performed and reviewed before the build is called done.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Websites / landing / SPAs' bullet, verbatim: \"a screenshot check before calling it done\"." }
+      ]
+    },
+    "fullstack": {
+      "playbook": "forge-fullstack",
+      "requirements": [
+        { "id": "server-side-auth", "text": "Auth enforced server-side on every protected route — never client-side only.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Full-stack apps' bullet, verbatim: \"auth enforced server-side on every protected route\"." },
+        { "id": "boundary-validation", "text": "Input validated at system boundaries before it is used.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Full-stack apps' bullet, verbatim: \"input validated at boundaries\"." },
+        { "id": "secrets-in-env", "text": "Secrets live in environment variables, with a matching placeholder added to .env.example — never hardcoded.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Full-stack apps' bullet, verbatim: \"secrets in env + .env.example\"." },
+        { "id": "reviewed-reversible-migrations", "text": "DB migrations are reviewed and reversible.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Full-stack apps' bullet, verbatim: \"DB migrations reviewed + reversible\"." },
+        { "id": "real-e2e-green", "text": "Real end-to-end tests pass — not just unit tests.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Full-stack apps' bullet, verbatim: \"real e2e green\"." },
+        { "id": "integration-gate", "text": "An integration gate runs against the assembled app (boots clean, real flow works) — green unit tests alone are insufficient.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Full-stack apps' bullet, verbatim: \"an integration-gate on the assembled app (not just green unit tests)\"." }
+      ]
+    },
+    "n8n": {
+      "playbook": "forge-n8n",
+      "requirements": [
+        { "id": "webhook-validation", "text": "Webhook method, schema, and auth are validated.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"validate webhook method/schema/auth\"." },
+        { "id": "error-retry-idempotency", "text": "An error branch plus retry/idempotency handling exists.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"an error branch + retry/idempotency\"." },
+        { "id": "prod-test-separation", "text": "Production and test workflow/URLs are kept separate.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"prod/test separation\"." },
+        { "id": "validate-workflow-run", "text": "validate_workflow (or validate_node) is run and its output is clean or its real errors resolved.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"run validate_workflow\"." },
+        { "id": "inactive-by-default-import", "text": "Imported/new workflows stay inactive until the owner explicitly approves activation.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"import inactive-by-default\"." },
+        { "id": "credentials-metadata-only", "text": "Credentials are referenced as metadata only — never hardcoded secrets in files.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"credentials as metadata only (no secrets in files)\"." },
+        { "id": "no-unearned-production-ready", "text": "Never claim 'production-ready' without validation, and never live-activate without explicit owner approval.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'n8n / automations' bullet, verbatim: \"never claim 'production-ready' without validation or live-activate without owner approval\"." }
+      ]
+    },
+    "scraping": {
+      "playbook": "forge-scraping",
+      "requirements": [
+        { "id": "permitted-sources-only", "text": "Only public, official, or explicitly permitted sources are scraped.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Scraping / data' bullet, verbatim: \"public / official / permitted sources only\"." },
+        { "id": "robots-and-rate-limits", "text": "robots.txt is respected and rate limits are honored.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Scraping / data' bullet, verbatim: \"respect robots + rate limits\"." },
+        { "id": "no-bypass", "text": "No login/paywall/credential bypass, and no use of leaked data.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Scraping / data' bullet, verbatim: \"NO login/paywall/credential bypass or leaked-data use\"." },
+        { "id": "outreach-drafted-only", "text": "Any outreach drawn from scraped data is drafted-only — never auto-sent without explicit owner approval.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Scraping / data' bullet, verbatim: \"outreach is drafted-only unless the owner explicitly approves sending\"." }
+      ]
+    },
+    "rag": {
+      "playbook": "forge-rag",
+      "requirements": [
+        { "id": "source-grounded-citations", "text": "Answers are source-grounded with citations — never fabricated business facts.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'RAG / chatbots / AI voice agents' bullet, verbatim: \"source-grounded answers with citations\"." },
+        { "id": "honest-fallback", "text": "An honest fallback response exists for when the system is unsure — no hallucinated business facts.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'RAG / chatbots / AI voice agents' bullet, verbatim: \"an honest fallback when unsure (no hallucinated business facts)\"." },
+        { "id": "idempotent-ingestion", "text": "Document ingestion is idempotent — re-running ingestion does not duplicate or corrupt the knowledge base.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'RAG / chatbots / AI voice agents' bullet, verbatim: \"idempotent ingestion\"." },
+        { "id": "human-handoff", "text": "A human-handoff path exists for questions the system can't answer.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'RAG / chatbots / AI voice agents' bullet, verbatim: \"human-handoff\"." },
+        { "id": "consent-aware-lead-capture", "text": "Lead capture, where present, is consent-aware.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'RAG / chatbots / AI voice agents' bullet, verbatim: \"consent-aware lead capture\"." }
+      ]
+    },
+    "prediction": {
+      "playbook": "forge-prediction",
+      "requirements": [
+        { "id": "verified-data-sources", "text": "Data sources are verified, not assumed or fabricated.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Prediction / sports-data' bullet, verbatim: \"verified data sources\"." },
+        { "id": "real-backtesting", "text": "Real backtesting is performed and reported.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Prediction / sports-data' bullet, verbatim: \"real backtesting\"." },
+        { "id": "uncertainty-confidence-labels", "text": "Every prediction/tip carries a mandatory uncertainty/confidence/risk label.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Prediction / sports-data' bullet, verbatim: \"mandatory uncertainty/confidence/risk labels\"." },
+        { "id": "never-claim-certainty", "text": "Predictions never claim certainty.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Prediction / sports-data' bullet, verbatim: \"never claim certainty\"." },
+        { "id": "no-automatic-real-money-betting", "text": "No automatic real-money betting is ever executed by the system.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Prediction / sports-data' bullet, verbatim: \"NO automatic real-money betting\"." }
+      ]
+    },
+    "integration": {
+      "playbook": "forge-integration",
+      "requirements": [
+        { "id": "webhook-auth-signature", "text": "Webhook auth/signature checks are enforced on every incoming webhook.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Telegram / bots / API integrations' bullet, verbatim: \"webhook auth/signature checks\"." },
+        { "id": "minimal-oauth-scopes", "text": "OAuth scopes requested are minimal, not broad.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Telegram / bots / API integrations' bullet, verbatim: \"minimal OAuth scopes\"." },
+        { "id": "retries-dead-letter-clear-errors", "text": "Retries, a dead-letter path, and clear errors exist for failed deliveries.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Telegram / bots / API integrations' bullet, verbatim: \"retries + dead-letter + clear errors\"." },
+        { "id": "safe-logging", "text": "Logging never leaks tokens or PII.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Telegram / bots / API integrations' bullet, verbatim: \"safe logging (never leak tokens/PII)\"." },
+        { "id": "outreach-drafted-only", "text": "Outreach/messages are drafted-only — never auto-sent without explicit owner approval.", "source": "FABLE5_SAFE_GLOBAL_POLICY.md per-domain principles, 'Telegram / bots / API integrations' bullet, verbatim: \"outreach drafted-only / no auto-send\"." }
+      ]
+    }
+  }
+}

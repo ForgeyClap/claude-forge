@@ -1,0 +1,71 @@
+{
+  "_doc": "Forge V2 — Required-evidence gate, piece C2 (2026-07-18). Per domain, the PROOF artifacts/events that MUST exist for a run to honestly be called 'done' — encodes the repeated owner ask 'prove it with REAL proof' and kills the failure mode where a doctor/verify pass says done but the underlying evidence was never produced. Consumed ONLY via .claude/forge-bin/forge-evidence.cjs::check({domain, artifacts, events}, opts) — no other file may re-implement this matching logic (same single-source-of-truth discipline forge-actiongate.cjs established for hard-gates.json). Each domain lists its own required evidence set; a domain's requirement set is deliberately the PROOF-shaped counterpart of that same domain's requirements in domain-presets.json (a requirement there names the standard, an evidence item here names how a run shows it met that standard) but the two files are independent — forge-evidence.cjs never reads domain-presets.json. Evidence 'presence' is judged ONLY from the artifact paths/ids and logged event types a caller actually passes in — forge-evidence.cjs never scans the filesystem or invents proof; absence is reported honestly as missing. kind:'artifact' items are satisfied when ANY supplied artifact string contains (case-insensitive) ANY of any_of_substrings; kind:'event' items are satisfied when ANY supplied event type exactly matches (case-insensitive) ANY of any_of_events; kind:'artifact_or_event' items are satisfied by either path. Advisory, matches this project's light-security governance (CLAUDE.md: 'no mandatory security gates') — a 'missing' result is a loud, honest report for the Lead/owner to act on, not a hook that silently blocks anything.",
+  "_doc_tooling_domain": "tooling / meta / dev-tooling domain added 2026-07-22 — closes a real config gap the forge-2026-07-22-v9-selfaudit self-audit run surfaced honestly: FORGE_HARD_RULES.json's cannot_override 'evidence-satisfied' rule could NEVER be satisfied for domain 'tooling' because this file had no 'tooling' entry at all (forge-evidence.cjs::listDomains() confirmed it absent, and forge-verify.cjs::evidenceCheck() returns null — not ok:true — for any domain unrecognized here). The 3 items below are the GENUINE, defensible standard for what ANY properly-done tooling/dev-tooling/meta task (CLAUDE.md's per-domain-principles 'Tooling / dev-systems / meta' bullet: 'change the canonical template first then sync, ship real tests with honest proof, never fake agents/runs/reviews, and back up before any destructive edit') must actually produce — deliberately NOT reverse-engineered from what the one existing self-audit run happens to already have (that run's own honest run-contract result, including whichever item(s) it genuinely still lacks, is recorded verbatim in this project's build-boss memory rather than papered over here). (1) 'verified-check-or-doctor-run' — a real verification signal. check_passed is trustworthy proof BY CONSTRUCTION here, not by mere convention: log-event.cjs's own CONTENT ORACLE (its PROOF_EVENTS/PASS_ASSERTION_EVENTS table, see verifyEvent()) REFUSES — under this project's default STRICT mode, exit code 2 — to even write a check_passed event whose own proof_verified check already failed (a non-zero exit_code, or none of command/output/evidence/output_artifact present); so under normal operation the mere PRESENCE of a check_passed event_type in a run's events.jsonl already means it was proof-verified at write time, and this file deliberately does not re-derive proof_verified itself a second time (that would duplicate log-event.cjs's own oracle, against this project's single-source-of-truth discipline). doctor_run is accepted as an OR-alternative: a weaker but still tool-written (never agent-self-claimed free text) signal — forge-doctor.cjs's own '--run' CLI flag writes doctor_run directly from its real computed rep.ok result, alongside a doctor.json artifact. (2) 'final-report-artifact' — a real, non-empty final-report artifact must exist for the run, mirroring the run-artifact contract CLAUDE.md already documents (.claude/forge-runs/<run_id>/final-report.md) and FORGE_HARD_RULES.json's separate 'report-present' hard rule already enforces via a real directory scan — required again here, independently, so a direct forge-evidence.cjs::check({domain:'tooling',...}) call (bypassing forge-runcontract.cjs entirely) still demands it on its own. (3) 'audit-or-analysis-artifact' — at least one real audit/analysis signal: this project's own two dedicated tooling self-audit tools (forge-audit-loop.cjs's audit_iteration/audit_finding events, forge-capabilities.cjs's capabilities_reported event — all three already registered in log-event.cjs KNOWN_EVENT_TYPES, per this task's own grounding instruction) or a real audit-evidence/capabilities-report artifact file reference — never a bare narrative 'note' field merely mentioning that an audit tool was run (a free-text note is not evidence forge-evidence.cjs can honestly credit). Seeded under THREE domain keys with an IDENTICAL evidence array — 'tooling' (canonical: matches FORGE_PROJECT_PROFILE.md's own declared project type and the real self-audit run's logged domain=tooling), 'meta', and 'dev-tooling' (both named alongside 'tooling' in CLAUDE.md's 'Tooling / dev-systems / meta' bullet) — because forge-evidence.cjs's schema/loader has NO alias or pointer mechanism today (confirmed by reading loadConfig()/check(): each domains{} key is looked up directly, only case-folded, never redirected to another key); duplicating the same 3-item array under all three keys honestly covers the whole naming family without inventing a new alias feature outside this task's scope.",
+  "version": 1,
+  "domains": {
+    "website": {
+      "evidence": [
+        { "id": "responsive-screenshot-mobile", "label": "A real mobile-breakpoint screenshot artifact exists.", "kind": "artifact", "any_of_substrings": ["mobile", "320", "375", "390", "414"] },
+        { "id": "responsive-screenshot-tablet", "label": "A real tablet-breakpoint screenshot artifact exists.", "kind": "artifact", "any_of_substrings": ["tablet", "768"] },
+        { "id": "responsive-screenshot-desktop", "label": "A real desktop-breakpoint screenshot artifact exists.", "kind": "artifact", "any_of_substrings": ["desktop", "1024", "1440", "1920"] },
+        { "id": "zero-console-errors-note", "label": "A zero-console-errors note (artifact or logged event) exists.", "kind": "artifact_or_event", "any_of_substrings": ["console-error", "console_error", "zero-console", "zero_console"], "any_of_events": ["zero_console_errors_noted"] }
+      ]
+    },
+    "fullstack": {
+      "evidence": [
+        { "id": "e2e-test-result", "label": "A real e2e test result artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["e2e", "end-to-end", "end_to_end"], "any_of_events": ["e2e_passed", "e2e_result"] },
+        { "id": "integration-gate-result", "label": "An integration-gate result artifact/event exists (assembled app boots clean, real flow works).", "kind": "artifact_or_event", "any_of_substrings": ["integration-gate", "integration_gate"], "any_of_events": ["integration_gate_passed"] }
+      ]
+    },
+    "n8n": {
+      "evidence": [
+        { "id": "validate-workflow-output", "label": "A validate_workflow (or validate_node) output artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["validate_workflow", "validate-workflow", "validate_node"], "any_of_events": ["validate_workflow_passed", "workflow_validated"] },
+        { "id": "inactive-import-note", "label": "A note confirming the workflow was imported inactive-by-default exists.", "kind": "artifact_or_event", "any_of_substrings": ["inactive-import", "inactive_import", "imported-inactive", "imported_inactive"], "any_of_events": ["workflow_imported_inactive"] }
+      ]
+    },
+    "scraping": {
+      "evidence": [
+        { "id": "source-robots-note", "label": "A source/robots compliance note artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["robots", "source-note", "source_note", "source-compliance"], "any_of_events": ["robots_checked", "source_compliance_noted"] }
+      ]
+    },
+    "rag": {
+      "evidence": [
+        { "id": "citation-grounding-note", "label": "A source-grounded citation note/example exists.", "kind": "artifact_or_event", "any_of_substrings": ["citation", "source-grounded", "source_grounded"], "any_of_events": ["citation_verified"] },
+        { "id": "idempotent-ingestion-note", "label": "An idempotent-ingestion verification note exists.", "kind": "artifact_or_event", "any_of_substrings": ["idempotent-ingestion", "idempotent_ingestion"], "any_of_events": ["ingestion_idempotency_verified"] }
+      ]
+    },
+    "prediction": {
+      "evidence": [
+        { "id": "backtest-result", "label": "A real backtest result artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["backtest"], "any_of_events": ["backtest_completed"] },
+        { "id": "uncertainty-label-note", "label": "An uncertainty/confidence/risk label note exists.", "kind": "artifact_or_event", "any_of_substrings": ["uncertainty", "confidence-label", "confidence_label", "risk-label", "risk_label"], "any_of_events": ["uncertainty_labels_applied"] }
+      ]
+    },
+    "integration": {
+      "evidence": [
+        { "id": "webhook-auth-check-note", "label": "A webhook auth/signature check note exists.", "kind": "artifact_or_event", "any_of_substrings": ["webhook-auth", "webhook_auth", "signature-check", "signature_check"], "any_of_events": ["webhook_auth_verified"] },
+        { "id": "outreach-drafted-only-note", "label": "A drafted-only-outreach confirmation note exists.", "kind": "artifact_or_event", "any_of_substrings": ["drafted-only", "drafted_only"], "any_of_events": ["outreach_drafted_only_noted"] }
+      ]
+    },
+    "tooling": {
+      "evidence": [
+        { "id": "verified-check-or-doctor-run", "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.", "kind": "artifact_or_event", "any_of_substrings": ["doctor.json", "doctor-report", "forge-doctor"], "any_of_events": ["check_passed", "doctor_run"] },
+        { "id": "final-report-artifact", "label": "A real, non-empty final-report artifact exists for this run.", "kind": "artifact", "any_of_substrings": ["final-report"] },
+        { "id": "audit-or-analysis-artifact", "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.", "kind": "artifact_or_event", "any_of_substrings": ["audit-evidence", "audit_evidence", "capabilities-report", "capabilities_report", "audit-report"], "any_of_events": ["audit_iteration", "audit_finding", "capabilities_reported"] }
+      ]
+    },
+    "meta": {
+      "evidence": [
+        { "id": "verified-check-or-doctor-run", "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.", "kind": "artifact_or_event", "any_of_substrings": ["doctor.json", "doctor-report", "forge-doctor"], "any_of_events": ["check_passed", "doctor_run"] },
+        { "id": "final-report-artifact", "label": "A real, non-empty final-report artifact exists for this run.", "kind": "artifact", "any_of_substrings": ["final-report"] },
+        { "id": "audit-or-analysis-artifact", "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.", "kind": "artifact_or_event", "any_of_substrings": ["audit-evidence", "audit_evidence", "capabilities-report", "capabilities_report", "audit-report"], "any_of_events": ["audit_iteration", "audit_finding", "capabilities_reported"] }
+      ]
+    },
+    "dev-tooling": {
+      "evidence": [
+        { "id": "verified-check-or-doctor-run", "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.", "kind": "artifact_or_event", "any_of_substrings": ["doctor.json", "doctor-report", "forge-doctor"], "any_of_events": ["check_passed", "doctor_run"] },
+        { "id": "final-report-artifact", "label": "A real, non-empty final-report artifact exists for this run.", "kind": "artifact", "any_of_substrings": ["final-report"] },
+        { "id": "audit-or-analysis-artifact", "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.", "kind": "artifact_or_event", "any_of_substrings": ["audit-evidence", "audit_evidence", "capabilities-report", "capabilities_report", "audit-report"], "any_of_events": ["audit_iteration", "audit_finding", "capabilities_reported"] }
+      ]
+    }
+  }
+}

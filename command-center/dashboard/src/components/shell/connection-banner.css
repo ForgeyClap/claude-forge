@@ -1,0 +1,182 @@
+/*
+ * Connection banner.
+ *
+ * A small floating strip pinned to the top-centre of the viewport, shown only
+ * when the bridge connection is not healthy. It sits above the shell chrome but
+ * below modals and toasts, and it never spans a blocking layer — the page
+ * underneath stays fully usable.
+ *
+ * Colour is monochrome. Severity is carried by the WEIGHT of a single left
+ * accent bar (via the --forge-status-* tokens), not by a hue, so the strip reads
+ * the same in greyscale as in full colour.
+ */
+
+.fw-conn {
+  position: fixed;
+  inset-block-start: var(--forge-space-3);
+  inset-inline: 0;
+  margin-inline: auto;
+  z-index: var(--forge-z-overlay);
+
+  display: grid;
+  grid-template-columns: var(--forge-icon-sm) minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--forge-space-3);
+
+  inline-size: min(40rem, calc(100vw - var(--forge-space-8)));
+  padding: var(--forge-space-3) var(--forge-space-4);
+  padding-inline-start: calc(var(--forge-space-4) + var(--forge-border-thick));
+
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-lg);
+  overflow: hidden;
+
+  animation: fw-conn-in var(--forge-motion-base) var(--forge-motion-ease-enter) both;
+}
+
+/* The severity accent. A left bar whose colour weight — not its hue — signals
+   how serious the state is. */
+.fw-conn__accent {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: var(--forge-border-thick);
+  background: var(--forge-color-line-loud);
+}
+
+.fw-conn[data-status='CONNECTING'] .fw-conn__accent {
+  background: var(--forge-status-waiting);
+}
+
+.fw-conn[data-status='DEGRADED'] .fw-conn__accent {
+  background: var(--forge-status-review);
+}
+
+.fw-conn[data-status='DISCONNECTED'] {
+  border-color: var(--forge-color-line-strong);
+}
+
+.fw-conn[data-status='DISCONNECTED'] .fw-conn__accent {
+  background: var(--forge-status-failed);
+}
+
+.fw-conn__icon {
+  margin-block-start: 2px;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-conn__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-conn__title {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+}
+
+.fw-conn__detail {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-conn__reconcile {
+  color: var(--forge-color-text-secondary);
+}
+
+/* The start command, monospace, with a copy affordance. */
+.fw-conn__command {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  margin-block-start: var(--forge-space-1);
+  padding: var(--forge-space-1) var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-sunken);
+  min-inline-size: 0;
+}
+
+.fw-conn__command-icon {
+  color: var(--forge-color-text-faint);
+  flex: none;
+}
+
+.fw-conn__code {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.fw-conn__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  padding: 2px var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  cursor: pointer;
+  transition: background var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-conn__copy:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-conn__copy:focus-visible {
+  outline: none;
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-conn__meta {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-conn__endpoint {
+  font-family: var(--forge-font-mono);
+  color: var(--forge-color-text-muted);
+}
+
+/* ----------------------------------------------------------------- narrow */
+
+@media (max-width: 640px) {
+  .fw-conn {
+    inset-inline: var(--forge-space-3);
+    inline-size: auto;
+  }
+}
+
+/* ----------------------------------------------------------------- motion */
+
+@keyframes fw-conn-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--forge-space-3)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-conn {
+    animation: none;
+  }
+}

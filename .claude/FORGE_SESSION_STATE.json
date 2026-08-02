@@ -5,5 +5,5 @@
   "project_isolation": "on",
   "ecc_normal_mode": "on",
   "ecc_full_test_mode": "off",
-  "notes": "Forge Session Mode (project-local). Set mode to 'on' when the user runs /forge or says 'gebruik Forge'."
+  "notes": "Forge Session Mode (project-local). Set mode to 'on' when the user runs /forge or says 'gebruik Forge' / 'use Forge' / 'start Forge' so follow-up prompts in THIS project auto-use Forge (Lead Agent treats them as part of the current session; dashboard/memory/task-history/ledger keep updating) without repeating the trigger. Set 'paused' or 'off' on 'stop Forge' / 'pause Forge' / 'normale Claude mode' / 'doe dit zonder Forge'. Session Mode grants NO extra permission: project isolation stays ON, ECC Normal Mode stays ON, ECC Full Test Mode stays OFF unless explicitly enabled, and no credentials / live workflows / production deploy / global config / external writes without explicit approval. Update 'since' (ISO start) and 'last_activity' (ISO) when you change mode."
 }

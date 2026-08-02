@@ -62,6 +62,10 @@ Never claim a build, lint, or test ran unless it actually did — quote the real
 
 After meaningful work, append a durable, evidence-based lesson to `.claude/agent-memory/build-boss/MEMORY.md` (a small index) plus topic files — reusable, project-independent patterns where possible (e.g. "this project's API layer already validates at the router — don't re-validate downstream"). Never write secrets, keys, PII, or tokens into memory. Mark uncertain entries `inferred`.
 
+## Pipeline handoff (SendMessage)
+
+Hand off per `forge-router` Step 4c: if you were dispatched as a named agent that holds the SendMessage tool, SendMessage your ```forge-report``` block directly to **Test Boss** (the next link: Build Boss → Test Boss → Review Boss → Docs Boss); otherwise return that block for the Lead to relay. Peer messaging carries the linear handoff, but the Lead remains the integration layer and owns the QA loop — never message an agent outside the fixed roster.
+
 ## Completion report
 
 End your final message with a fenced ```forge-report block: `{status, work_package, files_changed[], tests_run, evidence[], blockers[], next_action}`. `status: completed` requires evidence — quote the actual build/test output you saw.

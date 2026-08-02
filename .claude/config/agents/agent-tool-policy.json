@@ -1,7 +1,7 @@
 {
-  "_doc": "WP2 (2026-07-14) — the SOURCE OF TRUTH for least-privilege tool grants across all 18 Forge agent-md files (`.claude/agents/*.md`). This file is not documentation-only: `forge-doctor.cjs`'s `agents` check loads it and mechanically compares it against every agent-md's real frontmatter `tools:` line via `forge-policy.cjs`'s `toolPolicyCheck()`. Any drift (an agent gaining a tool not listed here, an agent missing from this file, a policy entry with no matching agent-md, or a class's own forbidden tool showing up in an agent's allowed list) fails forge-doctor and forge-bench. Change tool grants HERE first, keep them in sync with the real agent-md, then re-run forge-doctor.",
+  "_doc": "WP2 (2026-07-14) — the SOURCE OF TRUTH for least-privilege tool grants across all 19 Forge agent-md files (`.claude/agents/*.md`). This file is not documentation-only: `forge-doctor.cjs`'s `agents` check loads it and mechanically compares it against every agent-md's real frontmatter `tools:` line via `forge-policy.cjs`'s `toolPolicyCheck()`. Any drift (an agent gaining a tool not listed here, an agent missing from this file, a policy entry with no matching agent-md, or a class's own forbidden tool showing up in an agent's allowed list) fails forge-doctor and forge-bench. Change tool grants HERE first, keep them in sync with the real agent-md, then re-run forge-doctor.",
   "bash_is_a_write_primitive": true,
-  "bash_is_a_write_primitive_note": "Bash is a write-AND-execute primitive, not a read primitive. An agent holding Bash can create, overwrite, or delete any file it can reach (`echo >`, `rm`, a redirect), run `git`/`npm`/`curl`, and invoke arbitrary other programs — REGARDLESS of whether that same agent also has the Write/Edit tool grant. Consequently: (1) an agent with Bash is NEVER meaningfully read-only, even if Write/Edit are absent from its `tools:` line — do not 'harden' an agent by deleting Write/Edit while leaving Bash in place, that removes a convenience API but leaves the exact same blast radius reachable through the shell; (2) the only class in this policy that grants Bash without Write/Edit is `exec-reviewer` (codex-reviewer), and it is explicitly documented below as a deliberate, narrow, non-read-only exception, never treated as read-only in any report or dashboard panel.",
+  "bash_is_a_write_primitive_note": "Bash is a write-AND-execute primitive, not a read primitive. An agent holding Bash can create, overwrite, or delete any file it can reach (`echo >`, `rm`, a redirect), run `git`/`npm`/`curl`, and invoke arbitrary other programs — REGARDLESS of whether that same agent also has the Write/Edit tool grant. Consequently: (1) an agent with Bash is NEVER meaningfully read-only, even if Write/Edit are absent from its `tools:` line — do not 'harden' an agent by deleting Write/Edit while leaving Bash in place, that removes a convenience API but leaves the exact same blast radius reachable through the shell; (2) the only class in this policy that grants Bash without Write/Edit is `exec-reviewer` (codex-reviewer and verify-boss), and it is explicitly documented below as a deliberate, narrow, non-read-only exception, never treated as read-only in any report or dashboard panel.",
   "classes": {
     "read-only-audit": {
       "tools_base": ["Read", "Grep", "Glob"],
@@ -22,7 +22,7 @@
     "exec-reviewer": {
       "tools": ["Bash", "Read", "Grep", "Glob"],
       "forbidden": ["Write", "Edit"],
-      "description": "Has Bash but not Write/Edit. IMPORTANT: this is NOT a read-only class (see bash_is_a_write_primitive_note above) — it is a deliberate, narrow exception for a role whose only actual need is invoking an external CLI/slash-command (the Codex plugin) via Bash, with no first-party need to edit repository files through the Write/Edit tool APIs itself. Used for: codex-reviewer only."
+      "description": "Has Bash but not Write/Edit. IMPORTANT: this is NOT a read-only class (see bash_is_a_write_primitive_note above) — it is a deliberate, narrow exception for a role whose only actual need is invoking an external CLI/slash-command (the Codex plugin) via Bash, with no first-party need to edit repository files through the Write/Edit tool APIs itself. Used for: codex-reviewer and verify-boss."
     }
   },
   "agents": {
@@ -131,8 +131,14 @@
     "codex-reviewer": {
       "class": "exec-reviewer",
       "tools": ["Bash", "Read", "Grep", "Glob"],
-      "model": "claude-opus-4-8",
+      "model": "claude-opus-5",
       "rationale": "Optional independent code-quality reviewer. Needs Bash solely to invoke the Codex CLI/slash-commands (`/codex:review`, `/codex:adversarial-review`) and to run `git diff`. Deliberately has NO Write/Edit — it must never directly edit the code it is reviewing. Per bash_is_a_write_primitive, this agent is NOT read-only despite lacking Write/Edit; it is classified exec-reviewer, a distinct, narrower-than-full-build class than a coder role, not a security-equivalent to review-boss/security-boss."
+    },
+    "verify-boss": {
+      "class": "exec-reviewer",
+      "tools": ["Bash", "Read", "Grep", "Glob"],
+      "model": "claude-opus-5",
+      "rationale": "Optional independent RE-EXECUTOR: re-runs the exact build/test/health-check command a Boss claims passed, from a cold read of the diff, and reports the literal exit code. Needs Bash to actually re-execute those checks (forge-doctor/forge-runwatch/forge-flaky/the cited test suite) — a re-executor that could not run a command would be pointless. Deliberately has NO Write/Edit — per bash_is_a_write_primitive it is NOT read-only, but it must never be able to 'fix' the very evidence it verifies, so exec-reviewer (Bash + Read/Grep/Glob, no Write/Edit) is the correct minimum. Distinct from codex-reviewer (external Codex opinion) and from read-only review-boss/security-boss (which cannot re-execute at all)."
     }
   }
 }

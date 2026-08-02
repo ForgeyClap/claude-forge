@@ -23,7 +23,7 @@ console.log('forge-deeplearn offline tests');
 // ---- Fixture A: risky project — secrets, no tests, no .gitignore, an oversized file ----
 // FAKE_SECRET is a deliberately fake test string (never a real credential) used only to prove
 // detection + non-leakage of the redaction logic.
-const FAKE_SECRET = '\x6Evapi-FAKEFAKEFAKEFAKEFAKE1234567890';
+const FAKE_SECRET = 'nvapi-FAKEFAKEFAKEFAKEFAKE1234567890';
 const riskyRoot = mkFixture('forge-deeplearn-risky-');
 write(riskyRoot, 'package.json', JSON.stringify({ name: 'risky-fixture', version: '1.0.0', dependencies: { react: '^18.0.0' } }, null, 2));
 write(riskyRoot, 'src/index.js', 'module.exports = function main() { return 1; };\n');

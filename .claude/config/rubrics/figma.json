@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for design-to-code (Figma / mockup translation) tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss (or ui-boss) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-figma playbook.",
+  "domain": "figma",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "visual_fidelity",
+      "descriptor": "1=output diverges clearly from the source, no comparison done; 2=roughly similar but built from memory, no side-by-side; 3=matches the source at the main breakpoint with a screenshot check; 4=side-by-side match at every declared breakpoint (spacing, sizing, hierarchy, states) with screenshot evidence",
+      "raise": "render the built UI and compare it side-by-side against the source frame at each breakpoint, then fix spacing/sizing/hierarchy/state gaps"
+    },
+    {
+      "id": "design_tokens",
+      "descriptor": "1=colours/spacing/type hardcoded per component; 2=some variables but drift and magic values remain; 3=tokens extracted to variables/theme and mostly reused; 4=colours, type, spacing, radii, shadows all live as tokens/theme reused everywhere, matching the design's real scale",
+      "raise": "extract the design's colours, typography, spacing, radii and shadows into tokens/variables and reference them instead of hardcoding per component"
+    },
+    {
+      "id": "responsive_fidelity",
+      "descriptor": "1=fixed-pixel layout that breaks off-frame; 2=one viewport only, others break; 3=adapts at the design's declared breakpoints; 4=honours every design breakpoint (e.g. desktop + mobile frames), no overflow, fluid where the design intends",
+      "raise": "wire the design's declared breakpoints with fluid/adaptive layout and verify no overflow at each"
+    },
+    {
+      "id": "accessibility",
+      "descriptor": "1=contrast fails / no semantics / no focus states; 2=partial a11y, some contrast or keyboard gaps; 3=semantic HTML, AA contrast, visible focus, keyboard-navigable; 4=AA contrast, semantic structure, visible focus, full keyboard nav, alt text/ARIA — and any contrast failure in the source is flagged back rather than shipped",
+      "raise": "use semantic HTML, meet WCAG AA contrast, add visible focus states and keyboard nav, and flag any source-side contrast failures instead of shipping them"
+    },
+    {
+      "id": "component_structure_and_source",
+      "descriptor": "1=copy-pasted one-offs, translation source unstated, invented measurements; 2=some reuse but duplicated variants, source unclear; 3=variants become prop-driven components, source stated; 4=components mirror the design's variant system (one prop-driven component per variant set), the translation source (Figma MCP vs provided exports) is stated, no invented measurements",
+      "raise": "collapse variant sets into single prop-driven components, state whether you translated from a Figma MCP read or provided exports, and never invent measurements you could not see"
+    }
+  ]
+}

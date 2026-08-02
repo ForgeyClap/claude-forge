@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for CMS tasks (WordPress + headless). Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-boss) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-cms playbook.",
+  "domain": "cms",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "content_model",
+      "descriptor": "1=business content hardcoded in the theme, no editable model; 2=partial model, editors still need code for common changes; 3=post types/fields/taxonomies (or headless schema) defined, content editable in the admin; 4=complete, well-named content model that non-technical editors can change without touching code, with sensible defaults and no hardcoded copy",
+      "raise": "define the post types/fields/taxonomies (or headless schema) so editors change all business content in the admin, and remove hardcoded copy from the theme"
+    },
+    {
+      "id": "cms_security",
+      "descriptor": "1=unescaped output / unsanitized input / string-built SQL, or client-exposed API tokens; 2=partial escaping, missing nonces/capability checks, or over-broad headless tokens/CORS; 3=WP output escaped + input sanitized + prepared queries + nonces & capability checks (or headless tokens server-side + CORS locked); 4=all of that plus vetted, version-pinned third-party plugins, child-theme (no core edits), and signature-verified CMS->build webhooks",
+      "raise": "escape output, sanitize input, use $wpdb->prepare, add nonces + current_user_can on state-changing actions (WP), or keep headless tokens server-side with locked CORS and verified webhooks"
+    },
+    {
+      "id": "secrets_hygiene",
+      "descriptor": "1=DB creds/API tokens committed or in the theme; 2=some secrets in env but wp-config or a token still committed; 3=secrets in env, wp-config.php not committed; 4=all secrets in env + .env.example placeholders, wp-config values via env constants, no token ever shipped to the browser, .gitignore covers wp-config and uploads",
+      "raise": "move DB creds and API tokens to env, keep wp-config.php out of git, and never ship a server-side token to the client"
+    },
+    {
+      "id": "migration_backup_safety",
+      "descriptor": "1=migration/update run on production with no backup; 2=backup taken but migration not reversible or uses raw SQL find/replace on serialized data; 3=backup before change + migration tested on staging; 4=full DB+uploads backup before any change, reversible migration proven on staging first, serialized data changed only with a serialization-safe tool (wp search-replace)",
+      "raise": "take a full DB + uploads backup before any change, test the migration on staging with a reversal path, and use wp search-replace (not raw SQL) for serialized data"
+    },
+    {
+      "id": "performance_a11y",
+      "descriptor": "1=no caching/optimization and inaccessible output; 2=some optimization but plugin bloat or a11y gaps (missing alt text, bad heading order, low contrast); 3=caching + image optimization + basic a11y on rendered output; 4=caching/object cache, optimized+lazy images within a CWV budget, minimal plugin footprint, and accessible output (semantic markup, alt text, heading order, contrast) evidenced",
+      "raise": "add page/object caching + image optimization within a CWV budget, trim plugin bloat, and fix a11y on rendered output (semantic markup, alt text, heading order, contrast)"
+    }
+  ]
+}

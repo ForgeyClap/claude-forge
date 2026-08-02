@@ -1,0 +1,233 @@
+/*
+ * CommandPalette.
+ *
+ * An overlay dialog pinned high on the viewport, the way a palette is expected
+ * to sit. One accent in the whole component: the leading edge of the active
+ * option. Everything else is surface, hairline and type weight.
+ */
+
+.fw-palette {
+  position: fixed;
+  inset: 0;
+  z-index: var(--forge-z-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--forge-space-6) var(--forge-space-4);
+}
+
+.fw-palette__scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--forge-color-overlay);
+  animation: fw-palette-fade var(--forge-motion-fast) var(--forge-motion-ease-enter) both;
+}
+
+.fw-palette__dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  max-inline-size: calc(var(--forge-layout-sidebar) * 2.4);
+  max-block-size: min(70vh, 34rem);
+  margin-block-start: max(var(--forge-space-8), 8vh);
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-xl);
+  box-shadow: var(--forge-shadow-lg);
+  overflow: hidden;
+  animation: fw-palette-in var(--forge-motion-base) var(--forge-motion-ease-enter) both;
+}
+
+/* ------------------------------------------------------------------ field */
+
+.fw-palette__field {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-block-size: var(--forge-control-xl);
+  padding-inline: var(--forge-space-4);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-palette__field-icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-palette__input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-snug);
+  padding-block: var(--forge-space-2);
+}
+
+.fw-palette__input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-palette__input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------- list */
+
+.fw-palette__list {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding: var(--forge-space-2);
+}
+
+.fw-palette__group + .fw-palette__group {
+  margin-block-start: var(--forge-space-2);
+  padding-block-start: var(--forge-space-2);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-palette__group-name {
+  display: block;
+  padding-inline: var(--forge-space-2);
+  padding-block: var(--forge-space-1);
+}
+
+.fw-palette__option {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid transparent;
+  border-inline-start: var(--forge-border-thick) solid transparent;
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-base);
+  cursor: pointer;
+}
+
+.fw-palette__option.is-active {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line);
+  /* The single rationed accent in this component. */
+  border-inline-start-color: var(--forge-color-accent);
+  color: var(--forge-color-text);
+}
+
+.fw-palette__option-icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-palette__option.is-active .fw-palette__option-icon {
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-palette__option-title {
+  flex: 0 1 auto;
+  font-weight: var(--forge-weight-medium);
+}
+
+.fw-palette__option-detail {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  text-align: end;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-palette__empty {
+  padding: var(--forge-space-6) var(--forge-space-4);
+  text-align: center;
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-muted);
+}
+
+/* ------------------------------------------------------------------- foot */
+
+.fw-palette__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  flex: none;
+  min-block-size: var(--forge-control-lg);
+  padding-inline: var(--forge-space-4);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-2);
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-palette__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+}
+
+.fw-palette__honesty {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--forge-color-text-faint);
+}
+
+/* ----------------------------------------------------------------- narrow */
+
+@media (max-width: 640px) {
+  .fw-palette {
+    padding: var(--forge-space-3);
+  }
+
+  .fw-palette__dialog {
+    margin-block-start: var(--forge-space-4);
+    max-block-size: min(78vh, 34rem);
+  }
+
+  .fw-palette__option-detail {
+    display: none;
+  }
+
+  .fw-palette__honesty {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------- density */
+
+:root[data-density='compact'] .fw-palette__list {
+  padding: var(--forge-space-1);
+}
+
+:root[data-density='compact'] .fw-palette__field {
+  min-block-size: var(--forge-control-lg);
+}
+
+/* ----------------------------------------------------------------- motion */
+
+@keyframes fw-palette-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fw-palette-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--forge-space-2) * -1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-palette__scrim,
+  .fw-palette__dialog {
+    animation: none !important;
+  }
+}

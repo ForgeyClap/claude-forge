@@ -317,6 +317,46 @@ function readArtifacts() {
   return out;
 }
 
+// V9-INTEGRATE (2026-07-22): "Capabilities & Enforcement" panel — GET /api/capabilities (forge-capabilities.cjs
+// report()) and GET /api/runcontract?run=<id> (forge-runcontract.cjs check()). Lazy, guarded requires of the
+// sibling forge-bin tools — SOFT dependency, same discipline forge-doctor.cjs already uses for its own soft
+// siblings (forge-sync.cjs/forge-verify.cjs): a missing/broken tool degrades the two endpoints honestly
+// ({ok:false, error}) instead of crashing the whole dashboard. Both tools are pure fs/path readers (never
+// spawn a subprocess, never write), so requiring them at server start carries no side effects.
+let capsTool = null;
+try { capsTool = require(path.join(CLAUDE_DIR, 'forge-bin', 'forge-capabilities.cjs')); } catch { capsTool = null; }
+let rcTool = null;
+try { rcTool = require(path.join(CLAUDE_DIR, 'forge-bin', 'forge-runcontract.cjs')); } catch { rcTool = null; }
+
+// V9-INTEGRATE (2026-07-22): readCapabilities()/readRunContract() are the PURE, exported read functions behind
+// GET /api/capabilities and GET /api/runcontract — extracted out of the inline route handler (mirroring the
+// readDoctor()/readBossAgents() convention already established above) SPECIFICALLY so a test can exercise the
+// real route logic (real capsTool.report()/rcTool.check() calls against THIS project's real .claude/, real
+// honest-degrade shape when a sibling tool is unavailable/throws) without binding a port or spinning up an
+// HTTP server — same "require server.cjs, call the exported pure function directly" discipline every other
+// forge-dashboard test in this project already uses (forge-artifact-endpoint.test.cjs, forge-doctor-panel.test.cjs).
+// Never mutates PROJECT_DIR/CLAUDE_DIR; always reads the real, single, per-install project this server serves.
+function readCapabilities() {
+  if (!capsTool) return { ok: false, error: 'forge-capabilities.cjs not available', capabilities: [], summary: null };
+  try { return Object.assign({ ok: true }, capsTool.report({ root: PROJECT_DIR })); }
+  catch (e) { return { ok: false, error: e.message, capabilities: [], summary: null }; }
+}
+function readRunContract(runId, domain) {
+  if (!rcTool) return { ok: false, error: 'forge-runcontract.cjs not available', run_id: runId };
+  try { return rcTool.check({ run_id: runId, domain: domain || null }, { root: PROJECT_DIR }); }
+  catch (e) { return { ok: false, error: e.message, run_id: runId }; }
+}
+// Cross-run analytics panel (2026-07-24): READ-ONLY read of the STATS.json that forge-stats.cjs already
+// computes (its only write) — the dashboard previously never surfaced it. Never runs forge-stats itself
+// (that walks every run + writes the file); it only serves the already-computed aggregate. Missing/malformed
+// STATS.json degrades honestly to {ok:false, error} with an empty perBoss — never a fabricated stat.
+function readStats() {
+  const raw = safeRead(path.join(RUNS_DIR, 'STATS.json'));
+  if (raw == null) return { ok: false, error: 'no STATS.json yet — run forge-stats.cjs after some runs', perBoss: {}, runs_scanned: 0 };
+  try { return Object.assign({ ok: true }, JSON.parse(raw)); }
+  catch (e) { return { ok: false, error: 'STATS.json parse error: ' + e.message, perBoss: {}, runs_scanned: 0 }; }
+}
+
 // WP7 Doctor: newest run's doctor.json (forge-bin/forge-doctor.cjs), compacted for the Doctor panel +
 // the Project Registry's test_status. Guarded/never-throws; returns null when no doctor run exists yet.
 function readDoctor() {
@@ -384,6 +424,11 @@ function readBossAgents() {
 // WP5 Vault: containment-guarded id validation + path resolution for GET /api/artifact/<id> — SAME shape
 // as readRun()'s guard above (regex allowlist + belt-and-suspenders startsWith(base+sep) containment).
 // Exported (module.exports below) so tests can exercise the guard without requiring server.cjs to bind a port.
+// V9-INTEGRATE (2026-07-22): GET /api/runcontract?run=<id> reuses the SAME run-id allowlist regex every
+// other guarded route here already uses (log-event.cjs / /api/run / /api/artifact) — no new containment
+// pattern invented. Exported so it can be exercised offline without binding a port (same discipline as
+// artifactIdOk above).
+function runIdOk(id) { return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id); }
 function artifactIdOk(id) { return typeof id === 'string' && /^[A-Za-z0-9_-]+$/.test(id); }
 function resolveArtifactPath(id) {
   if (!artifactIdOk(id)) return null;
@@ -468,7 +513,6 @@ const STATIC = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
-  '/i18n.js': ['i18n.js', 'text/javascript; charset=utf-8'],
   '/lenses.js': ['lenses.js', 'text/javascript; charset=utf-8'],
   '/panels.js': ['panels.js', 'text/javascript; charset=utf-8'],
   '/graph.js': ['graph.js', 'text/javascript; charset=utf-8'],
@@ -589,6 +633,32 @@ function handler(req, res) {
     if (raw == null) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'not found' })); }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); return res.end(raw);
   }
+  // V9-INTEGRATE (2026-07-22): GET /api/capabilities — READ-ONLY real capability-vs-usage inventory (never
+  // fabricated; degrades honestly to {ok:false, error} when the sibling tool is unavailable/throws, same
+  // shape every other route here uses). 200 either way — this is an advisory report, not a resource lookup.
+  if (req.method === 'GET' && pathname === '/api/capabilities') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify(readCapabilities()));
+  }
+  // GET /api/stats — READ-ONLY cross-run analytics from the already-computed STATS.json (forge-stats.cjs).
+  // 200 either way (advisory report, not a resource lookup): honest {ok:false,error} when absent/malformed.
+  if (req.method === 'GET' && pathname === '/api/stats') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify(readStats()));
+  }
+  // V9-INTEGRATE (2026-07-22): GET /api/runcontract?run=<id>[&domain=<d>] — READ-ONLY forge-runcontract.cjs
+  // check() against a real run. `run` is validated with the SAME allowlist regex every other guarded route
+  // here uses (runIdOk) before it ever reaches path.join — never trust a query-string value into a filesystem
+  // path unchecked. Malformed/missing run -> 400 (a usage error, not a resource that might exist); a run that
+  // exists but the tool throws on (e.g. no events.jsonl yet) -> 200 with {ok:false, error} (an honest advisory
+  // result, not a server fault).
+  if (req.method === 'GET' && pathname === '/api/runcontract') {
+    const runId = parsed.searchParams.get('run') || '';
+    if (!runIdOk(runId)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'bad or missing ?run=<id>' })); }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    const domain = parsed.searchParams.get('domain') || null;
+    return res.end(JSON.stringify(readRunContract(runId, domain)));
+  }
   res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' }));
 }
 
@@ -622,4 +692,4 @@ if (require.main === module) {
   listen(preferredPort(), PORT_SPAN);
 }
 
-module.exports = { artifactIdOk, resolveArtifactPath };
+module.exports = { artifactIdOk, resolveArtifactPath, runIdOk, readCapabilities, readRunContract };

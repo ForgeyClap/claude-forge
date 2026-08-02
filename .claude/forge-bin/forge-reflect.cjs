@@ -62,7 +62,17 @@ const TEXT_MAX = 500;
 const QUOTE_MAX = 300;
 
 // ---- small pure helpers (mirrors forge-distill.cjs's truncate/normalizeText idiom) ----
-function truncate(s, n) { s = String(s == null ? '' : s).replace(/[\p{Cc}]/gu, ' ').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+// fix-cap-order: SCRUB FIRST, cut second. This used to cut at 200/300 chars and leave redaction to
+// forge-memory.addLesson() further down the pipe — redaction therefore ran on ALREADY-CUT text. Every
+// pattern in forge-store.cjs that needs a trailing anchor (the full PEM block needs its
+// `-----END ... PRIVATE KEY-----`, a JWT needs all three dot-separated segments) then matched nothing
+// and the readable head survived into .claude/agent-memory/<boss>/lessons.jsonl. Measured on a real
+// events.jsonl-shaped `issue` field: a PEM header line (BEGIN-marker + base64 body, written out in
+// full in the test, never here — quoting it verbatim in a comment trips our own leak scan) came through
+// intact; scrubbing first yields `***REDACTED***`. The scrubber stays OWNED by forge-memory.cjs (this
+// file still reimplements no redaction of its own, per its own header) — it is only applied at the
+// right moment. Scrubbing twice is harmless: it is idempotent.
+function truncate(s, n) { s = memory.scrub(String(s == null ? '' : s)).replace(/[\p{Cc}]/gu, ' ').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 function normalizeText(s) { return String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim(); }
 
 /** Registry lookup: read-only, never writes agent-registry.json. Missing/unreadable registry -> empty

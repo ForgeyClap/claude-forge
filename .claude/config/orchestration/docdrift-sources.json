@@ -1,0 +1,119 @@
+{
+  "_doc": "forge-docdrift.cjs seed config (WP-GH-WIRE, 2026-07-26 — PATTERN_ADAPTED from the shanraisshan/claude-code-best-practice research finding, Forge-native reimplementation, no code copied). Each entry is a REAL claim this project's own skills/docs make that genuinely depends on an external, changeable source (an official Claude Code doc page or an n8n node doc page) — every 'check' string and every check_tokens entry was verified against the real, live page at seed time (2026-07-26) before being written here; see forge-docdrift SKILL.md for the honest heuristic/limits. Do NOT add a claim here without first reading BOTH the citing skill/doc file AND the live source page.",
+  "version": 1,
+  "sources": [
+    {
+      "id": "agent-memory-scope",
+      "skill": ".claude/agents/build-boss.md",
+      "rule_id": "subagent-frontmatter-memory",
+      "category": "claude-code-native",
+      "check": "Forge Boss agent files (e.g. build-boss.md's `memory: project`) use a real Claude Code subagent frontmatter field named `memory` with scope values user/project/local.",
+      "check_tokens": ["Persistent memory scope"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/sub-agents",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "agent-isolation-worktree",
+      "skill": ".claude/skills/forge-worktrees/SKILL.md",
+      "rule_id": "subagent-frontmatter-isolation",
+      "category": "claude-code-native",
+      "check": "A subagent frontmatter `isolation: worktree` field runs that subagent's Bash/PowerShell commands inside an isolated git worktree branched from the default branch.",
+      "check_tokens": ["isolation: worktree"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/sub-agents",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "agent-hooks-field",
+      "skill": ".claude/config/orchestration/HOOKS_OPT_IN.md",
+      "rule_id": "subagent-frontmatter-hooks",
+      "category": "claude-code-native",
+      "check": "Subagent frontmatter supports a `hooks:` field for lifecycle hooks scoped to that ONE subagent, distinct from project-level settings.json hooks.",
+      "check_tokens": ["Lifecycle hooks"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/sub-agents",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "agent-model-aliases",
+      "skill": ".claude/docs/model-routing.md",
+      "rule_id": "subagent-model-aliases",
+      "category": "claude-code-native",
+      "check": "The subagent frontmatter `model:` field accepts the routing aliases sonnet/opus/haiku/fable (matching FORGE_MODEL_ROUTING.json's alias set) in addition to a full model ID or `inherit`.",
+      "check_tokens": ["sonnet", "opus", "haiku", "fable"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/sub-agents",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "goal-command",
+      "skill": ".claude/config/orchestration/FORGE_AUTONOMY.json",
+      "rule_id": "native-goal-primitive",
+      "category": "claude-code-native",
+      "check": "The native `/goal <condition>` command keeps Claude working across turns until an owner-set completion condition is met.",
+      "check_tokens": ["keeps working across turns until the condition is met"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/slash-commands",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "loop-command",
+      "skill": ".claude/config/orchestration/FORGE_AUTONOMY.json",
+      "rule_id": "native-loop-primitive",
+      "category": "claude-code-native",
+      "check": "The native `/loop <interval>` command plus cron scheduling tools can run prompts repeatedly, poll for status, or set one-time reminders within a session.",
+      "check_tokens": ["cron scheduling tools to run prompts repeatedly"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/slash-commands",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "n8n-webhook-auth",
+      "skill": ".claude/skills/forge-n8n/SKILL.md",
+      "rule_id": "n8n-webhook-authentication",
+      "category": "n8n-node-behavior",
+      "check": "The n8n Webhook node exposes a configurable Authentication option and a configurable Respond behavior that forge-n8n's validation gate ('webhook auth enabled') depends on.",
+      "check_tokens": ["Authentication", "Respond"],
+      "source_url": "https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.webhook/",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "hooks-event-names",
+      "skill": ".claude/config/orchestration/HOOKS_OPT_IN.md",
+      "rule_id": "hooks-event-vocabulary",
+      "category": "claude-code-native",
+      "check": "HOOKS_OPT_IN.md documents PreToolUse/PostToolUse as real Claude Code hook event names.",
+      "check_tokens": ["PreToolUse", "PostToolUse"],
+      "source_url": "https://docs.anthropic.com/en/docs/claude-code/hooks-guide",
+      "added": "2026-07-26"
+    },
+    {
+      "id": "precompact-matchers",
+      "skill": ".claude/skills/forge-snapshot/SKILL.md",
+      "rule_id": "precompact-manual-auto-matchers",
+      "category": "claude-code-native",
+      "check": "The PreCompact hook event supports matcher values `manual` and `auto`, with a stdin payload carrying session_id/transcript_path/cwd/hook_event_name/compaction_type — the exact contract forge-snapshot-marker.cjs reads.",
+      "check_tokens": ["PreCompact", "manual", "auto"],
+      "source_url": "https://code.claude.com/docs/en/hooks",
+      "added": "2026-07-29",
+      "_provenance": "check_tokens seeded from Search Boss's live research this run (forge-2026-07-29-cc-finish, dispatch_id a21935c1b0f5d4dbb, 7 directly-fetched sources incl. this exact URL) — not independently re-fetched by Build Boss at seed time; the first real `forge-docdrift.cjs check` run against this claim IS the independent live re-verification."
+    },
+    {
+      "id": "sessionstart-compact-reinject",
+      "skill": ".claude/skills/forge-snapshot/SKILL.md",
+      "rule_id": "sessionstart-compact-stdout-reinjection",
+      "category": "claude-code-native",
+      "check": "The SessionStart hook event's matcher accepts `compact` (fires after a compaction), and whatever that hook writes to stdout is added back into Claude's context — the one re-injection mechanism forge-snapshot-reinject.cjs relies on.",
+      "check_tokens": ["SessionStart", "compact", "stdout"],
+      "source_url": "https://code.claude.com/docs/en/hooks",
+      "added": "2026-07-29",
+      "_provenance": "check_tokens seeded from Search Boss's live research this run (forge-2026-07-29-cc-finish, dispatch_id a21935c1b0f5d4dbb) — not independently re-fetched by Build Boss at seed time; the first real `forge-docdrift.cjs check` run against this claim IS the independent live re-verification."
+    },
+    {
+      "id": "postcompact-exists",
+      "skill": ".claude/skills/forge-snapshot/SKILL.md",
+      "rule_id": "postcompact-event-exists",
+      "category": "claude-code-native",
+      "check": "A PostCompact hook event exists in the documented Claude Code hooks vocabulary (a distinct lifecycle point from PreCompact/SessionStart) — this project does not currently wire it, but forge-snapshot's design depends on knowing it exists so a future revision can consider it instead of/alongside SessionStart(compact).",
+      "check_tokens": ["PostCompact"],
+      "source_url": "https://code.claude.com/docs/en/hooks",
+      "added": "2026-07-29",
+      "_provenance": "seeded from Search Boss's live research this run (forge-2026-07-29-cc-finish, dispatch_id a21935c1b0f5d4dbb) — not independently re-fetched by Build Boss at seed time; the first real `forge-docdrift.cjs check` run against this claim IS the independent live re-verification. If this check comes back UNREACHABLE/drifted, treat PostCompact's existence as UNVERIFIED by this project, not as disproven — see forge-docdrift's own UNREACHABLE-is-not-drift honesty rule."
+    }
+  ]
+}

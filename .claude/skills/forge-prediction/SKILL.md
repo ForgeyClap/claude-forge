@@ -1,6 +1,6 @@
 ---
 name: forge-prediction
-description: "Forge playbook for prediction, sports-data, and analysis systems (incl. Telegram tip delivery). Use when building forecasting, sports betting analysis, odds/value models, or statistical prediction with confidence labels — keywords: prediction, forecast, sports, betting, odds, value bet, model, backtest, statistics, confidence, Telegram tips, bot. Enforces uncertainty labels, backtesting, and NO automatic real-money betting."
+description: Forge playbook for prediction, sports-data, and betting analysis (incl. Telegram tips). Use for forecast, odds, value bet, backtest, confidence label — NO real-money betting.
 ---
 
 # Forge playbook — Prediction / sports-data

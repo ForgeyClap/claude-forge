@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for chat/messaging bot tasks (Discord/Slack/Telegram). Owner-editable. Used by the forge-graded-verify skill: review-boss (or security-boss) scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-bots playbook.",
+  "domain": "bots",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "webhook_verification",
+      "descriptor": "1=inbound events acted on with no verification; 2=some verification but wrong mechanism, not on raw body, or no replay guard; 3=correct per-platform verification on the raw body (Discord Ed25519 + PONG, Slack HMAC v0, Telegram secret-token); 4=raw-body verification proven BOTH ways — a genuine event accepted and a forged/replayed one rejected — with Slack's <=5-min replay window enforced",
+      "raise": "verify each platform's auth on the raw request body using its official helper (Ed25519 for Discord, HMAC v0 + timestamp window for Slack, secret_token header for Telegram) and prove a forged/replayed event is rejected"
+    },
+    {
+      "id": "scope_minimization",
+      "descriptor": "1=broad admin/user scopes or privileged intents with no justification; 2=some over-scoping remains; 3=scopes/intents/permissions reduced to what's used; 4=minimal bot-token scopes + narrowed intents/allowed_updates, no privileged Discord intents (MESSAGE_CONTENT/GUILD_MEMBERS/PRESENCE) or broad Slack scopes without owner approval, each listed with a reason",
+      "raise": "cut OAuth scopes / gateway intents / permissions to the minimum the bot actually uses and remove privileged intents unless owner-approved"
+    },
+    {
+      "id": "delivery_reliability",
+      "descriptor": "1=slow handler, no ack discipline, no dedupe or retries; 2=acks but no dedupe OR retries without a dead-letter; 3=fast ack within the platform deadline + dedupe on the platform event id + retries with backoff; 4=fast ack (Slack/Discord ~3s, defer long work) + dedupe on interaction.id/event_id/update_id with a uniqueness guarantee + rate-limit-aware retries (429 + Retry-After) + dead-letter for permanent failures, no silent drop",
+      "raise": "ack within the platform deadline and move heavy work to a background path, dedupe on the platform event id, and add rate-limit-aware retries with a dead-letter store"
+    },
+    {
+      "id": "safe_logging_secrets",
+      "descriptor": "1=bot token/signing secret or user PII in code/logs/git; 2=secrets in env but message content or PII logged, or errors leak tokens; 3=secrets in env, logs mostly redacted; 4=all secrets in env + .env.example placeholders, logs redact tokens/secrets and avoid PII/message content beyond need, errors never leak credentials",
+      "raise": "move every token/signing secret to env, redact secrets in logs and errors, and stop logging user PII / message content beyond what the task needs"
+    },
+    {
+      "id": "outreach_consent",
+      "descriptor": "1=bot auto-DMs / mass-mentions / broadcasts without approval; 2=outreach possible but weakly gated; 3=outreach drafted-only, no auto-send; 4=no unsolicited DM/broadcast/mass-mention path at all without an explicit owner-approval step, respecting platform anti-spam ToS",
+      "raise": "make all outbound DMs/broadcasts drafted-only behind an explicit owner-approval step; remove any auto-send or mass-mention path"
+    }
+  ]
+}

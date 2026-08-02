@@ -55,7 +55,7 @@ try { S.getEntity('tickets', 'does-not-exist'); } catch (e) { missingThrew = /no
 t('get on a missing entity throws "not found"', missingThrew === true);
 
 // 3) secret redaction — raw secret never reaches disk
-const secret = '\x6Evapi-SECRETSECRETSECRET1234567890';
+const secret = 'nvapi-SECRETSECRETSECRET1234567890';
 S.putEntity('tickets', 'tk-secret', { note: 'key=' + secret });
 const rawFile = fs.readFileSync(path.join(TMP, 'forge-tickets', 'tk-secret.json'), 'utf8');
 t('raw secret absent from the written file', !rawFile.includes(secret));
@@ -76,10 +76,10 @@ t('index rows carry {id, ts, store}', idxRows.every((r) => r.id && r.ts && r.sto
 // 4b) HARDENED redaction (2026-07-10 security review): new patterns + key-name heuristic, no over-redaction
 const R = '***REDACTED***';
 const hasRaw = (o, s) => JSON.stringify(o).includes(s);
-t('stripe sk_live_ redacted', !hasRaw(S.redactValue({ v: '\x73k_live_ABCDEFGHIJ1234567890' }), '\x73k_live_ABCDEFGHIJ'));
-t('google AIza key redacted', !hasRaw(S.redactValue({ v: '\x41IzaSyA1234567890123456789012345678901234' }), 'AIzaSyA12345'));
-t('sendgrid SG. key redacted', !hasRaw(S.redactValue({ v: '\x53G.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdef' }), 'SG.ABCDEFGHIJKLMNOP'));
-t('github gho_ token redacted', !hasRaw(S.redactValue({ v: '\x67ho_ABCDEFGHIJ1234567890ABCDEFGHIJ' }), 'gho_ABCDEFGHIJ'));
+t('stripe sk_live_ redacted', !hasRaw(S.redactValue({ v: 'sk_live_ABCDEFGHIJ1234567890' }), 'sk_live_ABCDEFGHIJ'));
+t('google AIza key redacted', !hasRaw(S.redactValue({ v: 'AIzaSyA1234567890123456789012345678901234' }), 'AIzaSyA12345'));
+t('sendgrid SG. key redacted', !hasRaw(S.redactValue({ v: 'SG.ABCDEFGHIJKLMNOPQRSTUV.ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdef' }), 'SG.ABCDEFGHIJKLMNOP'));
+t('github gho_ token redacted', !hasRaw(S.redactValue({ v: 'gho_ABCDEFGHIJ1234567890ABCDEFGHIJ' }), 'gho_ABCDEFGHIJ'));
 const pemBlk = '-----BEGIN RSA PRIVATE KEY-----\nMIIBODYSECRETLINE1\nMIIBODYSECRETLINE2\n-----END RSA PRIVATE KEY-----';
 t('PEM private key BODY redacted (not just header)', !hasRaw(S.redactValue({ v: pemBlk }), 'MIIBODYSECRETLINE'));
 t('scheme://user:pass@ password redacted', !hasRaw(S.redactValue({ v: 'postgres://admin:SuperSecret99@db.host/x' }), 'SuperSecret99'));
@@ -143,6 +143,9 @@ t('CLI put with sizing_justification exits 0 and warns nothing on stderr', cliJu
 // stated minimum, so a +1 quantifier OR a narrowed character-class both fail to match it.
 const noRaw = (v) => !JSON.stringify(S.redactValue({ v })).includes(v);
 t('7a1: OpenAI-style sk- key at the exact 20-char minimum is redacted', noRaw('sk-' + '0'.repeat(20)));
+t('7a1b: real sk- key mid-string (after a space) is still redacted (boundary keeps true positives)', noRaw('prefix sk-' + 'A'.repeat(20)));
+const wordySlug = 'task-orchestrator-with-a-long-slug-1234567890';
+t('7a1c: ordinary word containing "sk-" (task-…) is NOT redacted (boundary-anchor false-positive fix 2026-07-25)', JSON.stringify(S.redactValue({ v: wordySlug })).includes(wordySlug));
 t('7a2: Stripe sk_live_ secret at the exact 10-char minimum (with 2-9 digits) is redacted', noRaw('sk_live_' + 'A1b2C3d4E5'));
 t('7a3: Stripe rk_live_ restricted key at the exact 10-char minimum is redacted', noRaw('rk_live_' + 'A1b2C3d4E5'));
 t('7a4: GitHub ghp_ token at the exact 20-char minimum is redacted', noRaw('ghp_' + 'A1b2C3d4E5F6g7H8i9J0'));

@@ -1,0 +1,86 @@
+{
+  "_doc": "Forge V2 WAVE G1 (2026-07-19) — DORMANT catalog of known MCP servers a Boss MAY be granted access to (see mcp-grants.json for the per-Boss least-privilege matrix). This file is a REGISTRY only: it never installs, connects to, or activates anything. Every entry's 'status' MUST start (and stay, until the owner explicitly opts in) at 'not-installed' — 'active' is FORBIDDEN in this file; forge-mcp-gate.cjs::status() treats any non-registry activation signal without a matching opt-in marker as a hard error. Tiers (least-privilege, doctrine #2): 0 = read-only LOCAL (docs/LSP read) · 1 = read-only REMOTE (web search, docs fetch, GitHub READ) · 2 = SANDBOXED action (browser-QA drive, no persistent writes) · 3 = WRITE-PRIMITIVE (any mcp write: GitHub write, file write, deploy, publish) — tier-3 tools ALWAYS route through forge-actiongate.cjs, never auto-used. Opt-in marker: an entry becomes usable only when config/orchestration/mcp-opt-in.json (owner-authored, not shipped by Forge) lists its id — absence means dormant/native-fallback, logged honestly (event mcp_native_fallback).",
+  "version": 1,
+  "servers": [
+    {
+      "id": "context7",
+      "purpose": "Up-to-date library/API documentation lookup (versioned docs, not stale training data).",
+      "tier": 1,
+      "network": "read",
+      "credentials_needed": false,
+      "install_hint": "MCP host config: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] } — see https://github.com/upstash/context7",
+      "status": "not-installed",
+      "notes": "Read-only docs fetch. Tier 1 because it is a remote network read, even without credentials."
+    },
+    {
+      "id": "playwright",
+      "purpose": "Browser automation for QA/visual verification — drive a real browser, no persistent writes outside its own sandboxed profile.",
+      "tier": 2,
+      "network": "read-write",
+      "credentials_needed": false,
+      "install_hint": "MCP host config: { command: 'npx', args: ['-y', '@playwright/mcp'] } — see https://github.com/microsoft/playwright-mcp",
+      "status": "not-installed",
+      "notes": "Sandboxed action tier: it can click/type/screenshot a page it navigates to, but that is ephemeral browser state, not a project write-primitive."
+    },
+    {
+      "id": "chrome-devtools",
+      "purpose": "Chrome DevTools Protocol automation — performance traces, console/network inspection, screenshot QA.",
+      "tier": 2,
+      "network": "read-write",
+      "credentials_needed": false,
+      "install_hint": "MCP host config: { command: 'npx', args: ['-y', 'chrome-devtools-mcp'] } — see https://github.com/ChromeDevTools/chrome-devtools-mcp",
+      "status": "not-installed",
+      "notes": "Sandboxed action tier, same reasoning as playwright — a browser-QA driver, not a repo/system write-primitive."
+    },
+    {
+      "id": "github-read",
+      "purpose": "Read-only GitHub access — issues, PRs, code search, file contents.",
+      "tier": 1,
+      "network": "read",
+      "credentials_needed": true,
+      "install_hint": "MCP host config: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] } scoped to a READ-ONLY token — see https://github.com/github/github-mcp-server",
+      "status": "not-installed",
+      "notes": "SPLIT from github-write per doctrine #4/#2 — a read token must never also carry write scopes."
+    },
+    {
+      "id": "github-write",
+      "purpose": "Write GitHub access — create/update issues, PRs, commits, branches, releases.",
+      "tier": 3,
+      "network": "read-write",
+      "credentials_needed": true,
+      "install_hint": "MCP host config: same server as github-read but with a WRITE-scoped token — see https://github.com/github/github-mcp-server. Keep the token in env, never in a committed file.",
+      "status": "not-installed",
+      "notes": "WRITE-PRIMITIVE (doctrine #3): every use ALWAYS routes through forge-actiongate.cjs; never auto-used; requires an explicit per-use owner grant, exactly like deploy/push/spend."
+    },
+    {
+      "id": "exa",
+      "purpose": "Neural/semantic web search for current information and research.",
+      "tier": 1,
+      "network": "read",
+      "credentials_needed": true,
+      "install_hint": "MCP host config: { command: 'npx', args: ['-y', 'exa-mcp-server'] }, EXA_API_KEY in env — see https://github.com/exa-labs/exa-mcp-server",
+      "status": "not-installed",
+      "notes": "Read-only remote search. Credential is a search API key, not a write scope."
+    },
+    {
+      "id": "firecrawl",
+      "purpose": "Web scraping / page-to-markdown extraction for research and content ingestion.",
+      "tier": 1,
+      "network": "read",
+      "credentials_needed": true,
+      "install_hint": "MCP host config: { command: 'npx', args: ['-y', 'firecrawl-mcp'] }, FIRECRAWL_API_KEY in env — see https://github.com/mendableai/firecrawl-mcp-server",
+      "status": "not-installed",
+      "notes": "Read-only remote fetch/scrape — respect robots.txt/rate limits per this project's scraping doctrine even when opted in."
+    },
+    {
+      "id": "serena-lsp",
+      "purpose": "Semantic code intelligence via a real language server — go-to-definition, references, symbol search.",
+      "tier": 0,
+      "network": "none",
+      "credentials_needed": false,
+      "install_hint": "MCP host config: { command: 'uvx', args: ['--from', 'git+https://github.com/oraios/serena', 'serena', 'start-mcp-server'] } — see https://github.com/oraios/serena",
+      "status": "not-installed",
+      "notes": "Purely local read (LSP over the project's own source) — no network call, lowest tier."
+    }
+  ]
+}

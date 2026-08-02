@@ -1,0 +1,54 @@
+{
+  "policy": "global-research-recovery-solution-first",
+  "version": 1,
+  "internal_use_only": true,
+  "public_redistribution_allowed": false,
+  "solutionFirst": true,
+  "minimumAlternativeMethods": 3,
+  "highValueMinimumAlternativeMethods": 5,
+  "blockOnSecurityRisk": true,
+  "continueIndependentTracks": true,
+  "allowPublicWebFallback": true,
+  "allowFirecrawlPublicDiscovery": true,
+  "allowExactNameGithubSearch": true,
+  "allowForgeNativeReimplementation": true,
+  "allowAuthBypass": false,
+  "allowPrivateSourceAccessWithoutPermission": false,
+  "requireVerifyAgent": true,
+  "requireAttemptLedgerBeforeBlocked": true,
+  "notImmediateBlockers": [
+    "http_401", "http_403", "http_404", "no_api_key", "empty_search", "wrong_path",
+    "nested_repo", "layout_differs", "tool_unavailable", "mcp_unauthenticated",
+    "package_install_failed", "skill_import_failed", "incompatible_command",
+    "undesirable_dependency", "one_request_failed", "one_scrape_failed", "firecrawl_failed"
+  ],
+  "hardStopConditions": [
+    "auth_bypass", "access_control_bypass", "paywall_evasion", "private_repo_no_permission",
+    "secret_exposure", "unauthorized_live_action", "malicious_code", "destructive_command",
+    "owner_restriction_violation", "unresolved_critical_security_risk"
+  ],
+  "recoveryRoutes": [
+    "firecrawl_public", "public_pages", "search_engine", "exact_name_github",
+    "repo_structure_discovery", "forge_native_reimplementation"
+  ],
+  "repoPathCandidates": [
+    "SKILL.md", "skills/<name>/SKILL.md", ".claude/skills/<name>/SKILL.md",
+    "plugins/<name>/", "commands/<name>/", "packages/<name>/", "src/skills/<name>/",
+    "examples/<name>/", "marketplace/<name>/"
+  ],
+  "identityConfidenceClasses": [
+    "VERIFIED_EXACT", "HIGH_CONFIDENCE", "POSSIBLE", "NAME_COLLISION", "UNVERIFIED"
+  ],
+  "implementationTypes": [
+    "COPIED_AND_ADAPTED_INTERNAL", "PARTIALLY_EXTRACTED_INTERNAL", "PATTERN_ADAPTED",
+    "BEHAVIOR_REIMPLEMENTED", "FORGE_NATIVE_ORIGINAL_IMPLEMENTATION"
+  ],
+  "allowedFinalStatuses": [
+    "FOUND_DIRECT", "FOUND_VIA_PUBLIC_FALLBACK", "FOUND_VIA_GITHUB_SEARCH",
+    "FOUND_VIA_REPOSITORY_DISCOVERY", "FOUND_VIA_FIRECRAWL", "FOUND_VIA_WEB_SEARCH",
+    "FOUND_VIA_SOURCE_REFERENCE", "PARTIAL_SOURCE_RECOVERED", "SAFE_ALTERNATIVE_ADOPTED",
+    "FORGE_NATIVE_REIMPLEMENTATION", "REJECTED_UNSAFE", "BLOCKED_ACCESS",
+    "BLOCKED_EXTERNAL_LIMIT", "BLOCKED_PERMISSION", "BLOCKED_AFTER_EXHAUSTIVE_RECOVERY"
+  ],
+  "ledger": ".claude/forge-research/recovery-attempts.jsonl"
+}

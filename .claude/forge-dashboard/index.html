@@ -27,15 +27,14 @@
       </div>
       <div class="tb-right">
         <span class="tb-stats">
-          <span><span data-i18n="stat.events">Events</span> <b id="s-events">0</b></span>
-          <span><span data-i18n="stat.agents">Agents</span> <b id="s-agents">0/0</b></span>
-          <span><span data-i18n="stat.files">Files</span> <b id="s-files">0</b></span>
-          <span><span data-i18n="stat.port">Port</span> <b class="s-port" id="s-port">—</b></span>
+          <span>Events <b id="s-events">0</b></span>
+          <span>Agents <b id="s-agents">0/0</b></span>
+          <span>Files <b id="s-files">0</b></span>
+          <span>Port <b class="s-port" id="s-port">—</b></span>
         </span>
         <span class="live" id="live"><i class="live-dot" id="live-dot"></i><span id="live-text">connecting…</span></span>
-        <button class="copy-url" id="copy-url" data-i18n="btn.copyUrl">Copy URL</button>
-        <button class="lang-toggle" id="lang-toggle" type="button" title="Language">EN</button>
-        <span class="complete-badge" id="badge-complete" data-i18n="badge.complete" hidden>COMPLETE</span>
+        <button class="copy-url" id="copy-url">Copy URL</button>
+        <span class="complete-badge" id="badge-complete" hidden>COMPLETE</span>
       </div>
     </header>
 
@@ -46,7 +45,7 @@
     <!-- WORKBENCH: groups | graph | inspector+activity -->
     <div class="workbench" id="workbench">
       <aside class="sidebar" id="sidebar">
-        <div class="sb-head"><span data-i18n="head.agentGroups">AGENT GROUPS</span> <span class="sb-count" id="sb-agent-count">0</span></div>
+        <div class="sb-head">AGENT GROUPS <span class="sb-count" id="sb-agent-count">0</span></div>
         <div class="sb-groups" id="sb-groups"></div>
         <div class="sb-foot"><div class="legend" id="status-legend"></div></div>
       </aside>
@@ -58,44 +57,44 @@
         </div>
         <div class="lens-empty" id="lens-empty" hidden>waiting for events — <span class="blink">forge nodes appear here live</span></div>
         <div class="canvas-legend" id="canvas-legend">
-          <span><i class="cl-crit"></i><span data-i18n="legend.criticalPath">Critical path</span></span>
-          <span><i class="cl-flow"></i><span data-i18n="legend.dataFlow">Data flow</span></span>
-          <span><i class="cl-hand"></i><span data-i18n="legend.handoff">Handoff</span></span>
-          <span><i class="cl-wait"></i><span data-i18n="legend.waiting">Waiting</span></span>
-          <span><i class="cl-loop"></i><span data-i18n="legend.reviewLoop">Review loop</span></span>
-          <span><i class="cl-art"></i><span data-i18n="legend.artifactFlow">Artifact flow</span></span>
-          <span><i class="cl-block"></i><span data-i18n="legend.blocked">Blocked</span></span>
+          <span><i class="cl-crit"></i>Critical path</span>
+          <span><i class="cl-flow"></i>Data flow</span>
+          <span><i class="cl-hand"></i>Handoff</span>
+          <span><i class="cl-wait"></i>Waiting</span>
+          <span><i class="cl-loop"></i>Review loop</span>
+          <span><i class="cl-art"></i>Artifact flow</span>
+          <span><i class="cl-block"></i>Blocked</span>
         </div>
         <div class="vp-controls">
-          <button id="vp-out" title="Zoom out (−)" data-i18n-title="tip.zoomOut" aria-label="Zoom out">−</button>
+          <button id="vp-out" title="Zoom out (−)" aria-label="Zoom out">−</button>
           <span class="vp-zoom" id="vp-zoom">100%</span>
-          <button id="vp-in" title="Zoom in (+)" data-i18n-title="tip.zoomIn" aria-label="Zoom in">+</button>
-          <button id="vp-fit" title="Fit (f)" data-i18n-title="tip.fit" aria-label="Fit graph to window">⊡</button>
+          <button id="vp-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+          <button id="vp-fit" title="Fit (f)" aria-label="Fit graph to window">⊡</button>
         </div>
         <div class="minimap" id="minimap" title="Minimap — click to jump">
           <canvas id="mm-canvas"></canvas>
           <div class="mm-view" id="mm-view"></div>
         </div>
         <div class="replay-bar" id="replay-bar" aria-label="Live / Replay controls">
-          <button id="rp-play" title="Replay / Pause" data-i18n-title="tip.replay">▶</button>
-          <button id="rp-speed" title="Replay speed" data-i18n-title="tip.speed">1x</button>
-          <button id="rp-reset" title="Reset to start" data-i18n-title="tip.reset">⟲</button>
-          <button id="rp-live" title="Jump to live" data-i18n-title="tip.live">⤓ Live</button>
+          <button id="rp-play" title="Replay / Pause">▶</button>
+          <button id="rp-speed" title="Replay speed">1x</button>
+          <button id="rp-reset" title="Reset to start">⟲</button>
+          <button id="rp-live" title="Jump to live">⤓ Live</button>
           <span class="rp-label" id="rp-label">Live run</span>
         </div>
       </main>
 
       <aside class="rightcol" id="rightcol">
         <section class="panel inspector" id="inspector">
-          <div class="ins-head"><span class="ins-title" id="ins-agent" data-i18n="ins.selectedAgent">SELECTED AGENT</span><span class="st-chip" id="ins-status" hidden>—</span></div>
+          <div class="ins-head"><span class="ins-title" id="ins-agent">SELECTED AGENT</span><span class="st-chip" id="ins-status" hidden>—</span></div>
           <div class="ins-tabs" id="ins-tabs" role="tablist"></div>
-          <div class="ins-body" id="ins-body"><div class="sn-empty" data-i18n="ins.selectPrompt">Select an agent to inspect it.</div></div>
+          <div class="ins-body" id="ins-body"><div class="sn-empty">Select an agent to inspect it.</div></div>
         </section>
         <section class="panel activity" id="activity">
-          <div class="act-head" data-i18n="head.liveActivity">LIVE ACTIVITY</div>
+          <div class="act-head">LIVE ACTIVITY</div>
           <div class="act-filters" id="act-filters" role="tablist"></div>
           <div class="act-body" id="act-feed"></div>
-          <a class="act-more" id="act-more" href="#" data-i18n="act.viewAll">View all events →</a>
+          <a class="act-more" id="act-more" href="#">View all events →</a>
         </section>
       </aside>
     </div>
@@ -107,22 +106,22 @@
         <div class="dock-body" id="dock-body"></div>
       </div>
       <div class="panel metrics" id="metrics">
-        <div class="panel-head" data-i18n="head.summaryMetrics">SUMMARY METRICS</div>
+        <div class="panel-head">SUMMARY METRICS</div>
         <div class="metrics-body">
-          <div class="m-row"><span class="m-k" data-i18n="metric.buildProgress">Build Progress</span><span class="m-bar"><i id="m-progfill"></i></span><span class="m-pct" id="m-progpct">0%</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.criticalPath">Critical Path</span><span class="m-v" id="m-critpath">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.nextStep">Next Step</span><span class="m-v" id="m-next">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.eta">Est. Completion</span><span class="m-v" id="m-eta">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.eccMode">ECC Mode</span><span class="m-v" id="m-ecc-mode">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.eccAgents">ECC Agents</span><span class="m-v" id="m-ecc-agents">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.fallback">Fallback</span><span class="m-v" id="m-ecc-fallback">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.subagents">Subagents</span><span class="m-v" id="m-subs">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.reworkLoop">Rework Loop</span><span class="m-v" id="m-rework">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.session">Session</span><span class="m-v" id="m-session">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.claudemd">CLAUDE.md</span><span class="m-v" id="m-claudemd">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.customSkills">Custom Skills</span><span class="m-v" id="m-customskills">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.codex">Codex</span><span class="m-v" id="m-codex">—</span></div>
-          <div class="m-row"><span class="m-k" data-i18n="metric.browserProof">Browser Proof</span><span class="m-v" id="m-browser">—</span></div>
+          <div class="m-row"><span class="m-k">Build Progress</span><span class="m-bar"><i id="m-progfill"></i></span><span class="m-pct" id="m-progpct">0%</span></div>
+          <div class="m-row"><span class="m-k">Critical Path</span><span class="m-v" id="m-critpath">—</span></div>
+          <div class="m-row"><span class="m-k">Next Step</span><span class="m-v" id="m-next">—</span></div>
+          <div class="m-row"><span class="m-k">Est. Completion</span><span class="m-v" id="m-eta">—</span></div>
+          <div class="m-row"><span class="m-k">ECC Mode</span><span class="m-v" id="m-ecc-mode">—</span></div>
+          <div class="m-row"><span class="m-k">ECC Agents</span><span class="m-v" id="m-ecc-agents">—</span></div>
+          <div class="m-row"><span class="m-k">Fallback</span><span class="m-v" id="m-ecc-fallback">—</span></div>
+          <div class="m-row"><span class="m-k">Subagents</span><span class="m-v" id="m-subs">—</span></div>
+          <div class="m-row"><span class="m-k">Rework Loop</span><span class="m-v" id="m-rework">—</span></div>
+          <div class="m-row"><span class="m-k">Session</span><span class="m-v" id="m-session">—</span></div>
+          <div class="m-row"><span class="m-k">CLAUDE.md</span><span class="m-v" id="m-claudemd">—</span></div>
+          <div class="m-row"><span class="m-k">Custom Skills</span><span class="m-v" id="m-customskills">—</span></div>
+          <div class="m-row"><span class="m-k">Codex</span><span class="m-v" id="m-codex">—</span></div>
+          <div class="m-row"><span class="m-k">Browser Proof</span><span class="m-v" id="m-browser">—</span></div>
         </div>
       </div>
     </section>
@@ -133,7 +132,6 @@
     </footer>
   </div>
 
-  <script src="/i18n.js"></script>
   <script src="/lenses.js"></script>
   <script src="/app.js"></script>
   <script src="/panels.js"></script>

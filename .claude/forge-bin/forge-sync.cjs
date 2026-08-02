@@ -18,6 +18,21 @@
  *   regression from pre-existing red   H4 validation requires positive evidence (forge-doctor --json), a
  *   degraded (no-doctor) pass needs --allow-degraded   M1-M11 (see inline // M<n> markers).
  *
+ * FIX (2026-07-26, wp4 canary repro): the dedicated canary was aborting stage 0 on EVERY sync-all run,
+ * regardless of template health. Direct repro (canaryInit + buildPlan + applyPlanSafely + a real `node
+ * forge-doctor.cjs --json` run against the freshly-populated canary, before any rollback) isolated the exact
+ * cause: one real, non-fabricated test (forge-capabilities-panel.test.cjs) has a genuine precondition of "at
+ * least one real run with events.jsonl exists in this project" — true for every real Forge project, but
+ * structurally impossible for a scaffold that canaryInit wipes and recreates empty on every single run (M5).
+ * Every other check/suite was genuinely green (89 suites, only this 1 assertion red). See seedCanaryRun's own
+ * doc comment (near runValidation) for the fix: log ONE real, honestly-described run_started event into the
+ * canary's own just-synced forge-runs/ (via its own freshly-copied log-event.cjs, going through the same
+ * strict-mode honesty gate any real event would) right before validation runs — canary-only, opt-in via
+ * opts.seedRunForValidation, wired ONLY into canarySyncOpts in runSyncAll. A real project's forge-runs/ is
+ * never touched by this. This is not a gate weakening: a genuinely broken template still fails the doctor for
+ * real reasons; a genuinely safe template now gets an honest, unconditional pass instead of being blocked by
+ * an environment gap that was never the template's fault.
+ *
  * SAFE FLOW (default for `install` and `sync-all`):
  *   1. PREFLIGHT   — classify every system file per project into: unchanged / to-change / expected_override
  *                     (declared in <project>/.claude/config/forge-overrides.json) / unknown_drift (project
@@ -101,7 +116,7 @@
  *   isSymlinkPath, containmentSafe, projectId, receiptPath, readReceipt, writeReceipt,
  *   receiptLastTemplateHashMap, readOverrideAllowlist, preflight, buildPlan, fullFileManifest,
  *   aggregateManifestHash, backupDirFor, centralBackupDir, takeBackup, applyPlanSafely, runValidation,
- *   decideValidationOutcome, verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches,
+ *   decideValidationOutcome, seedCanaryRun, verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches,
  *   restoreFromManifest, rollbackProject, rollbackBatch, acquireLock, releaseLock, safeSyncProject,
  *   adoptProject, rawInstall, status, findForgeProjects, dedicatedCanaryDir, canaryInit, runSyncAll,
  *   parseArgs, CANARY_DIR_NAME.
@@ -122,9 +137,27 @@ const SYSTEM = [
   // leaving it out of SYSTEM would make the checker reach all 12 projects while the rules it enforces did
   // not, wedging the first real rollout on its own safety gate. Pinned by a test in forge-sync.test.cjs.
   'config/agents/agent-tool-policy.json',
-  'config/models/model-capability-matrix.json', 'config/skills/global-skills.json',
+  'config/models/model-capability-matrix.json', 'config/models/function-model-fit.json', 'config/skills/global-skills.json',
   'config/orchestration/forge-graph.json', 'config/forge-bench/baseline.json',
+  // WAVE A / A1 (2026-07-18): the hard-gates SINGLE source of truth for irreversible/isolation-escape
+  // detection. forge-actiongate.cjs (which reads this file) is a forge-bin/*.cjs file and is already
+  // covered by SYSTEM_GLOB below — pinned here explicitly too (with its test) so a future SYSTEM_GLOB
+  // change can't silently drop the pairing; mirrors the WP2 agent-tool-policy.json precedent above.
+  'config/orchestration/hard-gates.json', 'forge-bin/forge-actiongate.cjs', 'forge-bin/forge-actiongate.test.cjs',
+  // WAVE B / B1-B4 (2026-07-18): owner-governance stack — owner-profile prefs (B1), standing rules (B2),
+  // autonomy policy (B3), and the precedence doc + applied-prefs ECHO wiring (B4). The *.cjs/*.test.cjs
+  // readers (forge-prefs.cjs, forge-standing.cjs, forge-autonomy.cjs, forge-echo.cjs + their tests) already
+  // live in forge-bin/ and are covered by SYSTEM_GLOB below; the config/data files they read are NOT
+  // glob-covered (config/orchestration/ and the .claude root are not globbed dirs) and are pinned here
+  // explicitly, same discipline as the hard-gates.json pairing above.
+  'FORGE_OWNER_PROFILE.json', 'FORGE_PREF_CANDIDATES.json',
+  'config/orchestration/FORGE_STANDING_RULES.json', 'config/orchestration/FORGE_AUTONOMY.json',
+  'config/orchestration/precedence.md',
   'docs/model-routing.md', 'docs/agents-and-skills.md',
+  // WAVE A / A4 (2026-07-18): Test Boss's mutation-testing recipe (forge-mutate.cjs wiring) —
+  // ships alongside the agent definition (agents/*.md is already SYSTEM_GLOB-covered) so a synced
+  // project's test-boss.md instructions and its referenced recipe doc never drift apart.
+  'docs/test-boss-mutation-recipe.md',
   'FORGE_MODEL_ROUTING.json', 'FORGE_PAPERCLIP_AGENTS.json',
   'skills/forge-deeplearn/SKILL.md', 'skills/forge-prd/SKILL.md', 'skills/forge-mindmap/SKILL.md',
   'skills/forge-registry/SKILL.md', 'skills/forge-doctor/SKILL.md',
@@ -138,7 +171,258 @@ const SYSTEM = [
   'config/intake/question-bank.json', 'skills/forge-intake/SKILL.md',
   'skills/forge-router/SKILL.md',
   'skills/forge-scraping/SKILL.md', 'skills/forge-rag/SKILL.md', 'skills/forge-integration/SKILL.md',
-  'skills/forge-graded-verify/SKILL.md', 'config/rubrics/rag.json', 'settings.model-tier.example.json',
+  'skills/forge-payments/SKILL.md', 'skills/forge-ecommerce/SKILL.md',
+  'skills/forge-electron/SKILL.md', 'skills/forge-voice/SKILL.md',
+  'skills/forge-graded-verify/SKILL.md',
+  'config/rubrics/rag.json', 'config/rubrics/payments.json', 'config/rubrics/ecommerce.json',
+  'config/rubrics/electron.json', 'config/rubrics/voice.json', 'settings.model-tier.example.json',
+  // WAVE C / C1-C5 + C-INTEGRATE (2026-07-18): required-evidence + web-quality-contract + Rule-of-Two +
+  // run-checklist orchestration stack. The *.cjs/*.test.cjs readers already live in forge-bin/ and are
+  // covered by SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders discipline
+  // the hard-gates.json/forge-actiongate.cjs pairing established) so a future SYSTEM_GLOB narrowing can't
+  // silently drop the pairing between a config/orchestration/*.json source of truth and its reader tool.
+  'config/orchestration/domain-presets.json', 'config/orchestration/required-evidence.json',
+  'config/orchestration/web-quality-contract.md', 'config/orchestration/run-checklist.json',
+  // 2026-07-23: solution-first recovery policy — read by forge-recovery.cjs (SYSTEM_GLOB-covered) and
+  // asserted-present by forge-recovery.test.cjs (#13). Pinned so the config reaches every project (else
+  // that test fails a synced project's doctor) and the config<->reader pair never silently drifts.
+  'config/orchestration/FORGE_RECOVERY_POLICY.json',
+  // 2026-08-01: the per-run cost cap for UNATTENDED runs — read by forge-run-budget.cjs (SYSTEM_GLOB-
+  // covered) and asserted-present by forge-run-budget.test.cjs ("the REAL project config exists..."), so a
+  // synced project without it would fail its own doctor. Same config<->reader pinning discipline as the
+  // FORGE_RECOVERY_POLICY.json line above.
+  'config/orchestration/FORGE_RUN_BUDGET.json',
+  'forge-bin/forge-evidence.cjs', 'forge-bin/forge-evidence.test.cjs', 'forge-bin/forge-webquality.test.cjs',
+  'forge-bin/forge-ruleoftwo.cjs', 'forge-bin/forge-ruleoftwo.test.cjs',
+  'forge-bin/forge-orchestrate.cjs', 'forge-bin/forge-orchestrate.test.cjs',
+  // WAVE D (D1/D2/D-INTEGRATE, 2026-07-18): swarm ARM/RECONCILE manifest (forge-manifest.cjs) + mission-level
+  // auto-resume (forge-swarm-resume.cjs — named to avoid a real, pre-existing, unrelated forge-resume.cjs
+  // global checkpoint/to-do CLI already in this project; see that file's header for the collision note) +
+  // the real-fixtures intake gate (forge-fixtures.cjs). The *.cjs/*.test.cjs pairs already live in forge-bin/
+  // and are covered by SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders
+  // discipline as the hard-gates.json/forge-evidence.cjs precedents above). forge-fixtures/README.md is NOT
+  // glob-covered (only forge-bin/forge-dashboard/agents dirs are globbed) so it MUST be pinned explicitly.
+  'forge-bin/forge-manifest.cjs', 'forge-bin/forge-manifest.test.cjs',
+  'forge-bin/forge-swarm-resume.cjs', 'forge-bin/forge-swarm-resume.test.cjs',
+  'forge-bin/forge-fixtures.cjs', 'forge-bin/forge-fixtures.test.cjs',
+  'forge-fixtures/README.md',
+  // E-INTEGRATE (2026-07-18): forge-doctor's own sync-completeness advisory (WAVE A / A2) found these 6
+  // pre-existing playbook/checklist SKILL.md files were NEVER added to this SYSTEM list at all — not a
+  // Wave-E regression, a real pre-existing gap the advisory was built to catch. skills/**/SKILL.md is NOT
+  // glob-covered (see SYSTEM_GLOB below), so each path needs an explicit entry same as every other skill
+  // above. Confirmed via `node forge-doctor.cjs` -> advisory.completeness.sync_completeness.missing before
+  // this edit; see the E-INTEGRATE report for the exact before/after count.
+  'skills/forge-fullstack/SKILL.md', 'skills/forge-n8n/SKILL.md', 'skills/forge-prediction/SKILL.md',
+  'skills/forge-report/SKILL.md', 'skills/forge-website/SKILL.md', 'skills/ship-readiness/SKILL.md',
+  // WAVE E (E1/E2/E3/E-INTEGRATE, 2026-07-18): honesty-safe lesson-store consolidation/decay (E2:
+  // forge-consolidate.cjs), outcome-gated anti-gaming utility reinforcement (E2: forge-reinforce.cjs), and
+  // utility-ranked recall with a reserved global/Lead namespace (E2: forge-recall.cjs); plus Test Boss's
+  // scriptable mutation-CHECK wrapper around forge-mutate.cjs (E3: forge-mutcheck.cjs) and the pure
+  // events.jsonl-projected requirements-traceability chain (E3: forge-trace.cjs). Every *.cjs/*.test.cjs pair
+  // here already lives in forge-bin/ and is covered by SYSTEM_GLOB below — pinned here explicitly too anyway
+  // (same belt-and-suspenders discipline as every prior wave's precedent above) so a future SYSTEM_GLOB
+  // narrowing can't silently drop the pairing. forge-playbooks.test.cjs (E1) proves the 4 new domain
+  // playbooks + their rubrics + the router wiring stay in shape; it is a forge-bin/*.test.cjs file too, same
+  // glob coverage + explicit pin. No new event_type was introduced by E2/E3 (both are pure readers of the
+  // already-registered vocabulary: check_passed/quality_gate_passed/retest_completed/ticket_created/
+  // prd_generated/agent_note) — nothing to add to log-event.cjs/forge-verify.cjs/app.js for this wave.
+  'forge-bin/forge-consolidate.cjs', 'forge-bin/forge-consolidate.test.cjs',
+  'forge-bin/forge-reinforce.cjs', 'forge-bin/forge-reinforce.test.cjs',
+  'forge-bin/forge-recall.cjs', 'forge-bin/forge-recall.test.cjs',
+  'forge-bin/forge-mutcheck.cjs', 'forge-bin/forge-mutcheck.test.cjs',
+  'forge-bin/forge-trace.cjs', 'forge-bin/forge-trace.test.cjs',
+  'forge-bin/forge-playbooks.test.cjs',
+  // forge-harvest (2026-07-18, post-WAVE-E): READ-ONLY cross-project learning harvester — reads other Forge
+  // projects' .claude/FORGE_*.md memory files (never writes to them) and stores real, evidenced lines into
+  // THIS project's reserved global lesson namespace (the same namespace forge-recall.cjs already blends
+  // into every dispatch). Reuses forge-store.cjs's/forge-memory.cjs's secret redaction and forge-
+  // consolidate.cjs's validateCanonical() — no new secret detector, no new canonical-quote guard. New
+  // event_type `lessons_harvested` registered in log-event.cjs/forge-verify.cjs/forge-dashboard/app.js.
+  // Already covered by SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders
+  // discipline as every prior wave's precedent above).
+  'forge-bin/forge-harvest.cjs', 'forge-bin/forge-harvest.test.cjs',
+  // WAVE H (H1 forge-docs.cjs, H2 forge-repomap.cjs, H3 the 4 new skills, H4 forge-beads.cjs, H-INTEGRATE,
+  // 2026-07-19): zero-dependency real office-document generator (docx/xlsx/pptx/pdf), a cheap token-light
+  // repository context map, a lightweight graph backlog/memory ("beads"), and 4 new project-local
+  // orchestration-wrapper skills (systematic debugging, structured ideation, code review, safe parallel
+  // work via git worktrees). The *.cjs/*.test.cjs pairs already live in forge-bin/ and are covered by
+  // SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders discipline as every
+  // prior wave's precedent above). forge-newskills.test.cjs (H3) proves the 4 skills are real (frontmatter
+  // + required-section lint), same forge-bin/*.test.cjs glob coverage + explicit pin. The 4 skills/*/SKILL.md
+  // files are NOT glob-covered (only forge-bin/forge-dashboard/agents dirs are globbed — see the
+  // E-INTEGRATE comment above) so each needs an explicit entry same as every other skill in this list. New
+  // event types doc_generated (real call site) / repomap_generated / bead_added / bead_closed (forward-
+  // declared, no current call site) registered in log-event.cjs/forge-verify.cjs/forge-dashboard/app.js.
+  'forge-bin/forge-docs.cjs', 'forge-bin/forge-docs.test.cjs',
+  'forge-bin/forge-repomap.cjs', 'forge-bin/forge-repomap.test.cjs',
+  'forge-bin/forge-beads.cjs', 'forge-bin/forge-beads.test.cjs',
+  'forge-bin/forge-newskills.test.cjs',
+  'skills/forge-debug/SKILL.md', 'skills/forge-brainstorm/SKILL.md',
+  'skills/forge-code-review/SKILL.md', 'skills/forge-worktrees/SKILL.md',
+  // PIECE I (2026-07-19): 12 new domain playbooks (agent/LLM+evals, contract-first API, chat/messaging
+  // bots, CLI/dev tool, CMS, data engineering/ETL, browser extension, design-to-code/Figma, games, legacy
+  // migration, production MLOps, mobile app) + their config/rubrics/<domain>.json rubrics + the presence/lint
+  // test that proves each is real (forge-playbooks-i.test.cjs — mirrors the Wave-E1 forge-playbooks.test.cjs
+  // shape for the earlier 4-playbook batch). skills/**/SKILL.md is NOT glob-covered (see the E-INTEGRATE/
+  // Wave-H comments above) so each path needs an explicit entry same as every prior playbook batch.
+  // forge-playbooks-i.test.cjs is a forge-bin/*.test.cjs file and already covered by SYSTEM_GLOB below —
+  // pinned here explicitly too anyway (same belt-and-suspenders discipline as every prior wave's precedent).
+  'skills/forge-agent/SKILL.md', 'skills/forge-api/SKILL.md', 'skills/forge-bots/SKILL.md',
+  'skills/forge-cli/SKILL.md', 'skills/forge-cms/SKILL.md', 'skills/forge-data/SKILL.md',
+  'skills/forge-extension/SKILL.md', 'skills/forge-figma/SKILL.md', 'skills/forge-game/SKILL.md',
+  'skills/forge-migration/SKILL.md', 'skills/forge-mlops/SKILL.md', 'skills/forge-mobile/SKILL.md',
+  'config/rubrics/agent.json', 'config/rubrics/api.json', 'config/rubrics/bots.json',
+  'config/rubrics/cli.json', 'config/rubrics/cms.json', 'config/rubrics/data.json',
+  'config/rubrics/extension.json', 'config/rubrics/figma.json', 'config/rubrics/game.json',
+  'config/rubrics/migration.json', 'config/rubrics/mlops.json', 'config/rubrics/mobile.json',
+  'forge-bin/forge-playbooks-i.test.cjs',
+  // WAVE G (G1 forge-mcp-gate.cjs + G-INTEGRATE, 2026-07-19): MCP-as-client least-privilege safety doctrine —
+  // dormant/opt-in-by-default catalog + validator + defer-loading planner for external MCP servers (docs
+  // lookup, web search, browser-QA, GitHub). The *.cjs/*.test.cjs pairs already live in forge-bin/ and are
+  // covered by SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders discipline as
+  // every prior wave's precedent above). config/orchestration/mcp-registry.json (server catalog) and
+  // mcp-grants.json (per-Boss max_tier + allow_servers matrix) are NOT glob-covered (config/orchestration/ is
+  // not a globbed dir) so both need explicit entries, same as hard-gates.json/required-evidence.json above.
+  // config/mcp/.mcp.json.example is a reference install-shape template (config/mcp/ is not glob-covered
+  // either); skills/forge-mcp-clients/SKILL.md is NOT glob-covered (only forge-bin/forge-dashboard/agents
+  // dirs are globbed — see the E-INTEGRATE/Wave-H comments above) so it needs an explicit entry too, same as
+  // every other skill in this list. New event types mcp_grant_validated/mcp_grant_denied/mcp_tool_loaded/
+  // mcp_native_fallback (forward-declared — forge-mcp-gate.cjs itself does not call logEvent, per its own
+  // header "shared-file rule for this wave") registered in log-event.cjs/forge-verify.cjs/forge-dashboard/app.js.
+  'forge-bin/forge-mcp-gate.cjs', 'forge-bin/forge-mcp-gate.test.cjs', 'forge-bin/forge-mcp-skill.test.cjs',
+  'forge-bin/forge-mcp.cjs', 'forge-bin/forge-mcp.test.cjs',
+  'config/orchestration/mcp-registry.json', 'config/orchestration/mcp-grants.json',
+  'config/mcp/.mcp.json.example', 'skills/forge-mcp-clients/SKILL.md',
+  // WAVE J (J1 forge-genesis.cjs, J2 forge-tournament.cjs, J3 forge-secondbrain.cjs, J4 forge-codemodel.cjs,
+  // J5 forge-briefing.cjs, J-INTEGRATE, 2026-07-19): staged/approval-gated self-authoring (never writes
+  // `.claude/skills/` without a real owner-approval token), best-of-N tournament planner/scorer, a
+  // read-only evidence-cited cross-project portfolio strategist, a persistent incremental codebase index,
+  // and a real morning-briefing generator (the tested core the `forge-nightshift` doctrine depends on) +
+  // 2 new project-local doctrine skills (`forge-nightshift`, `forge-guardian` — the latter an owner-gated
+  // SCAFFOLD, not a running capability). The *.cjs/*.test.cjs pairs already live in forge-bin/ and are
+  // covered by SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders discipline
+  // as every prior wave's precedent above). skills/**/SKILL.md is NOT glob-covered (see the E-INTEGRATE/
+  // Wave-H comments above) so both new skill files need an explicit entry too. New event types
+  // skill_proposed/skill_approved/proposal_rejected/tournament_planned/tournament_scored/portfolio_scanned/
+  // codemodel_built/codemodel_updated/briefing_generated registered in
+  // log-event.cjs/forge-verify.cjs/forge-dashboard/app.js.
+  'forge-bin/forge-genesis.cjs', 'forge-bin/forge-genesis.test.cjs',
+  'forge-bin/forge-tournament.cjs', 'forge-bin/forge-tournament.test.cjs',
+  'forge-bin/forge-secondbrain.cjs', 'forge-bin/forge-secondbrain.test.cjs',
+  'forge-bin/forge-codemodel.cjs', 'forge-bin/forge-codemodel.test.cjs',
+  'forge-bin/forge-briefing.cjs', 'forge-bin/forge-briefing.test.cjs',
+  'skills/forge-nightshift/SKILL.md', 'skills/forge-guardian/SKILL.md',
+  // V9-INTEGRATE (P1 forge-runcontract.cjs, P2 forge-capabilities.cjs, P4 forge-projectbrain.cjs,
+  // P5 forge-scout.cjs, V9-INTEGRATE registration, 2026-07-22): a real-run non-negotiables contract checker
+  // + its single-source-of-truth config (FORGE_HARD_RULES.json, now also carrying the doctor_check_overrides
+  // recovery path), an honest capabilities-vs-usage inventory tool, a tailored external-capability
+  // research/vetting doctrine + its persistent ledger (FORGE_SCOUT_VETTING.json — not yet created on disk in
+  // this project; harmless to pin now, same "template file doesn't exist yet" tolerance preflight() already
+  // has for any not-yet-created system file), and a top-tier project-CLAUDE.md generator + its annotated
+  // template. The *.cjs/*.test.cjs pairs already live in forge-bin/ and are covered by SYSTEM_GLOB below —
+  // pinned here explicitly too anyway (same belt-and-suspenders discipline as every prior wave's precedent
+  // above). skills/**/SKILL.md and skills/forge-projectbrain/template.md are NOT glob-covered (see the
+  // E-INTEGRATE/Wave-H comments above) so each needs an explicit entry, same as every other skill/template in
+  // this list. New event types research_done/run_contract_checked/run_contract_violated/
+  // capabilities_reported/scout_researched/capability_vetted/projectbrain_generated registered in
+  // log-event.cjs/forge-verify.cjs/forge-dashboard/app.js.
+  'config/orchestration/FORGE_HARD_RULES.json',
+  'forge-bin/forge-runcontract.cjs', 'forge-bin/forge-runcontract.test.cjs',
+  'forge-bin/forge-capabilities.cjs', 'forge-bin/forge-capabilities.test.cjs',
+  'forge-bin/forge-scout.cjs', 'forge-bin/forge-scout.test.cjs',
+  'config/orchestration/FORGE_SCOUT_VETTING.json', 'skills/forge-scout/SKILL.md',
+  'forge-bin/forge-projectbrain.cjs', 'forge-bin/forge-projectbrain.test.cjs',
+  'skills/forge-projectbrain/SKILL.md', 'skills/forge-projectbrain/template.md',
+  // V9 WAVE 2 (forge-bin/forge-audit-loop.cjs, 2026-07-22): the continuous AUDIT-LOOP tool — one real
+  // iteration per invocation (MEMORY-INTEGRITY / AGENT-HEALTH / FEATURE-USAGE / DOCTOR-DELTA), findings
+  // appended to the project-local `.claude/forge-audit/ledger.jsonl` (real per-project data, never a
+  // template file, so it is NOT pinned here — same "forge-runs/ isn't SYSTEM either" convention). Already
+  // covered by SYSTEM_GLOB below (forge-bin/*.cjs) — pinned here explicitly too anyway (same belt-and-
+  // suspenders discipline as every prior wave's precedent above). New event types audit_iteration/
+  // audit_finding registered in log-event.cjs/forge-verify.cjs/forge-dashboard/app.js. Also refines
+  // forge-doctor.cjs's own run_contract advisory (latestDispatchedRunIdFor()) — no new file for that piece.
+  'forge-bin/forge-audit-loop.cjs', 'forge-bin/forge-audit-loop.test.cjs',
+  // WP-GH-WIRE (forge-bin/forge-docdrift.cjs, 2026-07-26): doc-drift detector — PATTERN_ADAPTED from the
+  // shanraisshan/claude-code-best-practice research finding (no code copied), token-searches a real external
+  // doc page against a seeded real claim, OK/NEW-DRIFT/RECURRING/RESOLVED/UNREACHABLE state persisted
+  // per-project (NOT pinned here — .claude/forge-research/docdrift-{state.json,ledger.jsonl} are real
+  // per-project data, same "not a template file" convention as forge-audit's own ledger). Already covered by
+  // SYSTEM_GLOB below (forge-bin/*.cjs) — pinned here explicitly too anyway (same belt-and-suspenders
+  // discipline as every prior wave's precedent above). skills/**/SKILL.md is NOT glob-covered (see the
+  // E-INTEGRATE/V9-INTEGRATE precedent comments above), so it needs its own explicit entry, same as the
+  // config/orchestration/*.json seed file. Uses the ALREADY-REGISTERED audit_finding event type — no new
+  // log-event.cjs/forge-verify.cjs/app.js registration needed.
+  'forge-bin/forge-docdrift.cjs', 'forge-bin/forge-docdrift.test.cjs',
+  'config/orchestration/docdrift-sources.json', 'skills/forge-docdrift/SKILL.md',
+  // fin-snapshot (forge-bin/forge-snapshot*.cjs, 2026-07-29 — owner request "bij elke 50% context een
+  // snapshot.md"): context-continuity snapshot generator + PreCompact marker + SessionStart(compact)
+  // reinject + settings.json merge helper. The 4 *.cjs/*.test.cjs pairs already live in forge-bin/ and are
+  // covered by SYSTEM_GLOB below — pinned here explicitly too anyway (same belt-and-suspenders discipline as
+  // every prior wave's precedent above). skills/**/SKILL.md is NOT glob-covered (see the docdrift precedent
+  // immediately above), so it needs its own explicit entry. This wave introduces NO new log-event.cjs event
+  // type (the generator/hooks never call logEvent themselves, per the shared-file rule every other
+  // WAVE-J/V9-INTEGRATE module already follows) and does not itself write settings.json for a synced
+  // project — settings.json wiring stays a deliberate, per-project owner action (see HOOKS_OPT_IN.md).
+  'forge-bin/forge-snapshot.cjs', 'forge-bin/forge-snapshot.test.cjs',
+  'forge-bin/forge-snapshot-marker.cjs', 'forge-bin/forge-snapshot-marker.test.cjs',
+  'forge-bin/forge-snapshot-reinject.cjs', 'forge-bin/forge-snapshot-reinject.test.cjs',
+  'forge-bin/forge-snapshot-settings.cjs', 'forge-bin/forge-snapshot-settings.test.cjs',
+  'skills/forge-snapshot/SKILL.md',
+  // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
+  // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
+  // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by
+  // SYSTEM_GLOB above; skills/**/SKILL.md is NOT glob-covered (same precedent as every prior wave's SKILL.md
+  // entry above), so it needs its own explicit entry. Mirrors the EXISTING precedent for every other
+  // wp-skill-evals skill above: only SKILL.md is registered here, not its sibling evals.json/learnings.md/
+  // references/*.md — those were never registered for forge-code-review/forge-intake/forge-router/
+  // forge-snapshot/forge-verify's own self-improvement files either.
+  'skills/forge-skill-testing/SKILL.md',
+  // forge-tool-index (2026-07-31, mining-ronde-1 §1): the cross-run event search index that answers "has this
+  // already been tried?" — node:sqlite FTS5 with an always-canonical JSONL keyword fallback. Both files live
+  // in forge-bin/ and are therefore already covered by SYSTEM_GLOB below; pinned here explicitly too anyway
+  // (same belt-and-suspenders discipline as every prior wave's precedent above). Introduces the
+  // `rejected_approach` event type, registered in log-event.cjs (KNOWN_EVENT_TYPES + PROOF_EVENTS),
+  // forge-verify.cjs (TERMINAL_TYPES) and forge-dashboard/app.js (taskStatus done-list + SYNTH) per the
+  // 3-places discipline. Its DERIVED store `.claude/forge-index/` is real per-project data, not a template
+  // file, so it is deliberately NOT pinned here (same convention as forge-audit's/docdrift's own ledgers) —
+  // it is gitignored instead.
+  'forge-bin/forge-tool-index.cjs', 'forge-bin/forge-tool-index.test.cjs',
+  // context-budget (2026-08-01): the always-loaded instruction-surface meter wired into forge-doctor.cjs as
+  // the `context_budget` advisory. Both files live in forge-bin/ and are therefore already covered by
+  // SYSTEM_GLOB below; pinned here explicitly too anyway (same belt-and-suspenders discipline as every prior
+  // wave's precedent above). Its config `config/orchestration/FORGE_CONTEXT_BUDGET.json` is deliberately NOT
+  // pinned, breaking from the docdrift/hard-gates precedent for a specific reason: that file's `baseline`
+  // block is a MEASUREMENT of one particular project's own CLAUDE.md and skill catalog, so syncing it would
+  // hand every other project a baseline taken from this one — the meter would then report growth that is
+  // really just a different project. Each project records its own with `--write-baseline` (a missing config
+  // degrades to an honest "no baseline recorded yet", never an error). Same "real per-project data, not a
+  // template file" convention as forge-audit's and forge-tool-index's own stores above. Introduces NO new
+  // log-event.cjs event type — the meter is read-only and never logs.
+  'forge-bin/forge-contextbudget.cjs', 'forge-bin/forge-contextbudget.test.cjs',
+  // config-drift (2026-08-01): the run-scoped governance-config baseline + two-direction drift check
+  // (an undeclared change to the rules a run is judged by · a claimed change whose before == after). Both
+  // files live in forge-bin/ and are therefore already covered by SYSTEM_GLOB below; pinned here explicitly
+  // too anyway (same belt-and-suspenders discipline as every prior wave above). Its OUTPUT,
+  // `forge-runs/<run_id>/config-baseline.json`, is deliberately NOT pinned: it is a measurement of one
+  // particular run in one particular project, so syncing it would hand another project a baseline taken from
+  // this one — the same "real per-project data, not a template file" reason FORGE_CONTEXT_BUDGET.json is left
+  // out above. Introduces NO new log-event.cjs event type: it MATCHES on already-registered announcement
+  // events (file_changed / claude_md_* / custom_skill_* / decision_logged) and logs nothing itself.
+  'forge-bin/forge-configdrift.cjs', 'forge-bin/forge-configdrift.test.cjs',
+  // task-contract failure side (2026-08-01): the suite proving `failure_conditions` (gates, like a dropped
+  // acceptance criterion), `non_goals` (advisory scope check), `on_stuck` + `requires_inputs` (the dispatch
+  // brief) and `result_caveat` (the report). It has no module of its own — the fields live in the existing
+  // forge-prd.cjs / forge-report.cjs / forge-verify.cjs, all three already covered by SYSTEM_GLOB — so only
+  // the test file is pinned. Introduces NO new event type: a hit failure condition reuses the SAME registered
+  // lead_review_completed / rework_task_created / rework_assigned trio an acceptance gap already uses.
+  'forge-bin/forge-taskcontract.test.cjs',
+  // gate-isolation matrix (2026-08-01): the suite that pins ONE isolating scenario per forge-verify exit-code
+  // gate — a run in which that gate is the only non-zero counter — and enforces the mapping in both
+  // directions against the exported EXIT_GATES list (a new gate without a scenario, or a deleted gate, is a
+  // red test). Added after an independent witness deleted a whole gate from the exit code with the entire
+  // suite staying green. It has no module of its own (the gate set lives in forge-verify.cjs, already
+  // SYSTEM_GLOB-covered), so only the test file is pinned. Introduces NO new event type — it never logs.
+  'forge-bin/forge-verify-gates.test.cjs',
 ];
 const SYSTEM_GLOB = [ // whole-dir system files by extension (kept fresh), minus the protected names below
   { dir: 'forge-bin', ext: ['.cjs', '.ps1', '.cmd', '.sh', '.md', '.bat'] },
@@ -480,7 +764,7 @@ function applyPlanSafely(templateDir, projectDir, plan, copyFileImpl) {
 
 // ---- validation: H4 evidence-based gate + H3 pre/post baseline comparison ----
 // M10: build a human-copy-pasteable command STRING from an argv array with proper quoting — naive string
-// concatenation breaks on a project path containing a space and/or a "!" (e.g. "my project!").
+// concatenation breaks on a project path containing a space and/or a "!" (e.g. "my-forge-project").
 function quoteArg(a) {
   const s = String(a);
   return /[\s"!]/.test(s) ? ('"' + s.replace(/"/g, '\\"') + '"') : s;
@@ -612,6 +896,46 @@ function runValidation(projectDir, plan, opts) {
     if (r.status !== 0) failures.push(rel);
   }
   return { tool: 'node-check-fallback', exitCode: failures.length ? 1 : 0, ok: failures.length === 0, degraded: true, checked: cjsRels.length, failures, commands };
+}
+/** seedCanaryRun — CANARY-ONLY, opt-in via opts.seedRunForValidation (set ONLY on the dedicated canary's own
+ *  sync options in runSyncAll, NEVER for a real project's syncOpts). WHY THIS EXISTS (root cause, found via
+ *  direct repro 2026-07-26): the dedicated canary is wiped fresh on every canary-init/sync-all run (M5) and
+ *  therefore NEVER accumulates any forge-runs/ history of its own — but the REAL forge-doctor.cjs this tool
+ *  syncs into it runs the project's REAL *.test.cjs suite, and at least one real, non-fabricated test
+ *  (forge-capabilities-panel.test.cjs) has a genuine precondition of "at least one real run with
+ *  events.jsonl exists in this project" — true for every actual Forge project (they accumulate real run
+ *  history through real /forge usage) but structurally impossible for a scaffold that is deleted and
+ *  recreated empty every single time. That is not a template defect; it is the canary's own environment
+ *  missing something every real project already has. Confirmed with `preValidation` ALWAYS degraded for the
+ *  canary too (no doctor exists pre-sync in a freshly wiped scaffold), so decideValidationOutcome's existing
+ *  "already-red / pre-existing, not attributed to this sync" exemption can never fire for it either — this
+ *  precondition would fail EVERY canary run, for every template, forever, with no rescue path.
+ *  THE FIX: after this sync's files are applied but BEFORE post-sync validation runs, log ONE real, honestly
+ *  described `run_started` event into the JUST-SYNCED project's own forge-runs/ via ITS OWN freshly-copied
+ *  forge-dashboard/log-event.cjs (never a template copy, never a hand-crafted file — going through the exact
+ *  same strict-mode honesty gate a real event would, so this can never smuggle in something that would fail
+ *  STRICT). The canary genuinely WAS just initialized — recording that fact is accurate, not fabricated. This
+ *  makes the precondition honestly, unconditionally TRUE (not merely exempted-as-pre-existing), so a
+ *  template that is actually broken still fails the doctor for real reasons, and a genuinely safe template
+ *  now gets an honest, unconditional pass instead of being blocked by an environment gap unrelated to it.
+ *  Best-effort and silent-no-op when the just-synced project has no forge-dashboard/log-event.cjs at all
+ *  (e.g. a minimal test-fixture template that ships no dashboard) — the SAME "the canary can't be blocked by
+ *  a capability its template doesn't ship" leniency already established for --allow-degraded above, not a new
+ *  bypass. Never throws; a failed/skipped seed simply leaves the real (honest) gap to surface as it always
+ *  did. */
+function seedCanaryRun(projectDir, batchId, nowIso) {
+  const logEventPath = path.join(claudeDirOf(projectDir), 'forge-dashboard', 'log-event.cjs');
+  if (!fs.existsSync(logEventPath)) return { ok: false, skipped: true, reason: 'no forge-dashboard/log-event.cjs synced into this project — leniently skipped' };
+  const rawId = 'canary-init-' + String(batchId || nowIso || Date.now());
+  const runId = rawId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 120) || ('canary-init-' + Date.now());
+  const payload = JSON.stringify({
+    note: 'dedicated sync canary initialized by forge-sync.cjs — a real, honest event proving forge-runs/ genuinely exists for this fresh canary, never fabricated data',
+    canary: true,
+  });
+  let r;
+  try { r = spawnSync(process.execPath, [logEventPath, runId, 'run_started', payload], { cwd: projectDir, encoding: 'utf8' }); }
+  catch (e) { return { ok: false, runId, error: e.message }; }
+  return { ok: !!r && r.status === 0, runId, exitCode: r ? r.status : null, stderr: (r && r.stderr) || '' };
 }
 /** decideValidationOutcome — H3+H4 gating decision, kept as a pure function so it's directly unit-testable.
  *  Priority: timeout -> blocked. Degraded (no doctor) -> requires --allow-degraded even when clean, and NEVER
@@ -1007,6 +1331,13 @@ function safeSyncProject(templateDir, projectDir, opts) {
     return { ok: false, projectDir, plan, backup, applyError: apply.error, rolledBack, rollbackError, restored, preManifest };
   }
 
+  // Canary-only, opt-in (see seedCanaryRun's own doc comment above for the full root-cause rationale): the
+  // files just applied above may include a real forge-dashboard/log-event.cjs — use it, right before
+  // validation reads it, to log ONE honest run_started event so the canary's own forge-runs/ is never
+  // structurally empty going into the doctor it is about to run. Never set for a real project's own sync.
+  let canarySeed = null;
+  if (opts.seedRunForValidation) canarySeed = seedCanaryRun(projectDir, batchId, nowIso);
+
   const validation = runValidation(projectDir, plan, { doctorTimeoutMs: opts.doctorTimeoutMs });
   const outcome = decideValidationOutcome(preValidation, validation, { allowDegraded: opts.allowDegraded });
   if (!outcome.ok) {
@@ -1014,7 +1345,7 @@ function safeSyncProject(templateDir, projectDir, opts) {
     try { restored = restoreFromManifest(projectDir, backup.backupDir, backup.manifest); }
     catch (e) { rollbackError = e.message; }
     const rolledBack = !rollbackError && !!(restored && restored.ok !== false);
-    return { ok: false, projectDir, plan, backup, validation, preValidation, outcome, rolledBack, rollbackError, restored, preManifest };
+    return { ok: false, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, rolledBack, rollbackError, restored, preManifest };
   }
 
   /** B3 (Blocker 3) FIX: opts.refuseOnUnresolvedDrift (set ONLY by the single-project `install` CLI path —
@@ -1083,7 +1414,7 @@ function safeSyncProject(templateDir, projectDir, opts) {
     syncedAt: nowIso,
   };
   writeReceipt(projectDir, receipt);
-  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, receipt, preManifest, postManifest };
+  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, receipt, preManifest, postManifest };
 }
 
 /** adoptProject — NEW COMMAND: `forge-sync adopt <projectDir>`. Establishes a baseline receipt from the
@@ -1298,8 +1629,12 @@ function runSyncAll(templateDir, rootDir, opts) {
   // (e.g. a minimal test fixture) hits the fallback for the canary specifically; treat that leniently
   // (allowDegraded) so the canary's job — proving the SYNC MECHANISM is safe — isn't blocked by the absence of
   // a doctor it doesn't own. Real projects (representative + staged) always respect the caller's actual
-  // --allow-degraded flag (default strict) via plain `syncOpts`.
-  const canarySyncOpts = Object.assign({}, syncOpts, { allowDegraded: true });
+  // --allow-degraded flag (default strict) via plain `syncOpts`. seedRunForValidation: true is the OTHER
+  // canary-only leniency (see seedCanaryRun's doc comment) — logs one real run_started event into the
+  // canary's own just-synced forge-runs/ before validation runs, since the canary structurally never
+  // accumulates real run history the way an actual project does. Real projects NEVER get this — their
+  // forge-runs/ stays exactly what real /forge usage produced.
+  const canarySyncOpts = Object.assign({}, syncOpts, { allowDegraded: true, seedRunForValidation: true });
   /** S6 FIX: sync-all's CLI wrapper already holds the ROOT lock for the whole batch, but that alone doesn't
    *  stop a concurrent single-project `install <root>/proj` (which only locks THAT project's own
    *  `.claude/.forge-sync.lock`, a different path) from racing sync-all on the same files. Hold each
@@ -1472,7 +1807,7 @@ module.exports = {
   overridesAllowlistPath, readOverrideAllowlist,
   preflight, buildPlan, fullFileManifest, aggregateManifestHash,
   versionFilePath, readVersionFile, backupDirFor, centralBackupDir, takeBackup, applyPlanSafely, runValidation,
-  decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck,
+  decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck, seedCanaryRun,
   verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches, restoreFromManifest, subsetManifest,
   journalPath, latestBatchId, acquireLock, releaseLock, lockPathFor,
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,

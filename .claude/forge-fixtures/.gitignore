@@ -1,0 +1,9 @@
+# Forge fixtures vault — real owner-provided sample data stays LOCAL, never committed.
+# Ignore everything in this directory by default...
+*
+# ...except this .gitignore itself, the README, and deliberately-crafted synthetic/placeholder
+# fixtures explicitly marked as such (never real client data).
+!.gitignore
+!README.md
+!*.synthetic.*
+!*.placeholder.*

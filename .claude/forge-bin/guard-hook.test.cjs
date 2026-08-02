@@ -83,11 +83,32 @@ r = runHook({ mode: 'ok' }, PT);
 t('13 mode ok -> Bash allowed (no deny)', !r.denied);
 
 // 14. self-heal reminder fires ONCE: after self-heal, pendingRhythmResume set; UserPromptSubmit consumes it
-r = runHook({ mode: 'paused', resumeAtEpoch: NOW - 1000 }, UP, { project: 'X', phase: 'F1', last_done: 'WP2', next: 'WP3', todo: [{ id: 1, status: 'pending' }] });
-t('14 self-heal on UserPromptSubmit -> 📍 HERVAT reminder shown', /HERVAT/.test(r.stdout) && r.finalMode === 'ok', r.stdout.slice(0, 40));
+//
+// PROJECT-SCOPED SINCE 2026-07-30 (owner-reported leak, and this test caught the change honestly):
+// FORGE_RESUME_STATE.json is a single GLOBAL file, so the reminder used to inject whatever mission
+// was last checkpointed into ANY session — a fresh dashboard-spawned chat in ForgeProjecten\test
+// really did receive the "100 iOS App Opportunity Factory" mission as its resume hint. The hook now
+// only speaks when the checkpoint's own `project_path` actually contains the session's cwd.
+// This case therefore now needs BOTH: a real project_path AND a matching cwd. The two cases below
+// (14c/14d) are the ones the fix exists for — they must stay silent.
+const PROJ_A = path.join(DIR, 'projA');
+const PROJ_B = path.join(DIR, 'projB');
+fs.mkdirSync(PROJ_A, { recursive: true });
+fs.mkdirSync(PROJ_B, { recursive: true });
+const upIn = (cwd) => ({ hook_event_name: 'UserPromptSubmit', cwd });
+const checkpointFor = (root) => ({ project: 'X', project_path: root, phase: 'F1', last_done: 'WP2', next: 'WP3', todo: [{ id: 1, status: 'pending' }] });
+
+r = runHook({ mode: 'paused', resumeAtEpoch: NOW - 1000 }, upIn(PROJ_A), checkpointFor(PROJ_A));
+t('14 self-heal + cwd INSIDE the checkpoint project -> 📍 HERVAT reminder shown', /HERVAT/.test(r.stdout) && r.finalMode === 'ok', r.stdout.slice(0, 40));
 // second prompt on the now-ok state (pendingRhythmResume cleared) -> NO reminder again
-r = runHook({ mode: 'ok' }, UP, { project: 'X', phase: 'F1', last_done: 'WP2', next: 'WP3', todo: [] });
+r = runHook({ mode: 'ok' }, upIn(PROJ_A), checkpointFor(PROJ_A));
 t('14b reminder does NOT repeat on later ok prompt', !/HERVAT/.test(r.stdout));
+// 14c THE LEAK ITSELF: a checkpoint owned by project A must never surface in a session in project B.
+r = runHook({ mode: 'paused', resumeAtEpoch: NOW - 1000 }, upIn(PROJ_B), checkpointFor(PROJ_A));
+t('14c cwd in ANOTHER project -> reminder stays SILENT (no cross-project leak)', !/HERVAT/.test(r.stdout) && r.finalMode === 'ok', r.stdout.slice(0, 60));
+// 14d an old checkpoint with no project_path cannot be attributed to any project -> stay silent
+r = runHook({ mode: 'paused', resumeAtEpoch: NOW - 1000 }, upIn(PROJ_A), { project: 'X', phase: 'F1', last_done: 'WP2', next: 'WP3', todo: [] });
+t('14d checkpoint without project_path -> unverifiable, stays SILENT', !/HERVAT/.test(r.stdout) && r.finalMode === 'ok', r.stdout.slice(0, 60));
 
 // 15. ScheduleWakeup must NOT be blocked when paused (so the session can arm autonomous resume)
 r = runHook({ mode: 'paused', resumeAtEpoch: NOW + 600000, notice: 'P' }, { hook_event_name: 'PreToolUse', tool_name: 'ScheduleWakeup' });

@@ -1,0 +1,17 @@
+{
+  "skill": "forge-snapshot",
+  "assertions": [
+    { "id": "skillmd-exists", "type": "file_exists", "path": ".claude/skills/forge-snapshot/SKILL.md",
+      "why": "the skill file itself must exist for forge-snapshot to be usable at all" },
+    { "id": "description-budget", "type": "frontmatter_field", "field": "description", "max_length": 200,
+      "why": "2026-07-31 skill-load-budget fix (FORGE_MEMORY.md): every description must stay <=200 chars or the skill picker truncates it" },
+    { "id": "snapshot-cjs-exists", "type": "file_exists", "path": ".claude/forge-bin/forge-snapshot.cjs",
+      "why": "the generator this skill instructs the Lead/hooks to invoke" },
+    { "id": "no-context-percentage-claim", "type": "contains", "path": ".claude/skills/forge-snapshot/SKILL.md", "needle": "No context-window percentage is ever fabricated",
+      "why": "2026-07-29 design decision: no context-percentage is available to a hook, so this honesty guardrail must stay explicit" },
+    { "id": "mission-preserved-verbatim", "type": "contains", "path": ".claude/skills/forge-snapshot/SKILL.md", "needle": "preserved VERBATIM",
+      "why": "Section 1 (Mission) anti-drift rule is the core design decision distinguishing it from every re-derived section" },
+    { "id": "learnings-wiring", "type": "contains", "path": ".claude/skills/forge-snapshot/SKILL.md", "needle": "learnings.md",
+      "why": "wp-skill-evals: the skill must instruct reading its own learnings.md before use and appending corrections after" }
+  ]
+}

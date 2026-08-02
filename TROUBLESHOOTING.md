@@ -105,6 +105,8 @@ curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/instal
 
 ## 4. Dashboard port already in use
 
+> **Since 2026-07-31 the dashboard is the Command Center on `http://127.0.0.1:4100`** — one app for every project. The per-project Control Center described here is **retired**: it never starts automatically and only runs on an explicit `legacy dashboard` request. Its `log-event.cjs` is *not* retired and remains the run-event writer.
+
 **Problem** — Starting the dashboard fails, or you're unsure which URL to open.
 
 **Cause** — Each project's dashboard binds to a **deterministic port derived from the project path**, in the range **3737–3999**. If that exact port is already taken (another app, or a second Forge project that happened to hash nearby), the bind would collide.

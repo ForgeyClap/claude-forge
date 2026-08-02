@@ -1,0 +1,32 @@
+{
+  "_doc": "Forge graded-verify rubric for command-line tool / CLI tasks. Owner-editable. Used by the forge-graded-verify skill: review-boss scores each criterion 1-4 with evidence + feedback. Advisory only — never gates irreversible actions; a low score is a signal to rework, not a hard block. ADAPT per project; do not drop-in blindly. Pairs with the forge-cli playbook.",
+  "domain": "cli",
+  "threshold": 3,
+  "criteria": [
+    {
+      "id": "arg_parsing_help",
+      "descriptor": "1=hand-rolled argv slicing, no --help; 2=a parser but --help/--version missing or unknown flags throw a stack trace; 3=real parser with working --help + --version and clean unknown-flag errors; 4=that plus clear usage with examples and subcommand help, all exiting 0",
+      "raise": "adopt the stack's standard arg parser, ensure --help and --version work and exit 0, and make unknown flags fail with a usage message not a stack trace"
+    },
+    {
+      "id": "exit_codes_streams",
+      "descriptor": "1=exits 0 on error and/or logs pollute stdout; 2=exit codes inconsistent or diagnostics mixed into the data stream; 3=distinct correct exit codes, machine output on stdout + diagnostics on stderr; 4=that plus reads stdin when piped, a --json/--quiet script mode, honors non-TTY/NO_COLOR, and survives SIGPIPE",
+      "raise": "return distinct non-zero exit codes on failure, send machine output to stdout and all diagnostics to stderr, read stdin when piped, and suppress color/prompts on non-TTY"
+    },
+    {
+      "id": "no_destructive_default",
+      "descriptor": "1=destructive action happens by default with no guard; 2=guarded inconsistently or no dry-run; 3=destructive ops require a flag or confirmation and a bare run is safe; 4=that plus a working --dry-run preview and --force/--yes override, all covered by tests",
+      "raise": "make every irreversible action require an explicit flag or confirmation, add a --dry-run preview, and keep a bare invocation non-destructive"
+    },
+    {
+      "id": "testability",
+      "descriptor": "1=logic tangled with process I/O, untestable without spawning; 2=some tests but only one happy path; 3=I/O separated from core logic with tests over exit codes + stdout + stderr; 4=that plus pipe round-trip tests and a deliberate error-path test proving a non-zero exit",
+      "raise": "separate core logic from the CLI/stream layer so it is unit-testable, and add tests asserting exit codes, stdout, stderr, and a producer|tool|consumer pipe round-trip"
+    },
+    {
+      "id": "cross_platform",
+      "descriptor": "1=hardcoded path separators / POSIX-only shell assumptions; 2=works on one OS, other-OS behavior unknown and unstated; 3=platform path API + CRLF/LF tolerance + clean SIGINT, verified on the dev OS; 4=verified across a Windows+macOS+Linux matrix (or other-OS results honestly marked inferred)",
+      "raise": "use the platform path API, tolerate CRLF/LF, handle Ctrl-C cleanly, and run a CI matrix (or honestly label which OSes were actually tested vs inferred)"
+    }
+  ]
+}

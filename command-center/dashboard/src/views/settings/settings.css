@@ -1,0 +1,704 @@
+/*
+ * Settings view.
+ *
+ * No raw colour values: every declaration resolves to a var(--forge-*) token.
+ * Spacing and control heights come from the --fw-* density hooks in
+ * src/styles/app.css, so compact mode needs almost no extra rules here.
+ */
+
+/*
+ * The root fills its parent when the shell gives it a definite height and
+ * simply grows when it does not. Either way the page never scrolls sideways:
+ * every wide thing below carries its own overflow container.
+ */
+.fw-settings {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ head */
+
+.fw-settings__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  flex: none;
+  padding: var(--fw-gutter) var(--fw-gutter) var(--forge-space-3);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-settings__headings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-settings__title {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-settings__lede {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-settings__head-toolbar,
+.fw-settings__panel-toolbar {
+  padding-inline: 0;
+}
+
+/* ------------------------------------------------------------------ body */
+
+.fw-settings__body {
+  display: grid;
+  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+/* ------------------------------------------------------------------- nav */
+
+.fw-settings__nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding: var(--fw-gutter-tight);
+  border-inline-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.fw-settings__nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.fw-settings__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid transparent;
+  border-radius: var(--forge-radius-md);
+  background: transparent;
+  color: var(--forge-color-text-muted);
+  font-family: var(--forge-font-sans);
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  text-align: start;
+  cursor: pointer;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-settings__nav-item:hover:not(.is-selected) {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-settings__nav-item.is-selected {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+
+.fw-settings__nav-icon {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-settings__nav-item.is-selected .fw-settings__nav-icon {
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-settings__nav-label {
+  flex: 1 1 auto;
+}
+
+.fw-settings__nav-mark {
+  flex: none;
+  inline-size: var(--forge-space-2);
+  block-size: var(--forge-space-2);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-text-secondary);
+}
+
+.fw-settings__nav-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+}
+
+/* --------------------------------------------------------------- content */
+
+.fw-settings__content {
+  min-block-size: 0;
+  min-inline-size: 0;
+  padding: var(--fw-gutter);
+}
+
+.fw-settings__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-section-gap);
+  max-inline-size: 58rem;
+  min-inline-size: 0;
+}
+
+.fw-settings__section-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-settings__section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-settings__section-title {
+  font-size: var(--forge-text-lg);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-settings__section-sub {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-settings__panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fw-gap);
+  min-inline-size: 0;
+}
+
+/* ------------------------------------------------------------------ rows */
+
+.fw-settings__rows {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.fw-settings__row {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-4);
+  min-block-size: var(--forge-control-xl);
+  padding-block: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-settings__row + .fw-settings__row {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-settings__row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-settings__row-label {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-settings__row-hint {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-settings__row-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* ------------------------------------------------------------------ note */
+
+.fw-settings__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  margin-block-end: var(--forge-space-3);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-settings__note-icon {
+  flex: none;
+  margin-block-start: var(--forge-space-px);
+  color: var(--forge-color-text-faint);
+}
+
+/* -------------------------------------------------------------- swatches */
+
+.fw-settings__swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--forge-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-settings__swatch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-settings__swatch-chip {
+  block-size: var(--forge-space-10);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  box-shadow: var(--forge-shadow-inset);
+}
+
+.fw-settings__swatch-chip[data-token='canvas'] {
+  background: var(--forge-color-canvas);
+}
+.fw-settings__swatch-chip[data-token='bg'] {
+  background: var(--forge-color-bg);
+}
+.fw-settings__swatch-chip[data-token='surface-1'] {
+  background: var(--forge-color-surface-1);
+}
+.fw-settings__swatch-chip[data-token='surface-2'] {
+  background: var(--forge-color-surface-2);
+}
+.fw-settings__swatch-chip[data-token='surface-3'] {
+  background: var(--forge-color-surface-3);
+}
+.fw-settings__swatch-chip[data-token='line'] {
+  background: var(--forge-color-line);
+}
+.fw-settings__swatch-chip[data-token='text-muted'] {
+  background: var(--forge-color-text-muted);
+}
+.fw-settings__swatch-chip[data-token='accent'] {
+  background: var(--forge-color-accent);
+}
+
+.fw-settings__swatch-name {
+  font-size: var(--forge-text-2xs);
+}
+
+/* ----------------------------------------------------------------- lists */
+
+.fw-settings__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-settings__facts > li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-settings__facts-mark {
+  flex: none;
+  margin-block-start: var(--forge-space-1);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-settings__machine-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-settings__machine-list > li {
+  padding-block: var(--forge-space-2);
+  overflow-wrap: anywhere;
+}
+
+.fw-settings__machine-list > li + li {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+/* ---------------------------------------------------------------- skills */
+
+.fw-settings__skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--forge-space-1) var(--forge-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-settings__skill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-3);
+  min-block-size: var(--fw-row-h);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  min-inline-size: 0;
+}
+
+.fw-settings__skill-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--forge-color-text-secondary);
+}
+
+/* ---------------------------------------------------------------- tables */
+
+.fw-settings__table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-inline-size: 100%;
+}
+
+.fw-settings__table {
+  inline-size: 100%;
+  min-inline-size: 22rem;
+  font-size: var(--forge-text-sm);
+}
+
+.fw-settings__table th {
+  padding: var(--forge-space-2) var(--forge-space-3) var(--forge-space-2) 0;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line);
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-muted);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.fw-settings__table td {
+  padding: var(--forge-space-2) var(--forge-space-3) var(--forge-space-2) 0;
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+  vertical-align: top;
+}
+
+.fw-settings__table tbody tr:last-child td {
+  border-block-end: 0;
+}
+
+.fw-settings__table--shortcuts td:first-child {
+  inline-size: 12rem;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------- local Claude Code section */
+
+.fw-link-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-link-callout__icon {
+  flex: none;
+  margin-block-start: var(--forge-space-px);
+  color: var(--forge-color-text);
+}
+
+.fw-link-browser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-link-browser__strip {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  padding-block-end: var(--forge-space-1);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  min-inline-size: 0;
+}
+
+.fw-link-browser__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+  block-size: var(--fw-control-h-sm);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  white-space: nowrap;
+  cursor: pointer;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-link-browser__chip:hover:not(.is-selected) {
+  border-color: var(--forge-color-line-strong);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-link-browser__chip.is-selected {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text);
+}
+
+.fw-link-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  margin-block-start: var(--fw-gap);
+  padding: var(--forge-space-4);
+  border: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-lg);
+  background: var(--forge-color-surface-2);
+  min-inline-size: 0;
+}
+
+.fw-link-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-link-card__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-lg);
+  block-size: var(--forge-control-lg);
+  border: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--fw-status-soft);
+  color: var(--fw-status-color);
+}
+
+.fw-link-card__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-link-card__state {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  color: var(--fw-status-color);
+}
+
+.fw-link-card__title {
+  font-size: var(--forge-text-md);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-link-card__detail {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-link-card__hint {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-link-card__hint-icon {
+  flex: none;
+  margin-block-start: var(--forge-space-px);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-link-options {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-link-options__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-3);
+  padding-block: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-link-options__item + .fw-link-options__item {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-link-options__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-link-options__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-link-options__label {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+}
+
+.fw-link-options__detail {
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+/* --------------------------------------------------------------- density */
+
+:root[data-density='compact'] .fw-settings__body {
+  grid-template-columns: minmax(0, 11.5rem) minmax(0, 1fr);
+}
+
+:root[data-density='compact'] .fw-settings__row {
+  min-block-size: var(--forge-control-lg);
+}
+
+/* ---------------------------------------------------------------- narrow */
+
+@media (max-width: 860px) {
+  .fw-settings__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .fw-settings__nav {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--forge-space-3);
+    padding: var(--forge-space-2) var(--fw-gutter-tight);
+    border-inline-end: 0;
+    border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+  }
+
+  .fw-settings__nav-list {
+    flex-direction: row;
+    gap: var(--forge-space-1);
+  }
+
+  .fw-settings__nav-item {
+    inline-size: auto;
+    white-space: nowrap;
+  }
+
+  .fw-settings__nav-legend {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .fw-settings__row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--forge-space-2);
+  }
+
+  .fw-settings__row-control {
+    justify-content: flex-start;
+    inline-size: 100%;
+  }
+}

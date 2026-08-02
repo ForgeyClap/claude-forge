@@ -1,0 +1,512 @@
+/*
+ * Activity — view stylesheet.
+ *
+ * House rules held here:
+ *   - no raw hex, rgb() or hsl(). Every colour is a var(--forge-*) token.
+ *   - the spine is a hairline in --forge-color-line, drawn per event so it
+ *     starts at the first node and stops at the last one instead of trailing
+ *     off into whitespace.
+ *   - status keeps its icon, its uppercase label and its border treatment. The
+ *     running badge does NOT spin in this list: forty rows of motion is noise,
+ *     and a log is history rather than a live control.
+ *   - the only animation is a chevron rotation, disabled under reduced motion.
+ *
+ * The column widths are local layout properties, not colours — there is no
+ * token for "the width of a timestamp column". They retune once under the
+ * compact density hook.
+ */
+
+.fw-activity {
+  --fw-event-node: var(--forge-control-sm);
+  --fw-event-time: 9.5rem;
+  --fw-event-agent: 9.5rem;
+  --fw-event-status: 7rem;
+  --fw-activity-reading: 78ch;
+
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  /* The view owns its background so the sticky run header never mismatches. */
+  background: var(--forge-color-bg);
+}
+
+:root[data-density='compact'] .fw-activity {
+  --fw-event-node: var(--forge-control-xs);
+  --fw-event-time: 9rem;
+  --fw-event-agent: 8.5rem;
+  --fw-event-status: 6.5rem;
+}
+
+/* ============================================================ page header */
+
+.fw-activity__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--fw-gap);
+  flex: none;
+  padding: var(--fw-gutter);
+  padding-block-end: var(--fw-gutter-tight);
+}
+
+.fw-activity__title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+}
+
+.fw-activity__h1 {
+  font-size: var(--forge-text-xl);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+.fw-activity__lede {
+  max-inline-size: 62ch;
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-activity__toolbar {
+  padding-inline: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.fw-activity__count {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+  white-space: nowrap;
+}
+
+/* =============================================================== filters */
+
+.fw-activity__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--fw-gap);
+  flex: none;
+  padding-inline: var(--fw-gutter);
+  padding-block-end: var(--fw-gutter-tight);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-activity__filter {
+  flex: none;
+}
+
+.fw-activity__filter--search {
+  flex: 1 1 18rem;
+  max-inline-size: 26rem;
+}
+
+.fw-activity__search {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h-sm);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-activity__search:focus-within {
+  border-color: var(--forge-color-line-loud);
+}
+
+.fw-activity__search-icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-activity__input {
+  inline-size: 100%;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-xs);
+}
+
+.fw-activity__input:focus {
+  outline: none;
+}
+
+.fw-activity__input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+/* Chrome draws its own clear button; it does not belong on this surface. */
+.fw-activity__input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.fw-activity__select {
+  block-size: var(--fw-control-h-sm);
+  min-inline-size: 10rem;
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-xs);
+  cursor: pointer;
+}
+
+.fw-activity__select:hover {
+  border-color: var(--forge-color-line-strong);
+}
+
+/* =================================================== active filter summary */
+
+.fw-activity__active {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  padding-inline: var(--fw-gutter);
+  padding-block: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-surface-1);
+}
+
+.fw-activity__active-label {
+  flex: none;
+}
+
+.fw-activity__chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.fw-activity__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  max-inline-size: 22rem;
+  padding-inline-start: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-activity__chip-label {
+  flex: none;
+}
+
+.fw-activity__chip-value {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text);
+}
+
+/* ================================================================== body */
+
+.fw-activity__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding-inline: var(--fw-gutter);
+  padding-block-end: var(--fw-gutter);
+}
+
+/* --------------------------------------------------------- run grouping */
+
+.fw-run {
+  display: block;
+  margin-block-end: var(--fw-section-gap);
+}
+
+.fw-run__head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--forge-z-sticky);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--forge-space-2) var(--forge-space-3);
+  padding-block: var(--forge-space-3) var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line);
+  /* Opaque, because rows scroll underneath it. */
+  background: var(--forge-color-bg);
+}
+
+.fw-run__id {
+  flex: none;
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-run__goal {
+  flex: 1 1 20rem;
+  min-inline-size: 0;
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-run__meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  flex: none;
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+  white-space: nowrap;
+}
+
+.fw-run__meta-sep {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-run__meta-word {
+  color: var(--forge-color-text-muted);
+}
+
+/* ============================================================== timeline */
+
+.fw-activity__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  padding-block-start: var(--forge-space-2);
+}
+
+.fw-activity__list--flat {
+  padding-block-start: var(--forge-space-4);
+}
+
+/*
+ * An activity log is history. The running badge keeps its icon and its
+ * uppercase label; it just stops spinning, because forty rows of motion is
+ * noise rather than information.
+ */
+.fw-activity__list .fw-icon--spin {
+  animation: none;
+}
+
+.fw-event {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--fw-event-node) minmax(0, 1fr);
+  column-gap: var(--forge-space-3);
+  align-items: start;
+}
+
+/* The spine. One segment per event, so it starts and stops on a node. */
+.fw-event::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--fw-event-node) / 2);
+  inline-size: var(--forge-border-hair);
+  margin-inline-start: calc(var(--forge-border-hair) * -0.5);
+  background: var(--forge-color-line);
+}
+
+/* The node sits one space step below the row edge, so both ends allow for it. */
+.fw-event:first-child::before {
+  inset-block-start: calc(var(--forge-space-1) + var(--fw-event-node) / 2);
+}
+
+.fw-event:last-child::before {
+  inset-block-end: calc(100% - var(--forge-space-1) - var(--fw-event-node) / 2);
+}
+
+.fw-event__node {
+  position: relative;
+  z-index: var(--forge-z-base);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--fw-event-node);
+  block-size: var(--fw-event-node);
+  margin-block-start: var(--forge-space-1);
+  border: var(--fw-status-width) var(--fw-status-style) var(--fw-status-line);
+  border-radius: var(--forge-radius-full);
+  /* Opaque so the spine reads as passing behind the node, not through it. */
+  background: var(--forge-color-bg);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-event[data-selected='true'] .fw-event__node {
+  border-color: var(--fw-status-color);
+  background: var(--forge-color-surface-3);
+  color: var(--forge-color-text);
+}
+
+.fw-event__head {
+  display: grid;
+  grid-template-columns:
+    var(--fw-event-time)
+    var(--fw-event-agent)
+    var(--fw-event-status)
+    minmax(0, 1fr)
+    var(--forge-icon-md);
+  align-items: center;
+  gap: var(--forge-space-3);
+  inline-size: 100%;
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  padding-block: var(--forge-space-1);
+  border-radius: var(--forge-radius-sm);
+  text-align: start;
+  cursor: pointer;
+  color: inherit;
+}
+
+.fw-event__head:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-event[data-selected='true'] .fw-event__head {
+  background: var(--forge-color-selected);
+  box-shadow: inset var(--forge-border-thick) 0 0 0 var(--forge-color-line-loud);
+}
+
+.fw-event__stamp {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-inline-size: 0;
+}
+
+.fw-event__time {
+  font-size: var(--forge-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-event__run {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-event__agent {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-event__status {
+  display: inline-flex;
+  min-inline-size: 0;
+}
+
+.fw-event__message {
+  min-inline-size: 0;
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+}
+
+.fw-event__chev {
+  justify-self: end;
+  color: var(--forge-color-text-faint);
+  transition: transform var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-event__head[aria-expanded='true'] .fw-event__chev {
+  transform: rotate(180deg);
+}
+
+.fw-event__detail {
+  grid-column: 2;
+  padding-inline: var(--forge-space-2);
+  padding-block: var(--forge-space-1) var(--forge-space-3);
+}
+
+.fw-event__detail-text {
+  max-inline-size: var(--fw-activity-reading);
+  padding-inline-start: var(--forge-space-3);
+  border-inline-start: var(--forge-border-hair) solid var(--forge-color-line);
+  font-size: var(--forge-text-md);
+  line-height: var(--forge-leading-relaxed);
+  color: var(--forge-color-text-secondary);
+}
+
+/* ================================================================== note */
+
+.fw-activity__note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2);
+  margin-block-start: var(--forge-space-4);
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-faint);
+}
+
+/* ============================================================ responsive */
+
+@media (max-width: 64rem) {
+  .fw-event__head {
+    grid-template-columns: minmax(0, 1fr) var(--forge-icon-md);
+    grid-template-areas:
+      'message chev'
+      'stamp   chev'
+      'agent   chev'
+      'status  chev';
+    row-gap: var(--forge-space-1);
+    align-items: center;
+  }
+
+  .fw-event__stamp {
+    grid-area: stamp;
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--forge-space-2);
+  }
+
+  .fw-event__agent {
+    grid-area: agent;
+  }
+
+  .fw-event__status {
+    grid-area: status;
+  }
+
+  .fw-event__message {
+    grid-area: message;
+  }
+
+  .fw-event__chev {
+    grid-area: chev;
+  }
+}
+
+@media (max-width: 44rem) {
+  .fw-run__goal {
+    flex-basis: 100%;
+  }
+
+  .fw-activity__filter--search {
+    flex-basis: 100%;
+    max-inline-size: none;
+  }
+
+  .fw-activity__select {
+    min-inline-size: 8rem;
+  }
+}
+
+/* ========================================================= reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-event__chev {
+    transition: none;
+  }
+}

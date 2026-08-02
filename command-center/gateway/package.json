@@ -1,0 +1,13 @@
+{
+  "name": "forge-command-center-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Zero-dependency Forge Compatibility Gateway (WP1 T1.7 slice: health, projects, runs, events).",
+  "scripts": {
+    "start": "node bin.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

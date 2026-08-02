@@ -1,0 +1,676 @@
+/*
+ * Forge Workspace — sidebar.
+ *
+ * Four fixed bands (brand, actions, search, foot) around one scrolling band.
+ * Nothing here invents a value: every colour, space, radius and duration is a
+ * var(--forge-*) token.
+ *
+ * Widths, specifically. This file does not size the sidebar and must not: the
+ * 264px and 60px come from --forge-layout-sidebar and
+ * --forge-layout-sidebar-collapsed, and app-shell.css spends them on the grid
+ * track. Everything below simply fills that track and switches on the
+ * data-collapsed attribute. Two literal pixel values survive the audit, both on
+ * purpose:
+ *
+ *   861px / 860px   the drawer breakpoint, shared with seven other stylesheets.
+ *                   A media query cannot read a custom property, so this one
+ *                   cannot be a token no matter how much it deserves to be.
+ *   180px           the fallback for --fw-menu-w. The live value is set inline
+ *                   by Sidebar.tsx, which needs the same number in script to
+ *                   place the popover.
+ *
+ * The collapsed rail is a presentation change only — the same DOM, with labels
+ * folded away and their meaning kept in title attributes. Those rules are scoped
+ * to (min-width: 861px) because below that the sidebar is a drawer and always
+ * shows itself in full.
+ */
+
+.fw-sidebar {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  background: var(--forge-color-surface-1);
+  border-inline-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+/* =========================================================================
+   Brand
+   ========================================================================= */
+
+.fw-sidebar__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: none;
+  min-block-size: var(--fw-header-h);
+  padding-inline: var(--forge-space-3);
+  padding-block: var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  padding: var(--forge-space-1);
+  margin: calc(var(--forge-space-1) * -1);
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text);
+}
+
+.fw-sidebar__brand:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-sidebar__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-md);
+  block-size: var(--forge-control-md);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text);
+}
+
+.fw-mark {
+  inline-size: var(--forge-icon-lg);
+  block-size: var(--forge-icon-lg);
+}
+
+.fw-sidebar__wordmark {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-sidebar__wordmark-name {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-bold);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text);
+}
+
+.fw-sidebar__wordmark-sub {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-sidebar__head-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  flex: none;
+}
+
+/* The drawer close button only exists in drawer mode. */
+.fw-sidebar__drawer-close {
+  display: none;
+}
+
+/* =========================================================================
+   Actions
+   ========================================================================= */
+
+.fw-sidebar__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  flex: none;
+  padding: var(--fw-gutter-tight);
+}
+
+.fw-sidebar__rail-actions {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--forge-space-1);
+}
+
+/* =========================================================================
+   Search
+   ========================================================================= */
+
+.fw-sidebar__search {
+  flex: none;
+  padding-inline: var(--fw-gutter-tight);
+  padding-block-end: var(--forge-space-2);
+}
+
+.fw-sidebar__search-field {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-sunken);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-sidebar__search-field:focus-within {
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-sidebar__search-icon {
+  flex: none;
+}
+
+.fw-sidebar__search-input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-none);
+  outline: none;
+}
+
+.fw-sidebar__search-input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+/* The engine's own clear affordance would be a second, differently-styled X. */
+.fw-sidebar__search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.fw-sidebar__search-clear {
+  flex: none;
+}
+
+/* =========================================================================
+   Scrolling band
+   ========================================================================= */
+
+.fw-sidebar__scroll {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  padding-inline: var(--forge-space-2);
+  padding-block-end: var(--forge-space-3);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.fw-sidebar__rule {
+  margin-block: var(--forge-space-3);
+}
+
+.fw-sidebar__section {
+  margin-block-end: var(--forge-space-4);
+}
+
+.fw-sidebar__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--forge-space-2);
+  padding-inline: var(--forge-space-2);
+  padding-block: var(--forge-space-1) var(--forge-space-2);
+}
+
+.fw-sidebar__section-count {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-sidebar__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fw-sidebar__none {
+  padding-inline: var(--forge-space-2);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   Nav
+   ========================================================================= */
+
+.fw-nav__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.fw-nav__link {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  border: var(--forge-border-hair) solid transparent;
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  min-inline-size: 0;
+  transition-property: background-color, color, border-color;
+  transition-duration: var(--forge-motion-fast);
+  transition-timing-function: var(--forge-motion-ease-standard);
+}
+
+.fw-nav__link:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-nav__link.is-active {
+  background: var(--forge-color-selected);
+  border-color: var(--forge-color-line);
+  color: var(--forge-color-text);
+  font-weight: var(--forge-weight-semibold);
+}
+
+.fw-nav__icon {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-nav__link.is-active .fw-nav__icon {
+  color: var(--forge-color-text);
+}
+
+/* =========================================================================
+   Project row
+   ========================================================================= */
+
+.fw-prow {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  border-radius: var(--forge-radius-md);
+}
+
+.fw-prow:hover {
+  background: var(--forge-color-hover);
+}
+
+.fw-prow[data-active='true'] {
+  background: var(--forge-color-selected);
+}
+
+.fw-prow__main {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  min-block-size: var(--fw-row-h);
+  padding-inline: var(--forge-space-2);
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-prow__main:hover {
+  color: var(--forge-color-text);
+}
+
+.fw-prow__icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-prow__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-prow__name {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-medium);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text);
+}
+
+.fw-prow__meta {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-prow__status {
+  display: inline-flex;
+  flex: none;
+}
+
+.fw-prow__status .fw-status-dot {
+  inline-size: var(--forge-icon-md);
+  block-size: var(--forge-icon-md);
+}
+
+.fw-prow__tools {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: none;
+  padding-inline-end: var(--forge-space-1);
+  opacity: 0;
+  transition: opacity var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-prow:hover .fw-prow__tools,
+.fw-prow:focus-within .fw-prow__tools {
+  opacity: 1;
+}
+
+/* A pinned row keeps its pin visible even at rest — it is state, not a hover. */
+.fw-prow__tools .fw-icon-button.is-active {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .fw-prow__tools {
+    opacity: 1;
+  }
+}
+
+/* =========================================================================
+   Conversation row
+   ========================================================================= */
+
+.fw-crow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-inline-size: 0;
+}
+
+.fw-crow__main {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: 1 1 auto;
+  min-block-size: var(--fw-row-h);
+  min-inline-size: 0;
+  padding-inline: var(--forge-space-2);
+  border-inline-start: var(--forge-border-thick) solid transparent;
+  border-radius: 0 var(--forge-radius-md) var(--forge-radius-md) 0;
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-crow__main:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-crow__main.is-active {
+  border-inline-start-color: var(--forge-color-line-loud);
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-crow__icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-crow__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-px);
+  min-inline-size: 0;
+}
+
+.fw-crow__title {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-tight);
+}
+
+.fw-crow__meta {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-tight);
+  color: var(--forge-color-text-faint);
+}
+
+/* feat-delete-conversation: same hover-reveal shape as .fw-prow__tools above — a row's own delete
+   affordance stays out of the way until the row is hovered/focused, and always shows on touch. */
+.fw-crow__tools {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: none;
+  padding-inline-end: var(--forge-space-1);
+  opacity: 0;
+  transition: opacity var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-crow:hover .fw-crow__tools,
+.fw-crow:focus-within .fw-crow__tools {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .fw-crow__tools {
+    opacity: 1;
+  }
+}
+
+/* =========================================================================
+   Foot
+   ========================================================================= */
+
+.fw-sidebar__foot {
+  flex: none;
+  padding: var(--forge-space-2) var(--fw-gutter-tight);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+/*
+ * One line, always. The old foot was a 46-character sentence in an 11px mono
+ * face inside a 264px column: roughly 300px of text in 239px of room, so it
+ * wrapped and read like a paragraph that had lost its way. It is now an icon
+ * and a short UPPERCASE label that fit with room to spare, and .fw-truncate on
+ * the label means any future string clips to an ellipsis rather than wrapping.
+ * The full sentence lives in the row's title attribute either way.
+ */
+.fw-sidebar__foot-state {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-sidebar__foot-icon {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+/*
+ * text-muted, not text-faint. At --forge-text-2xs the faint value sits at about
+ * 3.2:1 on the dark surface, which is under AA; muted measures about 5.2:1 dark
+ * and 5.9:1 light, so the line is legible in both themes.
+ */
+.fw-sidebar__foot-text {
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  letter-spacing: var(--forge-tracking-wide);
+  color: var(--forge-color-text-muted);
+}
+
+/* =========================================================================
+   Context menu
+   Fixed to the viewport so the sidebar's own scroll container cannot clip it.
+   ========================================================================= */
+
+.fw-sidebar__menu {
+  position: fixed;
+  z-index: var(--forge-z-tooltip);
+  /*
+   * Set from Sidebar.tsx (MENU_WIDTH) as an inline custom property, because the
+   * same number places the popover in script. The fallback keeps this rule
+   * readable on its own and matches that constant.
+   */
+  inline-size: var(--fw-menu-w, 180px);
+  padding: var(--forge-space-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-raised);
+  box-shadow: var(--forge-shadow-lg);
+  animation: fw-menu-in var(--forge-motion-fast) var(--forge-motion-ease-enter) both;
+}
+
+.fw-sidebar__menu-head {
+  padding: var(--forge-space-1) var(--forge-space-2) var(--forge-space-2);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  margin-block-end: var(--forge-space-1);
+}
+
+.fw-sidebar__menu-id {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-sidebar__menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  inline-size: 100%;
+  min-block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-2);
+  border-radius: var(--forge-radius-sm);
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.fw-sidebar__menu-item:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-sidebar__menu-icon {
+  flex: none;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-sidebar__menu-note {
+  padding: var(--forge-space-2) var(--forge-space-2) var(--forge-space-1);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  margin-block-start: var(--forge-space-1);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+}
+
+@keyframes fw-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--forge-space-1) * -1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-sidebar__menu {
+    animation: none !important;
+  }
+}
+
+/* =========================================================================
+   Collapsed rail — desktop only
+   ========================================================================= */
+
+@media (min-width: 861px) {
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__label {
+    display: none;
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__head {
+    flex-direction: column;
+    gap: var(--forge-space-1);
+    padding-inline: var(--forge-space-1);
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__brand {
+    justify-content: center;
+    flex: none;
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__actions {
+    padding-inline: var(--forge-space-1);
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__rail-actions {
+    display: flex;
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__search {
+    display: none;
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__scroll {
+    padding-inline: var(--forge-space-1);
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-nav__link,
+  .fw-sidebar[data-collapsed='true'] .fw-prow__main {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__section {
+    margin-block-end: var(--forge-space-2);
+  }
+
+  /*
+   * The rail keeps the state, not the sentence. The label is folded away with
+   * every other .fw-sidebar__label, the icon centres in the 60px track, and the
+   * title attribute on the row still says the whole thing on hover — the same
+   * bargain the rail's nav links make. A connection indicator that disappeared
+   * the moment the sidebar narrowed would be the wrong indicator.
+   */
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__foot {
+    padding-inline: var(--forge-space-1);
+  }
+
+  .fw-sidebar[data-collapsed='true'] .fw-sidebar__foot-state {
+    justify-content: center;
+    gap: 0;
+  }
+}
+
+/* =========================================================================
+   Drawer mode — the rail never applies below 861px
+   ========================================================================= */
+
+@media (max-width: 860px) {
+  .fw-sidebar {
+    border-inline-end: 0;
+  }
+
+  .fw-sidebar__collapse {
+    display: none;
+  }
+
+  .fw-sidebar__drawer-close {
+    display: inline-flex;
+  }
+}

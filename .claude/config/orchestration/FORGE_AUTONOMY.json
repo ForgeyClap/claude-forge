@@ -1,0 +1,37 @@
+{
+  "_doc": "Forge V2 WAVE B / B3 (2026-07-18) — continue-within-mission autonomy policy. Governs ONE question only: 'may Forge keep WORKING through phase transitions without re-asking the owner' — it never governs 'may Forge do something irreversible'. Consumed by .claude/forge-bin/forge-autonomy.cjs::decide(), which ALWAYS defers to the hard-gates classifier (.claude/forge-bin/forge-actiongate.cjs, backed by hard-gates.json — the single source of truth for irreversible-action/isolation-escape regex) and to a live usage-limit pause BEFORE ever consulting a mode below. always_interrupt is a documentation/drift-canary manifest of the gate ids that ALWAYS win regardless of mode (mirrored 1:1 from hard-gates.json's gate ids, proven by forge-autonomy.test.cjs so this list can never silently drift from the real classifier) — the actual interrupt decision is made by calling actiongate.classify() live, never by matching against this static array. nl_phrases_advisory phrases (Dutch-first, matching the owner's real recorded usage) are ADVISORY ONLY: a caller MAY use them to select a mode via a future 'record' command, but detecting one can NEVER itself unlock or bypass a hard gate or a usage-limit pause — decide() does not even look at nl_phrases_advisory.",
+  "version": 1,
+  "default": "continue-within-mission",
+  "modes": {
+    "ask-each-phase": "Forge stops at every phase boundary and asks the owner before continuing (opt-in, the most conservative mode).",
+    "continue-within-mission": "DEFAULT. Forge does not re-ask between phases — a plain phase transition proceeds without interruption. Still bound by every entry in always_interrupt.",
+    "full-auto-within-mission": "Like continue-within-mission, with no additional phase-boundary confirmation at all. Still bound by every entry in always_interrupt — full autonomy never bypasses a hard gate or a usage-limit pause."
+  },
+  "always_interrupt": [
+    "deploy",
+    "git-push",
+    "spend",
+    "dns-change",
+    "prod-activate",
+    "credential-attach",
+    "credential-rotate",
+    "workflow-activate",
+    "outbound-sms",
+    "kill-by-name",
+    "destructive-delete",
+    "git-destructive",
+    "write-outside-root",
+    "usage-limit"
+  ],
+  "nl_phrases_advisory": [
+    "ga door",
+    "werk op loop",
+    "wacht niet op mij",
+    "continue"
+  ],
+  "native_primitives": {
+    "_doc": "WP-GH-WIRE (2026-07-26) — governance only, no new tool. A long autonomous mission SHOULD use the platform's own native primitives instead of prompt-only 'keep going' discipline: `/goal <condition>` for a loop-until-done tier (Claude keeps working across turns until the owner-set condition is met — verified live against the real Claude Code docs by forge-docdrift's `goal-command` claim) and `/loop <interval>` for recurring checks (heartbeat/canary polling — verified via forge-docdrift's `loop-command` claim). Neither primitive bypasses this file's own tiers — a hard gate (always_interrupt) or a usage-limit pause still stops a `/goal`/`/loop` run exactly as it stops any other continue-within-mission work; this section only tells Forge WHICH mechanism to prefer for the 'keep working/checking without re-asking' half of the job.",
+    "goal": "Prefer `/goal <completion-condition>` over a prompt-only 'keep going until X' instruction for a bounded, loop-until-done autonomous mission.",
+    "loop": "Prefer `/loop <interval>` over a prompt-only 'check again every N minutes' instruction for recurring checks (heartbeat, canary, scheduled status polling)."
+  }
+}

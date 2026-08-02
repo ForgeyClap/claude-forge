@@ -60,11 +60,11 @@ const REAL_POLICY = JSON.parse(fs.readFileSync(TOOL_POLICY_PATH, 'utf8'));
 const REAL_AGENT_MD_NAMES = fs.readdirSync(path.join(TEMPLATE_ROOT, '.claude', 'agents')).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, ''));
 
 // --- REAL repo assertions ---
-t('real template: 18 agent-md files present', REAL_AGENT_MD_NAMES.length === 18);
+t('real template: 19 agent-md files present', REAL_AGENT_MD_NAMES.length === 19);
 t('agent-tool-policy.json documents bash_is_a_write_primitive (no "harden by removing Write only" false sense of safety)', REAL_POLICY.bash_is_a_write_primitive === true);
-t('agent-tool-policy.json covers ALL 18 real agent-md files — no gaps', REAL_AGENT_MD_NAMES.every((n) => !!REAL_POLICY.agents[n]));
-t('agent-tool-policy.json has no orphan entries — every policy agent has a real agent-md', Object.keys(REAL_POLICY.agents).length === 18 && Object.keys(REAL_POLICY.agents).every((n) => REAL_AGENT_MD_NAMES.includes(n)));
-t('real template: agentsCheck toolPolicy sub-check passes (0 drift across all 18 real agent-mds)', real.toolPolicy && real.toolPolicy.ok === true);
+t('agent-tool-policy.json covers ALL 19 real agent-md files — no gaps', REAL_AGENT_MD_NAMES.every((n) => !!REAL_POLICY.agents[n]));
+t('agent-tool-policy.json has no orphan entries — every policy agent has a real agent-md', Object.keys(REAL_POLICY.agents).length === 19 && Object.keys(REAL_POLICY.agents).every((n) => REAL_AGENT_MD_NAMES.includes(n)));
+t('real template: agentsCheck toolPolicy sub-check passes (0 drift across all 19 real agent-mds)', real.toolPolicy && real.toolPolicy.ok === true);
 t('real template: docs-boss frontmatter carries NO Bash (write-no-exec, fixed 2026-07-14)', !D.parseFrontmatter(fs.readFileSync(path.join(TEMPLATE_ROOT, '.claude', 'agents', 'docs-boss.md'), 'utf8')).tools.includes('Bash'));
 t('real template: skill-boss frontmatter carries NO Bash (write-no-exec, fixed 2026-07-14)', !D.parseFrontmatter(fs.readFileSync(path.join(TEMPLATE_ROOT, '.claude', 'agents', 'skill-boss.md'), 'utf8')).tools.includes('Bash'));
 t('real template: review-boss + security-boss remain read-only-audit in the policy', REAL_POLICY.agents['review-boss'].class === 'read-only-audit' && REAL_POLICY.agents['security-boss'].class === 'read-only-audit');
