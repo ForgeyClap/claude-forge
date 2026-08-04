@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.2.0] - 2026-08-04
+
+Installing into a fresh project was structurally impossible, and the usage guard was watching the wrong
+account. Both were found by running the system against itself; every fix below ships with a test that
+first reproduces the defect.
+
+### Fixed — installing into a new project
+
+- **A fresh install validated itself against files that could only exist afterwards** and therefore
+  rolled back all ~357 files, every time. The post-install doctor required a `CLAUDE.md`, `.gitignore`
+  rules, a wrapper script that was never shipped, a **git repository**, and two assertions pinning the
+  maintainer tree's exact state. The installer now seeds the environment its own validation checks
+  (append-only `.gitignore`, create-only `CLAUDE.md` stub, both undone on rollback), environment tests
+  skip honestly where their precondition is legitimately absent, and dev-tree-only assertions sit behind
+  a marker file that is never shipped.
+- **The leak scan walked Python virtualenvs**, reporting third-party docstrings (`user:pass@host`
+  examples in fsspec/httpx/pandas) as credentials — enough to fail an entire install. Virtualenvs are now
+  detected by `pyvenv.cfg` (whatever the directory is called) and skipped like `node_modules`; a real
+  secret outside the venv is still caught.
+
+### Fixed — usage guard
+
+- **No account identity anywhere.** One state file served every account, so after switching accounts the
+  guard kept deciding on the previous one's numbers, and a credits override bought on account A
+  suppressed the guard on account B. The guard now fingerprints the account (a short digest — never a raw
+  uuid, e-mail or token), detects a switch, and starts clean instead of inheriting.
+- **Only two usage windows were read.** The API returns a typed `limits` array (session, weekly, and
+  per-model scoped windows); everything outside the two legacy fields was invisible and could sit at 100%
+  while the guard reported `ok`. All windows now count, are shown and are logged, typed and legacy are
+  merged rather than one replacing the other, and a `null` percentage is no longer coerced into a
+  confident `0%`.
+- **A live PID counted as proof the watcher was working.** It could stop ticking while the process lived
+  on. There is now a heartbeat, process-wide rejection/exception handlers, and an honest
+  running/stale/not-running verdict.
+- **`stop` could kill a recycled PID**, including its process tree. It now verifies the command line
+  belongs to this watcher before killing anything, never tree-kills, and removes the PID file only once
+  the process is confirmed gone.
+
+### Fixed — honesty of what the system reports
+
+- **A synthetic demo run counted as "the latest run"** for status, `open-report` and the dashboard header
+  — pointing at a report that does not exist — and operational directories were listed as missions. Run
+  listings now require run shape, order by real time, and never let a self-declared demo win "latest".
+- Several tools resolved their event writer from their own install directory while accepting a `--root`,
+  so running them against another project wrote that project's events into the tool's own tree.
+- Machine-specific paths (a maintainer's username, one machine's Paperclip home and `claude` binary) were
+  baked into shipped files — wrong everywhere else, and needlessly identifying. Per-install state files
+  are no longer published at all.
+
 ## [2.1.0] - 2026-08-02
 
 This release closes three defect classes that were **measured**, not guessed, in the system this repo is cut from.

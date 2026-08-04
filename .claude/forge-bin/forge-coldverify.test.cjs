@@ -321,5 +321,226 @@ t('criterion text comes from the PRD spec for every assessed ticket',
   t('CLI --help: documents that it never writes', cliHelp.status === 0 && /Never writes/.test(cliHelp.stdout));
 }
 
+// ============================ THE WRITE SIDE ============================
+// Everything above pins the READ side: it judges honestly and it touches nothing. From here the question
+// is whether it may ACT on that judgement, and under what restraint. Section order is load-bearing —
+// 12 and 13 must run before any ticket is actually mutated, and each later section owns its own ticket so
+// the sections cannot silently consume each other's fixtures.
+//
+// A thrown error inside these sections must surface as a real FAIL line rather than killing the file
+// halfway (which would hide every later assertion behind a stack trace), so each one runs inside `section`.
+const section = (name, fn) => {
+  try { fn(); }
+  catch (e) { fail++; console.error('  FAIL ' + name + ' — threw: ' + (e && e.message ? e.message : String(e))); }
+};
+
+// ============================ 12. reopen: planning only ============================
+section('12 reopen planning', () => {
+  const plan = C.planReopen({ run_id: RUN, projectRoot: TMP });
+  const ids = plan.candidates.map((c) => c.ticket_id).sort();
+  t('reopen plan: exactly the UNPROVEN done tickets are candidates',
+    ids.join(',') === 'tk-prd-cold-3,tk-prd-cold-4,tk-prd-cold-5,tk-prd-cold-6,tk-prd-cold-7');
+  t('reopen plan: a PROVEN ticket is never a candidate',
+    !ids.includes('tk-prd-cold-1') && !ids.includes('tk-prd-cold-2')
+    && C.planReopen({ ticket_id: 'tk-prd-cold-1', projectRoot: TMP }).candidates.length === 0);
+  t('reopen plan: an UNASSESSABLE ticket is never a candidate — "I could not judge it" is not "it is wrong"',
+    !ids.includes('tk-noc-1') && C.planReopen({ ticket_id: 'tk-noc-1', projectRoot: TMP }).candidates.length === 0);
+  t('reopen plan: a ticket this check never assessed (still open) cannot be a candidate',
+    C.planReopen({ ticket_id: 'tk-prd-cold-open', projectRoot: TMP }).candidates.length === 0);
+  t('reopen plan: every candidate is done -> review and carries the verdict + reasons that justify it',
+    plan.candidates.every((c) => c.from_status === 'done' && c.to_status === 'review'
+      && c.verdict === 'unproven' && Array.isArray(c.reasons) && c.reasons.length > 0));
+  t('reopen plan: planning alone changes no ticket status',
+    String(store.getEntity('tickets', 'tk-prd-cold-3').status).toLowerCase() === 'done');
+});
+
+// ============================ 13. reopen: DRY RUN IS THE DEFAULT ============================
+section('13 reopen dry run', () => {
+  const calls = [];
+  const spy = (runId, type, extra) => { calls.push({ runId, type, extra }); return { ok: true }; };
+  const treeBefore = snapshotTree(TMP);
+  const r = C.reopen({ run_id: RUN, projectRoot: TMP, logEvent: spy });
+  const treeAfter = snapshotTree(TMP);
+  t('reopen: DRY RUN is the DEFAULT — no --confirm means nothing is executed', r.dry_run === true);
+  t('reopen dry run: creates/modifies/deletes NOTHING on disk (same bar the read path is held to)',
+    treeBefore === treeAfter);
+  t('reopen dry run: logs NOT ONE event — a run that changed nothing may claim nothing', calls.length === 0);
+  t('reopen dry run: it still names every ticket it WOULD reopen, and made no change',
+    r.candidates.length === 5 && r.changes.length === 0 && r.reopened === 0);
+  t('reopen dry run: every candidate is still "done" afterwards',
+    r.candidates.every((c) => String(store.getEntity('tickets', c.store_id).status).toLowerCase() === 'done'));
+});
+
+// ============================ 14. reopen --confirm ============================
+section('14 reopen --confirm', () => {
+  const calls = [];
+  const spy = (runId, type, extra) => { calls.push({ runId, type, extra }); return { ok: true }; };
+  const r = C.reopen({ ticket_id: 'tk-prd-cold-3', projectRoot: TMP, confirm: true, logEvent: spy });
+  const tk = store.getEntity('tickets', 'tk-prd-cold-3');
+  t('reopen --confirm: the unproven ticket goes done -> review (never to done, never to anything else)',
+    tk.status === 'review');
+  t('reopen --confirm: the status it came from is recorded, not silently overwritten', tk.previous_status === 'done');
+  t('reopen --confirm: the ticket carries WHY it was reopened — verdict, timestamp and the check\'s own reasons',
+    !!tk.cold_verify && tk.cold_verify.verdict === 'unproven'
+    && Array.isArray(tk.cold_verify.reasons) && tk.cold_verify.reasons.length > 0
+    && typeof tk.cold_verify.reopened_at === 'string' && !Number.isNaN(Date.parse(tk.cold_verify.reopened_at)));
+  t('reopen --confirm: exactly ONE ticket_updated event per changed ticket, on that ticket\'s OWN run',
+    calls.length === 1 && calls[0].type === 'ticket_updated' && calls[0].runId === RUN
+    && calls[0].extra.ticket_id === 'tk-prd-cold-3');
+  t('reopen --confirm: the event states both the new status and the one it replaced',
+    calls[0].extra.status === 'review' && calls[0].extra.previous_status === 'done');
+  t('reopen --confirm: the result reports the change honestly (event logged AND written)',
+    r.reopened === 1 && r.failed === 0 && r.changes.length === 1
+    && r.changes[0].event_logged === true && r.changes[0].written === true);
+  t('reopen --confirm: a PROVEN sibling is untouched',
+    String(store.getEntity('tickets', 'tk-prd-cold-1').status).toLowerCase() === 'done');
+  t('reopen --confirm: an UNASSESSABLE sibling is untouched',
+    String(store.getEntity('tickets', 'tk-noc-1').status).toLowerCase() === 'done');
+  // The note a reopen writes is builder-visible prose like any other. The firewall must keep treating it
+  // as such, or this tool's own output would become admissible evidence for its next verdict.
+  t('reopen --confirm: the note it writes stays firewalled out of judging — it can never become evidence',
+    typeof tk.note === 'string' && tk.note.length > 0 && C.coldTicket(tk).note === undefined);
+});
+
+// ============================ 15. the ONE real writer ============================
+// Hermetic AND real: log-event.cjs resolves its own CLAUDE_DIR from __dirname, so a copy placed inside the
+// temp .claude/ writes into the temp forge-runs/. That means this exercises the actual writer — its strict
+// vocabulary check and its tamper-evident hash chain — without a single byte landing in the real project.
+section('15 the one real writer', () => {
+  const dashDir = path.join(CLAUDE_DIR, 'forge-dashboard');
+  fs.mkdirSync(dashDir, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), path.join(dashDir, 'log-event.cjs'));
+  const evFile = path.join(CLAUDE_DIR, 'forge-runs', RUN, 'events.jsonl');
+  const before = fs.readFileSync(evFile, 'utf8');
+  const r = C.reopen({ ticket_id: 'tk-prd-cold-4', projectRoot: TMP, confirm: true });
+  const added = fs.readFileSync(evFile, 'utf8').slice(before.length).trim().split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+  t('real writer: reopen --confirm appends exactly one line, through log-event.cjs itself', added.length === 1);
+  t('real writer: it is a genuine ticket_updated for that exact ticket, on that run',
+    added[0].event_type === 'ticket_updated' && added[0].ticket_id === 'tk-prd-cold-4' && added[0].run_id === RUN);
+  t('real writer: the line carries log-event.cjs\'s own hash-chain fields — proof it went THROUGH it, not around it',
+    typeof added[0].entry_hash === 'string' && added[0].entry_hash.length === 64 && typeof added[0].prev_hash === 'string');
+  t('real writer: and the ticket really moved',
+    store.getEntity('tickets', 'tk-prd-cold-4').status === 'review' && r.reopened === 1 && r.failed === 0);
+});
+
+// ============================ 16. a second reopen must not fire again ============================
+section('16 idempotency', () => {
+  const calls = [];
+  const spy = (runId, type, extra) => { calls.push({ runId, type, extra }); return { ok: true }; };
+  const first = C.reopen({ ticket_id: 'tk-prd-cold-5', projectRoot: TMP, confirm: true, logEvent: spy });
+  t('idempotency (setup): the first confirmed reopen really did fire once', first.reopened === 1 && calls.length === 1);
+  const ticketsDir = store.resolveStoreDir('tickets');
+  const treeBefore = snapshotTree(ticketsDir);
+  const storedBefore = store.getEntity('tickets', 'tk-prd-cold-5')._stored;
+  const second = C.reopen({ ticket_id: 'tk-prd-cold-5', projectRoot: TMP, confirm: true, logEvent: spy });
+  t('idempotency: a second reopen of an ALREADY reopened ticket plans nothing',
+    second.candidates.length === 0 && second.reopened === 0 && second.failed === 0);
+  t('idempotency: it logs no second event — one change, one event, never a duplicate', calls.length === 1);
+  t('idempotency: it writes nothing at all the second time (ticket store byte-identical, _stored unchanged)',
+    snapshotTree(ticketsDir) === treeBefore && store.getEntity('tickets', 'tk-prd-cold-5')._stored === storedBefore);
+  t('idempotency is STRUCTURAL: a reopened ticket is no longer "done", and only done tickets are ever assessed',
+    second.checked === 0 && second.skipped_not_done === 1);
+});
+
+// ============================ 17. a refused event aborts the write ============================
+section('17 refused event', () => {
+  const refuse = () => ({ ok: false, status: 2, stderr: 'STRICT REFUSED ticket_updated — simulated writer refusal' });
+  const before = store.getEntity('tickets', 'tk-prd-cold-6');
+  const r = C.reopen({ ticket_id: 'tk-prd-cold-6', projectRoot: TMP, confirm: true, logEvent: refuse });
+  const after = store.getEntity('tickets', 'tk-prd-cold-6');
+  t('refused event: the ticket is left EXACTLY as it was — no status change behind a rejected event',
+    String(after.status).toLowerCase() === 'done' && after._stored === before._stored && after.previous_status === undefined);
+  t('refused event: it is reported as failed, never quietly as done',
+    r.reopened === 0 && r.failed === 1 && r.changes[0].event_logged === false && r.changes[0].written === false);
+  t('refused event: the reported error quotes the writer\'s own refusal instead of paraphrasing it',
+    /STRICT REFUSED/.test(String(r.changes[0].error)));
+});
+
+// ============================ 18. a change that cannot be logged is not made ============================
+section('18 no run to log to', () => {
+  const calls = [];
+  const spy = (runId, type, extra) => { calls.push({ runId, type, extra }); return { ok: true }; };
+  const r = C.reopen({ ticket_id: 'tk-nochan-2', projectRoot: TMP, confirm: true, logEvent: spy });
+  t('no run: an unproven ticket naming no run is NOT reopened — every change must be recordable',
+    r.candidates.length === 0 && r.reopened === 0 && r.skipped.length === 1 && r.skipped[0].ticket_id === 'tk-nochan-2');
+  t('no run: it is skipped loudly with a reason and no event, not silently dropped',
+    /run/i.test(String(r.skipped[0].why)) && calls.length === 0);
+  t('no run: the ticket is untouched',
+    String(store.getEntity('tickets', 'tk-nochan-2').status).toLowerCase() === 'done');
+  const r2 = C.reopen({ ticket_id: 'tk-nochan-2', projectRoot: TMP, confirm: true, event_run_id: RUN, logEvent: spy });
+  t('no run: naming a run explicitly unblocks it, and the event goes THERE',
+    r2.reopened === 1 && calls.length === 1 && calls[0].runId === RUN && calls[0].extra.ticket_id === 'tk-nochan-2');
+  t('no run: only then does the ticket move to review',
+    store.getEntity('tickets', 'tk-nochan-2').status === 'review');
+});
+
+// ============================ 19. the state may not shift under it ============================
+section('19 write-time re-check', () => {
+  const mk = (id, status) => putTicket(id, { ticket_id: id, run_id: 'run-race', status, title: 'Race criterion ' + id, test_evidence: 'ghost-' + id + '.png' });
+  mk('tk-race-1', 'done');
+  mk('tk-race-2', 'done');
+  t('race (setup): both fixtures are genuinely unproven candidates',
+    C.planReopen({ run_id: 'run-race', projectRoot: TMP }).candidates.length === 2);
+  const calls = [];
+  const spy = (runId, type, extra) => {
+    calls.push(extra.ticket_id);
+    // Close the window: while ticket 1 is being reopened, someone else moves ticket 2 out of "done".
+    if (extra.ticket_id === 'tk-race-1') mk('tk-race-2', 'open');
+    return { ok: true };
+  };
+  const r = C.reopen({ run_id: 'run-race', projectRoot: TMP, confirm: true, logEvent: spy });
+  t('race: the ticket that was still done is reopened normally', store.getEntity('tickets', 'tk-race-1').status === 'review');
+  t('race: the ticket that moved under it is NOT clobbered — it was judged from a state that no longer exists',
+    store.getEntity('tickets', 'tk-race-2').status === 'open' && r.reopened === 1 && r.failed === 1);
+  t('race: and no event was logged for the change that did not happen', calls.length === 1);
+});
+
+// ============================ 20. the write contract, structurally ============================
+section('20 structural write contract', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'forge-coldverify.cjs'), 'utf8');
+  t('contract: this tool writes no file itself — no fs write call exists anywhere in its source',
+    !/fs\.(writeFileSync|appendFileSync|mkdirSync|rmSync|rmdirSync|unlinkSync|createWriteStream|writeFile|appendFile|copyFile)\b/.test(src));
+  const eventsLines = src.split(/\r?\n/).filter((l) => l.includes('events.jsonl'));
+  t('contract: every mention of events.jsonl in the source is a READ — it never appends to the log by hand',
+    eventsLines.length > 0 && eventsLines.every((l) => !/append|writeFile/i.test(l)));
+  t('contract: the event goes through the one real writer, forge-dashboard/log-event.cjs',
+    /'forge-dashboard'\s*,\s*'log-event\.cjs'/.test(src));
+  t('contract: the ticket write goes through forge-store\'s own putEntity, not a second write path',
+    /store\.putEntity\(\s*'tickets'/.test(src));
+});
+
+// ============================ 21. reopen CLI ============================
+section('21 reopen CLI', () => {
+  const runCli = (...args) => spawnSync(process.execPath, [path.join(__dirname, 'forge-coldverify.cjs'), ...args],
+    { encoding: 'utf8', env: Object.assign({}, process.env, { FORGE_STORE_ROOT: CLAUDE_DIR }) });
+
+  const dry = runCli('reopen', '--run', RUN, '--root', TMP);
+  t('CLI reopen: exits 0 and says plainly that it was a DRY RUN', dry.status === 0 && /DRY RUN/.test(dry.stdout));
+  t('CLI reopen: states that nothing changed and points at the flag that would change it',
+    /nothing was changed/i.test(dry.stdout) && /--confirm/.test(dry.stdout));
+  t('CLI reopen: lists the ticket it would reopen', /tk-prd-cold-7/.test(dry.stdout));
+
+  const statusBefore = String(store.getEntity('tickets', 'tk-prd-cold-7').status).toLowerCase();
+  const dryJson = runCli('reopen', '--run', RUN, '--root', TMP, '--json');
+  let parsed = null; try { parsed = JSON.parse(dryJson.stdout); } catch { parsed = null; }
+  t('CLI reopen --json: parseable, and honest that it was a dry run',
+    !!parsed && parsed.dry_run === true && Array.isArray(parsed.candidates) && parsed.candidates.length > 0);
+  t('CLI reopen: neither dry call touched the ticket',
+    String(store.getEntity('tickets', 'tk-prd-cold-7').status).toLowerCase() === statusBefore);
+
+  const confirmed = runCli('reopen', '--ticket', 'tk-prd-cold-7', '--root', TMP, '--confirm');
+  t('CLI reopen --confirm: exits 0 and reports the real change',
+    confirmed.status === 0 && /tk-prd-cold-7/.test(confirmed.stdout) && /review/.test(confirmed.stdout));
+  t('CLI reopen --confirm: the ticket really moved to review',
+    store.getEntity('tickets', 'tk-prd-cold-7').status === 'review');
+
+  const readOnly = runCli('--run', RUN, '--root', TMP);
+  t('CLI: the DEFAULT (no subcommand) mode is unchanged and still declares itself read-only',
+    /read-only: nothing was reopened, changed, or logged/.test(readOnly.stdout));
+  const help = runCli('--help');
+  t('CLI --help: documents the reopen subcommand and its --confirm gate',
+    help.status === 0 && /reopen/.test(help.stdout) && /--confirm/.test(help.stdout));
+});
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

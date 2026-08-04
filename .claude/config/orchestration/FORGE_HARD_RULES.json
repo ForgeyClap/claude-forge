@@ -50,7 +50,7 @@
     },
     {
       "id": "plan-or-prd-present",
-      "rule": "A run must produce a real plan/PRD/work-package artifact before dispatch — no team is spawned against an unwritten plan.",
+      "rule": "A run must produce a real plan/PRD/work-package artifact before dispatch — no team is spawned against an unwritten plan. This is the FLOOR: any of the three counts. Heavy work owes more — see prd-required-for-heavy-work.",
       "trigger": "always",
       "check": {
         "type": "event-present",
@@ -63,6 +63,20 @@
       "severity": "block",
       "override": "a real event {event_type:'owner_override', rule:'plan-or-prd-present', reason:'<real, non-bare-token reason, e.g. a genuinely trivial 1-line fix with no plan needed>', by:'<configured owner id>'} — see this file's top-level owners_allowlist",
       "source": "log-event.cjs KNOWN_EVENT_TYPES (prd_generated/mission_blueprint_created/agent_work_package_created) + forge-prd.cjs"
+    },
+    {
+      "id": "prd-required-for-heavy-work",
+      "rule": "Heavy work (fan-out L3/L4) must produce a REAL PRD — a genuine prd_generated event. The cheap agent_work_package_created that satisfies the plan floor is not enough once a run is this big.",
+      "trigger": "complexity:>=L3",
+      "check": {
+        "type": "event-present",
+        "key": [
+          "prd_generated"
+        ]
+      },
+      "severity": "block",
+      "override": "a real event {event_type:'owner_override', rule:'prd-required-for-heavy-work', reason:'<real, non-bare-token reason, e.g. a large but purely mechanical run against an already-approved plan>', by:'<configured owner id>'} — see this file's top-level owners_allowlist. DELIBERATELY overridable (never cannot_override): when the level was DERIVED rather than declared this rule blocks on an inference, and a block on an inference must always have a usable, attributed escape hatch.",
+      "source": "OWNER-PUNT B / richting 2 (2026-08-03). Measured over the 30 real runs in .claude/forge-runs: plan-or-prd-present's OR-key was satisfied on every run by the cheapest of its three alternatives (agent_work_package_created 12 events vs prd_generated 2), because the router instructs every Lead to log a work package per dispatched subagent — so the PRD, the expensive alternative, was never chosen. This rule restores the distinction: the floor stays cheap, heavy work owes the real thing. Complexity comes from forge-runcontract.cjs::resolveComplexity() — DECLARED from the run's own run.json (`complexity`/`fanout`), DERIVED from real dispatch volume via CLAUDE.md's fan-out bands (L1 1-3, L2 3-6, L3 6-12, L4 large), reconciled by MAX so a self-reported 'L1' cannot dodge it."
     },
     {
       "id": "dispatch-logged",

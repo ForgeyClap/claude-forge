@@ -308,12 +308,21 @@ function printHuman(result) {
   return lines.join('\n');
 }
 
-function logEvent(runId, eventType, extra) {
-  const logEventPath = path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs');
+/** logEvent(root, runId, eventType, extra) — ROOT CONTAINMENT (2026-08-03, same bug class proven live in
+ *  forge-runcontract/forge-manifest the same day): this tool scans the project given by `--path`, but the
+ *  writer used to be resolved from `__dirname`, so scanning project B wrote its deep_learn_started/
+ *  _completed events into THIS install's forge-runs. The writer now belongs to the SCANNED root (the
+ *  convention forge-distill/forge-audit-loop/forge-docdrift already follow); a root without its own
+ *  writer is reported honestly instead of silently falling back to another install's writer. */
+function logEvent(root, runId, eventType, extra) {
+  const logEventPath = path.join(path.resolve(root || '.'), '.claude', 'forge-dashboard', 'log-event.cjs');
+  if (!fs.existsSync(logEventPath)) {
+    return { status: 1, stdout: '', stderr: 'no event writer under the scanned root (' + logEventPath + ' missing) — refusing cross-install fallback' };
+  }
   return spawnSync(process.execPath, [logEventPath, runId, eventType, JSON.stringify(extra || {})], { encoding: 'utf8' });
 }
 
-module.exports = { scanProject, SECRET_PATTERNS, categoryOf };
+module.exports = { scanProject, SECRET_PATTERNS, categoryOf, logEvent };
 
 // ---- CLI ----
 if (require.main === module) {
@@ -335,7 +344,7 @@ if (require.main === module) {
     }
 
     if (opts.run) {
-      const started = logEvent(opts.run, 'deep_learn_started', { agent: 'project-scan', note: 'deep learn scan started', path: root });
+      const started = logEvent(root, opts.run, 'deep_learn_started', { agent: 'project-scan', note: 'deep learn scan started', path: root });
       if (started.status !== 0) console.error('forge-deeplearn: log-event (deep_learn_started) warning: ' + (started.stderr || '').trim());
     }
 
@@ -355,7 +364,7 @@ if (require.main === module) {
       const med = result.risks.filter((r) => r.level === 'med').length;
       const low = result.risks.filter((r) => r.level === 'low').length;
       const note = 'deep learn scan completed: ' + result.counts.totalFiles + ' files, risks high=' + high + ' med=' + med + ' low=' + low;
-      const completed = logEvent(opts.run, 'deep_learn_completed', { agent: 'project-scan', note });
+      const completed = logEvent(root, opts.run, 'deep_learn_completed', { agent: 'project-scan', note });
       if (completed.status !== 0) console.error('forge-deeplearn: log-event (deep_learn_completed) warning: ' + (completed.stderr || '').trim());
     }
 

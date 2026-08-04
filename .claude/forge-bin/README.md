@@ -1,7 +1,5 @@
 # Forge command pack (project-local)
 
-> **Since 2026-07-31 the dashboard is the Command Center on `http://127.0.0.1:4100`** — one app for every project. The per-project Control Center described here is **retired**: it never starts automatically and only runs on an explicit `legacy dashboard` request. Its `log-event.cjs` is *not* retired and remains the run-event writer.
-
 Cross-platform terminal wrappers for **this project's** Forge. They only ever run this project's `.claude/forge-dashboard/` scripts — **no global install, no PATH changes, no admin rights, nothing outside this folder.** They require Node.js (the wrappers auto-detect it; see below).
 
 ## Windows quick start (recommended)

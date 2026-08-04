@@ -199,10 +199,17 @@ const LOG_EVENT_PATH = path.join(__dirname, '..', 'forge-dashboard', 'log-event.
 /** logManifestArmed({run_id, manifest}, opts) -> {ok, event_type, reason?, status?} — best-effort. Returns
  *  an honest {ok:false, reason} instead of throwing, because the caller's manifest write has ALREADY
  *  committed by the time this runs: a failure to log the proof must never be reported as a failure to arm.
- *  opts.logEventPath overrides the writer (test hermeticity seam — same convention as opts.root). */
+ *  opts.logEventPath overrides the writer (test hermeticity seam — same convention as opts.root).
+ *  ROOT CONTAINMENT (2026-08-03, same class as forge-runcontract's fix): the writer is resolved under
+ *  opts.root — never via __dirname alone — so a foreign-root caller can never write proof events into
+ *  THIS install's forge-runs. A root without its own writer is an honest {ok:false}, never a fallback. */
 function logManifestArmed(input, opts) {
   opts = opts || {};
-  const script = opts.logEventPath || LOG_EVENT_PATH;
+  const root = resolveRoot(opts.root);
+  const script = opts.logEventPath || path.join(root, '.claude', 'forge-dashboard', 'log-event.cjs');
+  if (!opts.logEventPath && !fs.existsSync(script)) {
+    return { ok: false, event_type: 'manifest_armed', reason: 'no event writer under this root (' + script + ' missing) — refusing cross-install fallback' };
+  }
   const wps = Array.isArray(input.manifest) ? input.manifest : [];
   const ev = {
     run_id: input.run_id,

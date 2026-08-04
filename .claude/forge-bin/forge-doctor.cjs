@@ -314,25 +314,118 @@ function secretLabel(src) {
 }
 
 // 5) leak scan of git-tracked files (falls back to a bounded working-tree walk if git is unavailable)
+const WALK_SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', 'forge-runs', 'forge-backups', '.cache',
+  // VENV/VENDOR CONTAINMENT (2026-08-03, gemeten op "aiTraining"): the gitless WALK crawled a Python
+  // virtualenv (12.728 files) and flagged 16 third-party docstring URL-examples (fsspec/httpx/pandas/
+  // pyarrow/urllib3) as url-embedded-credentials. A venv/site-packages tree is dependency territory
+  // exactly like node_modules: third-party code we do not own. Fixed dir names here; arbitrary venv
+  // names (.venv-train, …) are caught by the pyvenv.cfg marker check in isVenvDir() below.
+  '.venv', 'venv', 'site-packages', '__pycache__', '.tox', '.mypy_cache', '.ruff_cache', '.pytest_cache']);
+/** isVenvDir — definitive Python-venv detection by its marker file, so a venv is skipped whatever its
+ *  directory name is (measured real case: `.venv-train`). Cheap: one existsSync per DIRECTORY walked. */
+function isVenvDir(absDir) { return fs.existsSync(path.join(absDir, 'pyvenv.cfg')); }
+// How deep below the project root a nested repository is still looked for. Four levels covers every real
+// layout this project has met (`command-center/`, `apps/<x>/`, `packages/<x>/<y>/`) without turning repo
+// discovery into a full-tree walk of a large monorepo.
+const NESTED_REPO_MAX_DEPTH = 4;
+
+/**
+ * nestedGitRepos(root, maxDepth) -> ['command-center', ...] (root-relative, forward slashes, sorted)
+ *
+ * THE BLIND SPOT THIS EXISTS FOR (measured on this project, 2026-08-02, not assumed):
+ *     git ls-files | wc -l                      -> 1298
+ *     git ls-files | grep -c '^command-center/' ->    0
+ * `command-center/` is its own git repository nested under the project root, so the outer index has never
+ * heard of a single file in it. trackedFiles() sourced the entire leak scan from that one index, which
+ * means the gateway that spawns the real `claude` CLI and the Discord integration that holds a live bot
+ * token were never scanned once — while the doctor printed "1146 tracked files (git) · clean" and the sync
+ * gate consumed that as coverage. A scan cannot honestly call a tree clean when it never opened it, and
+ * nothing in the output distinguished "found nothing" from "looked at nothing". When that same tree was
+ * later published as one repository, 9 findings appeared on the first scan.
+ *
+ * A directory counts as a nested repo when it contains a `.git` entry of ANY kind — a directory (ordinary
+ * clone) or a file (worktree / submodule gitlink). Descent continues past a found repo so a doubly-nested
+ * one is still discovered, and the ordinary heavy/vendor directories are skipped exactly as the walk
+ * fallback below skips them. Never throws: an unreadable directory is simply not descended into.
+ */
+function nestedGitRepos(root, maxDepth) {
+  const cap = Number.isFinite(maxDepth) ? maxDepth : NESTED_REPO_MAX_DEPTH;
+  const found = [];
+  (function walk(dir, depth, rel) {
+    if (depth > cap) return;
+    let es = [];
+    try { es = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of es) {
+      if (!e.isDirectory() || WALK_SKIP_DIRS.has(e.name)) continue;
+      const childRel = rel ? rel + '/' + e.name : e.name;
+      const childAbs = path.join(dir, e.name);
+      if (isVenvDir(childAbs)) continue; // a venv is dependency territory — never a nested repo of ours
+      if (fs.existsSync(path.join(childAbs, '.git'))) found.push(childRel);
+      walk(childAbs, depth + 1, childRel);
+    }
+  })(root, 1, '');
+  return found.sort();
+}
+
+/** gitLsFiles(dirAbs) -> string[] | null — the repo's own tracked-file list, or null when this is not a
+ *  usable git repository. `git ls-files` is the only listing method used for a nested repo, deliberately:
+ *  it lists TRACKED files and nothing else, so whatever that repo gitignores (its `.env`, its build output)
+ *  is never opened, never scanned, and never even named as a path in the report. Widening the scan must not
+ *  become a way to read files the repository itself declared out of bounds. */
+function gitLsFiles(dirAbs) {
+  const r = spawnSync('git', ['-C', dirAbs, 'ls-files'], { encoding: 'utf8' });
+  if (r.status !== 0 || typeof r.stdout !== 'string') return null;
+  return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+/** trackedFiles(root) -> {source, files, sources}
+ *  `sources` is the honest accounting the old single-number output could not give: one entry per repository
+ *  that actually contributed, `{root, method, files}`, so "N tracked files" can never again mean "N files
+ *  from however many of this tree's repositories we happened to notice". A source whose `git ls-files`
+ *  fails is reported with `unavailable` rather than dropped — and is NOT walked as a consolation prize,
+ *  because a walk would read exactly the ignored files the git listing exists to exclude.
+ *  Nested discovery only applies when the ROOT itself is a git repo. When git is unavailable the walk
+ *  fallback already covers the whole tree from the root down (including any nested repo's working files),
+ *  and it is left byte-for-byte as it was. */
 function trackedFiles(root) {
-  const r = spawnSync('git', ['-C', root, 'ls-files'], { encoding: 'utf8' });
-  if (r.status === 0 && typeof r.stdout === 'string') {
-    return { source: 'git', files: r.stdout.split('\n').map((s) => s.trim()).filter(Boolean) };
+  const rootList = gitLsFiles(root);
+  if (rootList) {
+    const files = rootList.slice();
+    const seen = new Set(rootList);
+    const sources = [{ root: '.', method: 'git', files: rootList.length }];
+    for (const relDir of nestedGitRepos(root, NESTED_REPO_MAX_DEPTH)) {
+      const nested = gitLsFiles(path.join(root, relDir.split('/').join(path.sep)));
+      if (nested === null) { sources.push({ root: relDir, method: 'git', files: 0, unavailable: 'git ls-files failed' }); continue; }
+      let added = 0;
+      for (const f of nested) {
+        // de-duplicated on purpose: a nested repo's directory can also be tracked by the outer index (an
+        // added submodule, a directory that gained its own .git later), and one file must not be scanned
+        // twice nor counted twice in the totals.
+        const rel = relDir + '/' + f;
+        if (seen.has(rel)) continue;
+        seen.add(rel); files.push(rel); added++;
+      }
+      sources.push({ root: relDir, method: 'git', files: added });
+    }
+    return { source: 'git', files, sources };
   }
   // fallback: bounded walk, skip the usual heavy/secret-bearing dirs (git absent). forge-runs + forge-backups
   // are Forge's OWN operational artifacts (run logs; backups of Forge's own system files, which include test
   // fixtures) — never the project source we scan for leaked credentials.
-  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', 'forge-runs', 'forge-backups', '.cache']);
   const out = [];
   (function walk(dir, depth) {
     if (depth > 6) return; let es = [];
     try { es = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of es) {
-      if (e.isDirectory()) { if (!SKIP.has(e.name)) walk(path.join(dir, e.name), depth + 1); continue; }
+      if (e.isDirectory()) {
+        const childAbs = path.join(dir, e.name);
+        if (!WALK_SKIP_DIRS.has(e.name) && !isVenvDir(childAbs)) walk(childAbs, depth + 1);
+        continue;
+      }
       if (e.isFile()) out.push(path.relative(root, path.join(dir, e.name)).split(path.sep).join('/'));
     }
   })(root, 0);
-  return { source: 'walk', files: out };
+  return { source: 'walk', files: out, sources: [{ root: '.', method: 'walk', files: out.length }] };
 }
 // A matched string only counts as a REAL leak if it isn't a placeholder, a short label, or a repeated-
 // filler test fixture. (Redaction patterns are intentionally aggressive; leak DETECTION must be precise so
@@ -459,6 +552,17 @@ function isPatternDefinitionContext(text, idx, matchLen) {
 // about it and not by crying wolf on it.
 const LEAK_SCAN_MAX_BYTES = 8 * 1024 * 1024;  // 8MB: scans every realistic text file; a larger file is surfaced in skipped, never silently dropped
 const LEAK_SCAN_MAX_LINE = 16 * 1024;         // 16KB: a single line longer than this (minified bundle, data blob) is length-bounded out of regex scanning and surfaced — the structural ReDoS guard (see below)
+// "test fixtures legitimately hold fake secrets" — a rule this scan has always had. Its implementation was
+// /\.test\.[cm]?js$/i, i.e. JavaScript-only, and nothing about the rule was ever meant to be: a
+// `chat.test.ts` holds fake credentials for exactly the same reason a `chat.test.cjs` does. The gap stayed
+// invisible only because this project's one TypeScript tree (command-center/dashboard) sat inside the
+// nested-repo blind spot fixed above — widening the scan surfaced 4 cry-wolf hits on *.test.ts / *.test.tsx
+// in the first run. Deliberately kept to the SAME rule rather than a broader one: only the `.test.`
+// infix before a JS/TS extension, so `real-source.ts` is still scanned and a file merely named
+// `latest.ts` or `contest.js` is untouched. The trade-off (a genuine secret hidden in a file named
+// `*.test.ts` is missed) is not new — it is the pre-existing, deliberate trade-off of the JS rule, now
+// applied consistently instead of by accident of file extension.
+const TEST_FIXTURE_RE = /\.test\.(?:[cm]?jsx?|[cm]?tsx?)$/i;
 // leakScan detection pattern list = store.SECRET_PATTERNS EXCEPT the one MULTI-LINE PEM BLOCK pattern
 // (/-----BEGIN...[\s\S]{0,N}?...-----END/) is replaced by its single-line HEADER. Reasons: (a) a
 // `-----BEGIN ... PRIVATE KEY-----` line is itself the leak signal — present even in a truncated key — so
@@ -475,11 +579,11 @@ const LEAK_SCAN_PATTERNS = store.SECRET_PATTERNS.map((re) => (re.source.includes
 // independent of how any individual pattern is written. Coverage is honest: file-level skips (too-large /
 // binary) and any length-bounded long line are all surfaced in `skipped`, never silently dropped.
 function leakScan(root) {
-  const { source, files } = trackedFiles(root);
+  const { source, files, sources } = trackedFiles(root);
   const hits = []; const skipped = []; let scanned = 0;
   for (const rel of files) {
     if (rel.endsWith('.env.example')) continue;                       // placeholders expected
-    if (/\.test\.[cm]?js$/i.test(rel)) continue;                      // test fixtures legitimately hold fake secrets
+    if (TEST_FIXTURE_RE.test(rel)) continue;                          // test fixtures legitimately hold fake secrets
     // Forge's OWN operational artifacts are never the project source we scan for leaked credentials: a git-
     // tracked .claude/forge-backups/ holds backups of Forge's own system files (which contain deliberate test
     // fixtures like forge-chaos.cjs's fake keys) — scanning them is circular and false-positives; .claude/
@@ -524,7 +628,7 @@ function leakScan(root) {
     }
     if (longLines) skipped.push({ file: rel, reason: 'long-line', lines: longLines });
   }
-  return { source, scanned, skipped, ok: hits.length === 0, hits };
+  return { source, sources, scanned, skipped, ok: hits.length === 0, hits };
 }
 
 // 6) agents check (2026-07-10) — the 12 Boss agent-files exist with valid frontmatter, AND no agent
@@ -1410,6 +1514,52 @@ function skillHygiene(root) {
   };
 }
 
+/**
+ * installationProfile(root) -> {profile:'development'|'redistribution', vendored:[ids], checked, reason}
+ *
+ * WHICH TREE IS THIS? (2026-08-02) — not a check, and deliberately never folded into any verdict. It answers
+ * one narrow question that some assertions genuinely need to ask before they mean anything: is this the
+ * canonical development tree, or a redistribution of it?
+ *
+ * The problem it exists to solve: several tests pin an EXACT property of this installation ("this project
+ * has exactly 57 skills"). Those pins are real drift guards here — they are how a silently-dropped skill or
+ * a walk that stops one directory too shallow gets caught. In the published distribution the same pins fail
+ * for a reason that is not a defect: the 9 vendored third-party skills are deliberately not redistributed,
+ * so the tree honestly has fewer. Loosening the pins to a range, or listing the acceptable counts, would
+ * destroy exactly the drift detection they were written for — a count that accepts two answers guards
+ * nothing.
+ *
+ * The marker is the difference itself, and it is EVIDENCE rather than a label: a skill counts as vendored
+ * only when detectVendorPin() finds BOTH an upstream `Source:` and a `Pinned commit:` hash that the
+ * vendoring step actually wrote into the file (see that function's own doc for why a half-marker must not
+ * buy anything). A tree that carries such skills is the tree those pins were measured against; a tree with
+ * none of them is a redistribution, and the pins are honestly not applicable there — which is a SKIP with a
+ * stated reason, never a quiet pass.
+ *
+ * Deliberately NOT a doctor check and NOT in `checks`: neither profile is a defect. Never throws — an
+ * unreadable skill is simply not counted, exactly as skillHygiene() treats it.
+ */
+function installationProfile(root) {
+  const cd = claudeDir(root);
+  const vendored = [];
+  let checked = 0;
+  for (const rel of listSkillFiles(root)) {
+    let text;
+    try { text = fs.readFileSync(path.join(cd, rel.split('/').join(path.sep)), 'utf8'); } catch { continue; }
+    checked++;
+    if (detectVendorPin(text)) vendored.push(rel.replace(/^skills\//, '').replace(/\/SKILL\.md$/, ''));
+  }
+  const dev = vendored.length > 0;
+  return {
+    profile: dev ? 'development' : 'redistribution',
+    vendored: vendored.sort(),
+    checked,
+    reason: dev
+      ? 'development tree: ' + vendored.length + ' of ' + checked + ' skills carry an upstream Source: + Pinned commit: header'
+      : 'not the development tree: none of the ' + checked + ' skills under .claude/skills carry a vendoring pin, so the vendored third-party skills these counts were measured with are absent',
+  };
+}
+
 /** loadDoctorCheckOverrides — reads config/orchestration/FORGE_HARD_RULES.json's `doctor_check_overrides`
  *  array (see that file's own top-level doc for the exact shape: {check, reason, by, ts}). A missing file,
  *  malformed JSON, or a missing/empty `doctor_check_overrides` array all degrade to "no overrides" ([]) —
@@ -1515,6 +1665,14 @@ function printSummary(rep) {
   out.push(line('honesty gate', c.strict_events.ok, 'known accepted=' + c.strict_events.known_accepted + ' · unknown rejected=' + c.strict_events.unknown_rejected));
   out.push(line('dashboard SPA', c.dashboard_spa.ok, c.dashboard_spa.ok ? DASH_SPA.length + ' files present' : 'missing: ' + c.dashboard_spa.missing.join(', ')));
   const lk = c.leak_scan;
+  // MULTI-REPO ACCOUNTING (2026-08-02): when more than one repository under this root contributed files,
+  // say so and say how many each gave. A single anonymous total is exactly what let "1146 tracked files ·
+  // clean" stand for years while a whole nested tree was never opened. Appended ONLY when there really is
+  // more than one source, so an ordinary single-repo project's line is unchanged, character for character.
+  const lkSources = lk.sources || [];
+  const lkFrom = lkSources.length > 1
+    ? ' from ' + lkSources.length + ' repos: ' + lkSources.map((s) => s.root + ' ' + (s.unavailable ? 'UNAVAILABLE (' + s.unavailable + ')' : s.files)).join(' + ')
+    : '';
   const lkSkips = lk.skipped || [];
   const lkTooLarge = lkSkips.filter((s) => s.reason === 'too-large').length;
   const lkBinary = lkSkips.filter((s) => s.reason === 'binary').length;
@@ -1529,7 +1687,7 @@ function printSummary(rep) {
   if (lkNotScanned) lkParts.push(lkNotScanned + ' file(s) not scanned (' + [lkTooLarge ? lkTooLarge + ' too-large' : '', lkBinary ? lkBinary + ' binary' : '', lkUnreadable ? lkUnreadable + ' unreadable' : ''].filter(Boolean).join(', ') + ')');
   if (lkLongLine) lkParts.push(lkLongLine + ' file(s) with over-long line(s) bounded');
   const lkSkip = lkParts.length ? ' · ' + lkParts.join(' · ') : '';
-  out.push(line('leak scan', lk.ok, lk.scanned + ' tracked files (' + lk.source + ')' + (lk.ok ? ' · clean' : ' · ' + lk.hits.length + ' HIT(S): ' + lk.hits.map((h) => h.pattern + ' in ' + h.file).join('; ')) + lkSkip));
+  out.push(line('leak scan', lk.ok, lk.scanned + ' tracked files (' + lk.source + ')' + lkFrom + (lk.ok ? ' · clean' : ' · ' + lk.hits.length + ' HIT(S): ' + lk.hits.map((h) => h.pattern + ' in ' + h.file).join('; ')) + lkSkip));
   if (c.agents) {
     const a = c.agents;
     const tp = a.toolPolicy || {};
@@ -1654,6 +1812,8 @@ function printSummary(rep) {
 
 module.exports = {
   nodeCheckAll, runTests, strictEventCheck, spaPresent, leakScan, agentsCheck, chainCheck, rebindingGuard, backfillContinuity, runDoctor, printSummary, secretLabel, parseFrontmatter, parseToolsList, loadToolPolicy, BOSS_NAMES, looksLikeRealSecret, secretPortion, STRONG_PLACEHOLDER_RE, isPatternDefinitionContext, parseEventsJsonlLenient, chainCanon, PATTERN_DEFINITION_PATHS, LEAK_SCAN_MAX_BYTES, LEAK_SCAN_MAX_LINE,
+  // 2026-08-02 — nested-repository discovery + per-source accounting for the leak scan (see nestedGitRepos)
+  trackedFiles, nestedGitRepos, gitLsFiles, NESTED_REPO_MAX_DEPTH, TEST_FIXTURE_RE,
   // WAVE A / A2 (2026-07-18) — doctor completeness checks
   listSkillFiles, syncCompleteness, countAssertionSites, checkTheChecks, memoryDiscipline, MEMORY_PLACEHOLDER_RE,
   extractKnownEventTypesFromSource, stripJsComments, extractLoggedEventTypes, unregisteredEvent, ASSERTION_SITE_RE, EVENT_TYPE_SHAPE_RE,
@@ -1667,6 +1827,8 @@ module.exports = {
   skillEvalsDoctorCheck,
   // wp-disclosure-ab (2026-07-31) — progressive-disclosure hygiene, advisory-only (see doc comment above)
   skillHygiene, extractSkillPathRefs, SKILL_DESCRIPTION_MAX_CHARS, SKILL_BODY_MAX_LINES,
+  // 2026-08-02 — which tree is this? (installation-pinned assertions ask before they assert; never a check)
+  installationProfile, detectVendorPin,
   // "pakket 2" (2026-08-01) — forge-runwatch.cjs wired in as an automatic advisory (see doc comment above)
   runLiveness, LIVENESS_WINDOW_MS, LIVENESS_RUNNING_STATUSES,
   // 2026-08-01 — forge-contextbudget.cjs wired in as an automatic advisory (see contextBudgetCheck above)

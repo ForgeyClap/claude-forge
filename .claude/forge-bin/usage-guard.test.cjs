@@ -215,5 +215,216 @@ test('pressure-file schema: exact keys, types and literal level values', () => {
   assert.strictEqual(unknown.week, null);
 });
 
+// ================================================================================================
+// MULTI-ACCOUNT + TYPED-LIMITS (2026-08-03). MEASURED DEFECTS these close, all from one live session:
+//  (a) the owner switches between TWO Claude accounts; the guard had NO account identity anywhere, so
+//      ~/.claude/FORGE_USAGE_GUARD_STATE.json kept account A's numbers (week 37%) while the live API
+//      reported account B (week 86%) — a stale pause/resume decision made on the wrong account's data;
+//  (b) the usage endpoint now returns a TYPED `limits` array (kinds seen live: session, weekly_all,
+//      weekly_scoped with a per-model scope) while the guard only read the legacy five_hour/seven_day
+//      fields — every other window, incl. any daily/scoped one, was invisible and could never pause;
+//  (c) a null resets_at was formatted as "1/1/1970" — a fabricated-looking date instead of "unknown".
+// These tests exercise the REAL module (usage-guard.cjs is now require-safe: the CLI only runs under
+// require.main === module), replacing the old mirror-the-logic-inline approach for this surface.
+// ================================================================================================
+const G = require('./usage-guard.cjs');
+
+test('typed limits: every window in the limits[] array is parsed, not just the legacy two', () => {
+  const j = {
+    five_hour: { utilization: 5, resets_at: '2026-08-04T00:00:00Z' },
+    seven_day: { utilization: 86, resets_at: '2026-08-05T20:00:00Z' },
+    limits: [
+      { kind: 'session', group: 'session', percent: 5, resets_at: '2026-08-04T00:00:00Z', scope: null },
+      { kind: 'weekly_all', group: 'weekly', percent: 86, resets_at: '2026-08-05T20:00:00Z', scope: null },
+      { kind: 'weekly_scoped', group: 'weekly', percent: 60, resets_at: '2026-08-05T20:00:00Z', scope: { model: { display_name: 'Fable' } } },
+      { kind: 'daily', group: 'daily', percent: 97, resets_at: '2026-08-04T06:00:00Z', scope: null },
+    ],
+  };
+  const w = G.normalizeWindows(j);
+  assert.strictEqual(w.length, 4, 'all four windows must survive parsing');
+  assert.ok(w.some((x) => x.kind === 'daily' && x.pct === 97), 'a daily window must be visible');
+  assert.ok(w.some((x) => x.kind === 'weekly_scoped' && /Fable/.test(x.label)), 'a scoped window keeps its model in the label');
+  assert.strictEqual(w[0].source, 'limits');
+});
+
+test('typed limits: a NON-legacy window over the threshold really crosses (the daily-blindness bug)', () => {
+  const j = { five_hour: { utilization: 5 }, seven_day: { utilization: 40 },
+    limits: [{ kind: 'daily', group: 'daily', percent: 97, resets_at: null, scope: null }] };
+  const crossed = G.crossedWindows(G.normalizeWindows(j), 93);
+  assert.strictEqual(crossed.length, 1);
+  assert.strictEqual(crossed[0].kind, 'daily');
+});
+
+test('typed limits: no limits[] at all still falls back to the legacy five_hour/seven_day pair', () => {
+  const w = G.normalizeWindows({ five_hour: { utilization: 12, resets_at: null }, seven_day: { utilization: 44, resets_at: null } });
+  assert.strictEqual(w.length, 2);
+  assert.ok(w.every((x) => x.source === 'legacy'));
+  assert.deepStrictEqual(w.map((x) => x.pct), [12, 44]);
+});
+
+test('typed limits: a non-numeric percent is dropped, never coerced into a fake 0', () => {
+  const w = G.normalizeWindows({ limits: [{ kind: 'session', percent: null }, { kind: 'weekly_all', percent: 50 }] });
+  assert.strictEqual(w.length, 1);
+  assert.strictEqual(w[0].pct, 50);
+});
+
+test('account identity: a fingerprint is derived and NEVER contains the raw uuid/email/token', () => {
+  const id = G.fingerprintAccount({ accountUuid: '3b51fe17-3d99-4577-8800-280e298bcbb1', organizationUuid: '67d9053f-1bb0-498c-942e-7f7822740933', emailAddress: 'owner@example.com' });
+  assert.ok(/^[0-9a-f]{12}$/.test(id.fp), 'fingerprint must be a short hex digest, got ' + id.fp);
+  assert.strictEqual(id.source, 'account-uuid');
+  const blob = JSON.stringify(id);
+  assert.ok(!/3b51fe17|67d9053f|owner@example\.com/.test(blob), 'identity object leaked a raw identifier');
+});
+
+test('account identity: two different accounts produce different fingerprints; the same one is stable', () => {
+  const a = G.fingerprintAccount({ accountUuid: 'aaaaaaaa-0000-0000-0000-000000000001' });
+  const a2 = G.fingerprintAccount({ accountUuid: 'aaaaaaaa-0000-0000-0000-000000000001' });
+  const b = G.fingerprintAccount({ accountUuid: 'bbbbbbbb-0000-0000-0000-000000000002' });
+  assert.strictEqual(a.fp, a2.fp);
+  assert.notStrictEqual(a.fp, b.fp);
+});
+
+test('account switch: a state written by another account is DETECTED, never silently reused', () => {
+  const prev = { mode: 'paused', percents: { session: 23, week: 37 }, account: { fp: 'aaaaaaaaaaaa' } };
+  const sw = G.detectAccountSwitch(prev, { fp: 'bbbbbbbbbbbb', source: 'account-uuid' });
+  assert.strictEqual(sw.switched, true);
+  assert.strictEqual(sw.from, 'aaaaaaaaaaaa');
+  assert.strictEqual(sw.to, 'bbbbbbbbbbbb');
+});
+
+test('account switch: the same account is NOT a switch, and an unknown identity never forces one', () => {
+  assert.strictEqual(G.detectAccountSwitch({ account: { fp: 'aaaaaaaaaaaa' } }, { fp: 'aaaaaaaaaaaa' }).switched, false);
+  assert.strictEqual(G.detectAccountSwitch({ account: { fp: 'aaaaaaaaaaaa' } }, { fp: null, source: 'unknown' }).switched, false);
+  assert.strictEqual(G.detectAccountSwitch({ mode: 'ok' }, { fp: 'bbbbbbbbbbbb' }).switched, false, 'first-ever stamping is adoption, not a switch');
+});
+
+test('account switch: the new account starts CLEAN — no carried percentages, pause, or credits override', () => {
+  const prev = { mode: 'paused', percents: { session: 23, week: 37 }, trigger: [{ name: 'week', pct: 95 }],
+    pausedAgents: [{ id: 'x' }], ownerOverride: { active: true, reason: 'credits bought on account A' },
+    account: { fp: 'aaaaaaaaaaaa' } };
+  const next = G.stateForAccount(prev, { fp: 'bbbbbbbbbbbb', source: 'account-uuid' });
+  assert.strictEqual(next.mode, 'ok');
+  assert.strictEqual(next.percents, undefined, 'account A percentages must not survive');
+  assert.strictEqual(next.ownerOverride, undefined, 'a credits override bought on account A must NOT suppress the guard on account B');
+  assert.strictEqual(next.pausedAgents, undefined);
+  assert.strictEqual(next.account.fp, 'bbbbbbbbbbbb');
+  assert.strictEqual(next.previousAccount.fp, 'aaaaaaaaaaaa', 'the switch is recorded, not erased');
+});
+
+test('account switch: same account keeps its state untouched (no gratuitous reset)', () => {
+  const prev = { mode: 'paused', percents: { session: 91, week: 94 }, ownerOverride: { active: true }, account: { fp: 'aaaaaaaaaaaa' } };
+  const next = G.stateForAccount(prev, { fp: 'aaaaaaaaaaaa', source: 'account-uuid' });
+  assert.strictEqual(next.mode, 'paused');
+  assert.strictEqual(next.ownerOverride.active, true);
+  assert.strictEqual(next.percents.week, 94);
+});
+
+test('account switch: an unstamped legacy state is ADOPTED (stamped), keeping its data', () => {
+  const next = G.stateForAccount({ mode: 'paused', percents: { session: 91, week: 94 } }, { fp: 'aaaaaaaaaaaa', source: 'account-uuid' });
+  assert.strictEqual(next.mode, 'paused');
+  assert.strictEqual(next.account.fp, 'aaaaaaaaaaaa');
+});
+
+test('fmtReset: a null/absent reset prints "onbekend", never a fabricated 1970 date', () => {
+  assert.strictEqual(G.fmtReset(null), 'onbekend');
+  assert.strictEqual(G.fmtReset(undefined), 'onbekend');
+  assert.strictEqual(G.fmtReset(''), 'onbekend');
+  assert.ok(!/1970/.test(G.fmtReset(null)));
+  assert.ok(/2026/.test(G.fmtReset('2026-08-05T20:00:00Z')), 'a real timestamp still formats');
+});
+
+test('watcher liveness: a live pid whose last check is ancient reads as STALE, not RUNNING', () => {
+  const now = Date.parse('2026-08-03T19:00:00Z');
+  const fresh = G.watcherHealth({ pidAlive: true, lastCheckAt: '2026-08-03T18:59:00Z', intervalSec: 120, now });
+  assert.strictEqual(fresh.state, 'running');
+  const stale = G.watcherHealth({ pidAlive: true, lastCheckAt: '2026-08-03T16:55:00Z', intervalSec: 120, now });
+  assert.strictEqual(stale.state, 'stale', 'a process that stopped checking must not be reported as healthy');
+  assert.ok(stale.staleSec > 3 * 120);
+  const dead = G.watcherHealth({ pidAlive: false, lastCheckAt: '2026-08-03T18:59:00Z', intervalSec: 120, now });
+  assert.strictEqual(dead.state, 'not-running');
+  const never = G.watcherHealth({ pidAlive: true, lastCheckAt: null, intervalSec: 120, now });
+  assert.strictEqual(never.state, 'unknown', 'no check timestamp is honest uncertainty, not a green light');
+});
+
+// ---- the account stamp must survive EVERY state write (found by the audit sweep, 2026-08-03) ----
+// doPause()/doResume() deliberately build a FRESH state object (that is how a stale pause is dropped),
+// carrying only ownerOverride/credits forward. The brand-new `account` stamp was not on that carry list,
+// so every pause or resume silently erased it — and the next tick then read from:null and called a real
+// account switch "first-stamp (adoption)". The account gate died exactly when it was needed most.
+// Fixed at the ONE choke point every writer goes through, not per call site.
+test('account stamp survives a state write that forgot it (single choke point, not per call site)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-stamp-'));
+  const f = path.join(dir, 'state.json');
+  fs.writeFileSync(f, JSON.stringify({ mode: 'ok', account: { fp: 'aaaaaaaaaaaa', source: 'account-uuid' } }));
+  G.writeStateTo(f, { mode: 'paused', trigger: [{ name: 'week', pct: 95 }] }); // a doPause-shaped fresh object
+  const after = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.strictEqual(after.mode, 'paused');
+  assert.strictEqual(after.account && after.account.fp, 'aaaaaaaaaaaa', 'the stamp must not be dropped by a fresh-object write');
+});
+
+test('an EXPLICIT account in the written state always wins (a real switch is never overwritten by the old stamp)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-stamp2-'));
+  const f = path.join(dir, 'state.json');
+  fs.writeFileSync(f, JSON.stringify({ mode: 'ok', account: { fp: 'aaaaaaaaaaaa' } }));
+  G.writeStateTo(f, { mode: 'ok', account: { fp: 'bbbbbbbbbbbb', source: 'account-uuid' } });
+  assert.strictEqual(JSON.parse(fs.readFileSync(f, 'utf8')).account.fp, 'bbbbbbbbbbbb');
+});
+
+test('heartbeat: every state write stamps a fresh watchdog heartbeat', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-hb-'));
+  const f = path.join(dir, 'state.json');
+  G.writeStateTo(f, { mode: 'ok' });
+  const hb = JSON.parse(fs.readFileSync(f, 'utf8')).heartbeatAt;
+  assert.ok(hb && Number.isFinite(Date.parse(hb)), 'heartbeatAt must be a real timestamp, got ' + hb);
+});
+
+// ---- inactive windows (audit finding: is_active was parsed but never used) ----
+// ---- CODEX ADVERSARIAL REVIEW (gpt-5.6-sol, effort max, 2026-08-03) finding #10 ----
+// The first version returned as soon as limits[] produced one usable window, which DROPPED the legacy
+// pair entirely: a response carrying limits=[{weekly_scoped,10%}] plus five_hour=99% reported only 10%
+// and would never pause. Typed wins per identity; legacy fills the gaps; nothing is double-counted.
+test('typed and legacy windows are MERGED — a 99% legacy window is not hidden by one typed entry', () => {
+  const w = G.normalizeWindows({
+    five_hour: { utilization: 99, resets_at: '2026-08-04T00:00:00Z' },
+    seven_day: { utilization: 40 },
+    limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: 10, scope: { model: { display_name: 'A' } } }],
+  });
+  assert.strictEqual(w.length, 3, 'expected typed + both legacy windows, got ' + JSON.stringify(w.map((x) => x.label)));
+  assert.strictEqual(G.crossedWindows(w, 93).length, 1, 'the 99% session window must still cross the threshold');
+  assert.strictEqual(G.crossedWindows(w, 93)[0].pct, 99);
+});
+
+test('a window reported BOTH typed and legacy is counted once (typed wins, no double pause/resume entry)', () => {
+  const w = G.normalizeWindows({
+    five_hour: { utilization: 50 },
+    limits: [{ kind: 'session', group: 'session', percent: 55, resets_at: '2026-08-04T00:00:00Z' }],
+  });
+  assert.strictEqual(w.length, 1);
+  assert.strictEqual(w[0].pct, 55, 'the typed value must win over the legacy one');
+  assert.strictEqual(w[0].source, 'limits');
+});
+
+test('duplicate typed records for the same window identity are not counted twice', () => {
+  const w = G.normalizeWindows({ limits: [
+    { kind: 'weekly_scoped', group: 'weekly', percent: 10, scope: { model: { display_name: 'A' } } },
+    { kind: 'weekly_scoped', group: 'weekly', percent: 10, scope: { model: { display_name: 'A' } } },
+    { kind: 'weekly_scoped', group: 'weekly', percent: 96, scope: { model: { display_name: 'B' } } },
+  ] });
+  assert.strictEqual(w.length, 2, 'same-identity duplicate must collapse, different scope must not');
+  assert.ok(w.some((x) => /B/.test(x.label) && x.pct === 96));
+});
+
+test('a genuine percent 0 survives (0 is data; only null/absent is no-data)', () => {
+  const w = G.normalizeWindows({ limits: [{ kind: 'session', percent: 0 }] });
+  assert.strictEqual(w.length, 1);
+  assert.strictEqual(w[0].pct, 0);
+});
+
+test('an API-inactive window still counts toward the pause decision (fail-safe, documented on purpose)', () => {
+  const w = G.normalizeWindows({ limits: [{ kind: 'weekly_scoped', percent: 96, is_active: false, resets_at: null, scope: { model: { display_name: 'Fable' } } }] });
+  assert.strictEqual(w[0].isActive, false);
+  assert.strictEqual(G.crossedWindows(w, 93).length, 1, 'a 96% window must pause even when the API calls it inactive — pausing early is the safe error');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

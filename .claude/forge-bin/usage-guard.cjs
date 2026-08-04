@@ -52,6 +52,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, execSync } = require('child_process');
 
 const HOME = path.join(os.homedir(), '.claude');
@@ -85,7 +86,27 @@ function log(msg) {
   try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
 }
 function readState() { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return { mode: 'ok' }; } }
-function writeState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2) + '\n'); }
+/** writeStateTo(file, s) — THE single choke point for every state write (audit finding 2026-08-03).
+ *  doPause()/doResume() deliberately build a FRESH state object so a stale pause cannot survive, carrying
+ *  only ownerOverride/credits forward by hand. The account stamp was not on that hand-written carry list,
+ *  so every pause/resume erased it and the next tick mistook a REAL account switch for a first stamp —
+ *  the account gate died exactly when it mattered. Carrying it here (unless the writer explicitly sets a
+ *  new one, which is what a genuine switch does) makes that impossible to forget at any future call site.
+ *  Every write also stamps a heartbeat: a watcher that stopped ticking is then visible in the state
+ *  itself, not only in a PID that outlives the work it was supposed to be doing. */
+function writeStateTo(file, s) {
+  const next = Object.assign({}, s);
+  if (!next.account) {
+    try {
+      const prev = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (prev && prev.account) next.account = prev.account;
+    } catch { /* no previous state — nothing to carry */ }
+  }
+  next.heartbeatAt = new Date().toISOString();
+  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n');
+  return next;
+}
+function writeState(s) { return writeStateTo(STATE_FILE, s); }
 
 // ---- NVIDIA-shift soft threshold — pure, advisory-only classification (never fabricates a %) ----
 function computePressureLevel(weekPct, nvidiaShiftAt) {
@@ -110,6 +131,145 @@ function writePressureFile(weekPct, nvidiaShiftAt, pauseAt) {
   return data;
 }
 
+// ---- ACCOUNT IDENTITY (2026-08-03) --------------------------------------------------------------
+// MEASURED DEFECT: the owner switches between TWO Claude accounts. Nothing in this guard carried an
+// account identity, so ONE state file served both: after a switch the state still held account A's
+// numbers (week 37%) while the live endpoint reported account B (week 86%) — pause/resume decisions,
+// the pressure signal and the credits override were all being made on the wrong account's data.
+// Identity is a SHORT SHA-256 FINGERPRINT, never the raw uuid/email/token: state files are read by
+// dashboards, synced between projects and (sanitized) published, so no raw identifier may land in one.
+const IDENTITY_FILE = path.join(os.homedir(), '.claude.json'); // Claude Code's own profile store
+function fingerprintAccount(oauthAccount) {
+  const a = oauthAccount || {};
+  const uuid = typeof a.accountUuid === 'string' ? a.accountUuid.trim() : '';
+  if (uuid) {
+    const org = typeof a.organizationUuid === 'string' ? a.organizationUuid.trim() : '';
+    return { fp: crypto.createHash('sha256').update('acct:' + uuid + '|org:' + org).digest('hex').slice(0, 12), source: 'account-uuid' };
+  }
+  return { fp: null, source: 'unknown' };
+}
+/** readAccountIdentity — best-effort, never throws. Primary source is Claude Code's own oauthAccount
+ *  profile; the fallback fingerprints the refresh token (stable within one login) so a machine without
+ *  the profile file still distinguishes accounts. Unknown identity is reported honestly and must never
+ *  be treated as "same account" evidence (see detectAccountSwitch). */
+function readAccountIdentity() {
+  try {
+    const j = JSON.parse(fs.readFileSync(IDENTITY_FILE, 'utf8'));
+    const id = fingerprintAccount(j && j.oauthAccount);
+    if (id.fp) return id;
+  } catch { /* fall through to the token fallback */ }
+  try {
+    const cred = JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
+    const rt = cred && cred.claudeAiOauth && cred.claudeAiOauth.refreshToken;
+    if (typeof rt === 'string' && rt) {
+      return { fp: crypto.createHash('sha256').update('rt:' + rt).digest('hex').slice(0, 12), source: 'refresh-token' };
+    }
+  } catch { /* no identity available */ }
+  return { fp: null, source: 'unknown' };
+}
+/** detectAccountSwitch(state, ident) -> {switched, from, to, reason}. Pure. A switch requires TWO known
+ *  fingerprints that differ: an unstamped legacy state (adoption) and an unknown current identity both
+ *  degrade to "no switch" — wiping real state on a missing profile file would be worse than the bug. */
+function detectAccountSwitch(state, ident) {
+  const from = state && state.account && typeof state.account.fp === 'string' ? state.account.fp : null;
+  const to = ident && typeof ident.fp === 'string' ? ident.fp : null;
+  if (!from) return { switched: false, from: null, to, reason: to ? 'first-stamp (adoption)' : 'no identity available' };
+  if (!to) return { switched: false, from, to: null, reason: 'current identity unknown — keeping existing state rather than guessing' };
+  if (from === to) return { switched: false, from, to, reason: 'same account' };
+  return { switched: true, from, to, reason: 'account fingerprint changed' };
+}
+/** stateForAccount(state, ident) -> state to use for THIS account. On a real switch the guard starts
+ *  CLEAN: percentages, pause/trigger, paused-agent list and — deliberately — the paid-credits
+ *  ownerOverride are account-A facts and must never suppress or trip the guard on account B. The switch
+ *  itself is recorded (previousAccount) rather than erased. */
+function stateForAccount(state, ident) {
+  const st = state && typeof state === 'object' ? state : { mode: 'ok' };
+  const sw = detectAccountSwitch(st, ident);
+  if (!sw.switched) {
+    if (sw.to && (!st.account || st.account.fp !== sw.to)) {
+      return Object.assign({}, st, { account: { fp: sw.to, source: ident.source, stampedAt: new Date().toISOString() } });
+    }
+    return st;
+  }
+  return {
+    mode: 'ok',
+    account: { fp: sw.to, source: ident.source, stampedAt: new Date().toISOString() },
+    previousAccount: { fp: sw.from, switchedAt: new Date().toISOString(), lastPercents: st.percents || null },
+    accountSwitchNotice: 'ACCOUNT SWITCH gedetecteerd (' + sw.from + ' -> ' + sw.to + '): guard-state is opnieuw begonnen. '
+      + 'Cijfers, pauze-status en een eventuele credits-override van het vorige account zijn NIET overgenomen.',
+  };
+}
+
+// ---- TYPED USAGE WINDOWS (2026-08-03) ------------------------------------------------------------
+// MEASURED DEFECT: the endpoint now returns a typed `limits` array (kinds seen live: session,
+// weekly_all, weekly_scoped with a per-model scope) alongside the legacy five_hour/seven_day fields.
+// The guard read ONLY those two legacy fields, so every other window — a scoped per-model limit, and
+// any daily window — was invisible: it could sit at 100% while the guard happily reported "ok".
+// normalizeWindows() reads the typed array when present (that is the authoritative, forward-compatible
+// shape: unknown future kinds are carried through unchanged) and falls back to the legacy pair.
+function windowLabel(l) {
+  const kind = l && l.kind ? String(l.kind) : 'onbekend';
+  const model = l && l.scope && l.scope.model && l.scope.model.display_name;
+  const surface = l && l.scope && l.scope.surface;
+  const extra = [model, surface].filter(Boolean).join('/');
+  return extra ? kind + ' (' + extra + ')' : kind;
+}
+function normalizeWindows(j) {
+  const out = [];
+  const seen = new Set();
+  // CODEX ADVERSARIAL REVIEW (gpt-5.6-sol, 2026-08-03) finding #10: the first version RETURNED EARLY as
+  // soon as limits[] yielded one usable entry, which silently dropped the legacy pair. A response with
+  // limits=[{weekly_scoped, 10%}] and five_hour=99% then reported ONLY 10% and would never pause — the
+  // exact blindness this rewrite existed to remove, reintroduced from the other side. Typed windows WIN
+  // per identity (kind+group+scope), legacy fills the gaps, and nothing is counted twice.
+  const key = (kind, group, label) => kind + '|' + (group || '') + '|' + (label || '');
+  const limits = j && Array.isArray(j.limits) ? j.limits : null;
+  if (limits && limits.length) {
+    for (const l of limits) {
+      // `Number(null)` is 0, so a null/absent percent would silently become a confident "0% used".
+      // NO data must stay no data (same discipline as the legacy `utilization ?? NaN` read below).
+      const raw = l && l.percent != null ? l.percent : NaN;
+      const pct = Number(raw);
+      if (!Number.isFinite(pct)) continue;
+      const kind = l.kind ? String(l.kind) : 'onbekend';
+      const group = l.group ? String(l.group) : null;
+      const label = windowLabel(l);
+      const k = key(kind, group, label);
+      if (seen.has(k)) continue; // a duplicate typed record must not be counted (or resumed from) twice
+      seen.add(k);
+      out.push({ kind, group, pct, resetsAt: (l && l.resets_at) || null, severity: (l && l.severity) || null,
+        isActive: l && l.is_active === true, label, source: 'limits' });
+    }
+  }
+  const legacy = [['session', 'session', j && j.five_hour], ['weekly_all', 'weekly', j && j.seven_day]];
+  for (const [kind, group, w] of legacy) {
+    const pct = Number(w && w.utilization != null ? w.utilization : NaN);
+    if (!Number.isFinite(pct)) continue;
+    if (seen.has(key(kind, group, kind))) continue; // already reported as a typed window — same window
+    seen.add(key(kind, group, kind));
+    out.push({ kind, group, pct, resetsAt: (w && w.resets_at) || null,
+      severity: null, isActive: false, label: kind, source: 'legacy' });
+  }
+  return out;
+}
+/** crossedWindows(windows, pauseAt) -> the windows at/over the pause threshold, ANY kind. */
+function crossedWindows(windows, pauseAt) {
+  if (!Number.isFinite(pauseAt)) return [];
+  return (Array.isArray(windows) ? windows : []).filter((w) => Number.isFinite(w.pct) && w.pct >= pauseAt);
+}
+/** watcherHealth — a live PID is NOT proof the watcher is doing its job: on 2026-08-03 the process was
+ *  alive while its last real check was 80 minutes old (it had silently stopped ticking). Freshness is
+ *  judged against 3 intervals; no timestamp at all is honest uncertainty, never a green light. */
+function watcherHealth(o) {
+  const now = Number.isFinite(o && o.now) ? o.now : Date.now();
+  const intervalSec = Number.isFinite(o && o.intervalSec) && o.intervalSec > 0 ? o.intervalSec : 120;
+  if (!o || !o.pidAlive) return { state: 'not-running', staleSec: null, intervalSec };
+  const ms = o.lastCheckAt ? Date.parse(o.lastCheckAt) : NaN;
+  if (!Number.isFinite(ms)) return { state: 'unknown', staleSec: null, intervalSec };
+  const staleSec = Math.max(0, Math.round((now - ms) / 1000));
+  return { state: staleSec > intervalSec * 3 ? 'stale' : 'running', staleSec, intervalSec };
+}
+
 // ---- real usage (official endpoint; token in-memory only, never logged) ----
 function readToken() {
   const cred = JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
@@ -125,6 +285,9 @@ async function fetchUsage() {
   return {
     session: { pct: Number(fh.utilization ?? NaN), resetsAt: fh.resets_at || null },
     week: { pct: Number(sd.utilization ?? NaN), resetsAt: sd.resets_at || null },
+    // every window the endpoint reports, typed — session/weekly_all/weekly_scoped and any future kind
+    // (see normalizeWindows). The two named fields above stay for the existing pressure/reporting paths.
+    windows: normalizeWindows(j),
     credits: creditsFrom(j),
   };
 }
@@ -163,7 +326,14 @@ async function allAgents() {
   return out;
 }
 
-function fmtReset(iso) { try { return new Date(iso).toLocaleString(); } catch { return String(iso); } }
+// A null/absent/unparseable reset must read as "onbekend" — `new Date(null)` is the epoch, which printed
+// a confident, fabricated-looking "1/1/1970" in every notice and status line (measured 2026-08-03).
+function fmtReset(iso) {
+  if (iso === null || iso === undefined || iso === '') return 'onbekend';
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return 'onbekend';
+  try { return new Date(ms).toLocaleString(); } catch { return String(iso); }
+}
 
 // ---- transitions ----
 async function doPause(u, crossed) {
@@ -182,7 +352,9 @@ async function doPause(u, crossed) {
   // both this watchdog and the hook fall back cleanly to the utilization-based resume only.
   let soonestResetMs = NaN;
   for (const c of crossed) {
-    const resetsAt = c.metric === 'session' ? u.session.resetsAt : u.week.resetsAt;
+    // the crossed window carries its OWN resets_at (typed windows); the legacy session/week lookup is
+    // only the fallback for a caller that still passes the old {metric:'session'|'week'} shape.
+    const resetsAt = c.resetsAt || (c.metric === 'session' ? u.session.resetsAt : u.week.resetsAt);
     const ms = Date.parse(resetsAt);
     if (Number.isFinite(ms)) soonestResetMs = Number.isFinite(soonestResetMs) ? Math.min(soonestResetMs, ms) : ms;
   }
@@ -235,8 +407,17 @@ async function tick() {
   // branching below, so it fires regardless of which branch this tick takes (pause always wins for the
   // real pause/resume decision; this file never influences it).
   writePressureFile(u.week.pct, NVIDIA_SHIFT_AT, PAUSE_AT);
-  if (!Number.isFinite(u.session.pct) || !Number.isFinite(u.week.pct)) { log('CHECK: non-numeric utilization (no action)'); return; }
-  const st = readState();
+  if (!(u.windows || []).length) { log('CHECK: endpoint reported no usable usage window (no action)'); return; }
+  // ACCOUNT GATE (2026-08-03): resolve identity BEFORE any decision is made on the stored state, so a
+  // switch can never be decided on the previous account's percentages/pause/override.
+  const ident = readAccountIdentity();
+  const rawState = readState();
+  const sw = detectAccountSwitch(rawState, ident);
+  const st = stateForAccount(rawState, ident);
+  if (sw.switched) {
+    writeState(st);
+    log('ACCOUNT SWITCH — fingerprint ' + sw.from + ' -> ' + sw.to + ' (' + ident.source + '): guard state reset; previous account\'s percentages, pause state and credits override NOT carried over');
+  }
   // OWNER OVERRIDE (usage credits): while purchased credits remain, do NOT pause on the plan limit.
   // Auto re-arm the normal guard the moment credits are exhausted (or the override's optional expiry passes).
   if (st.ownerOverride && st.ownerOverride.active !== false) {
@@ -256,17 +437,27 @@ async function tick() {
     // fall through to the normal pause/resume logic below (pauses if still over the plan limit)
   }
   if (st.mode !== 'paused') {
-    const crossed = [];
-    if (u.session.pct >= PAUSE_AT) crossed.push({ name: 'sessie', metric: 'session', pct: u.session.pct });
-    if (u.week.pct >= PAUSE_AT) crossed.push({ name: 'week', metric: 'week', pct: u.week.pct });
+    // EVERY reported window can trip the guard, not just the legacy session/week pair — a daily or
+    // per-model scoped limit at 100% used to be completely invisible here (fix 2026-08-03).
+    const crossed = crossedWindows(u.windows, PAUSE_AT)
+      .map((w) => ({ name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt }));
     if (crossed.length) { await doPause(u, crossed); return; }
     // keep pauseAt/resumeAt fresh on every tick (fix 2026-07-08) — otherwise a running watchdog started
     // with a different --pause-at than the last actual pause event leaves a stale threshold in the
     // state file, even though the real in-process trigger (PAUSE_AT, checked above) is already correct.
     st.mode = 'ok'; st.pauseAt = PAUSE_AT; st.resumeAt = RESUME_AT; st.nvidiaShiftAt = NVIDIA_SHIFT_AT; st.percents = { session: u.session.pct, week: u.week.pct }; st.lastCheckAt = new Date().toISOString(); delete st.lastError; writeState(st);
-    log('ok — session ' + u.session.pct + '% · week ' + u.week.pct + '% (pause-at ' + PAUSE_AT + '%)');
+    // log EVERY window, not just the legacy pair — otherwise a daily/scoped limit climbing toward 100%
+    // is invisible in the log as well as in the decision (fix 2026-08-03).
+    log('ok — ' + (u.windows || []).map((w) => w.label + ' ' + w.pct + '%').join(' · ') + ' (pause-at ' + PAUSE_AT + '%)');
   } else {
-    const stillHigh = (st.trigger || []).some((t) => (t.metric === 'session' ? u.session.pct : u.week.pct) > RESUME_AT);
+    // Look the CURRENT value of each triggering window up by its own kind (typed windows); the legacy
+    // session/week pair remains the fallback for a trigger recorded by an older build.
+    const curPct = (t) => {
+      const w = (u.windows || []).find((x) => x.kind === t.metric);
+      if (w && Number.isFinite(w.pct)) return w.pct;
+      return t.metric === 'session' ? u.session.pct : u.week.pct;
+    };
+    const stillHigh = (st.trigger || []).some((t) => curPct(t) > RESUME_AT);
     // RESET-RHYTHM: resume on EITHER the real utilization drop OR wall-clock reaching resumeAtEpoch —
     // whichever comes first. NaN-safe: an absent/unparseable resumeAtEpoch never triggers this branch.
     const resumeAtEpoch = Number(st.resumeAtEpoch);
@@ -278,25 +469,89 @@ async function tick() {
 }
 
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+/** readPidRecord — the pid file is now {pid,startedAt,script}; a bare number is the legacy form and is
+ *  still read (never break an already-running watcher), just without the extra identity evidence. */
+function readPidRecord() {
+  let raw = '';
+  try { raw = fs.readFileSync(PID_FILE, 'utf8').trim(); } catch { return { pid: 0, legacy: false }; }
+  if (!raw) return { pid: 0, legacy: false };
+  try { const j = JSON.parse(raw); if (j && Number(j.pid)) return { pid: Number(j.pid), startedAt: j.startedAt || null, script: j.script || null, legacy: false }; } catch { /* legacy bare number */ }
+  return { pid: Number(raw) || 0, startedAt: null, script: null, legacy: true };
+}
+/** ownsPid — HARD RULE (owner directive after the 2026-07-29 incident where a cleanup killed an unrelated
+ *  service): only ever kill a process we can PROVE is ours. Windows recycles PIDs, and the stale pid file
+ *  found on 2026-08-03 pointed at a number no longer belonging to any watcher — a `taskkill /T /F` on that
+ *  number could have taken down an unrelated process tree. We verify the live command line still refers to
+ *  this script before killing anything; when we cannot verify, we refuse and say so. */
+function ownsPid(pid, rec) {
+  if (!pid || !pidAlive(pid)) return { ok: false, reason: 'process not running' };
+  if (process.platform !== 'win32') {
+    // CODEX finding #17: the verification was Windows-only. Elsewhere we cannot read another process's
+    // command line without extra tooling, so we only accept a pid this install itself recorded WITH its
+    // own script path — and refuse otherwise rather than killing something unverified.
+    if (rec && rec.script && path.resolve(rec.script) === path.resolve(__filename)) return { ok: true, cmdline: '(recorded by this script; command line not verifiable on ' + process.platform + ')' };
+    return { ok: false, reason: 'cannot verify pid ' + pid + ' on ' + process.platform + ' (no recorded script match) — refusing to kill it' };
+  }
+  try {
+    const out = execSync('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \'ProcessId=' + Number(pid) + '\').CommandLine"', { encoding: 'utf8', windowsHide: true }).trim();
+    if (!out) return { ok: false, reason: 'no command line readable for pid ' + pid };
+    // CODEX finding #16: matching the bare word "usage-guard" also matched a `usage-guard.cjs status`
+    // process or a helper with that substring in its name. Require the EXACT recorded script path (when
+    // the pid file has one) AND the `watch` subcommand — a status/CLI invocation is never the watcher.
+    const scriptName = path.basename(__filename).toLowerCase();
+    const lower = out.toLowerCase();
+    const scriptOk = rec && rec.script
+      ? lower.includes(path.resolve(rec.script).toLowerCase()) || lower.includes(path.basename(rec.script).toLowerCase())
+      : lower.includes(scriptName);
+    if (!scriptOk) return { ok: false, reason: 'pid ' + pid + ' does not run this guard script (recycled pid) — refusing to kill it' };
+    if (!/\bwatch\b/.test(lower)) return { ok: false, reason: 'pid ' + pid + ' runs the guard script but NOT as a watcher (e.g. a status/CLI call) — refusing to kill it' };
+    return { ok: true, cmdline: out };
+  } catch (e) { return { ok: false, reason: 'could not verify pid ' + pid + ' (' + e.message + ') — refusing to kill it' }; }
+}
 
-(async () => {
+// CLI only when run directly — require()-ing this file used to immediately hit the live usage endpoint,
+// which is why its own tests had to MIRROR the logic inline instead of testing the real functions
+// (2026-08-03: the mirrored copies were what let the account/limits gaps go untested for so long).
+if (require.main === module) {
+  (async () => {
   if (cmd === 'check' || cmd === 'status') {
     let u;
     try {
       u = await fetchUsage();
-      console.log('REAL usage (official endpoint) — sessie(5h): ' + u.session.pct + '% (reset ' + fmtReset(u.session.resetsAt) + ') · week: ' + u.week.pct + '% (reset ' + fmtReset(u.week.resetsAt) + ')');
+      // EVERY window the endpoint reports, typed — printing only session+week hid a daily/scoped limit
+      // that could already be at 100% (fix 2026-08-03).
+      const wl = (u.windows || []).map((w) => w.label + ' ' + w.pct + '% (reset ' + fmtReset(w.resetsAt) + ')').join(' · ');
+      console.log('REAL usage (official endpoint) — ' + (wl || 'geen bruikbaar venster gerapporteerd'));
     } catch (e) {
       console.error('usage fetch failed: ' + e.message); process.exitCode = 1;
       if (cmd === 'status') { writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); console.log('pressure: unknown (usage data unavailable — fetch failed)'); }
       return;
     }
     if (cmd === 'status') {
-      const st = readState();
+      const ident = readAccountIdentity();
+      const rawSt = readState();
+      const swNow = detectAccountSwitch(rawSt, ident);
+      const st = rawSt;
+      console.log('account: ' + (ident.fp ? ident.fp + ' (' + ident.source + ')' : 'ONBEKEND — geen accountidentiteit leesbaar')
+        + (swNow.switched
+          ? ' · ⚠ ACCOUNT SWITCH t.o.v. de opgeslagen state (' + swNow.from + ' -> ' + swNow.to + '): de cijfers/pauze/override hieronder zijn van het VORIGE account en worden bij de eerstvolgende watch-tick gereset'
+          : (st.account ? '' : ' · state nog niet gestempeld (wordt bij de eerstvolgende tick geadopteerd)')));
       const ovr = st.ownerOverride && st.ownerOverride.active !== false ? ' · OVERRIDE ACTIVE (credits mode)' : '';
       const cr = st.credits ? ' · credits used ' + fmtMoney(st.credits.used, st.credits.currency, st.credits.decimals) + '/' + fmtMoney(st.credits.limit, st.credits.currency, st.credits.decimals) : '';
       console.log('guard state: ' + (st.mode || 'ok') + ' · pauseAt ' + (st.pauseAt != null ? st.pauseAt : '?') + '%' + ovr + cr + (st.lastPauseAt ? ' · lastPause ' + st.lastPauseAt : '') + (st.lastResumeAt ? ' · lastResume ' + st.lastResumeAt : ''));
-      const pid = Number((fs.existsSync(PID_FILE) && fs.readFileSync(PID_FILE, 'utf8').trim()) || 0);
-      console.log('watcher: ' + (pid && pidAlive(pid) ? 'RUNNING (pid ' + pid + ')' : 'not running'));
+      const rec = readPidRecord();
+      const pid = rec.pid;
+      // A live PID is not proof of a working watcher: on 2026-08-03 the process existed while its last
+      // real check was 80 minutes old — it had silently stopped ticking and status still said RUNNING.
+      // The heartbeat (stamped on every state write) is the freshness source; lastCheckAt is the fallback
+      // for a state written by an older build.
+      const wh = watcherHealth({ pidAlive: !!(pid && pidAlive(pid)), lastCheckAt: st.heartbeatAt || st.lastCheckAt, intervalSec: INTERVAL });
+      const staleTxt = wh.staleSec != null ? ' · laatste check ' + Math.round(wh.staleSec / 60) + ' min geleden' : '';
+      console.log('watcher: ' + (
+        wh.state === 'running' ? 'RUNNING (pid ' + pid + ')' + staleTxt
+        : wh.state === 'stale' ? '⚠ HANGT — proces leeft (pid ' + pid + ') maar tikt niet meer' + staleTxt + ' (interval ' + wh.intervalSec + 's); herstart met: node .claude/forge-bin/usage-guard.cjs stop && node .claude/forge-bin/usage-guard.cjs start'
+        : wh.state === 'unknown' ? 'proces leeft (pid ' + pid + ') maar heeft nog nooit een check gelogd — status onbekend'
+        : 'not running' + (pid ? ' (achtergebleven pid-bestand: ' + pid + ')' : '')));
       // NVIDIA-shift soft pressure signal — advisory only, real week% only, written on every status evaluation.
       const pressure = writePressureFile(u.week.pct, NVIDIA_SHIFT_AT, PAUSE_AT);
       if (pressure.level === 'nvidia-preferred') console.log('pressure: nvidia-preferred (week ' + u.week.pct + '% >= ' + NVIDIA_SHIFT_AT + '%)');
@@ -334,21 +589,38 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { retu
   if (cmd === 'watch') {
     if (has('once')) { await tick(); return; }
     // refuse a 2nd concurrent watcher — two would race the same non-atomic state file (fix 2026-07-09 checkup)
-    const existing = Number((fs.existsSync(PID_FILE) && fs.readFileSync(PID_FILE, 'utf8').trim()) || 0);
+    // CODEX finding #15: this still parsed the pid file as a BARE NUMBER after the writer switched to
+    // JSON — Number('{"pid":123,…}') is NaN, so the "refuse a second watcher" guard silently stopped
+    // guarding and two watchers could race the same non-atomic state file. Use the one reader.
+    const existing = readPidRecord().pid;
     if (existing && existing !== process.pid && pidAlive(existing)) { console.error('another usage-guard watcher already running (pid ' + existing + ') — refusing to start a second'); process.exit(1); }
     log('usage-guard watch started — interval ' + INTERVAL + 's · pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '% · nvidia-shift-at ' + NVIDIA_SHIFT_AT + '%' + (ONLY_COMPANIES.length ? ' · companies: ' + ONLY_COMPANIES.join(',') : ''));
-    fs.writeFileSync(PID_FILE, String(process.pid));
-    await tick();
-    setInterval(tick, INTERVAL * 1000);
+    // SILENT-DEATH GUARD (2026-08-03): on this machine the loop stopped at 16:55 without a single error
+    // line while the process stayed alive — only fetchUsage() was inside a try/catch, so a throw anywhere
+    // else (e.g. an EPERM/EBUSY on the state write) became an unhandled rejection that killed the ticking
+    // but not the process. The watcher must never die quietly again: log it, and keep ticking.
+    process.on('unhandledRejection', (e) => log('WATCHER unhandled rejection (loop kept alive): ' + ((e && e.stack) || e)));
+    process.on('uncaughtException', (e) => log('WATCHER uncaught exception (loop kept alive): ' + ((e && e.stack) || e)));
+    // The pid file now records WHO we are and WHEN we started, so `stop` can verify it is killing this
+    // watcher and not whatever process later inherited a recycled PID (Windows reuses PIDs).
+    fs.writeFileSync(PID_FILE, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), script: __filename }) + '\n');
+    const safeTick = async () => { try { await tick(); } catch (e) { log('TICK FAILED (watcher stays alive): ' + ((e && e.stack) || e)); } };
+    await safeTick();
+    setInterval(safeTick, INTERVAL * 1000);
     return; // keep alive
   }
   if (cmd === 'start') {
-    const pid = Number((fs.existsSync(PID_FILE) && fs.readFileSync(PID_FILE, 'utf8').trim()) || 0);
-    if (pid && pidAlive(pid)) { console.log('usage-guard already running (pid ' + pid + ')'); process.exit(0); }
+    // A recycled PID must not make `start` believe a watcher exists — that would leave the account
+    // permanently unguarded while the CLI cheerfully reports "already running" (audit, 2026-08-03).
+    const rec = readPidRecord();
+    if (rec.pid && ownsPid(rec.pid, rec).ok) { console.log('usage-guard already running (pid ' + rec.pid + ')'); process.exit(0); }
+    if (rec.pid) console.log('note: stale pid file (' + rec.pid + ' is not a usage-guard process) — starting a fresh watcher');
     const out = fs.openSync(LOG_FILE, 'a');
     const extra = [];
     if (ONLY_COMPANIES.length) extra.push('--companies', ONLY_COMPANIES.join(','));
     if (argv('state', null)) extra.push('--state', argv('state'));
+    // --grace-min was parsed but never forwarded, so `start --grace-min 30` silently ran on 5 (audit).
+    extra.push('--grace-min', String(GRACE_MIN));
     if (DRY) extra.push('--dry-run');
     // stdout → ignore (log() already appendFileSync's to LOG_FILE; redirecting stdout too double-logged every line);
     // keep stderr → LOG_FILE so a crash is still captured (fix 2026-07-09 checkup).
@@ -358,12 +630,38 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch { retu
     process.exit(0);
   }
   if (cmd === 'stop') {
-    const pid = Number((fs.existsSync(PID_FILE) && fs.readFileSync(PID_FILE, 'utf8').trim()) || 0);
-    if (pid && pidAlive(pid)) { try { execSync('taskkill /PID ' + pid + ' /T /F', { stdio: 'ignore' }); } catch {} console.log('usage-guard stopped (pid ' + pid + ')'); }
-    else console.log('usage-guard not running');
-    try { fs.unlinkSync(PID_FILE); } catch {}
+    // Never kill a PID we cannot prove is ours, and never `/T` (a tree-kill on a recycled pid is exactly
+    // the incident class the owner's HARD MUST was written for). Unverifiable = refuse + say so.
+    const rec = readPidRecord();
+    if (!rec.pid) console.log('usage-guard not running (no pid file)');
+    else {
+      const own = ownsPid(rec.pid, rec);
+      if (own.ok) {
+        try {
+          if (process.platform === 'win32') execSync('taskkill /PID ' + rec.pid + ' /F', { stdio: 'ignore' });
+          else process.kill(rec.pid, 'SIGTERM');
+        } catch { /* verified below by liveness, not by the exit code */ }
+        // CODEX finding #17: the pid file used to be deleted unconditionally — including when the kill
+        // was REFUSED or failed — which erased the only ownership evidence and let the next `start`
+        // spawn a duplicate alongside a watcher that was still alive. Delete only on confirmed death.
+        const dead = !pidAlive(rec.pid);
+        if (dead) { try { fs.unlinkSync(PID_FILE); } catch {} console.log('usage-guard stopped (pid ' + rec.pid + ')'); }
+        else console.log('usage-guard NOT stopped — pid ' + rec.pid + ' is still alive after the kill attempt; pid file kept so the next start does not spawn a duplicate');
+      } else {
+        console.log('usage-guard not stopped — ' + own.reason + (rec.startedAt ? ' (pid file written ' + rec.startedAt + ')' : '') + '; removing the stale pid file only');
+        try { fs.unlinkSync(PID_FILE); } catch {}
+      }
+    }
     process.exit(0);
   }
   console.error('unknown command: ' + cmd + ' (use check|status|credits|watch|start|stop|override-on|override-off)');
   process.exit(1);
-})();
+  })();
+}
+
+module.exports = {
+  writeStateTo,
+  fingerprintAccount, readAccountIdentity, detectAccountSwitch, stateForAccount,
+  normalizeWindows, crossedWindows, windowLabel, watcherHealth, fmtReset,
+  computePressureLevel, buildPressureData, creditsExhausted,
+};

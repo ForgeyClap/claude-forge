@@ -2173,5 +2173,94 @@ console.log('\n63) WP4 FIX: dedicated canary seeds one real run before validatio
   t('63g REGRESSION SAFETY: the real project never had a run seeded into it', !fs.existsSync(path.join(rep63g, '.claude', 'forge-runs')));
 }
 
+// =====================================================================================
+// 64) INSTALL-DEADLOCK FIX (2026-08-03): scaffold seeding — .gitignore snippet + CLAUDE.md stub.
+// MEASURED BUG this closes: a fresh install's post-validation doctor runs suites that require the
+// project environment (CLAUDE.md present, .gitignore rules for forge-runs/forge-index) which only
+// Phase 16 — an AGENT step that can never run before forge-sync finishes — would create. Result: every
+// fresh-project install failed validation and rolled back 357 files (reproduced live on the
+// "Kalshi trading" target, 2×, and again in a sandbox). The installer must seed the environment
+// invariants its own validation checks: append-only .gitignore seeding + create-only CLAUDE.md stub,
+// both from the template home (the dir ABOVE the template's .claude content dir).
+// =====================================================================================
+console.log('\n64) install seeds project scaffold (.gitignore snippet + CLAUDE.md stub) before validation');
+{
+  const home = path.join(freshDir('t64-tplhome'), 'template');
+  const tpl = path.join(home, '.claude');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v64");\n');
+  fs.writeFileSync(path.join(home, 'gitignore.snippet'), '# Forge scaffold\n.claude/forge-runs/*/*\n.claude/forge-index/\n!.claude/forge-runs/*/run.json\n');
+  fs.writeFileSync(path.join(home, 'CLAUDE.md'), '# CLAUDE.md stub\n');
+
+  // (a) fresh project: both created, install green
+  const pA = makeProject(freshDir('t64-root'), 'projA', 0);
+  const rA = sync.safeSyncProject(tpl, pA, { batchId: 'b64a', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('64a install succeeds on a fresh project', rA.ok === true);
+  t('64a .gitignore created carrying the snippet rules', fs.existsSync(path.join(pA, '.gitignore')) && fs.readFileSync(path.join(pA, '.gitignore'), 'utf8').includes('.claude/forge-index/'));
+  t('64a CLAUDE.md stub created', fs.existsSync(path.join(pA, 'CLAUDE.md')));
+  t('64a scaffold outcome reported on the result', !!rA.scaffold && rA.scaffold.gitignore === 'created' && rA.scaffold.claude_md === 'created');
+
+  // (b) existing files: .gitignore append-only (custom lines preserved, no duplicates), CLAUDE.md NEVER touched
+  const pB = makeProject(freshDir('t64-root2'), 'projB', 0);
+  fs.writeFileSync(path.join(pB, '.gitignore'), '# mine\nmy-secret-dir/\n.claude/forge-index/\n');
+  fs.writeFileSync(path.join(pB, 'CLAUDE.md'), '# owner content — must never change\n');
+  const rB = sync.safeSyncProject(tpl, pB, { batchId: 'b64b', nowIso: '2026-01-01T00:00:00.000Z' });
+  const gi64 = fs.readFileSync(path.join(pB, '.gitignore'), 'utf8');
+  t('64b existing custom .gitignore lines preserved', rB.ok === true && gi64.includes('my-secret-dir/'));
+  t('64b missing snippet rules appended', gi64.includes('.claude/forge-runs/*/*') && gi64.includes('!.claude/forge-runs/*/run.json'));
+  t('64b an already-present rule is not duplicated', gi64.split('\n').filter((l) => l.trim() === '.claude/forge-index/').length === 1);
+  t('64b existing CLAUDE.md byte-identical (create-only, never merged by the syncer)', fs.readFileSync(path.join(pB, 'CLAUDE.md'), 'utf8') === '# owner content — must never change\n');
+  t('64b scaffold outcome says appended + unchanged', !!rB.scaffold && /^appended:/.test(rB.scaffold.gitignore) && rB.scaffold.claude_md === 'unchanged');
+
+  // (c) dry-run seeds NOTHING (zero filesystem writes, as documented)
+  const pC = makeProject(freshDir('t64-root3'), 'projC', 0);
+  sync.safeSyncProject(tpl, pC, { dryRun: true, batchId: 'b64c' });
+  t('64c dry-run seeds nothing', !fs.existsSync(path.join(pC, '.gitignore')) && !fs.existsSync(path.join(pC, 'CLAUDE.md')));
+
+  // (d) a failed validation rolls back CREATED scaffold files too — a rolled-back install may not leave
+  // a half-provisioned root behind (appended lines in a PRE-EXISTING .gitignore stay: append-only is safe)
+  const pD = makeProject(freshDir('t64-root4'), 'projD', 1);
+  const rD = sync.safeSyncProject(tpl, pD, { batchId: 'b64d', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('64d failed validation still rolls back the synced files', rD.ok === false && rD.rolledBack === true);
+  t('64d created scaffold files are removed on rollback', !fs.existsSync(path.join(pD, '.gitignore')) && !fs.existsSync(path.join(pD, 'CLAUDE.md')));
+
+  // (f) CODEX ADVERSARIAL REVIEW (gpt-5.6-sol, 2026-08-03) findings #21/#22 — the seeding used to follow
+  // a symlinked .gitignore straight out of the project, and undoScaffold deleted by filename alone.
+  {
+    const pF = makeProject(freshDir('t64-root6'), 'projF', 0);
+    const outsideDir = freshDir('t64-outside');
+    const outside = path.join(outsideDir, 'victim-gitignore');
+    fs.writeFileSync(outside, 'ORIGINAL OUTSIDE CONTENT\n', 'utf8');
+    let linked = true;
+    try { fs.symlinkSync(outside, path.join(pF, '.gitignore')); } catch { linked = false; } // needs privileges on Windows
+    if (linked) {
+      const rF = sync.safeSyncProject(tpl, pF, { batchId: 'b64f', nowIso: '2026-01-01T00:00:00.000Z' });
+      t('64f a symlinked .gitignore is REFUSED — the installer never writes outside the project through a link',
+        fs.readFileSync(outside, 'utf8') === 'ORIGINAL OUTSIDE CONTENT\n');
+      t('64f the refusal is reported honestly on the result', !!rF.scaffold && (rF.scaffold.gitignore === 'refused' || (rF.scaffold.errors || []).some((e) => /symlink/.test(e))));
+    } else {
+      console.log('  SKIP 64f symlink case — creating a symlink needs privileges on this machine (code path still guarded by 64g)');
+    }
+
+    // undoScaffold must refuse a path outside the project and a name it never creates
+    const pG = makeProject(freshDir('t64-root7'), 'projG', 0);
+    const outsideVictim = path.join(freshDir('t64-outside2'), 'victim.txt');
+    fs.writeFileSync(outsideVictim, 'KEEP ME\n', 'utf8');
+    fs.writeFileSync(path.join(pG, 'not-ours.txt'), 'KEEP ME TOO\n', 'utf8');
+    sync.undoScaffold({ created: ['../' + path.basename(path.dirname(outsideVictim)) + '/victim.txt', 'not-ours.txt', path.join('..', 'escape.txt')] }, pG);
+    t('64g undoScaffold refuses a traversal path (file outside the project survives)', fs.existsSync(outsideVictim));
+    t('64g undoScaffold refuses a name it never creates (unrelated project file survives)', fs.existsSync(path.join(pG, 'not-ours.txt')));
+  }
+
+  // (e) a template home without scaffold assets degrades honestly (reported, never a crash)
+  const bareHome = path.join(freshDir('t64-bare'), 'template');
+  const tplBare = path.join(bareHome, '.claude');
+  fs.mkdirSync(path.join(tplBare, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplBare, 'forge-bin', 'tool.cjs'), 'console.log("v64e");\n');
+  const pE = makeProject(freshDir('t64-root5'), 'projE', 0);
+  const rE = sync.safeSyncProject(tplBare, pE, { batchId: 'b64e', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('64e missing scaffold assets degrade honestly to template-missing', rE.ok === true && !!rE.scaffold && rE.scaffold.gitignore === 'template-missing' && rE.scaffold.claude_md === 'template-missing');
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

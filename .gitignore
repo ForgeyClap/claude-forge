@@ -49,3 +49,19 @@ NVIDIA Build and NIM Model Mapping for Permanent Forge Agent Roles.pdf
 # Derived, local-only: the tool-index is rebuilt from your own events.jsonl. A committed copy would
 # publish local run text and go stale the moment you run anything.
 .claude/forge-index/
+
+# Per-install state — meaningless (and machine-identifying) in a distribution: FORGE_VERSION.json and
+# forge-sync-receipt.json record the LOCAL template path and project path, so a sync into this clone
+# would otherwise publish the maintainer's own directory layout. Excluded 2026-08-04 after the
+# pre-push owner-path scan caught exactly that.
+.claude/FORGE_VERSION.json
+.claude/forge-sync-receipt.json
+.claude/forge-backups/
+
+# Skills that this distribution deliberately does NOT ship under .claude/skills/ (see
+# .claude/skills/VENDORED-SKILLS.md): the vendored third-party ones, plus skills that are shipped once
+# under plugins/forge/skills/ instead. A `forge-sync install` into this clone copies them in from the
+# maintainer's tree; ignoring them here keeps that from silently re-adding a second copy (2026-08-04).
+.claude/skills/gsap/
+.claude/skills/humanizer/
+.claude/skills/forge-prd/

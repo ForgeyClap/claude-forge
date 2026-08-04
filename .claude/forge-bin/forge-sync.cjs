@@ -387,6 +387,12 @@ const SYSTEM = [
   // file, so it is deliberately NOT pinned here (same convention as forge-audit's/docdrift's own ledgers) —
   // it is gitignored instead.
   'forge-bin/forge-tool-index.cjs', 'forge-bin/forge-tool-index.test.cjs',
+  // install-deadlock fix (2026-08-03): maand-sweep.cmd itself is SYSTEM_GLOB-covered (.cmd), but its prompt
+  // payload is .txt — outside the glob's extension list — and forge-run-budget.test.cjs asserts the wrapper's
+  // presence in EVERY installed project; a wrapper without its prompt is a guaranteed runtime failure. The
+  // wrapper was previously missing from the template entirely (the test shipped, the file didn't — the exact
+  // ship-gap class the 2026-07-26 lesson recorded), which made every fresh install's validation red.
+  'forge-bin/maand-sweep-prompt.txt',
   // context-budget (2026-08-01): the always-loaded instruction-surface meter wired into forge-doctor.cjs as
   // the `context_budget` advisory. Both files live in forge-bin/ and are therefore already covered by
   // SYSTEM_GLOB below; pinned here explicitly too anyway (same belt-and-suspenders discipline as every prior
@@ -764,7 +770,7 @@ function applyPlanSafely(templateDir, projectDir, plan, copyFileImpl) {
 
 // ---- validation: H4 evidence-based gate + H3 pre/post baseline comparison ----
 // M10: build a human-copy-pasteable command STRING from an argv array with proper quoting — naive string
-// concatenation breaks on a project path containing a space and/or a "!" (e.g. "my-forge-project").
+// concatenation breaks on a project path containing a space and/or a "!" (e.g. "68 agents works!").
 function quoteArg(a) {
   const s = String(a);
   return /[\s"!]/.test(s) ? ('"' + s.replace(/"/g, '\\"') + '"') : s;
@@ -936,6 +942,115 @@ function seedCanaryRun(projectDir, batchId, nowIso) {
   try { r = spawnSync(process.execPath, [logEventPath, runId, 'run_started', payload], { cwd: projectDir, encoding: 'utf8' }); }
   catch (e) { return { ok: false, runId, error: e.message }; }
   return { ok: !!r && r.status === 0, runId, exitCode: r ? r.status : null, stderr: (r && r.stderr) || '' };
+}
+
+/** seedProjectScaffold — INSTALL-DEADLOCK FIX (2026-08-03). The post-install validation doctor runs test
+ *  suites that assert the PROJECT ENVIRONMENT: CLAUDE.md exists (forge-configdrift), .gitignore carries the
+ *  forge-runs/forge-index rules (forge-tool-index, forge-toolhook). Those files were Phase-16 duties of the
+ *  INSTALLING AGENT — a step that by definition can only run AFTER forge-sync returns. Net effect measured
+ *  live: every fresh-project install failed its own validation and rolled back all ~357 files ("Kalshi
+ *  trading", 2×, and a clean sandbox repro). The installer therefore seeds exactly the environment its own
+ *  validation checks, from the template HOME (the directory above the template's .claude content dir):
+ *    - .gitignore  — created verbatim from gitignore.snippet when absent; otherwise APPEND-ONLY: only
+ *      snippet rule-lines whose trimmed form is not already present are appended (comments/order/custom
+ *      lines untouched — the safe-merge discipline CLAUDE.md's Phase 16 already prescribes).
+ *    - CLAUDE.md   — created from the template home's stub ONLY when absent; an existing CLAUDE.md is
+ *      NEVER touched by the syncer (safe-merge of the Forge section stays an agent responsibility).
+ *  Missing template assets degrade honestly to 'template-missing' (fixture templates have none).
+ *  Returns { gitignore, claude_md, created:[rootRelNames], errors:[] } — callers surface it on the result
+ *  and undoScaffold() removes CREATED files on the rollback paths (append-only edits are left in place). */
+function seedProjectScaffold(templateDir, projectDir) {
+  const out = { gitignore: 'template-missing', claude_md: 'template-missing', created: [], errors: [] };
+  const tplHome = path.dirname(path.resolve(templateDir));
+  const snippetPath = path.join(tplHome, 'gitignore.snippet');
+  const stubPath = path.join(tplHome, 'CLAUDE.md');
+  // CODEX ADVERSARIAL REVIEW (gpt-5.6-sol, 2026-08-03) findings #21/#22: this seeding bypassed the
+  // installer's own containment/symlink discipline. A project `.gitignore` that is a SYMLINK to a file
+  // outside the project was read and appended to through the link — the installer writing outside the
+  // project it is installing into. And `existsSync` + `writeFileSync` is a check-then-write race: a
+  // file created in between was truncated. Both are closed here: refuse non-regular targets, verify
+  // containment against the resolved real path, and create with the exclusive 'wx' flag.
+  const root = path.resolve(projectDir);
+  const targetOk = (rel) => {
+    const p = path.join(root, rel);
+    if (path.resolve(p) !== path.normalize(p) || path.relative(root, p).startsWith('..')) return { ok: false, reason: 'path escapes the project root' };
+    let st = null;
+    try { st = fs.lstatSync(p); } catch (e) { if (e && e.code === 'ENOENT') return { ok: true, path: p, exists: false }; return { ok: false, reason: e.message }; }
+    if (st.isSymbolicLink()) return { ok: false, reason: 'target is a symlink — refusing to write through it' };
+    if (!st.isFile()) return { ok: false, reason: 'target exists but is not a regular file' };
+    return { ok: true, path: p, exists: true };
+  };
+  // .gitignore
+  try {
+    if (fs.existsSync(snippetPath)) {
+      const snippet = fs.readFileSync(snippetPath, 'utf8');
+      const chk = targetOk('.gitignore');
+      if (!chk.ok) { out.errors.push('.gitignore: ' + chk.reason); out.gitignore = 'refused'; throw new Error('scaffold refused: ' + chk.reason); }
+      const target = chk.path;
+      if (!chk.exists) {
+        try {
+          fs.writeFileSync(target, snippet.endsWith('\n') ? snippet : snippet + '\n', { encoding: 'utf8', flag: 'wx' });
+          out.gitignore = 'created';
+          out.created.push('.gitignore');
+        } catch (e) {
+          if (e && e.code === 'EEXIST') { out.gitignore = 'raced-existing'; out.errors.push('.gitignore: created by another process during install — left untouched'); }
+          else throw e;
+        }
+      } else {
+        const existing = new Set(fs.readFileSync(target, 'utf8').split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+        const missing = snippet.split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#') && !existing.has(l));
+        if (missing.length === 0) out.gitignore = 'unchanged';
+        else {
+          fs.appendFileSync(target, '\n# Forge scaffold rules (seeded by forge-sync install — append-only)\n' + missing.join('\n') + '\n', 'utf8');
+          out.gitignore = 'appended:' + missing.length;
+        }
+      }
+    }
+  } catch (e) { out.errors.push('.gitignore: ' + e.message); out.gitignore = 'error'; }
+  // CLAUDE.md (create-only)
+  try {
+    if (fs.existsSync(stubPath)) {
+      const chk = targetOk('CLAUDE.md');
+      if (!chk.ok) { out.errors.push('CLAUDE.md: ' + chk.reason); out.claude_md = 'refused'; throw new Error('scaffold refused: ' + chk.reason); }
+      if (chk.exists) out.claude_md = 'unchanged';
+      else {
+        try {
+          // COPYFILE_EXCL: fail rather than clobber a file that appeared between the check and the copy.
+          fs.copyFileSync(stubPath, chk.path, fs.constants.COPYFILE_EXCL);
+          out.claude_md = 'created';
+          out.created.push('CLAUDE.md');
+        } catch (e) {
+          if (e && e.code === 'EEXIST') { out.claude_md = 'raced-existing'; out.errors.push('CLAUDE.md: created by another process during install — left untouched'); }
+          else throw e;
+        }
+      }
+    }
+  } catch (e) { out.errors.push('CLAUDE.md: ' + e.message); out.claude_md = 'error'; }
+  return out;
+}
+
+/** undoScaffold — removes ONLY the files seedProjectScaffold reports it CREATED (never an append-edited or
+ *  pre-existing file), so a rolled-back install leaves no half-provisioned root behind. Best-effort. */
+const SCAFFOLD_ALLOWED = new Set(['.gitignore', 'CLAUDE.md']); // the ONLY files seeding may ever create
+function undoScaffold(scaffold, projectDir) {
+  if (!scaffold || !Array.isArray(scaffold.created)) return;
+  const root = path.resolve(projectDir);
+  for (const name of scaffold.created) {
+    // CODEX finding #22: this deleted by filename string alone, so a caller-supplied created:["../victim"]
+    // (the function IS exported) would delete outside the project, and a file REPLACED between creation
+    // and rollback was removed even though it was no longer ours. Allow-list + containment + regular-file
+    // check, and never follow a symlink out of the tree.
+    if (!SCAFFOLD_ALLOWED.has(name)) continue;
+    const p = path.join(root, name);
+    if (path.relative(root, p).startsWith('..') || path.dirname(p) !== root) continue;
+    try {
+      const st = fs.lstatSync(p);
+      if (!st.isFile()) continue; // a symlink/dir now sitting there is not the file we created
+      fs.rmSync(p, { force: true });
+    } catch { /* already gone — nothing to undo */ }
+  }
 }
 /** decideValidationOutcome — H3+H4 gating decision, kept as a pure function so it's directly unit-testable.
  *  Priority: timeout -> blocked. Degraded (no doctor) -> requires --allow-degraded even when clean, and NEVER
@@ -1338,14 +1453,20 @@ function safeSyncProject(templateDir, projectDir, opts) {
   let canarySeed = null;
   if (opts.seedRunForValidation) canarySeed = seedCanaryRun(projectDir, batchId, nowIso);
 
+  // INSTALL-DEADLOCK FIX (2026-08-03): seed the environment the validation below actually checks —
+  // see seedProjectScaffold's own doc. Runs for every real (non-dry-run) sync; created files are
+  // removed again on every rollback path below.
+  const scaffold = seedProjectScaffold(templateDir, projectDir);
+
   const validation = runValidation(projectDir, plan, { doctorTimeoutMs: opts.doctorTimeoutMs });
   const outcome = decideValidationOutcome(preValidation, validation, { allowDegraded: opts.allowDegraded });
   if (!outcome.ok) {
     let restored = null, rollbackError = null;
     try { restored = restoreFromManifest(projectDir, backup.backupDir, backup.manifest); }
     catch (e) { rollbackError = e.message; }
+    undoScaffold(scaffold, projectDir);
     const rolledBack = !rollbackError && !!(restored && restored.ok !== false);
-    return { ok: false, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, rolledBack, rollbackError, restored, preManifest };
+    return { ok: false, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, rolledBack, rollbackError, restored, preManifest };
   }
 
   /** B3 (Blocker 3) FIX: opts.refuseOnUnresolvedDrift (set ONLY by the single-project `install` CLI path —
@@ -1362,9 +1483,10 @@ function safeSyncProject(templateDir, projectDir, opts) {
     let restored = null, rollbackError = null;
     try { restored = restoreFromManifest(projectDir, backup.backupDir, backup.manifest); }
     catch (e) { rollbackError = e.message; }
+    undoScaffold(scaffold, projectDir);
     const rolledBack = !rollbackError && !!(restored && restored.ok !== false);
     return {
-      ok: false, refusedPartialDrift: true, projectDir, plan, backup, validation, preValidation, rolledBack, rollbackError, restored, preManifest,
+      ok: false, refusedPartialDrift: true, projectDir, plan, backup, validation, preValidation, scaffold, rolledBack, rollbackError, restored, preManifest,
       reason: 'refusing to stamp templateVersionTo: ' + plan.unknownDrift.length + ' unresolved drift + ' + plan.conflicts.length
         + ' conflict file(s) remain (use --force-overwrite, or resolve via .claude/config/forge-overrides.json/adopt) — a partially-synced project must never claim the new template version',
     };
@@ -1414,7 +1536,7 @@ function safeSyncProject(templateDir, projectDir, opts) {
     syncedAt: nowIso,
   };
   writeReceipt(projectDir, receipt);
-  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, receipt, preManifest, postManifest };
+  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest };
 }
 
 /** adoptProject — NEW COMMAND: `forge-sync adopt <projectDir>`. Establishes a baseline receipt from the
@@ -1807,7 +1929,7 @@ module.exports = {
   overridesAllowlistPath, readOverrideAllowlist,
   preflight, buildPlan, fullFileManifest, aggregateManifestHash,
   versionFilePath, readVersionFile, backupDirFor, centralBackupDir, takeBackup, applyPlanSafely, runValidation,
-  decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck, seedCanaryRun,
+  decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck, seedCanaryRun, seedProjectScaffold, undoScaffold,
   verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches, restoreFromManifest, subsetManifest,
   journalPath, latestBatchId, acquireLock, releaseLock, lockPathFor,
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,

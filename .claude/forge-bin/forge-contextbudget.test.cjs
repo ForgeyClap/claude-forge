@@ -9,10 +9,26 @@ const path = require('path');
 const assert = require('assert');
 const cb = require('./forge-contextbudget.cjs');
 
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 function t(name, fn) {
   try { fn(); passed++; console.log('  ok   ' + name); }
   catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); }
+}
+/** pinned(name, fn) — see the identical helper in forge-configdrift.test.cjs for the full reasoning. Short
+ *  version: "this project has 57 skills of its own" is a property of this INSTALLATION, not of the meter.
+ *  It is a real drift guard here and it is false in the published distribution for a legitimate reason (the
+ *  9 vendored third-party skills are not redistributed). Widening the number to a range would destroy the
+ *  guard, so the assertion asks which tree it is in and states plainly when it declined to check. */
+let INSTALL_PROFILE;
+try {
+  INSTALL_PROFILE = require('./forge-doctor.cjs').installationProfile(path.resolve(__dirname, '..', '..'));
+} catch (e) {
+  INSTALL_PROFILE = { profile: 'unknown', reason: 'forge-doctor.cjs installationProfile unavailable (' + e.message + ')' };
+}
+function pinned(name, fn) {
+  if (INSTALL_PROFILE.profile === 'development') { t(name, fn); return; }
+  skipped++;
+  console.log('  SKIP ' + name + ' — installation-dependent assertion · ' + INSTALL_PROFILE.reason);
 }
 
 console.log('forge-contextbudget tests (always-loaded context surface)');
@@ -470,10 +486,20 @@ t('on the REAL project all three sources are reported, and any zero among them i
     assert.ok(typeof s.skills === 'number', s.id + ' has no count');
     if (s.skills === 0) assert.ok(s.note && s.note.length > 10, s.id + ' reports zero with no explanation: ' + s.note);
   }
-  assert.ok(rep.skill_sources.find((s) => s.id === 'skill_catalog_project').skills >= 57,
-    'this project has 57 skills of its own; got ' + rep.skill_sources.find((s) => s.id === 'skill_catalog_project').skills);
+  // The COUNT is installation-specific and lives in its own pinned test below; what this test asserts is
+  // the property of the METER — three sources, every one of them counted, a zero always explained.
+  assert.ok(rep.skill_sources.find((s) => s.id === 'skill_catalog_project').skills > 0,
+    'the project catalog reports zero skills, which no Forge install should');
   assert.strictEqual(rep.findings.filter((f) => f.kind === 'depth_capped').length, 0,
     'the real tree fits inside the configured depth: ' + JSON.stringify(rep.findings.filter((f) => f.kind === 'depth_capped')));
+});
+// The 57 itself is a drift guard for THIS tree, not a property of the meter: a redistribution ships 47
+// because nine vendored skills are listed rather than copied. Same reasoning as the identical pin in
+// forge-configdrift.test.cjs — it stays strict here and skips VISIBLY elsewhere, never silently green.
+pinned('on the REAL project the project catalog carries this installation\'s full 57 skills', () => {
+  const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
+  const project = rep.skill_sources.find((s) => s.id === 'skill_catalog_project');
+  assert.ok(project.skills >= 57, 'this project has 57 skills of its own; got ' + project.skills);
 });
 t('the REAL always-loaded surface is now measured well above the project-only figure it used to report', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
@@ -666,7 +692,16 @@ t('a baseline recorded on the OLD (everything-counted) figure does not read as a
 t('on the REAL machine the plugin catalog reports FEWER loaded skills than sit on disk', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
   const pl = post(rep, 'skill_catalog_plugins');
-  assert.strictEqual(pl.skills_on_disk, 112, 'the on-disk plugin skill count changed; got ' + pl.skills_on_disk);
+  // The exact count is machine state, not a property of this code: it legitimately moves whenever a
+  // plugin is installed or upgraded. Measured 2026-08-03: upgrading the Codex CLI (0.142.3 -> 0.146.0,
+  // done to reach the gpt-5.6-sol model) took it 112 -> 135 and turned the doctor red for a change that
+  // is not a defect. A pin that has to be edited every plugin upgrade teaches people to edit assertions
+  // instead of reading them — so the load-bearing invariants (loaded < on-disk, some skills recognised
+  // as not-loaded, and loaded + not-loaded accounting for EVERY file) stay strict below, while the raw
+  // count only has to be a plausible non-trivial catalog. A walk that finds ~2 files (the depth-4 bug
+  // this test was written for) still fails here.
+  assert.ok(pl.skills_on_disk >= 50,
+    'the plugin catalog looks implausibly small (' + pl.skills_on_disk + ') — a shallow/broken walk, not a real catalog');
   assert.ok(pl.skills < pl.skills_on_disk,
     'every plugin skill is still being counted as loaded (' + pl.skills + ' of ' + pl.skills_on_disk + ')');
   assert.ok(pl.disabled_skills > 0, 'no plugin skill was recognised as not-loaded');
@@ -684,5 +719,7 @@ t('the REAL total no longer includes the weight of switched-off plugins', () => 
 });
 
 console.log('');
-console.log(passed + ' passed, ' + failed + ' failed');
+// Skips horen in de tally: een overgeslagen assertie die nergens verschijnt is niet te onderscheiden van
+// een assertie die slaagde — dat is precies het verschil dat deze scheiding zichtbaar moest maken.
+console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 process.exit(failed ? 1 : 0);

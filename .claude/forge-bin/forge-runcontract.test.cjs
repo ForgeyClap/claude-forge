@@ -363,7 +363,7 @@ t('ruleApplies: "web" trigger does not apply to an unrelated domain', RC.ruleApp
 t('ruleApplies: "domain:finance" trigger applies only to that exact domain', RC.ruleApplies({ trigger: 'domain:finance' }, 'finance') === true && RC.ruleApplies({ trigger: 'domain:finance' }, 'data') === false);
 t('hasEvent: case-insensitive event_type match', RC.hasEvent([{ event_type: 'Research_Done' }], 'research_done') === true);
 t('hasArtifact: case-insensitive substring match (legacy string[] input, treated as already-known-non-empty)', RC.hasArtifact(['FINAL-REPORT.MD'], 'final-report') === true);
-t('listRules: production FORGE_HARD_RULES.json has exactly 10 seeded rules', RC.listRules({}).length === 10);
+t('listRules: production FORGE_HARD_RULES.json has exactly 11 seeded rules', RC.listRules({}).length === 11);
 
 // ---- unit-level helpers: V9-fix DEFECT 1/2/3 pure-function proof ----
 t('DEFECT 1: hasArtifact rejects an object-shaped artifact with nonEmpty:false, accepts nonEmpty:true', RC.hasArtifact([{ name: 'FINAL-REPORT.MD', nonEmpty: false }], 'final-report') === false && RC.hasArtifact([{ name: 'FINAL-REPORT.MD', nonEmpty: true }], 'final-report') === true);
@@ -474,6 +474,254 @@ t('CLI: --log-event is accepted (exit 0 on a complete run, not a usage error)', 
 t('CLI --json with --log-event reports the logged outcome field', (() => {
   try { const j = JSON.parse(cliLog.stdout); return 'logged' in j; } catch { return false; }
 })());
+
+// ================================================================================================
+// PART 5 — OWNER-PUNT B / RICHTING 2 (2026-08-03): the rule must DISCRIMINATE.
+//
+// MEASURED PROBLEM: `plan-or-prd-present` is an event-present rule whose key is
+// ["prd_generated","mission_blueprint_created","agent_work_package_created"], and hasEvent() is
+// OR-semantics — so the router's own standing instruction ("every Lead logs an
+// agent_work_package_created per dispatched subagent") satisfies it on EVERY run via the CHEAPEST of
+// the three. Counted over the 30 real runs in .claude/forge-runs on 2026-08-03:
+// agent_work_package_created = 12 events, mission_blueprint_created = 2, prd_generated = 2. The
+// expensive alternative is essentially never chosen, so a rule that fires on every run discriminates
+// nothing. Heavy work must genuinely require a PRD; light work must not.
+//
+// The blocker richting 2 had to solve first: KNOWN_TRIGGER_LITERALS only knew
+// always|web|correctness-critical plus domain:<x>, and no L-level ever reached the ctx — "only at
+// L3/L4" was not even EXPRESSIBLE. Hence a new trigger form (complexity:>=L<n>) plus a real
+// complexity resolver.
+//
+// WHERE THE LEVEL COMES FROM (measured, not assumed — see the 30 runs on 2026-08-03):
+//   - run.json DOES carry it, under two different spellings: `complexity` (10 runs) and `fanout`
+//     (5 runs). NO event type carries it — run_started has no level field in any of the 25 real
+//     run_started events.
+//   - but only 18 of 30 runs declare one at all (10 runs have no run.json whatsoever).
+//   => so the level is DECLARED where available and DERIVED from measurable dispatch volume
+//      otherwise, and the two are reconciled by MAX (a run cannot declare itself small to dodge a
+//      rule). Both halves are reported separately so a derived level is never passed off as a
+//      declared one.
+// ================================================================================================
+
+const dispatches = (n, agentPrefix) => Array.from({ length: n }, (_, i) => ev({ event_type: 'subagent_started', agent: (agentPrefix || 'Boss') + '-' + i }));
+
+// ---- (5a) the NEW trigger form must be a VALID trigger (today loadRules() throws on it) ----
+const CX_RULES_PATH = path.join(TMP, 'complexity-rules.json');
+fs.writeFileSync(CX_RULES_PATH, JSON.stringify({
+  version: 1,
+  owners_allowlist: ['owner'],
+  rules: [
+    { id: 'heavy-only', rule: 'test complexity-trigger rule', trigger: 'complexity:>=L3', check: { type: 'event-present', key: 'signal_heavy' }, severity: 'block', override: 'owner_override rule:heavy-only', source: 'test fixture' },
+  ],
+}), 'utf8');
+let cxLoadThrew = null;
+try { RC.loadRules(CX_RULES_PATH); } catch (e) { cxLoadThrew = e; }
+t('5a: a rule with trigger "complexity:>=L3" loads without throwing (the new trigger form is valid vocabulary)', cxLoadThrew === null);
+
+// ---- (5b) a LIGHT run: the complexity rule simply does not apply ----
+writeRun('cx-light', [ev({ event_type: 'memory_loaded' })].concat(dispatches(1)), {});
+const cxLight = RC.check({ run_id: 'cx-light' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5b: on a light run the complexity:>=L3 rule lands in NO bucket (it does not apply)', (() => {
+  const all = cxLight.satisfied.concat(cxLight.missing, cxLight.warnings, cxLight.overridden.map((o) => o.id));
+  return !all.includes('heavy-only');
+})());
+t('5b: a light run is ok:true and reports complexity L1', cxLight.ok === true && cxLight.complexity === 'L1');
+
+// ---- (5c) a HEAVY run: the same rule applies and genuinely bites ----
+writeRun('cx-heavy', [ev({ event_type: 'memory_loaded' })].concat(dispatches(13)), {});
+const cxHeavy = RC.check({ run_id: 'cx-heavy' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5c: on a heavy run the complexity:>=L3 rule applies and is genuinely missing -> ok:false', cxHeavy.ok === false && cxHeavy.missing.includes('heavy-only'));
+t('5c: a 13-dispatch run resolves to L4 (CLAUDE.md fan-out bands: L1<=3, L2<=6, L3<=12, L4>12)', cxHeavy.complexity === 'L4');
+
+// ---- (5d) ruleApplies() unit-level: the third (complexity) argument ----
+t('5d: ruleApplies("complexity:>=L3") is true at L3 and L4, false at L1/L2', (() => {
+  const r = { trigger: 'complexity:>=L3' };
+  return RC.ruleApplies(r, null, 'L3') === true && RC.ruleApplies(r, null, 'L4') === true
+    && RC.ruleApplies(r, null, 'L2') === false && RC.ruleApplies(r, null, 'L1') === false;
+})());
+t('5d: ruleApplies("complexity:>=L3") is false when NO complexity is known (same discipline as an unknown domain)', RC.ruleApplies({ trigger: 'complexity:>=L3' }, null, null) === false);
+t('5d: an "always" rule is unaffected by the new third argument', RC.ruleApplies({ trigger: 'always' }, null, 'L1') === true);
+
+// ---- (5e/5f) DECLARED level, read from run.json under BOTH real spellings measured in this repo ----
+writeRun('cx-declared-complexity', [ev({ event_type: 'memory_loaded' })], { 'run.json': JSON.stringify({ run_id: 'cx-declared-complexity', complexity: 'L3' }) });
+const cxDeclared = RC.check({ run_id: 'cx-declared-complexity' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5e: a declared run.json "complexity":"L3" is read and honestly labelled source:"declared"', cxDeclared.complexity === 'L3' && cxDeclared.complexity_source === 'declared' && cxDeclared.complexity_declared === 'L3');
+t('5e: a declared L3 makes the complexity:>=L3 rule apply (and bite) on a run with zero dispatch events', cxDeclared.missing.includes('heavy-only'));
+
+writeRun('cx-declared-fanout', [ev({ event_type: 'memory_loaded' })], { 'run.json': JSON.stringify({ run_id: 'cx-declared-fanout', fanout: 'L4' }) });
+const cxFanout = RC.check({ run_id: 'cx-declared-fanout' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5f: the other real spelling, run.json "fanout":"L4", is read the same way', cxFanout.complexity === 'L4' && cxFanout.complexity_source === 'declared');
+
+// ---- (5g) DERIVED level when nothing is declared — and it must SAY it is derived ----
+writeRun('cx-derived', [ev({ event_type: 'memory_loaded' })].concat(dispatches(8)), {});
+const cxDerived = RC.check({ run_id: 'cx-derived' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5g: with no run.json the level is DERIVED from real dispatch volume and labelled source:"derived"', cxDerived.complexity === 'L3' && cxDerived.complexity_source === 'derived' && cxDerived.complexity_declared === null);
+t('5g: the derived level carries the real measured unit count as its evidence', cxDerived.complexity_units === 8 && cxDerived.complexity_derived === 'L3');
+
+// ---- (5h) ANTI-TAMPER: declared and derived are reconciled by MAX — a run cannot declare itself
+// small to dodge a rule it is measurably big enough to owe ----
+writeRun('cx-understated', [ev({ event_type: 'memory_loaded' })].concat(dispatches(20)), { 'run.json': JSON.stringify({ run_id: 'cx-understated', complexity: 'L1' }) });
+const cxUnderstated = RC.check({ run_id: 'cx-understated' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5h: a run declaring L1 while really dispatching 20 units is treated as L4 (max of declared/derived)', cxUnderstated.complexity === 'L4' && cxUnderstated.complexity_declared === 'L1' && cxUnderstated.complexity_derived === 'L4');
+t('5h: the understating run is honestly labelled source:"derived" (the derived half is what won)', cxUnderstated.complexity_source === 'derived' && cxUnderstated.missing.includes('heavy-only'));
+
+// ---- (5i) THE ACTUAL ASK, against the REAL production FORGE_HARD_RULES.json: a HEAVY run whose only
+// plan artifact is the cheap agent_work_package_created must now be NOT DONE ----
+const heavyNoPrd = completeEvents
+  .filter((line) => !line.includes('"prd_generated"'))
+  .concat([ev({ event_type: 'agent_work_package_created', agent: 'orchestrator', note: 'the cheap alternative' })])
+  .concat(dispatches(9));
+writeRun('run-heavy-no-prd', heavyNoPrd, { 'final-report.md': '# Report\n' });
+const heavyNoPrdRes = RC.check({ run_id: 'run-heavy-no-prd' }, { root: TMP });
+t('5i: a HEAVY run with only agent_work_package_created (no PRD) is ok:false', heavyNoPrdRes.ok === false);
+t('5i: it names prd-required-for-heavy-work in missing[]', heavyNoPrdRes.missing.includes('prd-required-for-heavy-work'));
+t('5i: the cheap alternative still satisfies the FLOOR rule plan-or-prd-present (the two rules are distinct)', heavyNoPrdRes.satisfied.includes('plan-or-prd-present'));
+
+// ---- (5j) COUNTERWEIGHT against the new rule being simply "always block": the same heavy run WITH a real
+// prd_generated must still be ok:true. Honest note on its red-phase status: the ok:true HALF of this
+// assertion was already true before the change (the rule did not exist, so nothing could block); the
+// satisfied[] half was genuinely red (a rule that does not exist can never land in satisfied[]). It is kept
+// as a pair because ok:true alone is what proves the sharpened rule does not simply block every heavy run. ----
+const heavyWithPrd = completeEvents.concat(dispatches(9));
+writeRun('run-heavy-with-prd', heavyWithPrd, { 'final-report.md': '# Report\n' });
+const heavyWithPrdRes = RC.check({ run_id: 'run-heavy-with-prd' }, { root: TMP });
+t('5j (counterweight): a heavy run WITH a real prd_generated is ok:true', heavyWithPrdRes.ok === true && heavyWithPrdRes.satisfied.includes('prd-required-for-heavy-work'));
+
+// ---- (5k) COUNTERWEIGHT (green before AND after): a LIGHT run keeps the cheap alternative — this
+// change must not make every small run owe a PRD ----
+const lightNoPrd = completeEvents
+  .filter((line) => !line.includes('"prd_generated"'))
+  .concat([ev({ event_type: 'agent_work_package_created', agent: 'orchestrator' })]);
+writeRun('run-light-no-prd', lightNoPrd, { 'final-report.md': '# Report\n' });
+const lightNoPrdRes = RC.check({ run_id: 'run-light-no-prd' }, { root: TMP });
+t('5k (counterweight): a LIGHT run with only agent_work_package_created stays ok:true', lightNoPrdRes.ok === true);
+t('5k (counterweight): prd-required-for-heavy-work lands in NO bucket on a light run', (() => {
+  const all = lightNoPrdRes.satisfied.concat(lightNoPrdRes.missing, lightNoPrdRes.warnings, lightNoPrdRes.overridden.map((o) => o.id));
+  return !all.includes('prd-required-for-heavy-work');
+})());
+
+// ---- (5l) the owner_override escape hatch must stay USABLE on the newly-sharpened rule ----
+const heavyOverridden = heavyNoPrd.concat([ownerOverride('prd-required-for-heavy-work', 'owner reviewed: this L3 run is 9 mechanical file moves against an already-approved plan, a PRD adds nothing')]);
+writeRun('run-heavy-overridden', heavyOverridden, { 'final-report.md': '# Report\n' });
+const heavyOverriddenRes = RC.check({ run_id: 'run-heavy-overridden' }, { root: TMP, ownerProfilePath: NO_OWNER_PROFILE });
+t('5l: a valid owner_override clears prd-required-for-heavy-work -> ok:true', heavyOverriddenRes.ok === true);
+t('5l: the override is reported with the real reason/by, never silently dropped', heavyOverriddenRes.overridden.some((o) => o.id === 'prd-required-for-heavy-work' && o.by === 'owner' && /mechanical file moves/.test(o.reason)));
+t('5l: prd-required-for-heavy-work is NOT flagged cannot_override (the escape hatch must exist)', RC.listRules({}).some((r) => r.id === 'prd-required-for-heavy-work' && r.cannot_override !== true));
+
+// ---- (5m/5n) THE FLEET BREAK-POINT: forge-sync.cjs ships config/orchestration/FORGE_HARD_RULES.json and
+// forge-bin/forge-runcontract.cjs to 12 projects as separate files, so one half can lag the other. Today
+// loadRules() THROWS on any trigger it does not know, which turns a version skew into a hard crash instead
+// of an honest degrade. A well-formed but UNKNOWN trigger must be reported and skipped, never crash. ----
+const UNKNOWN_TRIGGER_RULES_PATH = path.join(TMP, 'unknown-trigger-rules.json');
+fs.writeFileSync(UNKNOWN_TRIGGER_RULES_PATH, JSON.stringify({
+  version: 1,
+  owners_allowlist: ['owner'],
+  rules: [
+    { id: 'from-the-future', rule: 'a rule using trigger vocabulary this checker predates', trigger: 'phase:beta', check: { type: 'event-present', key: 'signal_future' }, severity: 'block', override: 'owner_override rule:from-the-future', source: 'test fixture' },
+    { id: 'ordinary-rule', rule: 'an ordinary rule in the same file', trigger: 'always', check: { type: 'event-present', key: 'signal_must' }, severity: 'block', override: 'owner_override rule:ordinary-rule', source: 'test fixture' },
+  ],
+}), 'utf8');
+let unknownTriggerThrew = null, unknownTriggerRes = null;
+try { unknownTriggerRes = RC.check({ run_id: 'fx-block-met-warn-missing' }, { root: TMP, rulesPath: UNKNOWN_TRIGGER_RULES_PATH }); } catch (e) { unknownTriggerThrew = e; }
+t('5m: an unknown-but-well-formed trigger does NOT crash check() (a stale synced rules file degrades, never hard-fails)', unknownTriggerThrew === null);
+t('5m: the un-judgeable rule is reported in unevaluated[] with its real trigger — an honest warning, not silence', !!unknownTriggerRes && unknownTriggerRes.unevaluated.some((u) => u.id === 'from-the-future' && u.trigger === 'phase:beta'));
+t('5m: the un-judgeable rule appears in NO verdict bucket (it was never judged, so it is neither met nor missing)', (() => {
+  if (!unknownTriggerRes) return false;
+  const all = unknownTriggerRes.satisfied.concat(unknownTriggerRes.missing, unknownTriggerRes.warnings, unknownTriggerRes.overridden.map((o) => o.id));
+  return !all.includes('from-the-future');
+})());
+t('5n: the OTHER rules in the same stale file are still evaluated normally (degrade, not abandon)', !!unknownTriggerRes && unknownTriggerRes.satisfied.includes('ordinary-rule') && unknownTriggerRes.ok === true);
+
+// ---- (5o) COUNTERWEIGHT (green before AND after): tolerance is limited to UNKNOWN VOCABULARY. A
+// structurally broken trigger (missing / not a string / empty) is still a malformed config and still throws.
+// Without this, "degrade gracefully" would quietly become "accept anything". ----
+for (const bad of [undefined, null, 42, '', '   ', 'domain:']) {
+  const p = path.join(TMP, 'bad-trigger-' + String(bad).replace(/\W/g, '_') + '.json');
+  fs.writeFileSync(p, JSON.stringify({ version: 1, rules: [{ id: 'x', rule: 'y', trigger: bad, check: { type: 'event-present', key: 'z' }, severity: 'block', override: 'o', source: 's' }] }), 'utf8');
+  let threw = null;
+  try { RC.loadRules(p); } catch (e) { threw = e; }
+  t('5o (counterweight): a structurally invalid trigger (' + JSON.stringify(bad) + ') still throws — tolerance covers unknown vocabulary only', threw instanceof Error);
+}
+
+// ---- (5p) params.complexity: an explicit caller-provided level, also reconciled by MAX ----
+const cxParam = RC.check({ run_id: 'cx-light', complexity: 'L4' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5p: an explicit params.complexity is honoured and labelled source:"param"', cxParam.complexity === 'L4' && cxParam.complexity_source === 'param' && cxParam.missing.includes('heavy-only'));
+const cxParamTooLow = RC.check({ run_id: 'cx-heavy', complexity: 'L1' }, { root: TMP, rulesPath: CX_RULES_PATH });
+t('5p: an explicit params.complexity can never LOWER a measurably heavier run below its real level', cxParamTooLow.complexity === 'L4' && cxParamTooLow.missing.includes('heavy-only'));
+
+// ---- (5q) CLI surface ----
+const cliCx = runCli('check', '--run', 'cx-heavy', '--root', TMP, '--rules', CX_RULES_PATH, '--json');
+t('5q: CLI --rules + a heavy run exits 3 and reports the resolved complexity in --json', (() => {
+  try { const j = JSON.parse(cliCx.stdout); return cliCx.status === 3 && j.complexity === 'L4' && j.complexity_source === 'derived'; } catch { return false; }
+})());
+const cliCxFlag = runCli('check', '--run', 'cx-light', '--root', TMP, '--rules', CX_RULES_PATH, '--complexity', 'L4', '--json');
+t('5q: CLI --complexity L4 is accepted and raises the resolved level', (() => {
+  try { const j = JSON.parse(cliCxFlag.stdout); return j.complexity === 'L4' && cliCxFlag.status === 3; } catch { return false; }
+})());
+const cliUnknown = runCli('check', '--run', 'fx-block-met-warn-missing', '--root', TMP, '--rules', UNKNOWN_TRIGGER_RULES_PATH);
+t('5q: CLI on a stale rules file exits 0 and PRINTS the unevaluated-rule warning (honest, not silent, not a crash)', cliUnknown.status === 0 && /unevaluated|from-the-future/.test(cliUnknown.stdout + cliUnknown.stderr));
+
+// ================================================================================================
+// PART 6 — ROOT CONTAINMENT of the gate proof event (2026-08-03). MEASURED BUG this closes: the
+// --log-event writer resolved log-event.cjs via __dirname (this install's own forge-dashboard/),
+// IGNORING opts.root — so every hermetic test run / doctor run / post-install validation in a
+// FOREIGN root wrote a real gate_evaluated into THIS project's .claude/forge-runs/run-complete/
+// (18 polluted events found 2026-08-02→03, plus one seeded into the canonical template and every
+// fresh install target). The proof event must land under the SAME root the check evaluated.
+// ================================================================================================
+{
+  const REAL_PROJECT_ROOT = path.join(__dirname, '..', '..');
+  const realPolluted = path.join(REAL_PROJECT_ROOT, '.claude', 'forge-runs', 'run-complete', 'events.jsonl');
+  const realLineCount = () => {
+    try { return fs.readFileSync(realPolluted, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; }
+  };
+
+  // seed a REAL writer stub at the root's canonical writer path — <root>/.claude/forge-dashboard/log-event.cjs
+  const rootWriterDir = path.join(TMP, '.claude', 'forge-dashboard');
+  fs.mkdirSync(rootWriterDir, { recursive: true });
+  const rootCapture = path.join(rootWriterDir, 'captured-by-root-writer.jsonl');
+  fs.writeFileSync(path.join(rootWriterDir, 'log-event.cjs'), [
+    "const fs=require('fs');",
+    "fs.appendFileSync(" + JSON.stringify(rootCapture) + ", process.argv[2] + '\\n');",
+  ].join('\n'), 'utf8');
+  const rootCaptured = () => {
+    if (!fs.existsSync(rootCapture)) return [];
+    return fs.readFileSync(rootCapture, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  };
+
+  // (6a) module form: logEvent under a foreign root resolves THAT root's writer — not this install's
+  const beforeA = realLineCount();
+  const resA = RC.check({ run_id: 'run-complete' }, { root: TMP, logEvent: true });
+  t('6a: check({root, logEvent:true}) spawns <root>/.claude/forge-dashboard/log-event.cjs', rootCaptured().length === 1 && rootCaptured()[0].run_id === 'run-complete');
+  t('6a: the logging outcome is reported ok against the root writer', !!resA.logged && resA.logged.ok === true);
+  t('6a: NOTHING was written into the executing install\'s own forge-runs (cross-project leak closed)', realLineCount() === beforeA);
+
+  // (6b) CLI form: --root + --log-event stays inside --root
+  const beforeB = realLineCount();
+  const cliRooted = runCli('check', '--run', 'run-complete', '--root', TMP, '--log-event', '--json');
+  t('6b: CLI --root + --log-event exits 0 and logs via the root writer', cliRooted.status === 0 && rootCaptured().length === 2);
+  t('6b: CLI --root + --log-event leaves the executing install\'s forge-runs untouched', realLineCount() === beforeB);
+
+  // (6c) a root WITHOUT a writer reports {logged.ok:false} honestly — it must never silently fall
+  // back to another install's writer (that fallback IS the pollution bug)
+  const bareRoot = fs.mkdtempSync(path.join(TMP, 'bare-root-'));
+  const bareDir = path.join(bareRoot, '.claude', 'forge-runs', 'r1');
+  fs.mkdirSync(bareDir, { recursive: true });
+  fs.writeFileSync(path.join(bareDir, 'events.jsonl'), completeEvents.join('\n') + '\n', 'utf8');
+  fs.writeFileSync(path.join(bareDir, 'final-report.md'), '# r\n', 'utf8');
+  const beforeC = realLineCount();
+  const resC = RC.check({ run_id: 'r1' }, { root: bareRoot, logEvent: true });
+  t('6c: a root without its own log-event.cjs reports logged.ok:false with a reason (no silent fallback)', !!resC.logged && resC.logged.ok === false && typeof resC.logged.reason === 'string');
+  t('6c: the verdict itself is unchanged by the missing writer', resC.ok === true);
+  t('6c: and still nothing leaked into the executing install\'s forge-runs', realLineCount() === beforeC);
+
+  // (6d) an explicit opts.logEventPath still wins (the existing stub seam keeps working)
+  const seamCapture = path.join(TMP, 'seam-capture.jsonl');
+  const seamStub = path.join(TMP, 'seam-stub.cjs');
+  fs.writeFileSync(seamStub, "require('fs').appendFileSync(" + JSON.stringify(seamCapture) + ", process.argv[2] + '\\n');", 'utf8');
+  RC.check({ run_id: 'run-complete' }, { root: TMP, logEvent: true, logEventPath: seamStub });
+  t('6d: an explicit logEventPath overrides root resolution (test seam preserved)', fs.existsSync(seamCapture) && rootCaptured().length === 2);
+}
 
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

@@ -179,7 +179,7 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
   const sample = {
     companyName: 'demo-project', companyId: 'co_123', goalId: 'goal_1', goalText: 'Ship it',
     projectId: 'proj_1', agents: { 'lead-agent': 'agent_1', 'qa-agent': 'agent_2' },
-    base: 'http://127.0.0.1:3100', pcHome: 'C:/Users/YOU/paperclip-home', updated: '2026-07-14T00:00:00.000Z',
+    base: 'http://127.0.0.1:3100', pcHome: 'C:/Users/EXAMPLE/paperclip-home', updated: '2026-07-14T00:00:00.000Z',
     guards: { loopback_only: true, comment_wakes: 'not configured by bridge (BLOCKER-15 guard)', claude_bin: 'C:\\claude.exe', git_initialized: true },
   };
   pc.writeBinding(sample, bindingPath);
@@ -203,10 +203,10 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
 // transforms) rather than re-asserting the transform logic itself (already proven by direct calls).
 // ===================================================================================
 {
-  const winPath = 'C:\\Users\\YOU\\.local\\bin\\claude.exe';
+  const winPath = 'C:\\Users\\EXAMPLE\\.local\\bin\\claude.exe';
   const out = pc.toForwardSlashes(winPath);
   t('F1 a Windows-style path is fully converted to forward slashes', !out.includes('\\'));
-  t('F1 the path segments themselves are preserved (no data loss in the transform)', out === 'C:/Users/YOU/.local/bin/claude.exe');
+  t('F1 the path segments themselves are preserved (no data loss in the transform)', out === 'C:/Users/EXAMPLE/.local/bin/claude.exe');
 
   const alreadyPosix = 'C:/already/posix/path.exe';
   t('F2 an already-forward-slash path is left unchanged', pc.toForwardSlashes(alreadyPosix) === alreadyPosix);
@@ -253,9 +253,9 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
 
   t('H2 no env override, lookup returns a single hit with surrounding whitespace -> the trimmed hit is used', pc.resolveClaudeBin({ env: {}, lookup: () => '  C:\\Program Files\\claude\\claude.exe  \r\n' }) === 'C:\\Program Files\\claude\\claude.exe');
   t('H2b multi-line lookup output: the FIRST non-blank line wins, not the last', pc.resolveClaudeBin({ env: {}, lookup: () => '\r\n\r\nC:/first/claude.exe\r\nC:/second/claude.exe\r\n' }) === 'C:/first/claude.exe');
-  t('H3 no env override, lookup throws (not found on PATH) -> hardcoded last resort', pc.resolveClaudeBin({ env: {}, lookup: () => { throw new Error('not found'); } }) === 'C:/Users/YOU/.local/bin/claude.exe');
-  t('H4 no env override, lookup returns an empty string -> hardcoded last resort', pc.resolveClaudeBin({ env: {}, lookup: () => '' }) === 'C:/Users/YOU/.local/bin/claude.exe');
-  t('H5 no env override, lookup returns only whitespace/blank lines -> hardcoded last resort', pc.resolveClaudeBin({ env: {}, lookup: () => '\r\n   \r\n\t\r\n' }) === 'C:/Users/YOU/.local/bin/claude.exe');
+  t('H3 no env override, lookup throws (not found on PATH) -> bare command name, never a machine-specific path', pc.resolveClaudeBin({ env: {}, lookup: () => { throw new Error('not found'); } }) === (process.platform === 'win32' ? 'claude.exe' : 'claude'));
+  t('H4 no env override, lookup returns an empty string -> bare command name, never a machine-specific path', pc.resolveClaudeBin({ env: {}, lookup: () => '' }) === (process.platform === 'win32' ? 'claude.exe' : 'claude'));
+  t('H5 no env override, lookup returns only whitespace/blank lines -> bare command name, never a machine-specific path', pc.resolveClaudeBin({ env: {}, lookup: () => '\r\n   \r\n\t\r\n' }) === (process.platform === 'win32' ? 'claude.exe' : 'claude'));
   t('H6 a Buffer return value from lookup (matching the REAL default execSync shape) is handled identically to a string', pc.resolveClaudeBin({ env: {}, lookup: () => Buffer.from('C:/from/buffer.exe\n') }) === 'C:/from/buffer.exe');
 }
 

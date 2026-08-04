@@ -9,8 +9,27 @@ const os = require('os');
 const crypto = require('crypto');
 const D = require('./forge-doctor.cjs');
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skipped = 0;
 const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } else { fail++; console.error('  FAIL ' + name); } };
+/** skip(name, reason) — a test that could not be run HERE, stated out loud with why. It is counted into the
+ *  trailing tally ("N passed, M failed, K skipped") so a reader of the summary line alone can see that
+ *  something was not checked. The one thing a skip must never be is silently green: an assertion that
+ *  quietly stops running is worse than one that fails, because nothing in the output changes. */
+const skip = (name, reason) => { skipped++; console.log('  SKIP ' + name + ' — ' + reason); };
+/** pinned(name, fn) — an assertion whose expected value is a property of THIS installation, not of the code
+ *  under test (e.g. "this project has exactly 57 skills"). It is a genuine drift guard in the development
+ *  tree and meaningless anywhere else: the published distribution deliberately omits the 9 vendored
+ *  third-party skills, so the same assertion fails there for a reason that is not a defect. It runs strictly
+ *  when the tree is the development tree and is visibly skipped, with the detector's own reason, when it is
+ *  not. Deliberately NOT solved with a tolerance or a list of acceptable counts — a count that accepts two
+ *  answers has stopped guarding drift. See D.installationProfile(). */
+const makePinned = (profile) => (name, fn) => {
+  if (profile.profile === 'development') { fn(); return true; }
+  skip(name, 'installation-dependent assertion · ' + profile.reason);
+  return false;
+};
+const DEV_TREE = D.installationProfile(path.resolve(__dirname, '..', '..'));
+const pinned = makePinned(DEV_TREE);
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-'));
 const cd = path.join(ROOT, '.claude');
@@ -40,6 +59,27 @@ fs.writeFileSync(path.join(CLEAN, 'readme.md'), '# hello\njust docs, no secrets\
 const leak2 = D.leakScan(CLEAN);
 t('clean fixture: leakScan ok=true', leak2.ok === true);
 t('clean fixture: zero hits', leak2.hits.length === 0);
+
+// --- VENV/VENDOR CONTAINMENT (2026-08-03, gemeten op "aiTraining"): the WALK fallback (no git) crawled
+// a Python virtualenv (12.728 files) and produced 16 false hits — all third-party library docstrings with
+// `user:pass@host` URL examples (fsspec/httpx/pandas/pyarrow/urllib3) plus a hash in a torch RECORD file.
+// A venv is dependency territory exactly like the already-skipped node_modules: third-party code we do not
+// own and must not "leak-scan" as project source. Detection is by the definitive marker file pyvenv.cfg
+// (catches ANY dir name — .venv, venv, .venv-train, …) plus the common Python cache/vendor dir names.
+// Real secrets OUTSIDE the venv must still be caught — both directions proven below. ---
+const VENVROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-venv-'));
+const VENVSECRET = 'nvapi-8kQw3rTz5xYvB2cNeM9pLdG6sHhJ4jFuIoP1aQzX7wErTyUjHkLmNbVcXsq';
+fs.mkdirSync(path.join(VENVROOT, '.venv-train', 'Lib', 'site-packages', 'somelib'), { recursive: true });
+fs.writeFileSync(path.join(VENVROOT, '.venv-train', 'pyvenv.cfg'), 'home = /usr/bin\nversion = 3.12\n');
+fs.writeFileSync(path.join(VENVROOT, '.venv-train', 'Lib', 'site-packages', 'somelib', 'util.py'), '# docs: ftp://user:password@host/path\napi = "' + VENVSECRET + '"\n');
+fs.mkdirSync(path.join(VENVROOT, '__pycache__'), { recursive: true });
+fs.writeFileSync(path.join(VENVROOT, '__pycache__', 'x.py'), 'k = "' + VENVSECRET + '"\n');
+fs.mkdirSync(path.join(VENVROOT, 'src'), { recursive: true });
+fs.writeFileSync(path.join(VENVROOT, 'src', 'config.py'), 'key = "' + VENVSECRET + '"\n');
+const leakVenv = D.leakScan(VENVROOT);
+t('venv containment: a pyvenv.cfg-marked dir (any name) is NOT walked — no hits from inside the venv', !leakVenv.hits.some((h) => h.file.includes('.venv-train')));
+t('venv containment: __pycache__ is NOT walked', !leakVenv.hits.some((h) => h.file.includes('__pycache__')));
+t('venv containment: the SAME real-looking secret OUTSIDE the venv IS still caught (precision kept)', leakVenv.hits.some((h) => h.file.endsWith('src/config.py')) && leakVenv.ok === false);
 
 // --- secretLabel maps sources to friendly names ---
 t('secretLabel nvapi', D.secretLabel('nvapi-[A-Za-z0-9_-]+') === 'nvidia-nvapi-key');
@@ -893,6 +933,21 @@ t('countAssertionSites: a truly empty suite has 0 sites', D.countAssertionSites(
 // flags a suite when it has ZERO real assertion sites, so confirming every real suite has >=1 site statically
 // proves none of them can ever be flagged, without needing to run any of them.
 const REAL_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+// CANONICAL DEV-TREE GATE (2026-08-03, install-deadlock fix): a handful of assertions below pin the EXACT
+// current state of the canonical development tree (the exact set of skills carrying an evals.json sibling,
+// the exact known skill-hygiene finding set). Those exact sets depend on files that are DELIBERATELY never
+// synced to installed projects (evals.json/learnings.md siblings — see forge-sync.cjs's FILES doc — and
+// provisioned per-project state), so in every installed project they failed for a reason that is not a
+// defect, which turned every fresh `forge-sync install`'s post-validation red and rolled the install back.
+// The vendor-pin based `pinned()` gate above cannot express this (installs DO ship the vendored skills), so
+// these guards key on the dev-tree marker file instead — present only in the canonical checkout, never in
+// forge-sync's FILES manifest. Strict where the sets are real; visibly skipped everywhere else.
+const IS_DEV_TREE = fs.existsSync(path.join(REAL_PROJECT_ROOT, '.claude', 'config', 'forge-dev-tree.json'));
+const devTreeOnly = (name, fn) => {
+  if (IS_DEV_TREE) { fn(); return true; }
+  skip(name, 'canonical dev-tree regression guard · .claude/config/forge-dev-tree.json absent — the exact sets this pins are deliberately not shipped to installed projects');
+  return false;
+};
 const realSuiteFiles = fs.readdirSync(path.join(REAL_PROJECT_ROOT, '.claude', 'forge-bin')).filter((f) => f.endsWith('.test.cjs'));
 const realSuitesWithZeroSites = realSuiteFiles.filter((f) => D.countAssertionSites(fs.readFileSync(path.join(REAL_PROJECT_ROOT, '.claude', 'forge-bin', f), 'utf8')) === 0);
 t('checkTheChecks static guard: every real *.test.cjs suite in this project has >=1 real assertion site (none COULD be flagged as a green no-op)', realSuitesWithZeroSites.length === 0, JSON.stringify(realSuitesWithZeroSites));
@@ -1168,7 +1223,8 @@ const realSkillEvalsCheck = D.skillEvalsDoctorCheck(REAL_PROJECT_ROOT);
 t('skillEvalsDoctorCheck: the real project\'s own wired skills (forge-intake/router/code-review/verify/snapshot) are all green', realSkillEvalsCheck.ok === true, JSON.stringify(realSkillEvalsCheck.skills.filter((s) => !s.ok)));
 // wp-disclosure-ab (2026-07-31) added a 6th wired skill (forge-skill-testing, dogfooding its own protocol) —
 // this list grows again the next time a real skill opts into evals.json; that is expected drift, not a bug.
-t('skillEvalsDoctorCheck: the real project has exactly the 6 wp-skill-evals/wp-disclosure-ab skills evaluated (no drift)', realSkillEvalsCheck.skills.map((s) => s.skill).sort().join(',') === ['forge-code-review', 'forge-intake', 'forge-router', 'forge-skill-testing', 'forge-snapshot', 'forge-verify'].sort().join(','));
+devTreeOnly('skillEvalsDoctorCheck: the real project has exactly the 6 wp-skill-evals/wp-disclosure-ab skills evaluated (no drift)', () =>
+  t('skillEvalsDoctorCheck: the real project has exactly the 6 wp-skill-evals/wp-disclosure-ab skills evaluated (no drift)', realSkillEvalsCheck.skills.map((s) => s.skill).sort().join(',') === ['forge-code-review', 'forge-intake', 'forge-router', 'forge-skill-testing', 'forge-snapshot', 'forge-verify'].sort().join(',')));
 
 // ===========================================================================================================
 // V9-INTEGRATE (2026-07-22): unregistered_event / check_the_checks are now ENFORCED (folded into `checks`/
@@ -1584,7 +1640,8 @@ const realSkillHygiene = D.skillHygiene(REAL_PROJECT_ROOT);
 // simply made the 8 gsap sub-skills VISIBLE to a check that had never once looked at them. Measured both
 // ways on this project the same day: `ls .claude/skills/*/SKILL.md | wc -l` = 49 vs
 // `find .claude/skills -name SKILL.md | wc -l` = 57.
-t('skillHygiene: the real project has exactly 57 skills evaluated — all 8 NESTED ones included (no drift)', realSkillHygiene.checked === 57, 'checked=' + realSkillHygiene.checked);
+pinned('skillHygiene: the real project has exactly 57 skills evaluated — all 8 NESTED ones included (no drift)', () =>
+  t('skillHygiene: the real project has exactly 57 skills evaluated — all 8 NESTED ones included (no drift)', realSkillHygiene.checked === 57, 'checked=' + realSkillHygiene.checked));
 // FINDINGS (2026-08-01, second revision): 10 -> 1. The 9 that left are ALL third-party skills copied at a
 // recorded pin (humanizer @1b48564, the 8 gsap sub-skills @aed9cfd) and they did NOT disappear — they moved
 // to `vendored_style`, numbers intact, because their shape is upstream's editorial choice while their
@@ -1603,10 +1660,171 @@ const KNOWN_VENDORED_EXEMPT = [
   'gsap/gsap-core', 'gsap/gsap-frameworks', 'gsap/gsap-performance', 'gsap/gsap-plugins',
   'gsap/gsap-react', 'gsap/gsap-scrolltrigger', 'gsap/gsap-timeline', 'gsap/gsap-utils', // @aed9cfd
 ].sort();
-t('skillHygiene: the real project has exactly the 1 known, already-real, non-blocking finding — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok)));
-t('skillHygiene: exactly the 9 pinned upstream skills carry a vendored_style entry (the exemption did not widen to cover one of ours)', realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => s.skill).sort().join(',') === KNOWN_VENDORED_EXEMPT.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => ({ skill: s.skill, vendored: s.vendored, vendored_style: s.vendored_style }))));
-t('skillHygiene: every exempted skill really does carry BOTH an upstream source and a commit pin (evidence, not a label)', realSkillHygiene.skills.filter((s) => s.vendored).every((s) => /^https?:\/\/\S+/.test(s.vendored.source) && /^[0-9a-f]{7,40}$/.test(s.vendored.pin)), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored).map((s) => s.vendored)));
-t('skillHygiene: the 8 gsap findings are still MEASURED, just filed as upstream shape (their real char counts survive)', realSkillHygiene.skills.filter((s) => s.skill.startsWith('gsap/')).every((s) => s.issues.length === 0 && s.vendored_style.length === 1 && /^description is \d+ chars \(max 200\)$/.test(s.vendored_style[0])), JSON.stringify(realSkillHygiene.skills.filter((s) => s.skill.startsWith('gsap/'))));
+devTreeOnly('skillHygiene: the real project has exactly the 1 known, already-real, non-blocking finding — never a silent NEW regression', () =>
+  t('skillHygiene: the real project has exactly the 1 known, already-real, non-blocking finding — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok))));
+// The three assertions below all describe the VENDORED skills specifically, which is exactly the surface
+// the distribution strips. Note that two of them are `every(...)` over a filtered array: in a tree with no
+// vendored skills they would not fail, they would pass VACUOUSLY over an empty list — a silent green that
+// looks like coverage and is none. Being visibly skipped is the honest outcome there; being strict is the
+// honest outcome here.
+pinned('skillHygiene: exactly the 9 pinned upstream skills carry a vendored_style entry', () =>
+  t('skillHygiene: exactly the 9 pinned upstream skills carry a vendored_style entry (the exemption did not widen to cover one of ours)', realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => s.skill).sort().join(',') === KNOWN_VENDORED_EXEMPT.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => ({ skill: s.skill, vendored: s.vendored, vendored_style: s.vendored_style })))));
+pinned('skillHygiene: every exempted skill really does carry BOTH an upstream source and a commit pin', () =>
+  t('skillHygiene: every exempted skill really does carry BOTH an upstream source and a commit pin (evidence, not a label)', realSkillHygiene.skills.filter((s) => s.vendored).every((s) => /^https?:\/\/\S+/.test(s.vendored.source) && /^[0-9a-f]{7,40}$/.test(s.vendored.pin)), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored).map((s) => s.vendored))));
+pinned('skillHygiene: the 8 gsap findings are still MEASURED, just filed as upstream shape', () =>
+  t('skillHygiene: the 8 gsap findings are still MEASURED, just filed as upstream shape (their real char counts survive)', realSkillHygiene.skills.filter((s) => s.skill.startsWith('gsap/')).every((s) => s.issues.length === 0 && s.vendored_style.length === 1 && /^description is \d+ chars \(max 200\)$/.test(s.vendored_style[0])), JSON.stringify(realSkillHygiene.skills.filter((s) => s.skill.startsWith('gsap/')))));
 
-console.log(pass + ' passed, ' + fail + ' failed');
+// =====================================================================================================
+// §9 NESTED GIT REPOSITORIES — the leak scan's biggest blind spot (2026-08-02)
+//
+// MEASURED, not assumed, on this very project the day this section was written:
+//   git ls-files | wc -l                      -> 1298
+//   git ls-files | grep -c '^command-center/' ->    0
+// `command-center/` is its OWN git repository nested under the project root. trackedFiles() sourced the
+// whole leak scan from a single `git ls-files` at the root, so every file in that tree — the gateway that
+// spawns the real `claude` CLI, the Discord integration whose .env holds a live bot token — was never
+// looked at even once, while the doctor printed "1146 tracked files (git) · clean" and the sync gate read
+// that as coverage. The scan was not clean; it was blindfolded, and nothing in the output said so.
+//
+// The fixture below is the same shape in miniature: an outer repo, an inner repo, a real-looking secret
+// tracked inside the inner one, and a genuinely gitignored .env next to it. Two things are proven at once
+// and they pull in opposite directions on purpose — the secret must be FOUND (coverage), the .env must
+// stay UNSEEN (gitignore is still honored, and a path we were never meant to read is not a path we may
+// print).
+// =====================================================================================================
+const NESTED_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-nested-'));
+const NESTED_SECRET = 'nvapi-7hQ2rLm9vKcW4dTgB1yZxP6nUaEjR8sFoI3lMwYtHqZbNvCxDkSuGpJr';   // long, high-entropy, no placeholder marker
+const NESTED_ENV_SECRET = 'nvapi-2bXvNm8qLpRt5wZyK7cHgD1aJfSoUeI4MdQxTnBvGrYkWsPzCuLhFj';
+const gitOk = (dir, ...args) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).status === 0;
+// the outer repo: one ordinary tracked file, no secret of its own
+fs.writeFileSync(path.join(NESTED_ROOT, 'readme.md'), '# outer project\nnothing secret here\n');
+// the inner repo: a TRACKED file carrying a real-looking secret, plus a genuinely IGNORED .env carrying
+// another one. `git add -A` inside the inner repo honors its own .gitignore, so the .env is never listed.
+const NESTED_SUB = path.join(NESTED_ROOT, 'command-center');
+fs.mkdirSync(NESTED_SUB, { recursive: true });
+fs.writeFileSync(path.join(NESTED_SUB, '.gitignore'), '.env\n');
+fs.writeFileSync(path.join(NESTED_SUB, 'gateway-config.md'), 'deploy key = ' + NESTED_SECRET + '\n');
+fs.writeFileSync(path.join(NESTED_SUB, '.env'), 'DISCORD_TOKEN=' + NESTED_ENV_SECRET + '\n');
+// ORDER AND SCOPE MATTER, and getting them wrong silently destroys the test: the inner repo is created
+// FIRST and the outer repo then tracks ONLY its own readme.md. That reproduces the measured shape of this
+// project exactly — `git ls-files | grep -c '^command-center/'` = 0, the nested tree entirely absent from
+// the outer index. (Written the other way round — outer `git add -A` before the inner `git init` — the
+// outer repo happily absorbs the nested files, the secret is found by the ROOT source, and the test passes
+// while proving nothing at all. That is the first version of this fixture, and it passed.)
+const nestedGitReady = gitOk(NESTED_SUB, 'init', '-q')
+  && gitOk(NESTED_SUB, 'add', '-A')
+  && gitOk(NESTED_ROOT, 'init', '-q')
+  && gitOk(NESTED_ROOT, 'add', 'readme.md');
+if (!nestedGitReady) {
+  // A visible skip, never a silent green: this section's whole claim is about what `git ls-files` reports,
+  // so without a working git there is nothing here to prove either way.
+  skip('nested-repo leak scan (§9)', 'git init/add unavailable in this environment — the section proves a git ls-files property and cannot be faked');
+} else {
+  const nestedLeak = D.leakScan(NESTED_ROOT);
+  const nestedJson = JSON.stringify(nestedLeak);
+  // PRECONDITION, asserted rather than assumed: the outer repo really does contribute only readme.md, so a
+  // hit on the nested file can ONLY have come from a second source. Without this the test above could go
+  // green because the fixture leaked into the root index instead of because the scan was widened.
+  t('leakScan: the outer repo genuinely tracks only its own file (the nested tree is invisible to it)',
+    (nestedLeak.sources || []).some((s) => s.root === '.' && s.files === 1), JSON.stringify(nestedLeak.sources));
+  // THE BUG: before this fix the inner repo contributed nothing at all and this was 0 hits + "clean".
+  t('leakScan: a secret tracked in a NESTED git repo is found (the command-center blind spot)',
+    nestedLeak.hits.some((h) => h.file.replace(/\\/g, '/') === 'command-center/gateway-config.md' && h.pattern === 'nvidia-nvapi-key'), nestedJson);
+  t('leakScan: and that makes the verdict red rather than a blindfolded "clean"', nestedLeak.ok === false);
+  // gitignore is still the boundary: a file the inner repo deliberately does not track is not scanned, is
+  // not reported as a path, and its contents never reach the output.
+  t('leakScan: a gitignored .env inside the nested repo is NOT scanned and NOT named as a path',
+    !nestedJson.includes('.env'), nestedJson);
+  t('leakScan: neither secret is ever echoed into the report (paths and pattern labels only)',
+    !nestedJson.includes(NESTED_SECRET) && !nestedJson.includes(NESTED_ENV_SECRET));
+  // HONEST ACCOUNTING: the printed total must say how many files came from how many repos, or a reader has
+  // no way to tell a widened scan from a lucky one.
+  t('leakScan: reports one entry per contributing repo, each with its own listed-file count',
+    Array.isArray(nestedLeak.sources) && nestedLeak.sources.length === 2
+      && nestedLeak.sources.some((s) => s.root === '.' && s.method === 'git' && s.files > 0)
+      && nestedLeak.sources.some((s) => s.root === 'command-center' && s.method === 'git' && s.files > 0),
+    JSON.stringify(nestedLeak.sources));
+  const nestedSummary = D.printSummary({ root: NESTED_ROOT, ok: false, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: nestedLeak }, advisory: {} });
+  t('printSummary: the leak-scan line names the nested repo as a separate source, not one anonymous total',
+    /2 repos: \. \d+ \+ command-center \d+/.test(nestedSummary), (nestedSummary.split('\n').find((l) => /leak scan/.test(l)) || nestedSummary));
+}
+// A project with NO nested repo must behave exactly as it always did — one source, no extra clause, same
+// single-repo line. A widened scan that quietly restyles every ordinary project's output is a regression
+// of its own.
+const SOLO_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-solo-'));
+fs.writeFileSync(path.join(SOLO_ROOT, 'readme.md'), '# solo project\nno secrets, no nesting\n');
+if (!gitOk(SOLO_ROOT, 'init', '-q') || !gitOk(SOLO_ROOT, 'add', '-A')) {
+  skip('single-repo leak scan is unchanged (§9)', 'git init/add unavailable in this environment');
+} else {
+  const soloLeak = D.leakScan(SOLO_ROOT);
+  t('leakScan: a project with no nested repo still reports exactly one git source', soloLeak.source === 'git' && soloLeak.sources.length === 1 && soloLeak.sources[0].root === '.', JSON.stringify(soloLeak.sources));
+  const soloSummary = D.printSummary({ root: SOLO_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: soloLeak }, advisory: {} });
+  t('printSummary: and its leak-scan line carries no multi-repo clause at all', /leak scan\s+\d+ tracked files \(git\) · clean/.test(soloSummary) && !/repos:/.test(soloSummary), (soloSummary.split('\n').find((l) => /leak scan/.test(l)) || soloSummary));
+}
+
+// =====================================================================================================
+// §10 WHICH TREE IS THIS? — installationProfile + the skip contract it drives (2026-08-02)
+//
+// Five assertions across three suites pin an exact property of THIS installation ("57 skills"). They are
+// real drift guards here and they fail in the published distribution for a reason that is not a defect:
+// the 9 vendored third-party skills are deliberately not redistributed. The cure must not be a tolerance
+// or a list of acceptable counts — a count that accepts two answers has stopped guarding anything. It is
+// a detector, and the thing it detects has to be evidence rather than a label.
+// =====================================================================================================
+const IP_DEV = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-dev-'));
+const IP_DIST = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-dist-'));
+for (const [base, withVendor] of [[IP_DEV, true], [IP_DIST, false]]) {
+  fs.mkdirSync(path.join(base, '.claude', 'skills', 'ours'), { recursive: true });
+  fs.writeFileSync(path.join(base, '.claude', 'skills', 'ours', 'SKILL.md'), '---\nname: ours\ndescription: a skill we wrote ourselves\n---\n\nbody\n');
+  if (withVendor) {
+    fs.mkdirSync(path.join(base, '.claude', 'skills', 'upstream'), { recursive: true });
+    // the real vendoring header shape, copied from .claude/skills/humanizer/SKILL.md: two indented
+    // frontmatter lines, not a comment block. A fixture that invents its own marker syntax proves only
+    // that the fixture is wrong (the first version of this one did exactly that and failed).
+    fs.writeFileSync(path.join(base, '.claude', 'skills', 'upstream', 'SKILL.md'),
+      '---\nname: upstream\ndescription: copied verbatim at a pin\nvendored: |\n  Source: https://github.com/someone/upstream\n  Pinned commit: 1b48564898e999219882660237fde01bf4843a0f\n---\n\nbody\n');
+  }
+}
+const ipDev = D.installationProfile(IP_DEV);
+const ipDist = D.installationProfile(IP_DIST);
+t('installationProfile: a tree carrying a pinned upstream skill is the development tree', ipDev.profile === 'development' && ipDev.vendored.join(',') === 'upstream', JSON.stringify(ipDev));
+t('installationProfile: a tree with the vendored skills stripped is a redistribution', ipDist.profile === 'redistribution' && ipDist.vendored.length === 0, JSON.stringify(ipDist));
+t('installationProfile: both verdicts state a reason with the real counts, so a skip can quote it', /1 of 2 skills/.test(ipDev.reason) && /none of the 1 skills/.test(ipDist.reason), ipDev.reason + ' || ' + ipDist.reason);
+// provenance must be EARNED: a half-marker (a Source: line with no pin) is not vendoring, or "vendored"
+// becomes a word anyone can type to silence a check.
+const IP_HALF = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-half-'));
+fs.mkdirSync(path.join(IP_HALF, '.claude', 'skills', 'claimed'), { recursive: true });
+fs.writeFileSync(path.join(IP_HALF, '.claude', 'skills', 'claimed', 'SKILL.md'), '---\nname: claimed\ndescription: claims vendoring, proves nothing\nvendored: |\n  Source: https://github.com/someone/upstream\n---\n\nbody\n');
+t('installationProfile: a Source: line with no commit pin does NOT make a tree "development"', D.installationProfile(IP_HALF).profile === 'redistribution', JSON.stringify(D.installationProfile(IP_HALF)));
+// THE SKIP CONTRACT — the whole point of the mechanism. In the development tree a pinned assertion runs
+// strictly; anywhere else it must be VISIBLY skipped and must NOT run. A pin that quietly stops asserting
+// is worse than one that fails: the output looks identical to success.
+let pinnedRan = false;
+const skippedBefore = skipped;
+const ranStrict = makePinned(ipDev)('§10 probe (development)', () => { pinnedRan = true; });
+t('pinned: in the development tree the assertion actually runs and is reported as run', ranStrict === true && pinnedRan === true);
+pinnedRan = false;
+const ranDist = makePinned(ipDist)('§10 probe (redistribution) — expected to be skipped, this line is the proof', () => { pinnedRan = true; });
+t('pinned: in a redistribution the assertion body does NOT run', ranDist === false && pinnedRan === false);
+t('pinned: and the skip is counted + printed, never a silent green', skipped === skippedBefore + 1);
+
+// --- the fixture exemption was JavaScript-only (found while widening the scan, 2026-08-02) --------------
+// The rule "test fixtures legitimately hold fake secrets" has always existed; its implementation was
+// /\.test\.[cm]?js$/i, which knows nothing about TypeScript. Every *.test.ts / *.test.tsx in a TS codebase
+// was therefore scanned as production source and its deliberate fake credentials reported as leaks. That
+// stayed invisible here only because the one TypeScript tree in this project — command-center/dashboard —
+// was in the blind spot above: widening the scan surfaced 4 such cry-wolf hits immediately.
+const TSFIX_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-tsfixture-'));
+const TSFIX_SECRET = 'nvapi-5kRw8pZnJ2tLxQm7bVcHdY1uGaSoEiI4fMqXvNzTrBwCkPjUyLhDsGe';
+for (const f of ['chat.test.ts', 'panel.test.tsx', 'gateway.test.mjs', 'legacy.test.cjs']) {
+  fs.writeFileSync(path.join(TSFIX_ROOT, f), 'const key = "' + TSFIX_SECRET + '";\n');
+}
+fs.writeFileSync(path.join(TSFIX_ROOT, 'real-source.ts'), 'export const key = "' + TSFIX_SECRET + '";\n');
+const tsfixLeak = D.leakScan(TSFIX_ROOT); // no git here -> walk fallback, same exemption rules
+t('leakScan: *.test.ts / *.test.tsx are test fixtures too — the exemption is no longer JavaScript-only',
+  !tsfixLeak.hits.some((h) => /\.test\.(ts|tsx|mjs|cjs)$/.test(h.file)), JSON.stringify(tsfixLeak.hits));
+t('leakScan: and an ordinary .ts SOURCE file is still scanned (the exemption did not widen to all TypeScript)',
+  tsfixLeak.hits.some((h) => h.file.endsWith('real-source.ts')), JSON.stringify(tsfixLeak.hits));
+
+console.log(pass + ' passed, ' + fail + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 process.exitCode = fail ? 1 : 0;

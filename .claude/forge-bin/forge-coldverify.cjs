@@ -45,19 +45,54 @@
  *   - done/failed classification  -> forge-verify.cjs's exported taskStatus(), not a re-derived copy
  *   - the evidence log            -> the run's own events.jsonl (filtered, never re-formatted)
  *
- * READ-ONLY — HARD CONTRACT
- * This tool NEVER writes: no ticket is reopened, no status changed, no event logged, no file created.
- * Reopening a ticket on an `unproven` verdict is a deliberate NON-GOAL of this build and is left as a
- * proposal for the owner to decide on. The only output is a report (text or --json) and an exit code.
+ * TWO MODES — READ BY DEFAULT, WRITE ONLY WHEN ASKED TWICE
+ * The DEFAULT invocation is READ-ONLY and stays that way: no ticket is reopened, no status changed, no
+ * event logged, no file created. That is the mode everything above describes, and it is pinned by a test
+ * that snapshots the whole project tree (paths + sizes + mtimes) around a full run and requires it back
+ * byte-identical.
+ *
+ * The `reopen` SUBCOMMAND is the one write path (owner decision, 2026-08-02 — added after the read side
+ * put three tickets the warm verify-loop had closed onto `unproven`). Its restraints ARE the feature:
+ *
+ *   - DRY RUN IS THE DEFAULT. Without `--confirm` nothing is written and nothing is logged — not a
+ *     softened version, nothing. It prints exactly what it WOULD do, against the real verdicts.
+ *   - IT MAY ONLY ACT ON ITS OWN `unproven` VERDICTS. Candidates come from coldVerify()'s own items, so a
+ *     ticket this check did not itself judge can never be touched. `unassessable` is deliberately NOT a
+ *     candidate: it means "I could not judge this", which is not "this is wrong", and turning an
+ *     admission of ignorance into an accusation would corrupt the one thing this tool is for.
+ *   - DONE -> REVIEW ONLY. It never closes anything, never marks anything done, and never moves a ticket
+ *     that is not currently `done` — the same one-way restraint forge-verify.cjs's warm loop applies when
+ *     it sends an unproven done back to 'review' (which is why it reuses that exact status, not a new one).
+ *   - EVERY CHANGE IS RECORDED BY THE ONE REAL WRITER. The `ticket_updated` event goes through
+ *     forge-dashboard/log-event.cjs (registered vocabulary, strict-mode gate, tamper-evident hash chain);
+ *     this file appends to no log itself and contains no fs write call at all. The ticket write goes
+ *     through forge-store.cjs's own putEntity(), so there is no second write path and no second set of
+ *     id/containment/secret guards to keep in sync.
+ *   - THE EVENT COMES FIRST. If the writer refuses the event, the ticket is left untouched. That ordering
+ *     is deliberate rather than arbitrary: a refusal is the PLAUSIBLE failure (strict mode, an invalid run
+ *     id, a missing writer), while a putEntity failure is not — so the gate sits on the failure that can
+ *     actually happen. If the write then fails anyway, the result says so loudly instead of leaving the
+ *     log claiming a change that never landed.
+ *   - A CHANGE THAT CANNOT BE LOGGED IS NOT MADE. A ticket naming no run_id has nowhere to record the
+ *     change, so it is skipped with a reason (`--event-run <run_id>` says where it belongs) rather than
+ *     being changed off the record.
+ *   - IT CANNOT FIRE TWICE. Reopening moves the ticket out of `done`, and only `done` tickets are ever
+ *     assessed — so a second `reopen --confirm` on an already reopened ticket finds no candidate, writes
+ *     nothing, logs nothing. The status is re-read at WRITE time as well, so a ticket that moved between
+ *     the verdict and the write is refused rather than clobbered by a stale judgement.
  *
  * CLI
  *   node forge-coldverify.cjs [--run <run_id>] [--ticket <ticket_id>] [--json] [--root <projectRoot>]
  *   exit 0 = no `unproven` verdicts · 1 = at least one `unproven` · 2 = usage/read error
  *   (`unassessable` never fails the run — "I cannot judge this" is not the same as "this is wrong".)
+ *
+ *   node forge-coldverify.cjs reopen [--confirm] [--run <id>] [--ticket <id>] [--event-run <id>] [--json] [--root <dir>]
+ *   exit 0 = dry run, or every planned change landed · 1 = at least one planned change FAILED · 2 = usage
  */
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const store = require('./forge-store.cjs');
 const verify = require('./forge-verify.cjs');
@@ -418,7 +453,12 @@ function coldVerify(opts) {
     const ticket = Object.assign({ id }, data);
     if (opts.run_id && ticket.run_id !== opts.run_id) continue;
     if (String(ticket.status || '').toLowerCase() !== 'done') { skipped++; continue; }
-    items.push(coldVerifyTicket(ticket, opts));
+    const item = coldVerifyTicket(ticket, opts);
+    // The FILE this verdict belongs to, kept separate from the ticket's self-declared ticket_id. They are
+    // the same for every ticket forge-prd mints, but only this one is the key putEntity accepts — and the
+    // write side must never address a ticket by a name the ticket wrote about itself.
+    item.store_id = id;
+    items.push(item);
   }
   const summary = { proven: 0, unproven: 0, unassessable: 0 };
   for (const it of items) summary[it.verdict] = (summary[it.verdict] || 0) + 1;
@@ -431,11 +471,168 @@ function coldVerify(opts) {
   };
 }
 
+// ---- the write side: sending an UNPROVEN ticket back --------------------------------------------------
+// Read the "TWO MODES" block in the header before changing anything below it — every restraint there is
+// load-bearing and is pinned by a test.
+
+// The one status a reopen may produce. Deliberately the SAME target forge-verify.cjs's warm loop uses for
+// an unproven done (see its "back to review" branch): the work exists, only the proof does not, and
+// inventing a second vocabulary for the same situation would split the board into two dialects.
+const REOPEN_TO_STATUS = 'review';
+const REOPEN_FROM_STATUS = 'done';
+const REOPEN_NOTE = 'cold-verify: reopened — closed on evidence this check could not corroborate';
+const EVENT_WRITER = ['forge-dashboard', 'log-event.cjs'];
+
+/** realLogEvent(runId, eventType, extra) -> {ok, status, stdout, stderr, writer}. Shells out to the ONE
+ *  real event writer, exactly like forge-artifact.cjs and forge-verify.cjs do — same path resolution off
+ *  store.CLAUDE_DIR, so a hermetic FORGE_STORE_ROOT redirects it too. Injectable via opts.logEvent purely
+ *  so a test can observe the call without spawning; production always goes through the real writer. */
+function realLogEvent(runId, eventType, extra) {
+  const writer = path.join(store.CLAUDE_DIR, EVENT_WRITER[0], EVENT_WRITER[1]);
+  const r = spawnSync(process.execPath, [writer, runId, eventType, JSON.stringify(extra || {})], { encoding: 'utf8' });
+  return {
+    ok: r.status === 0,
+    status: r.status,
+    stdout: String(r.stdout || '').trim(),
+    stderr: String(r.stderr || (r.error && r.error.message) || '').trim(),
+    writer,
+  };
+}
+
+/** appendNote — same non-clobbering, repeat-safe append forge-verify.cjs uses, so re-running can never
+ *  stack the same sentence twice on one ticket. */
+function appendNote(existing, msg) {
+  const cur = typeof existing === 'string' ? existing : '';
+  if (cur.includes(msg)) return cur;
+  return cur ? cur + ' | ' + msg : msg;
+}
+
+/**
+ * planReopen(opts) -> {scope, checked, skipped_not_done, summary, candidates, skipped, event_run_id}
+ * Pure: it reads, judges, and decides — it writes nothing, and `reopen` without --confirm returns exactly
+ * this. opts are coldVerify's (run_id / ticket_id / projectRoot) plus opts.event_run_id, the run a change
+ * should be recorded on when the ticket itself names none.
+ *
+ * A candidate must clear BOTH bars: this check's own verdict on it is `unproven`, AND there is a run its
+ * change can be logged to. Nothing else is eligible — see the header for why `unassessable` is excluded.
+ */
+function planReopen(opts) {
+  opts = opts || {};
+  const cold = coldVerify(opts);
+  const override = typeof opts.event_run_id === 'string' && opts.event_run_id.trim() ? opts.event_run_id.trim() : null;
+  const candidates = [];
+  const skipped = [];
+  for (const it of cold.items) {
+    if (it.verdict !== 'unproven') continue;
+    const storeId = it.store_id || it.ticket_id;
+    const runId = override || it.run_id;
+    if (!storeId) {
+      skipped.push({ ticket_id: it.ticket_id, store_id: null, verdict: it.verdict,
+        why: 'this verdict carries no store id, so there is no entity to address — refusing to guess one' });
+      continue;
+    }
+    if (!runId) {
+      skipped.push({ ticket_id: it.ticket_id, store_id: storeId, verdict: it.verdict,
+        why: 'the ticket names no run_id, so a ticket_updated event has no run to land in — a change that cannot be recorded is not made. Pass --event-run <run_id> to say where it belongs.' });
+      continue;
+    }
+    candidates.push({
+      ticket_id: it.ticket_id, store_id: storeId, run_id: runId, verdict: it.verdict,
+      from_status: REOPEN_FROM_STATUS, to_status: REOPEN_TO_STATUS,
+      criterion: it.criterion, criterion_source: it.criterion_source, ac_id: it.ac_id,
+      reasons: it.reasons.slice(),
+    });
+  }
+  return {
+    scope: cold.scope, checked: cold.checked, skipped_not_done: cold.skipped_not_done,
+    summary: cold.summary, candidates, skipped, event_run_id: override,
+  };
+}
+
+/**
+ * reopen(opts) -> planReopen's shape plus {dry_run, changes, reopened, failed}
+ * DRY RUN UNLESS opts.confirm === true. A dry run executes nothing and logs nothing — it changed nothing,
+ * so it may claim nothing.
+ *
+ * Per candidate, in this order (see the header's "THE EVENT COMES FIRST"):
+ *   1. re-read the entity and re-check that it is STILL `done` — a verdict is about a state, and if that
+ *      state has moved the verdict no longer applies to what is on disk;
+ *   2. log the ticket_updated through the real writer; a refusal ends this candidate untouched;
+ *   3. only then write the ticket back through forge-store's putEntity.
+ */
+function reopen(opts) {
+  const o = opts || {};
+  const plan = planReopen(o);
+  const dry = o.confirm !== true;
+  const result = Object.assign({ dry_run: dry }, plan, { changes: [], reopened: 0, failed: 0 });
+  if (dry) return result;
+
+  const logEvent = o.logEvent || realLogEvent;
+  const at = new Date().toISOString();
+  const done = new Set();
+  for (const c of plan.candidates) {
+    if (done.has(c.store_id)) continue; // one change per ticket per pass, never twice in the same breath
+    done.add(c.store_id);
+    const change = {
+      ticket_id: c.ticket_id, store_id: c.store_id, run_id: c.run_id,
+      from_status: null, to_status: REOPEN_TO_STATUS, event_logged: false, written: false, error: null,
+    };
+
+    let data;
+    try { data = store.getEntity('tickets', c.store_id); }
+    catch (e) {
+      change.error = 'could not re-read the ticket before writing: ' + (e && e.message ? e.message : String(e));
+      result.changes.push(change); continue;
+    }
+    const current = String((data && data.status) || '').toLowerCase();
+    change.from_status = current;
+    if (current !== REOPEN_FROM_STATUS) {
+      change.error = 'the ticket is no longer "' + REOPEN_FROM_STATUS + '" (it is now "' + current +
+        '") — it moved between the verdict and this write, so the stale judgement is refused rather than applied';
+      result.changes.push(change); continue;
+    }
+
+    const why = c.reasons.join(' · ');
+    const note = REOPEN_NOTE + ': ' + (why.length > 300 ? why.slice(0, 297) + '...' : why);
+    const logged = logEvent(c.run_id, 'ticket_updated', {
+      agent: 'orchestrator', ticket_id: c.ticket_id, status: REOPEN_TO_STATUS,
+      previous_status: REOPEN_FROM_STATUS, verdict: c.verdict, ac_id: c.ac_id, note,
+    });
+    if (!logged || logged.ok !== true) {
+      change.error = 'the ticket_updated event was NOT accepted by ' + EVENT_WRITER.join('/') + ' (' +
+        ((logged && (logged.stderr || logged.stdout)) || 'no result from the writer') + ') — the ticket was left untouched';
+      result.changes.push(change); continue;
+    }
+    change.event_logged = true;
+
+    const next = Object.assign({}, data);
+    delete next.id; // never persist the synthetic store-key some readers attach; it is not part of the entity
+    next.status = REOPEN_TO_STATUS;
+    next.previous_status = REOPEN_FROM_STATUS;
+    next.note = appendNote(next.note, note);
+    next.cold_verify = {
+      verdict: c.verdict, reopened_at: at, criterion_source: c.criterion_source, ac_id: c.ac_id,
+      reasons: c.reasons, by: 'forge-coldverify.cjs reopen --confirm',
+    };
+    try { store.putEntity('tickets', c.store_id, next); change.written = true; }
+    catch (e) {
+      change.error = 'the event was logged but the ticket write FAILED: ' + (e && e.message ? e.message : String(e)) +
+        ' — the run log now records a change that did not land; reconcile this before trusting the board';
+    }
+    result.changes.push(change);
+  }
+  result.reopened = result.changes.filter((c) => c.written).length;
+  result.failed = result.changes.filter((c) => !c.written).length;
+  return result;
+}
+
 module.exports = {
   coldVerify, coldVerifyTicket, admitEvents, coldTicket, extractReferents, resolveReferent,
   readAdmittedEvents, criterionFor, eventPaths,
+  planReopen, reopen, realLogEvent, appendNote,
   COLD_EXCLUDED_EVENT_TYPES, COLD_ADMITTED_EVENT_TYPES, COLD_NON_PROVING_TYPES,
   COLD_NARRATIVE_FIELDS, COLD_EXCLUDED_TICKET_FIELDS, VERDICTS,
+  REOPEN_TO_STATUS, REOPEN_FROM_STATUS, REOPEN_NOTE,
 };
 
 // ---- CLI ----------------------------------------------------------------------------------------------
@@ -443,18 +640,70 @@ if (require.main === module) {
   const argv = process.argv.slice(2);
   const opts = {};
   let asJson = false;
-  for (let i = 0; i < argv.length; i++) {
+  // The default (no subcommand) invocation is unchanged, down to its flags and exit codes — `reopen` is
+  // strictly additive, so every existing caller keeps the read-only behaviour it was written against.
+  const sub = argv[0] === 'reopen' ? 'reopen' : 'verify';
+  for (let i = (sub === 'reopen' ? 1 : 0); i < argv.length; i++) {
     if (argv[i] === '--run') opts.run_id = argv[++i];
     else if (argv[i] === '--ticket') opts.ticket_id = argv[++i];
     else if (argv[i] === '--root') opts.projectRoot = argv[++i];
+    else if (argv[i] === '--event-run') opts.event_run_id = argv[++i];
+    else if (argv[i] === '--confirm') opts.confirm = true;
     else if (argv[i] === '--json') asJson = true;
     else if (argv[i] === '--help' || argv[i] === '-h') {
       console.log('Usage: node forge-coldverify.cjs [--run <run_id>] [--ticket <ticket_id>] [--json] [--root <projectRoot>]');
+      console.log('       node forge-coldverify.cjs reopen [--confirm] [--run <id>] [--ticket <id>] [--event-run <id>] [--json] [--root <dir>]');
       console.log('READ-ONLY cold verification: re-checks each DONE ticket against its acceptance criterion with the');
       console.log("builder's narrative structurally removed. Verdicts: proven | unproven | unassessable.");
-      console.log('Never writes: no ticket is reopened, no status changed, no event logged.');
+      console.log('Never writes in this default mode: no ticket is reopened, no status changed, no event logged.');
+      console.log('');
+      console.log('reopen — sends tickets THIS check judged `unproven` back from done to review. DRY RUN by default:');
+      console.log('  without --confirm nothing is written and nothing is logged. A `proven` or `unassessable` ticket is');
+      console.log('  never touched ("I could not judge it" is not "it is wrong"). Every change is recorded as a real');
+      console.log('  ticket_updated via forge-dashboard/log-event.cjs; a change that cannot be logged is not made');
+      console.log('  (--event-run names the run for a ticket that carries none). Re-running it changes nothing twice.');
       process.exit(0);
     } else { console.error('forge-coldverify: unknown argument ' + argv[i]); process.exit(2); }
+  }
+
+  if (sub === 'reopen') {
+    let r;
+    try { r = reopen(opts); }
+    catch (e) { console.error('forge-coldverify: ' + (e && e.message ? e.message : String(e))); process.exit(2); }
+
+    if (asJson) {
+      console.log(JSON.stringify(r, null, 2));
+      process.exit(r.failed > 0 ? 1 : 0);
+    }
+    const sc = r.scope.ticket_id ? 'ticket ' + r.scope.ticket_id : (r.scope.run_id ? 'run ' + r.scope.run_id : 'all tickets');
+    console.log('Forge COLD verify — REOPEN' + (r.dry_run ? ' (DRY RUN)' : ' (CONFIRMED)'));
+    console.log('  scope: ' + sc + ' · ' + r.checked + ' done ticket(s) assessed · ' +
+      r.summary.proven + ' proven · ' + r.summary.unproven + ' unproven · ' + r.summary.unassessable + ' unassessable');
+    console.log('  ' + (r.dry_run ? 'WOULD REOPEN' : 'CANDIDATES') + ' (unproven · done -> ' + REOPEN_TO_STATUS + '): ' + r.candidates.length);
+    for (const c of r.candidates) {
+      console.log('    ' + c.ticket_id + (c.ac_id ? ' [' + c.ac_id + ']' : '') + '  done -> ' + c.to_status);
+      console.log('        criterion (' + c.criterion_source + '): ' + (c.criterion || '(none)'));
+      for (const why of c.reasons) console.log('        -> ' + why);
+      console.log('        ' + (r.dry_run ? 'would log' : 'logs') + ' ticket_updated on run ' + c.run_id +
+        ' via ' + EVENT_WRITER.join('/'));
+    }
+    if (r.skipped.length) {
+      console.log('  NOT REOPENED (unproven, but the change could not be recorded):');
+      for (const s of r.skipped) console.log('    ' + s.ticket_id + ' — ' + s.why);
+    }
+    if (!r.dry_run) {
+      console.log('  RESULT:');
+      for (const c of r.changes) {
+        if (c.written) console.log('    ' + c.ticket_id + ': ' + c.from_status + ' -> ' + c.to_status + ' (ticket_updated logged on run ' + c.run_id + ')');
+        else console.log('    ' + c.ticket_id + ': NOT CHANGED — ' + c.error);
+      }
+      console.log('  summary: ' + r.reopened + ' reopened · ' + r.failed + ' failed · ' + r.skipped.length + ' skipped');
+      console.log('  (only tickets this check itself judged `unproven` were eligible; nothing was closed or marked done)');
+    } else {
+      console.log('  summary: ' + r.candidates.length + ' candidate(s) · ' + r.skipped.length + ' skipped');
+      console.log('  DRY RUN. Nothing was changed and no event was logged. Add --confirm to actually do this.');
+    }
+    process.exit(r.failed > 0 ? 1 : 0);
   }
 
   let res;

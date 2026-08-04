@@ -39,10 +39,13 @@ const PROJECT_NAME = path.basename(PROJECT_DIR);
 const BINDING_FILE = path.join(CLAUDE_DIR, 'FORGE_PAPERCLIP_BINDING.json');
 const LOG_EVENT = path.join(CLAUDE_DIR, 'forge-dashboard', 'log-event.cjs');
 const BASE = process.env.PAPERCLIP_URL || 'http://127.0.0.1:3100';
-// Portable defaults (deep-scan: template must not hardcode one machine). Prefer explicit env, then the
-// owner's existing lab home if it already exists (preserve their data), else a project-local home.
-const LAB_HOME = 'C:/Users/YOU/Documents/Paperclip-Test/forge-paperclip-lab/pc-home';
-const PC_HOME = process.env.PAPERCLIP_HOME || (fs.existsSync(LAB_HOME) ? LAB_HOME : path.join(CLAUDE_DIR, 'paperclip-home'));
+// Portable defaults. AUDIT FIX (2026-08-03): this file used to name ONE machine's lab home
+// (`C:/Users/<owner>/Documents/Paperclip-Test/...`) and prefer it whenever that directory existed — so on
+// that machine EVERY project silently shared one Paperclip home (companies, agents, embedded DB), and on
+// every other machine (and in the published repo) the constant was a dead path plus a leaked username.
+// The home is now: explicit env override, else project-local. An existing lab home is opt-in via
+// PAPERCLIP_HOME, which is exactly what an env override is for.
+const PC_HOME = process.env.PAPERCLIP_HOME || path.join(CLAUDE_DIR, 'paperclip-home');
 // Default OS lookup for `claude` on PATH (win: where, posix: which) — the ONLY part of
 // resolveClaudeBin() that touches a real process; kept as an injectable default (opts.lookup) so
 // resolveClaudeBin() itself is a safely-callable, directly-testable function. `require()`-ing this
@@ -60,7 +63,11 @@ function resolveClaudeBin(opts) {
     const hit = String(lookup()).split(/\r?\n/).find((x) => x.trim());
     if (hit && hit.trim()) return hit.trim();
   } catch {}
-  return 'C:/Users/YOU/.local/bin/claude.exe'; // last-resort fallback (this machine's known path)
+  // AUDIT FIX (2026-08-03): the last resort used to be one machine's absolute claude.exe path, which got
+  // written verbatim into generated agent docs (docs/agents/<slug>/TOOLS.md) and adapter configs — wrong
+  // on any other machine and a leaked username in the published repo. A bare command name is resolved by
+  // the OS if claude is installed at all; if it is not, failing loudly beats pointing at someone's disk.
+  return process.platform === 'win32' ? 'claude.exe' : 'claude';
 }
 let CLAUDE_BIN = null; // resolved lazily by the require.main guard below (guard #3) — keeps a plain
                         // `require()` of this module side-effect-free (no OS process spawned on load)

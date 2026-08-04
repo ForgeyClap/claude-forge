@@ -365,6 +365,18 @@ t('G2 the tool-log directory is not a run directory, so run pickers skip it', ()
 
 t('G3 the log path is gitignored by the existing forge-runs rule (no .gitignore edit needed)', () => {
   const projectRoot = path.resolve(__dirname, '..', '..');
+  // INSTALL-DEADLOCK FIX (2026-08-03): in a project that is not (yet) a git repository — the normal state
+  // of a fresh install target, where this suite runs as forge-sync's post-install validation — nothing is
+  // committable at all, so "must never be committable" is vacuously satisfied and `git check-ignore`
+  // cannot even answer (exit 128, "not a git repository"; exit ENOENT when git itself is absent). That
+  // non-answer made every gitless fresh install fail validation and roll back — the owner's live
+  // workaround trail ("retry after git init") is this exact defect. Honest outcome: pass-with-reason on
+  // "no git here", stay STRICT the moment a real repository exists.
+  const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectRoot, encoding: 'utf8' });
+  if (probe.error || probe.status !== 0 || String(probe.stdout).trim() !== 'true') {
+    console.log('       (no git repository at this root — nothing is committable, rule check not applicable here)');
+    return;
+  }
   const r = spawnSync('git', ['check-ignore', '-v', '.claude/forge-runs/_toollog/x.jsonl'], { cwd: projectRoot, encoding: 'utf8' });
   assert.strictEqual(r.status, 0, 'path is NOT gitignored — a tool ledger must never be committable');
   assert.ok(/forge-runs/.test(r.stdout), 'unexpected ignore rule: ' + r.stdout);

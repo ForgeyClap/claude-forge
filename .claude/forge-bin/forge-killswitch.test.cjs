@@ -48,7 +48,7 @@ function stateFile() { return path.join(TMP, 'state-' + (seq++) + '.json'); }
 // ---- a fake but realistic world ----------------------------------------------------------------------
 // Modelled on the REAL live tree measured on this machine on 2026-08-01:
 //   nohup -> node supervisor.mjs (19752) -> node gateway/bin.mjs (18868) -> node discord/src/main.js (5004)
-const ROOT = 'C:\\Users\\YOU\\Documents\\my-forge-project';
+const ROOT = 'C:\\Users\\EXAMPLE\\Documents\\my-forge-project';
 const NODE = '"C:\\Program Files\\nodejs\\node.exe" ';
 function world(over) {
   return Object.assign({

@@ -79,9 +79,50 @@ function preferredPort() {
 }
 function nextPort(p) { return p + 1 > PORT_HI ? PORT_LO : p + 1; }
 
+/** classifyRunDir(dir, name) -> {isRun, synthetic, recency} — pure enough to test, exported below.
+ *  MEASURED DEFECT (audit sweep 2026-08-03): this listing sorted by DIRECTORY NAME and accepted EVERY
+ *  directory, so `forge-demo-10agents-layout-preview` — a run whose own run.json says
+ *  {"_demo":true,"synthetic":true,"request":"DEMO LAYOUT PREVIEW (geen echt werk)"} — sorted first and
+ *  became "the latest run" for `/forge status`, `/forge open-report` and the dashboard header: the owner
+ *  was shown a fabricated demo as the system's current state, and open-report pointed at a report that
+ *  does not exist. Two rules, mirroring the gateway's own FU2 fix:
+ *    - a run DIRECTORY must actually carry run shape (run.json and/or events.jsonl), so operational dirs
+ *      (`_toollog`, `.hotspot-locks`) are no longer counted as missions;
+ *    - a run that declares itself synthetic/demo is still listable, but never wins "latest".
+ *  Recency comes from real time (newest event mtime, else dir mtime), not from the name. */
+function classifyRunDir(dir, name) {
+  const runJsonPath = path.join(dir, 'run.json');
+  const eventsPath = path.join(dir, 'events.jsonl');
+  const hasRunJson = exists(runJsonPath), hasEvents = exists(eventsPath);
+  if (!hasRunJson && !hasEvents) return { isRun: false, synthetic: false, recency: 0 };
+  let synthetic = false;
+  if (hasRunJson) {
+    try {
+      const j = JSON.parse(fs.readFileSync(runJsonPath, 'utf8'));
+      synthetic = j && (j._demo === true || j.synthetic === true);
+    } catch { /* unreadable run.json is not evidence of anything — treat as a normal run */ }
+  }
+  let recency = 0;
+  for (const p of [eventsPath, runJsonPath, dir]) {
+    try { const t = fs.statSync(p).mtimeMs; if (t > recency) recency = t; } catch { /* ignore */ }
+  }
+  return { isRun: true, synthetic: !!synthetic, recency, name };
+}
+/** orderRunRows — pure ordering rule, exported so it is tested directly instead of through a server
+ *  that deliberately refuses to be pointed at a fixture project (detectProjectRoot's isolation guard).
+ *  Real runs first, newest real time first; self-declared synthetic/demo runs always behind them. */
+function orderRunRows(rows) {
+  return rows.slice().sort((a, b) => (a.synthetic === b.synthetic) ? (b.recency - a.recency) : (a.synthetic ? 1 : -1));
+}
 function listRunIds() {
   if (!exists(RUNS_DIR)) return [];
-  return fs.readdirSync(RUNS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort().reverse();
+  const rows = [];
+  for (const d of fs.readdirSync(RUNS_DIR, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    const c = classifyRunDir(path.join(RUNS_DIR, d.name), d.name);
+    if (c.isRun) rows.push(c);
+  }
+  return orderRunRows(rows).map((r) => r.name);
 }
 function readRun(id) {
   if (!/^[A-Za-z0-9_-]+$/.test(id)) return null; // run ids are alphanumeric + _ - only — reject any path chars (no traversal)
@@ -692,4 +733,4 @@ if (require.main === module) {
   listen(preferredPort(), PORT_SPAN);
 }
 
-module.exports = { artifactIdOk, resolveArtifactPath, runIdOk, readCapabilities, readRunContract };
+module.exports = { artifactIdOk, resolveArtifactPath, runIdOk, readCapabilities, readRunContract, classifyRunDir, orderRunRows, listRunIds };

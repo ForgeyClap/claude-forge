@@ -10,10 +10,30 @@ const path = require('path');
 const assert = require('assert');
 const cd = require('./forge-configdrift.cjs');
 
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 function t(name, fn) {
   try { fn(); passed++; console.log('  ok   ' + name); }
   catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); }
+}
+/** pinned(name, fn) — an assertion whose expected value is a property of THIS installation rather than of
+ *  the code under test (here: "this project has 57 skills"). It is a genuine drift guard in the development
+ *  tree — it is how a skill walk that stops one directory too shallow gets caught — and it is meaningless
+ *  in the published distribution, which deliberately omits the 9 vendored third-party skills and therefore
+ *  honestly has fewer. Relaxing the number to a range or a list of acceptable counts would delete exactly
+ *  the drift detection the assertion exists for, so instead it asks which tree it is in and says out loud
+ *  when it decided not to look. A skipped assertion that prints nothing is worse than a failing one.
+ *  installationProfile is a SOFT dependency, the same posture forge-doctor.cjs itself takes towards its
+ *  siblings: if it cannot be loaded the pin is skipped with that as the stated reason, never assumed. */
+let INSTALL_PROFILE;
+try {
+  INSTALL_PROFILE = require('./forge-doctor.cjs').installationProfile(path.resolve(__dirname, '..', '..'));
+} catch (e) {
+  INSTALL_PROFILE = { profile: 'unknown', reason: 'forge-doctor.cjs installationProfile unavailable (' + e.message + ')' };
+}
+function pinned(name, fn) {
+  if (INSTALL_PROFILE.profile === 'development') { t(name, fn); return; }
+  skipped++;
+  console.log('  SKIP ' + name + ' — installation-dependent assertion · ' + INSTALL_PROFILE.reason);
 }
 
 console.log('forge-configdrift tests (governance-config baseline + drift)');
@@ -331,9 +351,20 @@ t('on the REAL project every named governance source is found and hashed', () =>
     assert.strictEqual(e.exists, true, id + ' does not exist at ' + e.path);
     assert.ok(/^[0-9a-f]{64}$/.test(e.sha256), id + ' has no hash');
   }
+  // installation-INDEPENDENT half: every tree, development or redistribution, must produce a non-empty
+  // hashed skill set. This stays strict everywhere — it is the part that catches a walk returning nothing.
+  const skills = snap.entries.filter((e) => e.id.startsWith('skill_frontmatter:'));
+  assert.ok(skills.length > 0, 'no skill was hashed at all on the real project');
+});
+
+// installation-DEPENDENT half, split out so the guard covers only what actually depends on the install.
+pinned('on the REAL project the full 57-skill catalog is hashed, nested bundles included', () => {
+  const root = path.resolve(__dirname, '..', '..');
+  const snap = cd.snapshot(root);
   const skills = snap.entries.filter((e) => e.id.startsWith('skill_frontmatter:'));
   // 57 = 49 at depth 1 + the 8-skill gsap bundle at depth 2 (the same 57 forge-contextbudget.cjs reports for
-  // this project's own catalog). A depth-1-only walk finds 49 and looks perfectly calm doing it.
+  // this project's own catalog). A depth-1-only walk finds 49 and looks perfectly calm doing it. Both halves
+  // below are properties of the vendored bundle specifically: the distribution ships neither.
   assert.ok(skills.length >= 57, 'this project has 57 skills; hashed only ' + skills.length);
   assert.ok(skills.some((s) => s.id === 'skill_frontmatter:gsap/gsap-core'),
     'the nested gsap bundle is not covered on the real project');
@@ -347,5 +378,5 @@ t('hashing the real project twice in a row is stable (no timestamps leak into th
 });
 
 console.log('');
-console.log(passed + ' passed, ' + failed + ' failed');
+console.log(passed + ' passed, ' + failed + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 process.exit(failed ? 1 : 0);
