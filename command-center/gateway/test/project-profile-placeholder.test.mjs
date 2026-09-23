@@ -80,7 +80,7 @@ test('the parenthetical scaffold variant (the real "forge-system-public" shape) 
 // instead of quietly blanking four real projects' identities.
 test('real prose containing parentheses mid-sentence is passed through unchanged (the anchor is end-to-end, not a contains-check)', () => {
   const realFleetValues = [
-    'Forge V2 Hybrid Installer ("my-forge-project")',
+    'Forge V2 Hybrid Installer ("my project (v2)!")',
     'new (greenfield)',
     'n8n / automation (booking + quotation backend)',
     'unknown (empty folder at install time — `needs verification` once first task lands)',

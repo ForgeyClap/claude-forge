@@ -139,7 +139,7 @@ describe('RecoveryPanel', () => {
       }),
     );
 
-    const { container, findByText } = render(<RecoveryPanel projectName="my-forge-project" />);
+    const { container, findByText } = render(<RecoveryPanel projectName="my project (v2)!" />);
 
     expect(await findByText('resolve a skills.sh 401')).toBeTruthy();
     expect(await findByText('skills.sh:gws-gmail-reply')).toBeTruthy();
@@ -175,7 +175,7 @@ describe('RecoveryPanel', () => {
       }),
     );
 
-    const { container, findByText } = render(<RecoveryPanel projectName="my-forge-project" />);
+    const { container, findByText } = render(<RecoveryPanel projectName="my project (v2)!" />);
 
     expect(await findByText('No recovery ledger configured')).toBeTruthy();
     expect(await findByText('No run manifests')).toBeTruthy();
@@ -190,7 +190,7 @@ describe('RecoveryPanel', () => {
       }),
     );
 
-    const { container, findByText } = render(<RecoveryPanel projectName="my-forge-project" />);
+    const { container, findByText } = render(<RecoveryPanel projectName="my project (v2)!" />);
 
     expect(await findByText('No recovery data yet')).toBeTruthy();
     expect(scanForbidden(container)).toEqual([]);

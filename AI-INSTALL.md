@@ -60,8 +60,12 @@ bash install.sh --project "/absolute/path/to/the/users/project" --yes
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir "C:\absolute\path\to\project" -Yes
 ```
 
-Useful flags (same on both): `--dry-run` shows every write without making one · `--project-only`
-skips the global part · `--global-only` skips the project part.
+Useful flags — bash spells them `--dry-run` · `--project-only` · `--global-only`; PowerShell spells the
+same three `-DryRun` · `-ProjectOnly` · `-GlobalOnly`. `--dry-run` shows every write without making one.
+
+**`--global-only` has no verification step:** `forge-doctor.cjs` ships only in the project payload, so an
+install that skipped the project part cannot be checked by §3. Say that to the user instead of claiming
+it was verified.
 
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
@@ -70,6 +74,25 @@ skips the global part · `--global-only` skips the project part.
 - Your `CLAUDE.md` is **never overwritten** — it is only created when absent.
 - Your `.gitignore` only ever gets lines it does not already have.
 - Running it twice is safe and changes nothing the second time.
+
+---
+
+## 2b. What the install switches on (tell the user — do not let them find out later)
+
+The project payload ships a `.claude/settings.json` with **four live Claude Code hooks**, all local,
+none phoning home:
+
+- three `PreCompact`/`SessionStart` hooks that snapshot and re-inject the mission across context
+  compaction (so a long session does not lose what it was doing);
+- one `PostToolUse` hook, matcher `Write|Edit|MultiEdit|NotebookEdit|Bash`, that appends the tool name and
+  target path of each *changing* tool call to `.claude/forge-runs/_toollog/<session>.jsonl` (gitignored).
+  Until v2.4.0 it had no matcher and fired on every tool call; it does not any more. To opt out, delete
+  that entry from `.claude/settings.json` — nothing else depends on it.
+
+The **usage guard** (`usage-guard.cjs`) is *opt-in*. It is a machine-global background watcher that
+reads the Claude OAuth token from `~/.claude/.credentials.json` and polls Anthropic's own usage
+endpoint so a run can pause before the account's limit. `/forge` no longer starts it silently; it runs
+only when the user asks for usage protection. If you start it on their behalf, say so in one line.
 
 ---
 
@@ -157,7 +180,7 @@ gateway and then claim the dashboard is running without checking `GET /api/healt
 | PowerShell: *"running scripts is disabled"* | Execution policy | Use `powershell -ExecutionPolicy Bypass -File .\install.ps1 ...` (as shown above) — do not change the machine-wide policy |
 | `Permission denied` running install.sh | Not executable | `bash install.sh ...` (invoking bash directly needs no chmod) |
 | Doctor: `not a project (.claude missing)` from forge-sync | You ran the *updater* on a folder that has no Forge yet | That is the installer's job — run `install.sh`/`install.ps1` instead |
-| Doctor reports failures right after a fresh install | Genuinely unexpected — this is measured to be green | Report the exact `✗` lines to the user and stop; do not guess |
+| Doctor reports failures right after a fresh install | Should not happen on v2.4.0+: this exact scenario (clean folder, **empty** `~/.claude`) is what the `fresh-install` CI job measures on every commit | Report the exact `✗` lines to the user, include the doctor's `tests` line, and open an issue with them; do not guess or re-run until it looks better |
 | `spawn powershell ENOENT` on macOS/Linux | `forge-killswitch` is Windows-only | Expected; it refuses honestly. Every other tool is cross-platform |
 | Codex review step fails with HTTP 400 | The pinned Codex model is not available on that account | Optional feature. Forge continues and reports the review did not run |
 

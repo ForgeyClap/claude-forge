@@ -30,6 +30,26 @@ jobs:
       - name: Report Node version
         run: node --version
 
+      # 0) Hygiene gates added 2026-09-23 (external audit II-D / II-H): nothing tracked against the repo's own
+      #    .gitignore (that is how per-install state and a live PID lock shipped in 2.2.0/2.3.0), and one
+      #    version number — VERSION is the source, the plugin manifests must match it.
+      - name: Nothing is tracked against .gitignore, and every manifest carries VERSION
+        run: |
+          set -e
+          ignored=$(git ls-files -i -c --exclude-standard)
+          if [ -n "$ignored" ]; then
+            echo "::error::these files are tracked but match .gitignore — untrack them (git rm --cached):"
+            echo "$ignored"
+            exit 1
+          fi
+          echo "ok   no tracked file matches .gitignore"
+          v=$(tr -d '[:space:]' < VERSION)
+          for m in plugins/forge/.claude-plugin/plugin.json .claude-plugin/marketplace.json; do
+            mv=$(node -e 'const j=require(process.argv[1]);const p=j.version||(j.plugins&&j.plugins[0]&&j.plugins[0].version)||(j.metadata&&j.metadata.version)||"";console.log(p)' "$m")
+            if [ "$mv" != "$v" ]; then echo "::error::$m declares version '$mv' but VERSION is '$v'"; exit 1; fi
+            echo "ok   $m = $v"
+          done
+
       # 1) Syntax-check every .cjs source in the terminal command pack.
       - name: node --check all .cjs in .claude/forge-bin
         run: |

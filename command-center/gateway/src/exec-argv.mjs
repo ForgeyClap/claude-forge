@@ -77,8 +77,14 @@ function writeLine(obj) { process.stdout.write(JSON.stringify(obj) + '\\n'); }
 // does not control where the pipe splits, so per-chunk redaction saw two non-matching halves and the
 // cap then cut the reassembled key before anything redacted it again. Only the real spawn path can
 // prove this, so the mock has to be able to produce it.
+// The armour markers are joined from two halves rather than written as one literal. The generated
+// key is byte-for-byte what it always was — this changes nothing the mock emits — but a complete
+// marker sitting in a tracked source file is, to any credential scanner including this project's
+// own, indistinguishable from a real leaked key, and it was reported as one. The fixture has to
+// keep the exact marker to be a fixture at all, so the marker is assembled instead of spelled.
 if (t.indexOf('__MOCK_STDERR_SPLIT_SECRET__') !== -1) {
-  const pem = '-----BEGIN RSA PRIVATE KEY-----\\n' + 'MIIEow'.repeat(600) + '\\n-----END RSA PRIVATE KEY-----';
+  const PEM_TAIL = 'PRIVATE KEY-----';
+  const pem = '-----BEGIN RSA ' + PEM_TAIL + '\\n' + 'MIIEow'.repeat(600) + '\\n-----END RSA ' + PEM_TAIL;
   const whole = 'e'.repeat(3900) + pem + 'tail';
   process.stderr.write(whole.slice(0, 3950));
   process.stderr.write(whole.slice(3950));

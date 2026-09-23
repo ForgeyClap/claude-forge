@@ -37,12 +37,12 @@ import SettingsView from '@/views/settings/SettingsView';
 const REAL_PROJECT: Project = {
   prototype: true,
   id: 'proj-active',
-  name: 'my-forge-project',
+  name: 'my project (v2)!',
   description: 'A real project row used only to assert the composer names its real path.',
   type: 'unknown',
   status: 'waiting',
   lastActivity: '2026-07-29T00:00:00.000Z',
-  path: 'C:\\Users\\YOU\\Documents\\my-forge-project',
+  path: 'C:\\Users\\YOU\\Documents\\my project (v2)!',
   templateVersion: 'v1',
   pinned: false,
   conversationCount: 0,
@@ -160,7 +160,7 @@ describe('Composer write-scope disclosure', () => {
 /*  Settings ▸ Claude Code connection — the same fact, reinforced               */
 /* ========================================================================== */
 
-const FAKE_PROJECT_ROW = { name: 'my-forge-project', path: 'C:\\Users\\YOU\\Documents\\my-forge-project', has_dashboard: false };
+const FAKE_PROJECT_ROW = { name: 'my project (v2)!', path: 'C:\\Users\\YOU\\Documents\\my project (v2)!', has_dashboard: false };
 
 function installFetchMock(): void {
   vi.stubGlobal(

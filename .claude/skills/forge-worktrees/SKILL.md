@@ -29,7 +29,7 @@ wrapper: when Forge reaches for isolation, and who owns merging the result back.
   on different modules of the same app in the same run).
 - A large/risky change (major refactor, dependency upgrade) that should stay reviewable as its own diff
   before merging into the main line.
-- Codex write-delegation (`/codex:rescue` or any `--write` task) — per `CODEX_GLOBAL_POLICY.md`, Codex
+- Codex write-delegation (`/codex:rescue` or any `--write` task) — per `CODEX_GLOBAL_POLICY.md` (an owner-level policy in `~/.claude` when present; on an install without it, the defaults stated in this skill apply — read-only, never a blocker), Codex
   runs on a **separate worktree/branch**, never concurrently with Claude in the same tree.
 
 Do NOT isolate: single-agent sequential work, trivial 1-2 file edits, or tasks with no real parallelism

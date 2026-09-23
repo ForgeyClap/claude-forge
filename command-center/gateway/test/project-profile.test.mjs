@@ -4,8 +4,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildProjectProfile } from '../src/project-profile.mjs';
 import { PROJECT_ROOT } from '../src/paths.mjs';
+import { needsFilledProjectProfile } from './.real-data-guard.mjs';
 
-test('buildProjectProfile reads this real project profile + version file', () => {
+// Real-data assertion: only this repository's own filled-in profile reads "Forge V2 … tooling / meta". A fresh
+// clone still carries the installer scaffold and no FORGE_VERSION.json, so it is skipped there with the reason
+// (2026-09-23); the honest-absence test below runs everywhere.
+test('buildProjectProfile reads this real project profile + version file', { skip: needsFilledProjectProfile() }, () => {
   const result = buildProjectProfile(PROJECT_ROOT);
   assert.equal(result.ok, true);
   assert.equal(result.profile_present, true);

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// gateway/src -> gateway -> command-center -> project root ("my-forge-project")
+// gateway/src -> gateway -> command-center -> project root ("my project (v2)!")
 export const GATEWAY_DIR = path.resolve(__dirname, '..');
 export const COMMAND_CENTER_DIR = path.resolve(GATEWAY_DIR, '..');
 export const PROJECT_ROOT = path.resolve(COMMAND_CENTER_DIR, '..');

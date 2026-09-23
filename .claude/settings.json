@@ -42,7 +42,9 @@
             "command": "node .claude/forge-bin/forge-toolhook.cjs",
             "timeout": 8000
           }
-        ]
+        ],
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "_matcher_doc": "2026-09-23 (external audit II-D): shipped without a matcher, so it fired on EVERY tool call of every agent (461 in one audited session, ~56 ms each) and logged 320 paths outside the project. The ledger exists to record what CHANGED; reads are noise. Opt out entirely by deleting this entry — nothing else depends on it."
       }
     ]
   }

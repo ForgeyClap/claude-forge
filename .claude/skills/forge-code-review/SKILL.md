@@ -51,7 +51,7 @@ how a finding becomes a rework item in the Forge pipeline.
 ## Codex handoff (optional, never a blocker)
 For security-sensitive, auth, payments, database-migration, or other high-risk changes, this review MAY
 be followed by an independent `codex-reviewer` pass (`/codex:review` read-only, or
-`/codex:adversarial-review` for the required-review areas in `CODEX_GLOBAL_POLICY.md`). If Codex is
+`/codex:adversarial-review` for the required-review areas in `CODEX_GLOBAL_POLICY.md` (an owner-level policy in `~/.claude` when present; on an install without it, the defaults stated in this skill apply — read-only, never a blocker)). If Codex is
 unavailable, report that honestly — the review above still stands on its own.
 
 **The model is pinned, and it is NOT a detail you restate from memory.** Read

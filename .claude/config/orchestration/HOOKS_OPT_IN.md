@@ -1,7 +1,7 @@
-# Forge hooks — mostly opt-in, 2 real ones now LIVE (see section 4)
+# Forge hooks — mostly opt-in, 4 real ones LIVE (3 snapshot hooks in section 4 + the tool ledger in section 5)
 
 **Status (corrected 2026-07-29, forge-snapshot wiring):** this project's `.claude/settings.json` now EXISTS
-and carries **3 real, live hooks** (the context-continuity snapshot system — section 4 below). Everything
+and carries **4 real, live hooks**: the three context-continuity snapshot hooks (section 4 below) and the PostToolUse tool ledger (section 5, now with a `Write|Edit|MultiEdit|NotebookEdit|Bash` matcher — corrected 2026-09-23 after an external audit measured it firing on every tool call). Everything
 else in this file (sections 1-3) remains what it always was: a documented, NOT-installed example an owner
 could opt into by hand. Forge is still deliberately *security-light* ("No mandatory security gates", per the
 project `CLAUDE.md`) — the snapshot hooks are advisory/never-blocking, exactly like every other hook here;
@@ -134,7 +134,7 @@ raw file body or credential.
 Manual (also always available, hook or no hook): `node .claude/forge-bin/forge-snapshot.cjs write --reason
 manual|phase` · `node .claude/forge-bin/forge-snapshot.cjs check --max-age-hours 24` · `/forge snapshot`.
 
-## 5. Tool-behaviour ledger — `forge-toolhook.cjs` (PostToolUse, **built + tested, NOT wired**)
+## 5. Tool-behaviour ledger — `forge-toolhook.cjs` (PostToolUse, **WIRED and live** — matcher `Write|Edit|MultiEdit|NotebookEdit|Bash` since 2026-09-23; the 2026-08-03 correction further down already said it was firing)
 
 **The gap it closes, measured 2026-08-01 (not assumed):** across all 28 `events.jsonl` in this project —
 846 events — `file_read` appears **0** times and `command_run` **1** time. Both types are registered in

@@ -31,7 +31,7 @@ const PORT = 9333;
 const BASE = 'http://127.0.0.1:4100';
 const EVIDENCE_DIR = path.resolve(__dirname, '../../mission/test-evidence/part2');
 const RESULTS_PATH = path.join(EVIDENCE_DIR, 'results.json');
-const GATEWAY_CWD = 'c:\\Users\\YOU\\Documents\\my-forge-project';
+const GATEWAY_CWD = 'c:\\Users\\YOU\\Documents\\my project (v2)!';
 const GATEWAY_ENTRY = 'command-center/gateway/bin.mjs';
 
 const TS = new Date().toISOString().replace(/[:.]/g, '-');
@@ -423,7 +423,7 @@ async function phase6_sseLiveness(session) {
 
 async function phase7_retestSweep(session) {
   log('=== PHASE 7: clean retest sweep, 13 views + WP-specific checks ===');
-  const projectName = 'my-forge-project';
+  const projectName = 'my project (v2)!';
   for (const [name, route] of VIEWS) {
     const navMs = await timedNavigate(session, `${BASE}/#${route}`, `view-${name}`);
     await new Promise((r) => setTimeout(r, 300));

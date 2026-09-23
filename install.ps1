@@ -201,6 +201,36 @@ function Add-ForgeProjectRootSeed {
   Write-ForgeLog "  wrote: $gitignore (+$($toAdd.Count) Forge line(s); your existing rules kept)"
 }
 
+# Writes .claude\FORGE_VERSION.json -- per-install state (gitignored by the snippet), read by
+# `forge-sync status` to report the installed release next to the canonical template's hash.
+function Write-ForgeVersionMarker {
+  param(
+    [Parameter(Mandatory = $true)][string] $ProjectDir,
+    [Parameter(Mandatory = $true)][string] $Version,
+    [bool] $IsDryRun = $false
+  )
+  $markerPath = Join-Path $ProjectDir '.claude\FORGE_VERSION.json'
+  if ($IsDryRun) {
+    Write-ForgeLog "  would write: $markerPath (forge_version $Version)"
+    return
+  }
+  $homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+  $marker = [ordered]@{
+    forge_version = $Version
+    synced_at     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    template      = (Join-Path $homeDir '.claude\forge\template\.claude')
+    installed_by  = 'install.ps1'
+    _doc          = 'Written by the claude-forge installer. forge-sync status compares forge_version with the canonical template. Per-install state: keep it out of git (the installer ignores it for you).'
+  }
+  try {
+    $json = ($marker | ConvertTo-Json -Depth 3)
+    [System.IO.File]::WriteAllText($markerPath, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    Write-ForgeLog "  wrote: $markerPath (forge_version $Version)"
+  } catch {
+    Write-ForgeError "could not write $markerPath (forge-sync status will report installed=none): $($_.Exception.Message)"
+  }
+}
+
 function Main {
   $projectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
   $assumeYes  = [bool]$Yes -or ($env:FORGE_YES -eq '1')
@@ -340,6 +370,26 @@ function Main {
       Write-ForgeLog ''
       Write-ForgeLog "Installing global core -> $HOME\.claude"
       $globalOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir 'global-install\.claude') -DestDir (Join-Path $HOME '.claude') -IsDryRun $isDryRun
+      # The CANONICAL TEMPLATE (external audit II-A, 2026-09-23). The forge-core skill sends every
+      # "install Forge V2 into this project", the bare-folder auto-install and the "stay current" rule to
+      # ~\.claude\forge\template\ -- and this installer never created it, so all three pointed at nothing
+      # and `forge-sync status` compared each project with itself ("up to date" forever). The template is
+      # the project payload plus the two root seeds, kept where the skill looks for it.
+      $templateDir = Join-Path $HOME '.claude\forge\template'
+      Write-ForgeLog ''
+      Write-ForgeLog "Installing canonical template -> $templateDir (used by forge-sync and the auto-installer)"
+      $templateOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $templateDir '.claude') -IsDryRun $isDryRun
+      if ($templateOk -and -not $isDryRun) {
+        $seedMd = Join-Path $sourceDir 'templates\project-CLAUDE.md'
+        $seedGi = Join-Path $sourceDir 'templates\gitignore.snippet'
+        $seedEnv = Join-Path $sourceDir '.env.example'
+        if (Test-Path -LiteralPath $seedMd) { Copy-Item -LiteralPath $seedMd -Destination (Join-Path $templateDir 'CLAUDE.md') -Force }
+        if (Test-Path -LiteralPath $seedGi) { Copy-Item -LiteralPath $seedGi -Destination (Join-Path $templateDir 'gitignore.snippet') -Force }
+        if (Test-Path -LiteralPath $seedEnv) { Copy-Item -LiteralPath $seedEnv -Destination (Join-Path $templateDir 'env.example') -Force }
+      } elseif (-not $templateOk) {
+        Write-ForgeError 'canonical template copy had failures (project installs still work; forge-sync update checks will not)'
+        $globalOk = $false
+      }
     }
 
     if ($doProject) {
@@ -354,6 +404,9 @@ function Main {
       # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and the
       # first forge-doctor a new user runs reports FAILURES. Merge-safe and idempotent.
       Add-ForgeProjectRootSeed -ProjectDir $projectDir -SourceDir $sourceDir -IsDryRun $isDryRun
+      # Record WHICH release this project got: forge-sync status reads forge_version from this file
+      # (2.4.0: the payload no longer ships a stale copy of this per-install file).
+      Write-ForgeVersionMarker -ProjectDir $projectDir -Version $forgeVersion -IsDryRun $isDryRun
     }
 
     # -------------------------------------------------------------------------

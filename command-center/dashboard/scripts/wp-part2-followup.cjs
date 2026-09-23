@@ -5,7 +5,7 @@
  * The main wp-part2-reality.cjs run navigated Settings via URL hash only, which lands on the
  * default "Appearance" tab — it never clicked into the "Capabilities" sub-tab, so the 78/134/8/7
  * assertions were never actually exercised. It also read Activity/Recovery while the active
- * project defaulted to "100 apps" (a project with no recovery ledger), not "my-forge-project"
+ * project defaulted to "100 apps" (a project with no recovery ledger), not "my project (v2)!"
  * (the project the retest's expected numbers — 3 attempts, 11 docdrift/0 drifted — belong to).
  * This is a pure UI-navigation + screenshot follow-up: switches the active project, clicks real
  * tabs, screenshots. Zero `claude -p` calls (none of this touches the composer).
@@ -43,8 +43,8 @@ async function main() {
     await driver.navigate(session, `${BASE}/#/`);
     await new Promise((r) => setTimeout(r, 500));
 
-    // Switch active project to "my-forge-project" via the sidebar's Recent Projects row.
-    const pt = await driver.evaluate(session, `(() => { const items = Array.from(document.querySelectorAll('.fw-sidebar__recent-item, .fw-sidebar [data-project-name], .fw-sidebar a, .fw-sidebar button')); const el = items.find(x => (x.textContent||'').includes('my-forge-project')); if(!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; })()`);
+    // Switch active project to "my project (v2)!" via the sidebar's Recent Projects row.
+    const pt = await driver.evaluate(session, `(() => { const items = Array.from(document.querySelectorAll('.fw-sidebar__recent-item, .fw-sidebar [data-project-name], .fw-sidebar a, .fw-sidebar button')); const el = items.find(x => (x.textContent||'').includes('my project (v2)!')); if(!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; })()`);
     if (pt) {
       await driver.clickXY(session, pt.x, pt.y);
       await new Promise((r) => setTimeout(r, 500));
@@ -71,7 +71,7 @@ async function main() {
     out.has7Roles = (capText.match(/role/gi) || []).length;
     await shot(session, 'followup-1-settings-capabilities-tab');
 
-    // Activity, now scoped to "my-forge-project".
+    // Activity, now scoped to "my project (v2)!".
     await driver.navigate(session, `${BASE}/#/activity`);
     await new Promise((r) => setTimeout(r, 500));
     const activityText = await mainText(session);

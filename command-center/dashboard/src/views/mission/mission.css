@@ -1,0 +1,617 @@
+/*
+ * Mission Control — view stylesheet.
+ *
+ * Every value comes from a --forge-* token. There is not a single hex, rgb()
+ * or hsl() below. The only hue in the file is the rationed ember accent, used
+ * in exactly two places: the focus ring on the canvas, and the two-pixel
+ * progress hairline under a node whose agent is actually running.
+ *
+ * Status never speaks through colour alone here either: a node carries the
+ * status border treatment (--forge-status-<key> / -style / -width, resolved by
+ * the shared .fw-status carrier) *and* a StatusBadge with an icon and an
+ * uppercase label.
+ */
+
+/* =========================================================================
+   1. View shell
+   ========================================================================= */
+
+.fw-mission {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  inline-size: 100%;
+  max-inline-size: 100%;
+  /* The graph pans inside its own region. The page itself never scrolls. */
+  overflow: hidden;
+  background: var(--forge-color-bg);
+}
+
+/* =========================================================================
+   2. Header strip
+   ========================================================================= */
+
+.fw-mission__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--fw-gap);
+  padding: var(--fw-gutter) var(--fw-gutter) var(--fw-gutter-tight);
+  border-block-end: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  background: var(--forge-color-bg);
+}
+
+.fw-mission__ident {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  min-inline-size: 0;
+  flex: 1 1 22rem;
+}
+
+.fw-mission__title {
+  font-size: var(--forge-text-lg);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text);
+  /* Human-written mission goal: sans, deliberately not the machine face. */
+  max-inline-size: var(--forge-layout-reading);
+}
+
+.fw-mission__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2) var(--forge-space-4);
+  margin-block-start: var(--forge-space-1);
+}
+
+.fw-mission__meta-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-mission__meta-key {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-mission__meta .fw-machine {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+}
+
+/* =========================================================================
+   3. Controls
+   ========================================================================= */
+
+.fw-mission__controls {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+}
+
+.fw-mission__zoom {
+  min-inline-size: 4ch;
+  padding-inline: var(--forge-space-1);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-secondary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-mission__controls-hint {
+  align-items: center;
+  gap: var(--forge-space-1);
+}
+
+.fw-mission__hint-text {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+  margin-inline-end: var(--forge-space-2);
+}
+
+/* =========================================================================
+   4. Graph region
+   ========================================================================= */
+
+.fw-graph {
+  position: relative;
+  flex: 1 1 auto;
+  min-block-size: 0;
+  min-inline-size: 0;
+}
+
+.fw-graph__canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--forge-color-canvas);
+  cursor: grab;
+  /* Pointer drags belong to the graph, not to the page. */
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.fw-graph__canvas.is-panning {
+  cursor: grabbing;
+}
+
+.fw-graph__canvas:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--forge-border-thick) var(--forge-color-focus);
+}
+
+.fw-graph__world {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  transform-origin: 0 0;
+}
+
+.fw-graph__world.is-smooth {
+  transition: transform var(--forge-motion-base) var(--forge-motion-ease-standard);
+}
+
+.fw-graph__svg {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: block;
+  overflow: visible;
+  /* app.css caps every svg at 100% of its parent; the world is wider than the
+     viewport by design, so this one opts out. */
+  max-inline-size: none;
+}
+
+.fw-graph__nodes {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+}
+
+/* =========================================================================
+   5. Lane bands
+   The band is a surface step, not a colour. The two-pixel tick at its left
+   edge carries the agent-group luminance, which is the only thing that
+   distinguishes one band from another beyond its name.
+   ========================================================================= */
+
+.fw-graph__band {
+  --fw-lane-tone: var(--forge-color-line-strong);
+}
+
+.fw-graph__band[data-group='control'] { --fw-lane-tone: var(--forge-group-control); }
+.fw-graph__band[data-group='context'] { --fw-lane-tone: var(--forge-group-context); }
+.fw-graph__band[data-group='planning'] { --fw-lane-tone: var(--forge-group-planning); }
+.fw-graph__band[data-group='domain'] { --fw-lane-tone: var(--forge-group-domain); }
+.fw-graph__band[data-group='execution'] { --fw-lane-tone: var(--forge-group-execution); }
+.fw-graph__band[data-group='review'] { --fw-lane-tone: var(--forge-group-review); }
+.fw-graph__band[data-group='memory'] { --fw-lane-tone: var(--forge-group-memory); }
+
+.fw-graph__band-fill {
+  fill: var(--forge-color-surface-1);
+  fill-opacity: 0.66;
+  stroke: var(--forge-color-line-subtle);
+  stroke-width: 1;
+}
+
+.fw-graph__band-tick {
+  fill: var(--fw-lane-tone);
+  fill-opacity: 0.55;
+}
+
+.fw-graph__band-label {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  text-transform: uppercase;
+  fill: var(--forge-color-text-muted);
+}
+
+.fw-graph__band-group {
+  fill: var(--fw-lane-tone);
+  fill-opacity: 0.85;
+}
+
+/* =========================================================================
+   6. Connectors
+   Three weights, three dash patterns, one shared arrow geometry. Strokes do
+   not scale with the zoom so a 35% overview stays legible.
+   ========================================================================= */
+
+.fw-graph__edge {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  transition: opacity var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+.fw-graph__edge--flow {
+  stroke: var(--forge-color-line-loud);
+  stroke-width: 1.5;
+}
+
+.fw-graph__edge--dependency {
+  stroke: var(--forge-color-line-strong);
+  stroke-width: 1;
+  stroke-dasharray: 1 4;
+  opacity: 0.85;
+}
+
+.fw-graph__edge--feedback {
+  stroke: var(--forge-color-line-loud);
+  stroke-width: 1.25;
+  stroke-dasharray: 7 5;
+}
+
+.fw-graph__edge.is-emphasised {
+  stroke: var(--forge-color-text);
+  stroke-width: 2;
+  opacity: 1;
+}
+
+.fw-graph__edge.is-dimmed {
+  opacity: 0.22;
+}
+
+/* The repair loop advertises itself only while one of its ends is working. */
+.fw-graph__edge--feedback.is-live {
+  animation: fw-graph-return 1.6s linear infinite;
+}
+
+@keyframes fw-graph-return {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.fw-graph__arrow--flow { fill: var(--forge-color-line-loud); }
+.fw-graph__arrow--dependency { fill: var(--forge-color-line-strong); }
+.fw-graph__arrow--feedback { fill: var(--forge-color-line-loud); }
+.fw-graph__arrow--emphasis { fill: var(--forge-color-text); }
+
+/* ------------------------------------------------------------ edge labels */
+
+.fw-graph__edge-label-plate {
+  fill: var(--forge-color-bg);
+  stroke: var(--forge-color-line-subtle);
+  stroke-width: 1;
+}
+
+.fw-graph__edge-label-text {
+  font-family: var(--forge-font-mono);
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-normal);
+  fill: var(--forge-color-text-muted);
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.fw-graph__edge-label--feedback .fw-graph__edge-label-text {
+  fill: var(--forge-color-text-secondary);
+}
+
+.fw-graph__edge-label.is-dimmed {
+  opacity: 0.25;
+}
+
+.fw-graph__edge-label.is-emphasised .fw-graph__edge-label-plate {
+  stroke: var(--forge-color-line-strong);
+}
+
+.fw-graph__edge-label.is-emphasised .fw-graph__edge-label-text {
+  fill: var(--forge-color-text);
+}
+
+/* =========================================================================
+   7. Nodes
+   ========================================================================= */
+
+.fw-graph-node {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--forge-space-1);
+  padding: var(--forge-space-2);
+  overflow: hidden;
+  text-align: start;
+  cursor: pointer;
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  /* The status border treatment, straight off the tokens. */
+  border-inline-start: var(--fw-status-width) var(--fw-status-style) var(--fw-status-color);
+  border-radius: var(--forge-radius-md);
+  color: var(--forge-color-text);
+  box-shadow: var(--forge-shadow-sm);
+  transition:
+    background-color var(--forge-motion-fast) var(--forge-motion-ease-standard),
+    border-color var(--forge-motion-fast) var(--forge-motion-ease-standard),
+    opacity var(--forge-motion-fast) var(--forge-motion-ease-standard);
+}
+
+/* The spine sits one surface step above the lanes it commands. */
+.fw-graph-node--spine {
+  background: var(--forge-color-surface-2);
+}
+
+.fw-graph-node:hover {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-line-strong);
+  border-inline-start-color: var(--fw-status-color);
+}
+
+.fw-graph-node.is-selected {
+  background: var(--forge-color-surface-3);
+  border-color: var(--forge-color-text);
+  border-width: var(--forge-border-thick);
+  border-inline-start-color: var(--fw-status-color);
+  border-inline-start-width: var(--fw-status-width);
+  box-shadow: var(--forge-shadow-md);
+}
+
+.fw-graph-node.is-dimmed {
+  opacity: 0.42;
+}
+
+.fw-graph-node:hover.is-dimmed {
+  opacity: 0.8;
+}
+
+.fw-graph-node__head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-graph-node__glyph {
+  flex: none;
+  color: var(--forge-color-text-muted);
+}
+
+.fw-graph-node__label {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  line-height: var(--forge-leading-tight);
+  letter-spacing: var(--forge-tracking-tight);
+}
+
+.fw-graph-node__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-graph-node__meta {
+  min-inline-size: 0;
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-none);
+  color: var(--forge-color-text-muted);
+}
+
+/* The single rationed use of the accent inside the graph: real progress. */
+.fw-graph-node__progress {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 0;
+  block-size: var(--forge-border-thick);
+  inline-size: var(--fw-progress, 0%);
+  background: var(--forge-color-accent);
+}
+
+/* =========================================================================
+   8. Minimap
+   ========================================================================= */
+
+.fw-graph__minimap {
+  position: absolute;
+  inset-block-end: var(--forge-space-3);
+  inset-inline-end: var(--forge-space-3);
+  inline-size: var(--forge-layout-minimap-w);
+  block-size: var(--forge-layout-minimap-h);
+  padding: 0;
+  overflow: hidden;
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  box-shadow: var(--forge-shadow-md);
+}
+
+.fw-graph__minimap-svg {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.fw-graph__minimap-band {
+  fill: var(--forge-color-surface-3);
+  fill-opacity: 0.6;
+}
+
+.fw-graph__minimap-node {
+  fill: var(--fw-status-color);
+  fill-opacity: 0.7;
+}
+
+.fw-graph__minimap-node.is-selected {
+  fill: var(--forge-color-text);
+  fill-opacity: 1;
+}
+
+.fw-graph__minimap-view {
+  fill: var(--forge-color-selected);
+  stroke: var(--forge-color-line-loud);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* =========================================================================
+   9. Legend and the honesty note
+   ========================================================================= */
+
+.fw-graph__legend {
+  position: absolute;
+  inset-block-end: var(--forge-space-3);
+  inset-inline-start: var(--forge-space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--forge-space-2) var(--forge-space-4);
+  max-inline-size: min(34rem, calc(100% - var(--forge-layout-minimap-w) - var(--forge-space-10)));
+  padding: var(--forge-space-2) var(--forge-space-3);
+  background: var(--forge-color-surface-1);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  box-shadow: var(--forge-shadow-sm);
+}
+
+.fw-graph__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+}
+
+.fw-graph__legend-mark {
+  flex: none;
+  inline-size: 26px;
+  block-size: 8px;
+  overflow: visible;
+}
+
+.fw-graph__legend-line {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.fw-graph__legend-line--flow {
+  stroke: var(--forge-color-line-loud);
+  stroke-width: 1.5;
+}
+
+.fw-graph__legend-line--dependency {
+  stroke: var(--forge-color-line-strong);
+  stroke-width: 1;
+  stroke-dasharray: 1 4;
+}
+
+.fw-graph__legend-line--feedback {
+  stroke: var(--forge-color-line-loud);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+}
+
+.fw-graph__legend-head {
+  fill: var(--forge-color-line-loud);
+}
+
+.fw-graph__legend-text {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-eyebrow);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-graph__legend-note {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* =========================================================================
+   10. Density
+   ========================================================================= */
+
+:root[data-density='compact'] .fw-graph-node {
+  padding: var(--forge-space-1) var(--forge-space-2);
+  gap: 0;
+}
+
+:root[data-density='compact'] .fw-graph-node__label {
+  font-size: var(--forge-text-xs);
+}
+
+:root[data-density='compact'] .fw-mission__meta {
+  gap: var(--forge-space-1) var(--forge-space-3);
+  margin-block-start: 0;
+}
+
+:root[data-density='compact'] .fw-graph__legend {
+  padding: var(--forge-space-1) var(--forge-space-2);
+}
+
+/* =========================================================================
+   11. Narrow layouts
+   Under 860px the minimap and the legend swatches go, the header meta trims
+   to what fits, and the graph keeps panning inside its own region. The page
+   never gains a horizontal scrollbar.
+   ========================================================================= */
+
+@media (max-width: 1180px) {
+  .fw-mission__controls-hint {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .fw-mission__header {
+    align-items: flex-start;
+    gap: var(--forge-space-2);
+  }
+
+  .fw-mission__controls {
+    margin-inline-start: 0;
+  }
+
+  .fw-mission__meta-item--wide {
+    display: none;
+  }
+
+  .fw-graph__minimap {
+    display: none;
+  }
+
+  .fw-graph__legend-item {
+    display: none;
+  }
+
+  .fw-graph__legend {
+    max-inline-size: calc(100% - var(--forge-space-6));
+  }
+}
+
+/* =========================================================================
+   12. Reduced motion
+   The return-path dash and the eased viewport are the only motion in the
+   view, and both stop here.
+   ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-graph__world.is-smooth {
+    transition: none;
+  }
+
+  .fw-graph__edge--feedback.is-live {
+    animation: none;
+  }
+
+  .fw-graph-node,
+  .fw-graph__edge {
+    transition: none;
+  }
+}

@@ -1547,6 +1547,30 @@ t('skillHygiene: a genuinely missing reference in the SAME skill is still flagge
   (shGenSkill.issues || []).some((i) => i.includes('.claude/forge-bin/really-missing.cjs')), JSON.stringify(shGenSkill));
 t('skillHygiene: so the skill is still not ok (the real gap survives the reclassification)', shGenSkill.ok === false);
 
+// (4c) the written path lives in a VARIABLE (2026-09-23). MEASURED on forge-setup.cjs, restored this release:
+// `const projMarkerPath = path.join(projectDir, '.claude', '.forge-setup.json')` … fifteen lines later
+// `fs.writeFileSync(projMarkerPath, …)`. Neither line holds both the write API and the literal, so (4b)'s
+// same-line window missed it and forge-router's honest reference to `.claude/.forge-setup.json` was reported
+// as dangling. generatedPathBasenames() now resolves the written argument to its declaration in the same file.
+// Guards in both directions: the resolved name IS reclassified; an identifier that is never written to is NOT.
+const SH_VAR_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-generated-var-');
+fs.writeFileSync(path.join(SH_VAR_ROOT, '.claude', 'forge-bin', 'marker-var.cjs'),
+  "'use strict';\nconst fs = require('fs');\nconst path = require('path');\n"
+  + "const unusedPath = path.join(dir, '.never-written.json');\n"
+  + "const markerPath = path.join(dir, '.claude', '.a-variable-marker.json');\n"
+  + "function save(dir) {\n  const body = '{}';\n  fs.writeFileSync(markerPath, body, 'utf8');\n}\n"
+  + "module.exports = { save, unusedPath };\n");
+fs.mkdirSync(path.join(SH_VAR_ROOT, '.claude', 'skills', 'gen-var'), { recursive: true });
+fs.writeFileSync(path.join(SH_VAR_ROOT, '.claude', 'skills', 'gen-var', 'SKILL.md'),
+  '---\nname: gen-var\ndescription: A short, valid description.\n---\n\n# gen-var\n\n'
+  + 'Reads `.claude/.a-variable-marker.json` (written by marker-var.cjs) and mentions `.claude/.never-written.json`.\n');
+const shVarRep = D.runDoctor(SH_VAR_ROOT);
+const shVarSkill = shVarRep.advisory.completeness.skill_hygiene.skills.find((s) => s.skill === 'gen-var') || {};
+t('skillHygiene: a path built into a variable and written later is resolved to its declaration (not dangling)',
+  !JSON.stringify(shVarSkill.issues || []).includes('.a-variable-marker.json') && Array.isArray(shVarSkill.generated_refs) && shVarSkill.generated_refs.includes('.claude/.a-variable-marker.json'), JSON.stringify(shVarSkill));
+t('skillHygiene: a path variable that is NEVER handed to a write API stays a dangling reference (the resolution did not widen into "every literal in the file")',
+  (shVarSkill.issues || []).some((i) => i.includes('.claude/.never-written.json')), JSON.stringify(shVarSkill));
+
 // (5) prose-with-slash NOT flagged: an alternation phrase ("manifest.json/events.jsonl", meaning "either
 // file", not a nested directory) and an UNANCHORED path-shaped example (a generic downstream-project
 // illustration with neither a .claude/ nor a references//scripts//assets/ prefix) must both be silently
@@ -1688,7 +1712,17 @@ t('context_budget: the REAL project has no dead @-include in its global chain', 
 // the skill surface is THREE sources, reported separately (2026-08-01, second pass): the meter used to count
 // only this project's .claude/skills — 57 of the 278 skills a session carries — and the doctor line repeated
 // that as the whole figure. Both the JSON and the printed line must now carry the breakdown.
-t('context_budget: the REAL measurement reports all three skill sources separately, none of them zero on this machine', cbudReal.skill_sources.length === 3 && cbudReal.skill_sources.every((s) => s.skills > 0), JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
+// "none of them zero on THIS machine" is a statement about the author's ~/.claude, not about the meter:
+// a fresh install or a CI runner has no global skill catalog and no plugins, so 0 is the truth there.
+// The structural half (three sources, reported separately) stays strict everywhere; the non-zero half
+// only where a global catalog actually exists (external audit II-B, 2026-09-23).
+t('context_budget: the REAL measurement reports all three skill sources separately', cbudReal.skill_sources.length === 3, JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
+if (fs.existsSync(path.join(require('os').homedir(), '.claude', 'skills')) && fs.existsSync(path.join(require('os').homedir(), '.claude', 'plugins'))) {
+  t('context_budget: on a machine WITH a global skills dir and a plugin catalog, none of the three sources is zero', cbudReal.skill_sources.every((s) => s.skills > 0), JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
+} else {
+  skipped++;
+  console.log('  SKIP context_budget non-zero-sources — this machine has no ~/.claude/skills and/or ~/.claude/plugins; a zero count is the truth here, not a defect');
+}
 t('context_budget: the two out-of-project catalogs are flagged read-only, never write-touched', cbudReal.skill_sources.filter((s) => !s.in_project).length === 2 && cbudReal.skill_sources.filter((s) => !s.in_project).every((s) => s.access === 'read-only'), JSON.stringify(cbudReal.skill_sources.map((s) => s.id + ':' + s.access)));
 t('context_budget: no skill walk hit its depth cap on the real machine (a capped walk would be a finding, not a smaller number)', !cbudReal.findings.some((f) => f.kind === 'depth_capped'), JSON.stringify(cbudReal.findings.filter((f) => f.kind === 'depth_capped')));
 // asserted on the doctor report ALREADY computed above — never on a second runDoctor(REAL_PROJECT_ROOT),
@@ -1742,6 +1776,13 @@ devTreeOnly('skillHygiene: forge-snapshot still REPORTS its runtime marker, now 
   t('skillHygiene: forge-snapshot still REPORTS its runtime marker, now as a generated ref',
     (realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot') || {}).generated_refs?.some((r) => r.includes('.forge-snapshot-due.json')) === true,
     JSON.stringify(realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot'))));
+// (d) 2026-09-23: forge-router and forge-intake now read `.claude/.forge-setup.json` (what /setup-forge saved,
+// so the silent intake never re-asks it). forge-setup.cjs writes that file through a path VARIABLE; the
+// reference must surface as a generated ref, not as the dangling link the real doctor reported before the fix.
+devTreeOnly('skillHygiene: forge-router REPORTS the /setup-forge marker as a generated ref (variable-written path resolved)', () =>
+  t('skillHygiene: forge-router REPORTS the /setup-forge marker as a generated ref (variable-written path resolved)',
+    (realSkillHygiene.skills.find((s) => s.skill === 'forge-router') || {}).generated_refs?.some((r) => r.includes('.forge-setup.json')) === true,
+    JSON.stringify(realSkillHygiene.skills.find((s) => s.skill === 'forge-router'))));
 // The three assertions below all describe the VENDORED skills specifically, which is exactly the surface
 // the distribution strips. Note that two of them are `every(...)` over a filtered array: in a tree with no
 // vendored skills they would not fail, they would pass VACUOUSLY over an empty list — a silent green that

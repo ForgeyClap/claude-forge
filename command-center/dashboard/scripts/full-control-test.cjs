@@ -28,7 +28,7 @@ const RESULTS_PATH = path.join(EVIDENCE_DIR, 'full-control-results.json');
 const NEW_PROJECT_NAME = 'dashboard-selftest';
 const NEW_PROJECT_ROOT = path.join(os.homedir(), 'Documents', 'ForgeProjects');
 const NEW_PROJECT_PATH = path.join(NEW_PROJECT_ROOT, NEW_PROJECT_NAME);
-const ATTACH_PROJECT = 'my-forge-project';
+const ATTACH_PROJECT = 'my project (v2)!';
 const ATTACH_TEST_FILE = path.join(SHOT_DIR, 'attach-test.txt');
 
 const ROUTES = [

@@ -148,6 +148,7 @@ function abandonPendingAsk(convId, reason) {
 // { started:false, reason }. Never throws — every failure path is a truthful, reported reason
 // (per D2: "a degraded but truthful product beats a fake send button").
 export function startExecution({ convId, turnId, requestId, text, cwd, mode, effort, model }) {
+  if (drainModeReason !== null) return { started: false, reason: 'gateway is draining (' + drainModeReason + ') — no new executions; the supervisor will start a fresh gateway' };
   const availability = executionAvailability();
   if (!availability.available) return { started: false, reason: availability.note };
   if (isConversationBusy(convId)) return { started: false, reason: 'conversation already has a pending execution' };
@@ -269,6 +270,10 @@ export function startExecution({ convId, turnId, requestId, text, cwd, mode, eff
     finished = true;
     return true;
   }
+  // r5 #27: interruptAllExecutions (drain) moet dezelfde terminal-guard kunnen zetten als de timeout- en
+  // close-handlers — anders schreef een late 'close' na het interrupted-event alsnog een normale
+  // assistant-turn en was "interrupted" niet terminaal.
+  entry.markFinished = markFinished;
 
   const timeoutMs = resolveExecTimeoutMs();
   // feat-fix-ghost-asks: pulled out of the inline scheduleExecTimeout() arrow this used to be, into
@@ -470,8 +475,11 @@ export function startExecution({ convId, turnId, requestId, text, cwd, mode, eff
     //      not control where the pipe splits), and neither half then matches on its own;
     //   2. the surviving raw text was then cut at STDERR_CAP_BYTES and only redacted AFTER the cut, so
     //      the PEM pattern lost the `-----END ...` it needs and left its readable head behind.
-    // Measured: a PEM split at char 3950 came through the cap with `-----BEGIN RSA PRIVATE KEY-----`
-    // plus body intact. Accumulating raw and redacting ONCE, on the whole buffer at close (via
+    // Measured: a PEM split at char 3950 came through the cap with its `BEGIN RSA PRIVATE KEY`
+    // armour line (dashes and all) plus body intact. The dashes are left off this sentence on
+    // purpose — spelled in full, the marker makes this comment itself look like a leaked key to
+    // every credential scanner that reads the file, including this project's own, which reported
+    // it. Accumulating raw and redacting ONCE, on the whole buffer at close (via
     // redactAndCap below), closes both: the pattern always sees the credential whole. Memory is
     // unchanged — this buffer already accumulated without a running bound.
     child.stderr.on('data', (chunk) => { stderrBuffer += chunk.toString('utf8'); });
@@ -587,6 +595,32 @@ export function stopExecution(convId) {
   return { stopped: true };
 }
 
+/** SHUTDOWN-COÖRDINATIE (Codex r4 #13-rest, 2026-08-07). De drain sloot alleen HTTP: actieve claude-
+ *  children liepen door terwijl de supervisor al een verse gateway startte — twee schrijvers op dezelfde
+ *  bestanden. Nu: (1) `enterDrainMode()` blokkeert elke NIEUWE executie met een eerlijke reden;
+ *  (2) `interruptAllExecutions()` markeert iedere lopende executie duurzaam als 'interrupted' in haar
+ *  conversation-ledger, tree-killt de exacte kind-PID (killChildTree — /T op win32, eigen spawns) en
+ *  sluit hangende asks af. Beide worden door bin.mjs' degradeAndDrain aangeroepen vóór de exit. */
+let drainModeReason = null;
+export function enterDrainMode(reason) { drainModeReason = reason || 'gateway is draining after a fatal error'; }
+export function isDraining() { return drainModeReason !== null; }
+export function interruptAllExecutions(reason) {
+  const interrupted = [];
+  for (const [convId, entry] of [...running.entries()]) {
+    const { child, turnId, requestId, timeoutTimer } = entry;
+    running.delete(convId);
+    clearExecTimeout(timeoutTimer);
+    // r5 #27: terminal-guard EERST — de close/error-handlers van dit kind zien finished=true en schrijven
+    // geen normale assistant-turn meer; 'interrupted' is daarmee de ene terminale ledgeruitkomst.
+    if (typeof entry.markFinished === 'function') entry.markFinished();
+    killChildTree(child);
+    try { appendConversationEvent(convId, { turn_id: turnId, request_id: requestId, kind: 'interrupted', data: { reason: reason || 'gateway drain' } }); } catch { /* best-effort — de kill zelf is het belangrijkst */ }
+    abandonPendingAsk(convId, 'gateway_drain');
+    interrupted.push({ convId, pid: child && child.pid });
+  }
+  return interrupted;
+}
+
 /**
  * feat-fix-ghost-asks item 4: called by server.mjs the instant a real `ask_owner` call registers a
  * pending question for THIS conv's currently running execution (`POST /api/ask`, BEFORE it starts
@@ -678,4 +712,5 @@ export function _resetExecBridgeForTests() {
   for (const entry of running.values()) clearExecTimeout(entry.timeoutTimer);
   running.clear();
   execTimeoutMsOverride = null;
+  drainModeReason = null;
 }

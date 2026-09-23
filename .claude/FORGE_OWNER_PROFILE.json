@@ -1,59 +1,60 @@
 {
-  "_doc": "Forge V2 WAVE B / PIECE B1 (2026-07-18) — project-local canonical SEED of durable owner defaults that pre-fill intake. This is THIS project's own copy; the global ~/.claude/FORGE_OWNER_PROFILE.json copy is deployed in a later, separate step and is owner-write-only (never written automatically by any tool). Read via .claude/forge-bin/forge-prefs.cjs::resolve() — do not change this file's shape without updating that reader's validateEntry(). Every pref is {value, source, confidence, scope}: value is the actual default; source is the verbatim owner quote or policy filename that evidences it (never fabricated — omit a pref entirely rather than invent one); confidence is 'evidenced' (directly grounded in a real quote/policy, as every pref below is) or 'inferred' (a reasonable but not directly-quoted extrapolation — none seeded here); scope is 'global' (applies regardless of project/task type) or 'domain:<x>' (applies only when the task/project matches that domain). honesty_core.cannot_override_core:true is the untouchable invariant — no later rule/candidate may weaken it, only reinforce it (enforced by future forge-doctor wiring, not yet built in this piece). NOT YET WIRED into intake/router — that is a later piece (B4); this file + forge-prefs.cjs only resolve/read it so far.",
+  "_doc": "Project-local SEED of durable owner defaults that pre-fill intake. Read via .claude/forge-bin/forge-prefs.cjs::resolve() — do not change this file's shape without updating that reader's validateEntry(). Every pref is {value, source, confidence, scope}: value is the actual default; source is the shipped document (or the owner's own words, once they said them) that evidences it — never invented; confidence is 'evidenced' or 'inferred'; scope is 'global' or 'domain:<x>'. honesty_core.cannot_override_core:true is the untouchable invariant — no later rule may weaken it, only reinforce it. The global copy (~/.claude/FORGE_OWNER_PROFILE.json) is owner-write-only and layers on top of this file.",
+  "_doc_seed": "2026-09-23 (external audit II-D): the distribution used to ship the AUTHOR's own preferences here, each quoted as an owner rule (\"source: owner AskUserQuestion answer this session\") — applied to users who never answered anything. The nine entries below are now Forge's PRODUCT DEFAULTS: each `source` names the shipped document that defines the behaviour, not a person. `/forge remember <text>` adds your own rules on top (they land in ~/.claude/FORGE_OWNER_PROFILE.json and win over these).",
   "version": 1,
-  "seeded_at": "2026-07-18",
+  "seeded_at": "2026-09-23",
   "prefs": {
     "never_auto_push": {
       "value": true,
-      "source": "recurring owner rule \"NIET gepusht\" / \"Commit or push only when the user asks\"",
+      "source": "Forge default — .claude/commands/forge.md: push, deploy, spend, DNS, production and outbound sends are hard gates; git push only on an explicit owner instruction",
       "confidence": "evidenced",
       "scope": "global"
     },
     "language": {
-      "value": { "ui": "match-owner (nl when owner writes Dutch)", "code_docs": "en" },
-      "source": "owner writes Dutch + \"ook wil ik dat de gehele app ook internationaal word\" + project CLAUDE.md English-default",
+      "value": { "ui": "match-owner (reply in the language the owner writes)", "code_docs": "en" },
+      "source": "Forge default — .claude/skills/forge-core/SKILL.md (v8 owner-memory: language follows the owner's messages; code and docs stay English)",
       "confidence": "evidenced",
       "scope": "global"
     },
     "deep_research_first": {
       "value": true,
-      "source": "\"/deep-research\", \"start een loop van 2 uur onderzoek, stop niet eerder\"",
+      "source": "Forge default — .claude/skills/forge-scout/SKILL.md: research tasks start from sources, never from memory alone",
       "confidence": "evidenced",
       "scope": "domain:research"
     },
     "real_file_testing_for_correctness_critical": {
       "value": true,
-      "source": "honesty core + \"Never claim a check/test ran if it didn't\"",
+      "source": "Forge honesty core — CLAUDE.md 'Honesty (REQUIRED)': never claim a check or test ran if it did not; correctness-critical work needs real fixtures",
       "confidence": "evidenced",
       "scope": "global"
     },
     "codex_on_high_risk": {
       "value": "optional-on-request",
-      "source": "CODEX_GLOBAL_POLICY (read-only, not a blocker)",
+      "source": "Forge default — CLAUDE.md 'Codex (optional reviewer)': available for important changes, read-only, never a blocker",
       "confidence": "evidenced",
       "scope": "global"
     },
     "ui_quality_default": {
       "value": true,
-      "source": "web design-quality rules + repeated \"fix de UI/animaties\" asks (screenshot-loop + no-template-look + tasteful motion for web/full-stack)",
+      "source": "Forge default — .claude/skills/forge-website/SKILL.md: responsive screenshot loop, no template look, purposeful motion for web and full-stack work",
       "confidence": "evidenced",
       "scope": "domain:website"
     },
     "autonomy_default": {
       "value": "continue-within-mission",
-      "source": "owner AskUserQuestion answer this session",
+      "source": "Forge default — .claude/commands/forge.md: autonomy `continue-within-mission` (no phase re-asking); hard gates always interrupt",
       "confidence": "evidenced",
       "scope": "global"
     },
     "outreach_draft_only": {
       "value": true,
-      "source": "per-domain principles \"outreach drafted-only unless owner approves\"",
+      "source": "Forge default — .claude/skills/forge-bots/SKILL.md and forge-scraping: outreach is drafted only; nothing is sent without explicit owner approval",
       "confidence": "evidenced",
       "scope": "global"
     },
     "honesty_core": {
       "value": { "cannot_override_core": true },
-      "source": "FORGE honesty core (untouchable)",
+      "source": "Forge honesty core — CLAUDE.md 'Honesty (REQUIRED)' (untouchable)",
       "confidence": "evidenced",
       "scope": "global"
     }

@@ -4,7 +4,7 @@
 
 Every slash command, sub-flow, dashboard control, natural-language trigger, and zero-dependency terminal tool — in one scannable page.
 
-**2 slash commands · 18 agents · 23 skills · a fleet of zero-dep `.cjs` tools.**
+**2 slash commands · 19 agents · 59 skills · 93 zero-dep `.cjs` tools (full install; the LITE plugin has 18 agents and 31 skills).**
 
 </div>
 
@@ -184,7 +184,7 @@ node .claude/forge-dashboard/log-event.cjs '<json>'
 
 ## `forge-bin/` terminal tools
 
-Cross-platform wrappers with **no global install** — everything runs from the project folder. Each has a PowerShell `.ps1`, CMD `.cmd`, and Bash `.sh` form, plus a `forge` dispatcher. If a `package.json` exists, matching `npm run forge:*` scripts work too.
+Cross-platform wrappers with **no global install** — everything runs from the project folder. Each has a PowerShell `.ps1`, CMD `.cmd`, and Bash `.sh` form, plus a `forge` dispatcher.
 
 ### Wrappers (day-to-day)
 
@@ -193,12 +193,12 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 | `forge` | Dispatcher — routes to the sub-tools below. | `.\.claude\forge-bin\forge.ps1 dashboard` |
 | `forge-dashboard` | Start / health-check the Command Center. | `.claude\forge-bin\forge-dashboard.cmd` |
 | `forge-status` | Print project + latest-run status. | `bash .claude/forge-bin/forge-status.sh` |
-| `forge-runs` | List runs newest-first. | `npm run forge:runs` |
-| `forge-open-report` | Print the newest final report. | `npm run forge:open-report` |
+| `forge-runs` | List runs newest-first. | `.claude/forge-bin/forge-runs.cmd` |
+| `forge-open-report` | Print the newest final report. | `.claude/forge-bin/forge-open-report.cmd` |
 | `forge-log-event` | Append a real event to a run. | `.\.claude\forge-bin\forge-log-event.ps1 <run_id> <type> "<json>"` |
 
 > [!TIP]
-> **Pick your shell:** PowerShell `.\.claude\forge-bin\forge-dashboard.ps1` · CMD `.claude\forge-bin\forge-dashboard.cmd` · Bash `bash .claude/forge-bin/forge-dashboard.sh` · npm `npm run forge:dashboard`. Same pattern for `forge-status` / `forge-runs` / `forge-open-report`.
+> **Pick your shell:** PowerShell `.\.claude\forge-bin\forge-dashboard.ps1` · CMD `.claude\forge-bin\forge-dashboard.cmd` · Bash `bash .claude/forge-bin/forge-dashboard.sh` · npm `.claude/forge-bin/forge-dashboard.cmd` (or `.ps1` / `.sh`). Same pattern for `forge-status` / `forge-runs` / `forge-open-report`.
 
 ### Core engines (`node .claude/forge-bin/<tool>.cjs`)
 

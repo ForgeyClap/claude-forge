@@ -144,7 +144,11 @@ function runsScript(cmd, signature) {
 
 // ---- real Windows collectors (all injectable; never called by the tests) ------------------------------
 function ps(script) {
-  return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  /** 2026-09-23 (external audit II-G): Get-NetTCPConnection/Get-ScheduledTask raise a NON-terminating error
+   *  when nothing matches; -EA SilentlyContinue hides the text but powershell.exe still exits 1, so
+   *  execFileSync threw and every target line carried '!! lookup failed' while the answer ('none') was
+   *  correct. The probe now ends with an explicit `exit 0`; an empty result is 'none', not a failure. */
+  return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script + '; exit 0'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
 function asArray(parsed) { return parsed === null || parsed === undefined ? [] : (Array.isArray(parsed) ? parsed : [parsed]); }
 

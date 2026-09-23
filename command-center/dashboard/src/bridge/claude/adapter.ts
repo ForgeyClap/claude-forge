@@ -126,6 +126,48 @@ const DEFAULT_MAX_STDERR_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_STDERR_EVENTS = 200;
 const TASKKILL_TIMEOUT_MS = 15_000;
 
+/**
+ * The stderr hand-over buffer. See `consumeStderr`.
+ *
+ * A process that writes megabytes without ever emitting a newline must not be buffered until it
+ * exits — the events would arrive too late to be a live view, and the buffer would grow without a
+ * ceiling. Past this many held-back characters the tail is released anyway, keeping only the last
+ * `STDERR_CARRY_KEEP_CHARS` so a credential sitting on the forced split is still whole next time.
+ *
+ * HONEST LIMIT: a single secret longer than the keep window can still be cut by that forced release.
+ * 4 KiB is longer than every shape `redactSecrets` knows (the longest realistic one is a JWT with a
+ * fat payload), but "longer than anything we have seen" is not "impossible", and this is a denylist
+ * either way. It narrows the window; it does not claim to close it.
+ */
+const STDERR_CARRY_FORCE_FLUSH_CHARS = 64 * 1024;
+const STDERR_CARRY_KEEP_CHARS = 4 * 1024;
+
+const REDACTION_MARKER = '[REDACTED';
+
+function countRedactionMarkers(text: string): number {
+  let found = 0;
+  let at = text.indexOf(REDACTION_MARKER);
+  while (at !== -1) {
+    found += 1;
+    at = text.indexOf(REDACTION_MARKER, at + REDACTION_MARKER.length);
+  }
+  return found;
+}
+
+/**
+ * `redactSecrets`, plus how many values it actually replaced.
+ *
+ * The count is derived from the markers the redactor writes, minus any the input already contained —
+ * text that arrives with a literal "[REDACTED" in it (a log line quoting an earlier redaction, or
+ * someone trying to spoof the tally) must not inflate the number. It is a lower bound on what was
+ * there, never an invented one.
+ */
+function redactAndCount(text: string): { readonly text: string; readonly redactions: number } {
+  const alreadyMarked = countRedactionMarkers(text);
+  const redacted = redactSecrets(text);
+  return { text: redacted, redactions: Math.max(0, countRedactionMarkers(redacted) - alreadyMarked) };
+}
+
 export type EventSink = (draft: ForgeEventDraft) => void;
 
 export interface AdapterOptions {
@@ -145,6 +187,18 @@ export interface AdapterOptions {
   readonly maxStderrEvents?: number;
   /** TEST-ONLY seam. Forces win32 vs posix cancellation semantics. */
   readonly platform?: string;
+  /**
+   * TEST-ONLY seam. Replaces the child-process factory so the stream handling can be driven against
+   * a scripted child instead of a real executable — the only way to put a chunk boundary in an exact
+   * place, which is what the stderr redaction tests need.
+   *
+   * It widens nothing. Every gate that decides WHAT may be spawned — the path guard, the flag gate,
+   * `assertArgvIsSafe` — has already run by the time this is called, and it is set only by the code
+   * that constructs the adapter, never from a request. It sits beside the existing `now` and
+   * `platform` seams for the same reason: behaviour that depends on the environment has to be
+   * substitutable or it cannot be tested at all.
+   */
+  readonly spawnChild?: typeof spawn;
 }
 
 export interface StartRunRequest {
@@ -530,6 +584,10 @@ interface RunEntry {
   streamingAnnounced: boolean;
   stderrBytes: number;
   stderrEvents: number;
+  /** stderr received but deliberately not released yet, so the next chunk can be redacted with it. */
+  stderrCarry: string;
+  /** How many secret-shaped values have been scrubbed out of this run's stderr so far. */
+  stderrRedactions: number;
   sinkFailures: number;
   cancelRequested: boolean;
   cancelReason: string | null;
@@ -547,12 +605,14 @@ export class ClaudeAdapter {
   private readonly options: AdapterOptions;
   private readonly now: () => Date;
   private readonly platform: string;
+  private readonly spawnChild: typeof spawn;
   private readonly runs = new Map<string, RunEntry>();
 
   constructor(options: AdapterOptions) {
     this.options = options;
     this.now = options.now ?? (() => new Date());
     this.platform = options.platform ?? os.platform();
+    this.spawnChild = options.spawnChild ?? spawn;
     ensureDir(resolve(options.evidenceDir));
   }
 
@@ -659,7 +719,7 @@ export class ClaudeAdapter {
       }, [{ kind: 'file', ref: `${request.runId}/argv.json`, note: 'the argv that was assembled, with the prompt hashed' }]),
     );
 
-    const child = spawn(this.options.located.executablePath, [...built.argv], {
+    const child = this.spawnChild(this.options.located.executablePath, [...built.argv], {
       cwd: canonicalProjectPath,
       shell: false,
       windowsHide: true,
@@ -692,6 +752,8 @@ export class ClaudeAdapter {
       streamingAnnounced: false,
       stderrBytes: 0,
       stderrEvents: 0,
+      stderrCarry: '',
+      stderrRedactions: 0,
       sinkFailures: 0,
       cancelRequested: false,
       cancelReason: null,
@@ -834,14 +896,95 @@ export class ClaudeAdapter {
     for (const draft of drafts) this.emitDraft(draft);
   }
 
+  /**
+   * Take one stderr chunk and decide how much of it may be released.
+   *
+   * A CHUNK IS NOT A UNIT OF MEANING. The OS decides where a read splits, not the writer. Redacting
+   * each chunk on its own therefore misses any credential that lands on the seam: neither half is a
+   * complete token, neither half matches a pattern, and both halves go out verbatim — reassembling
+   * the event stream (or reading the evidence file) hands the reader the whole secret back. Found on
+   * 2026-08-02; pinned by tests/unit/stderr-chunk-boundary-redaction.test.ts.
+   *
+   * This is NOT the cap-before-redact defect fixed on 2026-08-01 (see the comment on `rawExcerpt` in
+   * `wire`, and tests/unit/excerpt-redaction-order.test.ts). That one was a single value being
+   * sliced before it was scrubbed. This one is two separate calls that never see the whole token, so
+   * no amount of care inside `safeExcerpt` can help; the fix has to be a hand-over buffer.
+   *
+   * So: text is released only once a newline has arrived after it. Every pattern in `redactSecrets`
+   * matches within one log line, so a line boundary is a place where a secret cannot be straddling
+   * the split. The unterminated tail is carried into the next chunk and redacted together with it.
+   * Nothing is released twice — the carry is CONSUMED when it is released, not copied.
+   */
   private consumeStderr(entry: RunEntry, chunk: string): void {
+    if (chunk.length === 0) return;
+    entry.stderrCarry += chunk;
+
+    const lastNewline = entry.stderrCarry.lastIndexOf('\n');
+    if (lastNewline >= 0) {
+      const ready = entry.stderrCarry.slice(0, lastNewline + 1);
+      entry.stderrCarry = entry.stderrCarry.slice(lastNewline + 1);
+      this.releaseStderr(entry, ready);
+    }
+
+    // A newline may never come. Releasing an over-long tail keeps the live view live and the buffer
+    // bounded; the kept window is what stops the forced split from becoming the very leak this
+    // method exists to prevent.
+    if (entry.stderrCarry.length > STDERR_CARRY_FORCE_FLUSH_CHARS) {
+      const releaseUpTo = entry.stderrCarry.length - STDERR_CARRY_KEEP_CHARS;
+      const ready = entry.stderrCarry.slice(0, releaseUpTo);
+      entry.stderrCarry = entry.stderrCarry.slice(releaseUpTo);
+      this.releaseStderr(entry, ready);
+    }
+  }
+
+  /**
+   * The process is gone: whatever is still held back is released now or never.
+   *
+   * Two real cases end here — a final line the process never terminated with a newline, and a run
+   * that dies with a partly-written line in flight. Holding a credential back forever would be safe
+   * but dishonest: the diagnostic would silently vanish from the evidence file.
+   */
+  private flushStderr(entry: RunEntry): void {
+    if (entry.stderrCarry.length === 0) return;
+    const remaining = entry.stderrCarry;
+    entry.stderrCarry = '';
+    this.releaseStderr(entry, remaining);
+  }
+
+  /**
+   * Write one released stderr segment to the evidence file and emit it as an event.
+   *
+   * WHY THE EVIDENCE FILE IS REDACTED TOO (changed 2026-08-02). This used to append the RAW chunk,
+   * with the comment "the full capture is in the evidence file" — deliberate, and forensically the
+   * right instinct, but it meant a live API token from a failing auth call sat in plain text in
+   * `<runDir>/stderr.log` for as long as that run's evidence is kept. Nobody chose to store a
+   * credential at rest; it arrived as a side effect of capturing diagnostics.
+   *
+   * The trade-off was weighed rather than assumed. Dropping the capture entirely would gut the only
+   * record of why a run failed. Encrypting it would move the problem to a key. Writing raw and
+   * "trusting the directory" is what we were already doing, and it is the thing that failed. So the
+   * segment is redacted BEFORE it is written, and the redaction is deliberately in-place: the
+   * `[REDACTED:jwt]` marker keeps the POSITION and the KIND of what was there, so an investigator
+   * reading the log still sees that the process printed a JWT at exactly this point in exactly this
+   * message. What is lost is the one thing we did not want on disk — the value itself. The count is
+   * carried on the event as `redactions` so the loss is visible from the outside too, not silent.
+   *
+   * The file gets `redactSecrets` only, not `safeExcerpt`: control characters and length are part of
+   * a raw log's fidelity and are left alone. Only the event excerpt is escaped and capped.
+   */
+  private releaseStderr(entry: RunEntry, segment: string): void {
+    if (segment.length === 0) return;
+
     const maxBytes = this.options.maxStderrBytes ?? DEFAULT_MAX_STDERR_BYTES;
     const maxEvents = this.options.maxStderrEvents ?? DEFAULT_MAX_STDERR_EVENTS;
-    const bytes = Buffer.byteLength(chunk, 'utf8');
+    const arrivedBytes = Buffer.byteLength(segment, 'utf8');
+    const { text: scrubbed, redactions } = redactAndCount(segment);
+    entry.stderrRedactions += redactions;
 
     if (entry.stderrBytes < maxBytes) {
-      this.appendEvidence(entry, 'stderr', chunk);
-      entry.stderrBytes += bytes;
+      this.appendEvidence(entry, 'stderr', scrubbed);
+      // Counts what was actually stored, which is what `stderr.log` now holds.
+      entry.stderrBytes += Buffer.byteLength(scrubbed, 'utf8');
       if (entry.stderrBytes >= maxBytes) {
         this.appendEvidence(entry, 'stderr', `\n[forge] stderr capture stopped at ${String(maxBytes)} bytes\n`);
       }
@@ -851,9 +994,11 @@ export class ClaudeAdapter {
       entry.stderrEvents += 1;
       this.emitDraft(
         this.draft(entry.request, 'claude.stderr', undefined, {
-          bytes,
-          // Redacted and capped. The full capture is in the evidence file.
-          excerpt: safeExcerpt(chunk, 1000),
+          bytes: arrivedBytes,
+          // Already scrubbed; safeExcerpt escapes control characters and applies the cap. It redacts
+          // again on the way through, which is a no-op on clean text and cheap insurance.
+          excerpt: safeExcerpt(scrubbed, 1000),
+          redactions,
           truncatedEventStream: false,
         }, [{ kind: 'stderr', ref: entry.stderrRef }]),
       );
@@ -863,6 +1008,7 @@ export class ClaudeAdapter {
         this.draft(entry.request, 'claude.stderr', undefined, {
           bytes: 0,
           excerpt: `[forge] further stderr is being written to the evidence file but is no longer emitted as events (cap ${String(maxEvents)})`,
+          redactions: 0,
           truncatedEventStream: true,
         }, [{ kind: 'stderr', ref: entry.stderrRef }]),
       );
@@ -888,6 +1034,10 @@ export class ClaudeAdapter {
       this.consumeLine(entry, entry.buffer, Date.now());
       entry.buffer = '';
     }
+    // Same for stderr: the hand-over buffer holds back everything after the last newline, so a run
+    // that ends mid-line has one segment that has been redacted but not yet released. It must go out
+    // before the evidence file is closed, or it is lost.
+    this.flushStderr(entry);
 
     const endedAt = this.now();
     const durationMs = endedAt.getTime() - entry.startedAtMs;
@@ -898,7 +1048,16 @@ export class ClaudeAdapter {
 
     const evidenceRefs: EvidenceRef[] = [
       { kind: 'stdout', ref: entry.stdoutRef, note: `${String(entry.lineNumber)} stream-json lines captured` },
-      { kind: 'stderr', ref: entry.stderrRef, note: `${String(entry.stderrBytes)} bytes captured` },
+      {
+        kind: 'stderr',
+        ref: entry.stderrRef,
+        // The redaction tally is part of the evidence, not a footnote: a reader of stderr.log is
+        // entitled to know the file is a scrubbed copy and how much was scrubbed out of it.
+        note:
+          entry.stderrRedactions === 0
+            ? `${String(entry.stderrBytes)} bytes captured`
+            : `${String(entry.stderrBytes)} bytes captured, ${String(entry.stderrRedactions)} secret-shaped values redacted`,
+      },
       { kind: 'exit-code', ref: String(exitCode), note: signal === null ? 'process exit code' : `terminated by ${signal}` },
     ];
 

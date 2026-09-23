@@ -22,7 +22,7 @@ const driver = require('./cdp-driver.cjs');
 
 const PORT = 9334; // different port than full-control-test.cjs, in case of overlap
 const BASE = 'http://127.0.0.1:4100';
-const PROJECT = 'my-forge-project';
+const PROJECT = 'my project (v2)!';
 
 function pause(ms) { return new Promise((r) => setTimeout(r, ms)); }
 

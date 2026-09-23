@@ -25,6 +25,20 @@ try {
 } catch (e) {
   INSTALL_PROFILE = { profile: 'unknown', reason: 'forge-doctor.cjs installationProfile unavailable (' + e.message + ')' };
 }
+/** realMachine — for assertions about THIS MACHINE's global ~/.claude (its CLAUDE.md chain, its plugin
+ *  catalog). Those are facts about the author's workstation, not about this code: a fresh install, a CI
+ *  runner, and every new user have an empty or minimal ~/.claude, and there the assertion has nothing to
+ *  measure. It used to run anyway and fail (external audit II-B, 2026-09-23: 3 of the 9 fresh-install
+ *  failures were exactly these). Now the precondition is checked first and a miss is a VISIBLE skip with
+ *  the reason — never a silent green, never a red for something the user does not have. */
+const HOME_CLAUDE = path.join(require('os').homedir(), '.claude');
+const HAS_GLOBAL_CHAIN = fs.existsSync(path.join(HOME_CLAUDE, 'CLAUDE.md'));
+const HAS_PLUGIN_CATALOG = fs.existsSync(path.join(HOME_CLAUDE, 'plugins'));
+function realMachine(name, precondition, reason, fn) {
+  if (precondition) { t(name, fn); return; }
+  skipped++;
+  console.log('  SKIP ' + name + ' — machine-dependent assertion · ' + reason);
+}
 function pinned(name, fn) {
   if (INSTALL_PROFILE.profile === 'development') { t(name, fn); return; }
   skipped++;
@@ -501,7 +515,7 @@ pinned('on the REAL project the project catalog carries this installation\'s ful
   const project = rep.skill_sources.find((s) => s.id === 'skill_catalog_project');
   assert.ok(project.skills >= 57, 'this project has 57 skills of its own; got ' + project.skills);
 });
-t('the REAL always-loaded surface is now measured well above the project-only figure it used to report', () => {
+realMachine('the REAL always-loaded surface is now measured well above the project-only figure it used to report', HAS_GLOBAL_CHAIN && HAS_PLUGIN_CATALOG, 'this machine has no ~/.claude/CLAUDE.md chain and/or no ~/.claude/plugins — the widened surface being compared against does not exist here', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
   // 24.809 est. tokens was the ENTIRE reported chain while only 57 of 278 skills were counted (2026-08-01).
   assert.ok(rep.total_approx_tokens > 24809,
@@ -689,7 +703,7 @@ t('a baseline recorded on the OLD (everything-counted) figure does not read as a
 });
 
 // --- the real machine ------------------------------------------------------------------------------------
-t('on the REAL machine the plugin catalog reports FEWER loaded skills than sit on disk', () => {
+realMachine('on the REAL machine the plugin catalog reports FEWER loaded skills than sit on disk', HAS_PLUGIN_CATALOG, 'no ~/.claude/plugins on this machine — a plugin count of 0 is the truth here, not a broken walk', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
   const pl = post(rep, 'skill_catalog_plugins');
   // The exact count is machine state, not a property of this code: it legitimately moves whenever a
@@ -710,7 +724,7 @@ t('on the REAL machine the plugin catalog reports FEWER loaded skills than sit o
   assert.ok(rep.potential_approx_tokens > 0, 'the not-loaded weight is reported as zero on a machine that has disabled plugins');
 });
 
-t('the REAL total no longer includes the weight of switched-off plugins', () => {
+realMachine('the REAL total no longer includes the weight of switched-off plugins', HAS_GLOBAL_CHAIN && HAS_PLUGIN_CATALOG, 'the before/after figures this compares were measured on a machine with a global chain and a plugin catalog; neither exists here', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
   // 38.251 est. tokens was the figure while all 112 plugin skills were counted as loaded (2026-08-01).
   assert.ok(rep.total_approx_tokens < 38251,

@@ -9,7 +9,8 @@ release and `main`.
 
 | Version | Supported |
 | --- | --- |
-| 2.0.x | Yes |
+| 2.4.x | Yes |
+| 2.3.x and older | No — upgrade |
 | < 2.0 | No |
 
 ## Reporting a vulnerability

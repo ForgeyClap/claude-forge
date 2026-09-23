@@ -29,7 +29,7 @@ function extractBulletValue(lines, label) {
 
 // fix-placeholder (forge-2026-07-29-cc-finish): a live-fleet inventory across every
 // currently-registered project (`GET /api/projects` -> `GET /api/projects/:name/profile`,
-// 2026-07-29) found several projects ("app-bundle", "cashflow", "shop") whose
+// 2026-07-29) found several projects ("100 apps", "a cashflow project", "an e-commerce project") whose
 // FORGE_PROJECT_PROFILE.md was never filled in past the scaffold: the bullet exists, but its
 // value is still the literal fill-in-the-blank token from the template, e.g.
 // "- **Project goal:** <one or two lines>". Returning that string verbatim (as this module did
@@ -57,7 +57,7 @@ function extractBulletValue(lines, label) {
 // misleading on screen as the `<…>` form. Before adding the rule, every one of the four fields was
 // re-read across all 15 registered projects: exactly THREE values in the entire fleet are wholly
 // parenthetical, and all three are that template's placeholders. Every other parenthesis in the
-// fleet sits mid-sentence inside real prose — "Forge V2 Hybrid Installer (\"my-forge-project\")",
+// fleet sits mid-sentence inside real prose — "Forge V2 Hybrid Installer (\"my project (v2)!\")",
 // "new (greenfield)", "n8n / automation (booking + quotation backend)", "unknown (empty folder at
 // install time …)" — none of which the anchored form can touch, because a legitimate name, type,
 // goal or maturity is never wrapped in parentheses end-to-end. Same discipline as above: the rule

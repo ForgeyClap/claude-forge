@@ -18,6 +18,7 @@
 // same taskkill(win32)/process-group(POSIX) tree-kill shape as exec-lifecycle.mjs's own
 // killChildTree(), never a name/pattern-based kill (root CLAUDE.md HARD MUST).
 import { spawn, execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -266,13 +267,55 @@ export async function startDiscordService() {
     logStream.on('error', () => {
       logStream = null; // best-effort only — the child's own stdout/stderr keep flowing regardless
     });
+    // AUDIT G8.2 (2026-08-06) + Codex r4 #14 (2026-08-07): geef het door de gateway GEHARDE claude-CLI-pad
+    // door aan de bot — en faal GESLOTEN wanneer de broker niets kan leveren: (1) een geërfd, ongevalideerd
+    // CLAUDE_CLI_PATH uit process.env wordt ALTIJD gestript (nooit ongecontroleerd doorgegeven); (2) zonder
+    // gebrokerd pad en zonder expliciete fake-runner-override weigert de service te starten — de runner
+    // heeft zijn eigen fallbacks niet meer, dus doorstarten zou hoe dan ook stranden, maar dan pas bij de
+    // eerste echte prompt in plaats van hier, met een duidelijke fout.
+    let brokeredCli = null;
+    try { const m = await import('./exec-cli.mjs'); brokeredCli = m.resolveClaudeCliPath(); } catch { /* resolver onbeschikbaar */ }
+    // BROKER-ATTEST v2 (Codex r5 #30-rest): pin de FILE-IDENTITEIT van het geresolvede doel, zodat de
+    // runner bij ELKE spawn kan verifiëren dat het nog exact dezelfde binary is (swap/omlegging na de
+    // servicestart = harde weigering aan de runner-kant). v1 (CLAUDE_CLI_PATH) blijft mee-gaan voor de
+    // gefaseerde migratie; het attest wint aan de runner-kant.
+    // r6 #31-deel: dezelfde configbronnen als het KIND — overrides > proces-env > het .env-bestand
+    // dat config.js in het kind zelf leest. Anders mist de servicecheck een RUNNER=fake uit .env.
+    const effectiveRunnerFor = () => (extraEnvOverrides && extraEnvOverrides.RUNNER) || process.env.RUNNER || parseEnvFile(paths.envFile).RUNNER || null;
+    let cliAttest = null;
+    if (brokeredCli) {
+      try {
+        const st = fs.statSync(brokeredCli);
+        if (st.isFile()) {
+          // r6 #5: de CONTENT-digest is de echte identiteit (size+mtime is opvulbaar+terugzetbaar)
+          const sha = crypto.createHash('sha256').update(fs.readFileSync(brokeredCli)).digest('hex');
+          cliAttest = JSON.stringify({ v: 2, path: brokeredCli, size: st.size, mtime_ms: st.mtimeMs, sha256: sha });
+        }
+      } catch { /* hieronder fail-closed */ }
+      if (!cliAttest && effectiveRunnerFor() !== 'fake') {
+        // r6 #6: een resolver die WEL een pad gaf maar geen attest kan bouwen is een fout — een stille
+        // v1-downgrade zou de per-spawn pinning uitschakelen zonder dat iemand het ziet.
+        try { if (logStream) logStream.end(); } catch { /* best effort */ }
+        return { ok: false, status: 503, error: 'claude-CLI-attest kon niet worden opgebouwd voor ' + brokeredCli + ' — Discord-service start NIET (fail-closed, r6 #6); controleer het CLI-doel of start expliciet met RUNNER=fake voor tests' };
+      }
+    }
+    const effectiveRunner = effectiveRunnerFor();
+    if (!brokeredCli && effectiveRunner !== 'fake') {
+      try { if (logStream) logStream.end(); } catch { /* best effort */ }
+      return { ok: false, status: 503, error: 'claude-CLI-broker kon geen gevalideerd absoluut pad leveren — Discord-service start NIET (fail-closed, Codex r4 #14); controleer de claude-installatie of start expliciet met RUNNER=fake voor tests' };
+    }
+    const parentEnv = { ...process.env };
+    delete parentEnv.CLAUDE_CLI_PATH; // nooit een ongevalideerd geërfd pad doorgeven
+    delete parentEnv.CLAUDE_CLI_ATTEST; // idem voor een geërfd attest (alleen het eigen, verse attest telt)
     child = doSpawn(process.execPath, [paths.mainJs], {
       cwd: paths.discordDir,
       // Fresh, gateway-owned STATE_DIR — never the imported folder's own default `./state`. Any
       // test-only extra overrides (TRANSPORT/RUNNER/BOT_HTTP_PORT/...) are layered on top; a real
       // gateway process never sets extraEnvOverrides, so production always spawns with the real
       // `.env` file's own values (config.js's own loadConfig() reads that file directly from cwd).
-      env: { ...process.env, STATE_DIR: paths.stateDir, ...(extraEnvOverrides || {}) },
+      // r5 #31: de gebrokerde CLI-sleutels zijn BESCHERMD — ze worden NA de test-overrides gespreid
+      // zodat geen enkele override ze kan vervangen door een ongevalideerd pad/attest.
+      env: { ...parentEnv, STATE_DIR: paths.stateDir, ...(extraEnvOverrides || {}), ...(brokeredCli ? { CLAUDE_CLI_PATH: brokeredCli } : {}), ...(cliAttest ? { CLAUDE_CLI_ATTEST: cliAttest } : {}) },
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -342,13 +385,23 @@ export async function stopDiscordService() {
     /* fall through to a hard kill below — the graceful path is best-effort only */
   }
   await new Promise((resolve) => setTimeout(resolve, GRACEFUL_SHUTDOWN_WAIT_MS));
+  // r5 #28: tracking pas wissen NA bewezen exit — anders start een supervisor/drain een verse bot naast
+  // een nog levende oude. Bounded wait; een overlever wordt eerlijk gerapporteerd.
+  const pidToWatch = childPid;
   if (childProcess !== null) {
     (killFnOverride || killChildTree)(childProcess);
+  }
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  let survived = false;
+  if (pidToWatch) {
+    const deadline = Date.now() + 5000;
+    while (alive(pidToWatch) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    survived = alive(pidToWatch);
   }
   childProcess = null;
   childPid = null;
   startedAtIso = null;
-  return { ok: true, stopped: true };
+  return { ok: true, stopped: true, ...(survived ? { survivor_pid: pidToWatch, note: 'kind leefde nog na de kill-deadline — eerlijk gemeld' } : {}) };
 }
 
 function errorMessage(err) {

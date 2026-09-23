@@ -3,7 +3,7 @@
 The complete catalog behind the one-line pitch. **claude-forge** turns Claude Code into a coordinated team that **builds, automates, reviews and ships** — with a live per-project dashboard, honest reporting, and zero runtime dependencies.
 
 > [!NOTE]
-> **Honest counts.** Forge ships exactly **18 built-in agents** (12 permanent Bosses + 6 specialists) and **23 skills**. That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present — but only 18 agents and 23 skills ship here, and nothing else is ever claimed as "shipped".
+> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists) and **59 skills** (31 in the LITE plugin). That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present — but only 18 agents and 23 skills ship here, and nothing else is ever claimed as "shipped".
 
 > [!TIP]
 > You do **not** need to read this whole page to use Forge. Run `/setup-forge` once, then say `/forge <what you want>`. This reference is for when you want to know *exactly* what is under the hood.
@@ -207,7 +207,7 @@ Cross-platform wrappers in `.claude/forge-bin/` run **only this project's** dash
 | Latest report | `forge-open-report.cmd` | `forge-open-report.ps1` | `forge-open-report.sh` |
 | Log an event | `forge-log-event.cmd <run> <type> "<json>"` | `forge-log-event.ps1 …` | `forge-log-event.sh …` |
 
-Every wrapper auto-detects Node (PATH → `C:\Program Files\nodejs\node.exe` → a clear "install Node.js LTS" message). Dispatcher commands: `dashboard` · `start` · `status` · `runs` · `open-report` · `health` · `assign-only` · `log-event`. If `package.json` exists: `npm run forge:dashboard | forge:status | forge:runs | forge:open-report`.
+Every wrapper auto-detects Node (PATH → `C:\Program Files\nodejs\node.exe` → a clear "install Node.js LTS" message). Dispatcher commands: `dashboard` · `start` · `status` · `runs` · `open-report` · `health` · `assign-only` · `log-event`. If `package.json` exists: `.claude/forge-bin/forge-dashboard.cmd | forge:status | forge:runs | forge:open-report`.
 
 ---
 

@@ -18,10 +18,17 @@ import {
   _setSpawnFnForTests,
   _setFetchFnForTests,
   _setKillFnForTests,
+  _setExtraEnvOverridesForTests,
   _resetDiscordServiceForTests,
 } from '../src/discord-service.mjs';
 
 let tempDir;
+
+// r6b #6: de spawn-stubs negeerden de OPTIES, dus de uiteindelijke child-env (waar de fail-closed
+// brokergrens over gaat) was onzichtbaar voor tests. Deze capture legt de laatste spawn-opties vast.
+let _lastSpawnOpts = null;
+function lastSpawnEnv() { return (_lastSpawnOpts && _lastSpawnOpts.env) || {}; }
+function captureSpawn(pid) { return (_cmd, _args, opts) => { _lastSpawnOpts = opts || null; return makeFakeChild(pid); }; }
 
 function makeFakeChild(pid) {
   const child = new EventEmitter();
@@ -179,4 +186,83 @@ test('stop() kills exactly the tracked pid via the injected kill function, then 
   const status = await getDiscordStatus();
   assert.equal(status.running, false);
   assert.equal(status.pid, null);
+});
+
+// ── FAIL-CLOSED GRENS VAN DE CLI-BROKER (Codex r6b #6, 2026-08-09) ─────────────────────────────────
+// De attest/503/.env-RUNNER/beschermde-sleutel-paden hadden geen gerichte assertions: een regressie in
+// die grens bleef groen. Deze tests kijken naar de ECHTE child-env die start() zou meegeven en naar
+// het feit dat er bij een fail-closed weigering NUL keer gespawnd wordt.
+test('r6b #6: zonder gebrokerd CLI-pad weigert start() met 503 en spawnt NIETS (tenzij RUNNER=fake)', async () => {
+  _setDiscordPathsForTests(isolatedPaths());
+  let spawnCalls = 0;
+  _setSpawnFnForTests((...a) => { spawnCalls += 1; return captureSpawn(111)(...a); });
+  _setFetchFnForTests(async () => { throw new Error('niets bereikbaar — vrij om te starten'); });
+  // forceer "resolver levert niets" door PATH leeg te maken; de resolver vindt dan geen claude
+  const savedPath = process.env.PATH;
+  const savedCli = process.env.CLAUDE_CLI_PATH;
+  process.env.PATH = path.join(tempDir, 'leeg-pad-zonder-claude');
+  delete process.env.CLAUDE_CLI_PATH;
+  try {
+    const r = await startDiscordService();
+    if (r.ok === false) {
+      assert.equal(r.status, 503, 'een niet-opbouwbaar attest/pad hoort 503 te geven: ' + JSON.stringify(r).slice(0, 200));
+      assert.match(r.error, /fail-closed/);
+      assert.equal(spawnCalls, 0, 'een fail-closed weigering mag NOOIT spawnen');
+    } else {
+      // de machine heeft een echte claude op een absoluut pad dat de resolver ook zonder PATH vindt:
+      // dan hoort de child een attest MET sha256 te krijgen (de andere helft van dezelfde grens).
+      assert.equal(spawnCalls, 1);
+      const env = lastSpawnEnv();
+      assert.ok(env.CLAUDE_CLI_ATTEST, 'een geslaagde start hoort een v2-attest mee te geven');
+      const at = JSON.parse(env.CLAUDE_CLI_ATTEST);
+      assert.equal(at.v, 2);
+      assert.equal(typeof at.sha256, 'string');
+      assert.equal(at.sha256.length, 64);
+    }
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedCli === undefined) delete process.env.CLAUDE_CLI_PATH; else process.env.CLAUDE_CLI_PATH = savedCli;
+  }
+});
+
+test('r6b #6: RUNNER=fake uit het .env-bestand van het KIND telt mee (geen 503 op een testconfig)', async () => {
+  _setDiscordPathsForTests(isolatedPaths({ envContent: 'TRANSPORT=mock\nRUNNER=fake\nBOT_HTTP_PORT=3979\n' }));
+  let spawnCalls = 0;
+  _setSpawnFnForTests((...a) => { spawnCalls += 1; return captureSpawn(222)(...a); });
+  _setFetchFnForTests(async () => { throw new Error('niets bereikbaar'); });
+  const savedPath = process.env.PATH;
+  const savedCli = process.env.CLAUDE_CLI_PATH;
+  process.env.PATH = path.join(tempDir, 'leeg-pad-zonder-claude');
+  delete process.env.CLAUDE_CLI_PATH;
+  try {
+    const r = await startDiscordService();
+    assert.equal(r.ok, true, 'met RUNNER=fake in .env mag de service starten zonder attest: ' + JSON.stringify(r).slice(0, 200));
+    assert.equal(spawnCalls, 1);
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedCli === undefined) delete process.env.CLAUDE_CLI_PATH; else process.env.CLAUDE_CLI_PATH = savedCli;
+  }
+});
+
+test('r6b #6: een GEERFD CLAUDE_CLI_PATH/ATTEST wordt gestript en overrides kunnen de gebrokerde sleutels niet kapen', async () => {
+  _setDiscordPathsForTests(isolatedPaths({ envContent: 'TRANSPORT=mock\nRUNNER=fake\n' }));
+  _setSpawnFnForTests(captureSpawn(333));
+  _setFetchFnForTests(async () => { throw new Error('niets bereikbaar'); });
+  _setExtraEnvOverridesForTests({ RUNNER: 'fake', CLAUDE_CLI_PATH: 'C:\kwaadaardig\claude.exe', CLAUDE_CLI_ATTEST: '{"v":2,"path":"C:\\kwaadaardig\\claude.exe"}' });
+  const savedCli = process.env.CLAUDE_CLI_PATH;
+  const savedAt = process.env.CLAUDE_CLI_ATTEST;
+  process.env.CLAUDE_CLI_PATH = 'C:\geerfd\claude.exe';
+  process.env.CLAUDE_CLI_ATTEST = '{"v":2,"path":"C:\\geerfd\\claude.exe"}';
+  try {
+    const r = await startDiscordService();
+    assert.equal(r.ok, true);
+    const env = lastSpawnEnv();
+    // het GEERFDE pad/attest mag nooit ongewijzigd doorlekken naar het kind
+    assert.notEqual(env.CLAUDE_CLI_PATH, 'C:\geerfd\claude.exe', 'een geerfd CLI-pad moet gestript zijn');
+    assert.notEqual(env.CLAUDE_CLI_ATTEST, '{"v":2,"path":"C:\\geerfd\\claude.exe"}', 'een geerfd attest moet gestript zijn');
+  } finally {
+    if (savedCli === undefined) delete process.env.CLAUDE_CLI_PATH; else process.env.CLAUDE_CLI_PATH = savedCli;
+    if (savedAt === undefined) delete process.env.CLAUDE_CLI_ATTEST; else process.env.CLAUDE_CLI_ATTEST = savedAt;
+    _setExtraEnvOverridesForTests(null);
+  }
 });

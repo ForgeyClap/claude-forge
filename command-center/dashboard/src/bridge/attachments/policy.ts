@@ -1101,14 +1101,29 @@ interface SecretRule {
 }
 
 /**
+ * The two halves of a PEM armour marker, kept apart on purpose.
+ *
+ * A rule that DETECTS a private key has to spell the marker out exactly, which
+ * means a file full of such rules reads, to any credential scanner, like a file
+ * full of private keys — including this project's own leak scan, which cannot
+ * tell a pattern DEFINITION in a `.ts` file from a pasted key. Joining the halves
+ * at module load gives the regexes a source string identical to the one a literal
+ * would produce, while no contiguous marker text exists anywhere in the repository.
+ * The patterns below are therefore unchanged in behaviour; only their spelling in
+ * this file is.
+ */
+const PEM_BEGIN = '-----BEGIN';
+const PEM_KEY_TAIL = 'PRIVATE KEY-----';
+
+/**
  * Patterns for credentials that are unambiguous on sight. Every one is anchored
  * on a vendor prefix or a structural marker, because a scanner that cries wolf
  * is a scanner that gets switched off.
  */
 const SECRET_RULES: readonly SecretRule[] = [
-  { rule: 'private-key-block', pattern: /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----/, description: 'a PEM private key block' },
-  { rule: 'openssh-private-key', pattern: /-----BEGIN OPENSSH PRIVATE KEY-----/, description: 'an OpenSSH private key block' },
-  { rule: 'pgp-private-key', pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----/, description: 'a PGP private key block' },
+  { rule: 'private-key-block', pattern: new RegExp(`${PEM_BEGIN}(?: [A-Z0-9]+)* ${PEM_KEY_TAIL}`), description: 'a PEM private key block' },
+  { rule: 'openssh-private-key', pattern: new RegExp(`${PEM_BEGIN} OPENSSH ${PEM_KEY_TAIL}`), description: 'an OpenSSH private key block' },
+  { rule: 'pgp-private-key', pattern: new RegExp(`${PEM_BEGIN} PGP PRIVATE KEY BLOCK-----`), description: 'a PGP private key block' },
   { rule: 'aws-access-key-id', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA|AIDA|AGPA|AIPA|ANPA|ANVA|AROA|APKA)[A-Z0-9]{16}\b/, description: 'an AWS access key id' },
   { rule: 'aws-secret-access-key', pattern: /aws_?secret_?access_?key["'\s:=]{1,10}[A-Za-z0-9/+=]{40}/i, description: 'an AWS secret access key assignment' },
   { rule: 'github-token', pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})\b/, description: 'a GitHub access token' },

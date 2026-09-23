@@ -218,8 +218,14 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
   // the 3 documented sites (BLOCKER-12/13: the workspace cwd + both adapterConfig.command
   // constructions) — replacing the PREVIOUS architecture of 3 duplicated inline
   // `.split(path.sep).join('/')` expressions with a single shared, exported, real-tested helper.
+  // 2026-09-23 (external audit, CI on Linux): the helper no longer splits on path.sep at all — that only
+  // converted the HOST's separator, so Windows-style input kept its backslashes on a Linux runner. The
+  // invariant this test guards is "no duplicated inline transform"; it used to pin the (buggy) implementation
+  // by counting exactly one split(path.sep) occurrence. Now: zero inline split(path.sep) transforms anywhere,
+  // and the single regex-based transform lives inside toForwardSlashes itself.
   const inlineDuplicates = (SOURCE_TEXT.match(/split\(path\.sep\)\.join\('\/'\)/g) || []).length;
-  t('F3 the real source defines the forward-slash transform in exactly ONE place now (inside toForwardSlashes itself), not duplicated inline at each call site', inlineDuplicates === 1);
+  const helperTransforms = (SOURCE_TEXT.match(/function toForwardSlashes\(p\) \{ return String\(p\)\.replace\(\/\\\\\/g, '\/'\); \}/g) || []).length;
+  t('F3 the real source defines the forward-slash transform in exactly ONE place now (inside toForwardSlashes itself), not duplicated inline at each call site', inlineDuplicates === 0 && helperTransforms === 1, 'inline split(path.sep)=' + inlineDuplicates + ' helper=' + helperTransforms);
   const toForwardSlashesRefs = (SOURCE_TEXT.match(/toForwardSlashes\(/g) || []).length;
   t('F4 toForwardSlashes is referenced exactly 4 times: 1 function signature + 3 real call sites (cwd + 2x adapterConfig.command)', toForwardSlashesRefs === 4);
 }

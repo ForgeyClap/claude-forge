@@ -1,8 +1,0 @@
-{
-  "type": "report",
-  "title": "Final report — volledige audit + fix-ronde",
-  "path": "forge-runs/forge-2026-07-25-full-audit/final-report.md",
-  "agent": "orchestrator",
-  "summary": "WP0-WP3 afgerond; ~372MB opgeruimd; salvage forge-workspace 30 commits; v10 governance; usage-pressure 80%; NVIDIA herprobe 6/6",
-  "_stored": "2026-07-25T22:34:38.844Z"
-}

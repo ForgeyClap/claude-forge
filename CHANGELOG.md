@@ -9,6 +9,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.4.0] - 2026-09-23
+
+Release theme: **measured on a machine that has never seen Forge.** An independent deep audit of v2.3.0 (Windows 11,
+empty `~/.claude`, public GitHub API) found that every "fresh installs work" claim since 2.1.0 had been verified on the
+author's own workstation — with its hooks, 40 plugins, policy files and canonical template already in place. A real
+user has none of that. This release reproduces the audit's result (9 failing assertions in 4 suites on an empty HOME),
+fixes each cause, and adds the one job that would have caught all of it: **a CI workflow that installs into an empty
+directory with an empty HOME on Ubuntu and Windows and requires the doctor to print ALL GREEN.**
+
+### Fixed — the P0s
+
+- **`/setup-forge` crashed with `MODULE_NOT_FOUND`** (audit II-A). Its engine `forge-setup.cjs` shipped in 2.0.0 and was
+  deleted in 2.1.0 while 35 references in 6 documents kept calling it; only fresh installs noticed, because the template
+  sync is additive and never removes a file from a project that already had it. Restored from `be088b8`, and now part of
+  the canonical payload so it cannot silently disappear again.
+- **The canonical template `~/.claude/forge/template/` was never created** (II-A). The auto-install, "install Forge V2 into
+  this project" and the "stay current" rule all pointed at nothing, and `forge-sync status` compared each project with
+  itself — printing "up to date" forever. Both installers now create the template from the payload; `forge-sync status`
+  says plainly when no template exists and that the update check was NOT performed.
+- **A `PostToolUse` hook with no matcher shipped in `settings.json`** (II-D) and fired on every tool call of every agent
+  (461 in one audited session). It now carries `Write|Edit|MultiEdit|NotebookEdit|Bash`, is disclosed in AI-INSTALL.md
+  with the other three hooks, and `HOOKS_OPT_IN.md` no longer contradicts itself about it.
+- **`forge-log-event.cmd` re-tokenised JSON and executed text after an `&`** (II-G). Payloads may now be passed as a
+  `.json` file (`log-event.cjs --file` — the only form cmd can never mangle) or inline with cmd's own `""` escape; the
+  `.ps1` form passes the payload through an environment variable (`--env`). Both wrappers return the real exit code
+  instead of 0. The three audit payloads were driven through the real `.cmd`: intact, nothing executed, exit 1 on bad JSON.
+- **`forge.cmd resume` / `learn` could not find their tool from any directory but one** (II-G): `shift` also shifts `%0`.
+  The script directory is captured before any shift. Two original REM lines containing `<command>` and `->` — parsed by
+  cmd as redirection even inside a comment — are rewritten; the file is pure ASCII (a UTF-8 dash shifts cmd's byte offsets).
+- **The Command Center dashboard could not be built from the repository** (II-G): `src/views/mission/` was imported by
+  `App.tsx` but never committed (it lived inside a nested git repo in the author's tree). All eight files are in.
+- **The shipped `command-center/` was a stale copy** (measured while chasing the last red suite): 14 gateway source
+  files, 19 dashboard source files, `gateway/src/runtime-state.mjs`, the drain test and two redaction tests existed only
+  in the author's tree, so `gateway-drain.test.cjs` exercised a gateway that ignored `CC_PORT`, and the leak scan hit
+  lines the source had rewritten weeks earlier. Brought current with a selective sync (code only — no runtime data,
+  transcripts or logs). Two `supervisor-out.log.*` residue files are untracked.
+- **Every fresh install reported `installed=2.3.0` forever**: the payload carried the author's `FORGE_VERSION.json`.
+  The file is no longer shipped; both installers now write it with the real version, and the fresh-install job asserts it.
+
+### Fixed — tests that only passed on the author's machine (II-B, Part III)
+
+- `guard-hook.test.cjs` required a hook the installer deliberately never ships and read `~/.claude/settings.json`
+  unguarded; elsewhere it died with "0 passed, 0 failed", which the doctor counts as a failed suite. It now skips
+  honestly, with the reason, when the optional hook is absent.
+- `forge-contextbudget.test.cjs` (3) and `forge-doctor.test.cjs` (1) asserted the size of "the REAL machine's" plugin
+  catalog and global CLAUDE.md chain. They now check the precondition first and skip visibly where there is nothing to measure.
+- `forge-sync.test.cjs` (5): with no canonical template the template-refusal fired before argument validation, so the
+  `--force-all` usage gate was unreachable. Validation now comes first; usage (2) and environment (3) have distinct exit
+  codes; `install` against a folder without `.claude/` names the fix instead of blaming the template.
+- `forge-paperclip.cjs` split paths on `path.sep`, so a Windows-style input kept its backslashes on a Linux runner.
+- `forge-capabilities-panel.test.cjs` counted the tool ledger's `_toollog/` as a run directory.
+- `forge-prefs.test.cjs` (7) and `forge-echo.test.cjs` (1) went red the moment the author's preferences left
+  `FORGE_OWNER_PROFILE.json`: they pin Forge's nine standing defaults. The file now ships those nine as **product
+  defaults**, each sourced to the shipped document that defines it (never to a person's answer); `/forge remember` layers
+  the owner's own rules on top.
+- `nvidia-provider.test.cjs` ("every registry agent has core skills"): dropping the unshipped skills had left ui-boss,
+  seo-boss and skill-boss with empty lists. Refilled from skills that ship.
+- Skill hygiene reported `.claude/.forge-setup.json` — the marker `/setup-forge` writes — as a dangling reference,
+  because the engine builds that path into a variable and writes it fifteen lines later. `generatedPathBasenames()` now
+  resolves a written variable to its declaration; a variable never handed to a write API still counts as dangling.
+- New `forge-setup.test.cjs`: the tripwire that was missing for two releases (engine present, starts, `status`/`doctor`
+  answer JSON on a throwaway project and write nothing).
+
+### Changed — beginner-first (Part IV of the audit)
+
+- **`/forge <goal>` builds by default.** The ARM → START gate is gone: Forge posts one line (`Plan ready — N work
+  packages · team … · Building now — say STOP to pause`) and continues. It waits for START only when the owner writes
+  "wait", "ask first" or "plan only", or the mission is L4. All hard gates (deploy, push, spend, DNS, production,
+  credentials, outbound, writing outside the project) are unchanged and still interrupt.
+- **Silent intake.** The 21–24-question intake is answered by the Lead from the mission text, the project scan,
+  `.claude/.forge-setup.json` and the project profile, recorded in the PRD as *Assumptions (auto-filled)*. At most one
+  question is asked. The full interview is opt-in via **`/forge interview`**. `/forge` reads what `/setup-forge` saved.
+- **The dashboard is started, not printed.** `/forge` health-checks port 4100, starts the supervisor itself when
+  `command-center/` is present, or says in one line that no dashboard is installed here and continues.
+- **The usage guard is opt-in** (it reads the OAuth token from `~/.claude/.credentials.json`); no silent start.
+- The six `/forge` sub-commands advertised since v8.1 (`propose-skill`, `approve-skill`, `tournament`, `secondbrain`,
+  `codemodel`, `briefing`) have dispatcher entries pointing at the tools that already shipped.
+- `forge-doctor.cjs --help` prints usage and exits (it used to run the full self-test); a mistyped flag is refused. The
+  "dashboard SPA · 7 files present" line now says it checks the retired per-project files, not a working dashboard.
+- `forge-killswitch.cjs` refuses honestly on non-Windows; its probes no longer report a lookup failure when nothing listens.
+
+### Removed from the distribution (II-D)
+
+- Per-install state tracked against the repo's own `.gitignore`: `forge-sync-receipt.json` (311 hashes from the author's
+  machine), `FORGE_VERSION.json`, `scheduled_tasks.lock` (a live PID lock), and the author's `forge-tickets/`,
+  `forge-artifacts/`, `forge-mindmaps/`. `FORGE_OWNER_PROFILE.json` no longer quotes the author: its nine entries are
+  Forge's product defaults with document sources (see Fixed — tests).
+- `agent-skill-map.json` mapped 24 skills that exist only in the author's global `~/.claude`; 19 are remapped to the
+  shipped Forge equivalents, the rest are listed in the file rather than silently dropped.
+- Skill text citing policy documents present only on the author's machine now says so and falls back to its own defaults.
+
+### Documentation
+
+- One set of counts, taken from the directories: full install **19 agents / 59 skills / 93 tools**; LITE plugin
+  **18 agents / 31 skills**. README, AGENTS, FEATURES, COMMANDS-QUICK-REF and CONTRIBUTING agree.
+- `npm run forge:*` was documented in nine places and defined nowhere — replaced by the real wrappers.
+  `forge-doctor.cjs leakScan` is not a CLI mode. `docs/INTERNATIONALIZATION.md` is labelled a design note (the dashboard
+  i18n layer was never built) and the README no longer claims the dashboard adapts to your language.
+- `AI-INSTALL.md` states the PowerShell flag spellings, that `--global-only` has no doctor to verify it, which hooks the
+  install switches on, and that the usage guard is opt-in.
+- `SECURITY.md` supports 2.4.x; CHANGELOG link references exist for every release; `plugin.json` and `marketplace.json`
+  are stamped from `VERSION`, and CI fails if they drift.
+
+### CI
+
+- **New `fresh-install.yml`**: real installer into an empty directory with an empty HOME (Ubuntu + Windows, Node 18 + 22),
+  checks the install delivered what it documents, re-runs the installer to prove idempotence, runs the full doctor,
+  requires `⇒ ALL GREEN`.
+- `validate.yml` gains two hygiene gates: `git ls-files -i -c` must be empty; every manifest version must equal `VERSION`.
+
+### Verified
+
+- Reproduction of the audit on this machine with an empty HOME: 9 failed / 4 suites before, **0 failed after**.
+- Source-tree regression with a normal HOME: every touched suite green.
+- The three audit payloads through the real `forge-log-event.cmd`: `x=1,y;z` intact; a file containing `a&echo INJECTED`
+  written verbatim with nothing executed; malformed JSON returns exit 1. `forge.cmd resume` works from a foreign cwd.
+
 ## [2.3.0] - 2026-08-13
 
 Release theme: **a fresh install on someone else's machine now behaves exactly like the author's.**
@@ -218,4 +335,8 @@ build / automation / review / delivery system for Claude Code.
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
 [Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...HEAD
+[2.4.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/ForgeyClap/claude-forge/releases/tag/v2.0.0

@@ -13,10 +13,18 @@ import { PROJECT_ROOT } from '../src/paths.mjs';
 import { _resetProjectsCacheForTests } from '../src/projects.mjs';
 import { _setUsagePressureFileForTests, _setUsageGuardStateFileForTests } from '../src/usage.mjs';
 import { request } from '../test-support/helpers.mjs';
+import { needsRunEvents, needsRunArtifacts, needsDoctorReceipt, needsArtifactsIndex, needsAll } from './.real-data-guard.mjs';
 
 const THIS_PROJECT_NAME = path.basename(PROJECT_ROOT);
 const RUN_ID = 'forge-2026-07-26-command-center';
 const FULL_AUDIT_RUN_ID = 'forge-2026-07-25-full-audit';
+
+// Only the four assertions that read this project's real run data are guarded. Every security /
+// rejection / shape test in this file stays unconditional — those exercise gateway logic, not the
+// environment, and must run everywhere.
+const NEEDS_RUN_EVENTS = needsRunEvents(RUN_ID);
+const NEEDS_AUDIT_PROOF = needsAll(needsDoctorReceipt(FULL_AUDIT_RUN_ID), needsArtifactsIndex());
+const NEEDS_AUDIT_ARTIFACTS = needsRunArtifacts(FULL_AUDIT_RUN_ID);
 
 let server;
 let port;
@@ -60,7 +68,7 @@ function requestStream(urlPath, { headers = {}, readMs = 500 } = {}) {
   });
 }
 
-test('GET /api/missions returns this run\'s real derived mission state', async () => {
+test('GET /api/missions returns this run\'s real derived mission state', { skip: NEEDS_RUN_EVENTS }, async () => {
   const res = await request(port, '/api/missions?project=' + encodeURIComponent(THIS_PROJECT_NAME) + '&run=' + RUN_ID);
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
@@ -89,7 +97,7 @@ test('GET /api/models returns the real capability matrix + a truthful nvidia sta
   assert.ok(['CONNECTED', 'DISCONNECTED', 'NOT CONFIGURED', 'UNKNOWN'].includes(res.json.nvidia.state));
 });
 
-test('GET /api/proof returns the real evidence chain for the full-audit run (2 registered artifacts)', async () => {
+test('GET /api/proof returns the real evidence chain for the full-audit run (2 registered artifacts)', { skip: NEEDS_AUDIT_PROOF }, async () => {
   const res = await request(port, '/api/proof?project=' + encodeURIComponent(THIS_PROJECT_NAME) + '&run=' + FULL_AUDIT_RUN_ID);
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.report_present, true);
@@ -100,12 +108,19 @@ test('GET /api/proof returns the real evidence chain for the full-audit run (2 r
 
 // cc-fix-artifacts-empty: the one HTTP-level wiring test — buildProofAll() itself is covered in
 // depth (aggregation, labels, bound) by proof-all.test.mjs's own dedicated unit tests.
-test('GET /api/proof?run=all returns a real project-wide artifact list, including one from an older run than the newest', async () => {
+test('GET /api/proof?run=all is wired to buildProofAll: aggregate list with the window-independent index entries present', { skip: NEEDS_AUDIT_ARTIFACTS }, async () => {
+  // The run-dir scan is bounded to the 10 newest runs BY DESIGN (owner bound in buildProofAll) — as
+  // real missions land, the full-audit fixture run ages out of that window, so this wiring test may
+  // not demand its label here (that labelling logic has its own wide-window unit tests in
+  // proof-all.test.mjs). What IS window-independent: the forge-artifacts index is always read in
+  // full, so its real entries must be present in the aggregate.
   const res = await request(port, '/api/proof?project=' + encodeURIComponent(THIS_PROJECT_NAME) + '&run=all');
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.run_id, 'all');
-  const fromOlderRun = res.json.artifacts.filter((a) => a.run_id === FULL_AUDIT_RUN_ID);
-  assert.ok(fromOlderRun.length > 0, 'the full-audit run\'s real artifacts must be present in the aggregate');
+  assert.ok(Array.isArray(res.json.artifacts));
+  const indexArtifacts = res.json.artifacts.filter((a) => a.source === 'forge-artifacts-index');
+  assert.ok(indexArtifacts.length > 0, 'the always-read forge-artifacts-index entries must be present in the aggregate');
+  assert.ok(indexArtifacts.some((a) => a.id === 'wp0-audit-reports'), 'the real wp0-audit-reports index entry must be present');
 });
 
 // fix-test-hygiene: both real branches of GET /api/usage are now driven explicitly via the
@@ -155,7 +170,7 @@ test('SECURITY: /api/missions with a missing run id is rejected with 400', async
   assert.equal(res.statusCode, 400);
 });
 
-test('GET /api/events/stream connects and replays this run\'s real backlog as SSE frames', async () => {
+test('GET /api/events/stream connects and replays this run\'s real backlog as SSE frames', { skip: NEEDS_RUN_EVENTS }, async () => {
   const res = await requestStream('/api/events/stream?project=' + encodeURIComponent(THIS_PROJECT_NAME) + '&run=' + RUN_ID);
   assert.equal(res.statusCode, 200);
   assert.match(res.headers['content-type'], /text\/event-stream/);

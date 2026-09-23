@@ -34,7 +34,7 @@ By contributing you agree that your work is licensed under the project's
 | --- | --- |
 | `.claude/` | The per-project Forge payload (skills, agents, dashboard, `forge-bin`, config, commands). |
 | `global-install/.claude/` | The small global core copied into `~/.claude` (the `forge-core` skill + the bare `/forge` and `/setup-forge` commands). |
-| `plugins/forge/` | The **LITE** Claude Code plugin bundle (commands, 18 agents, curated skills). |
+| `plugins/forge/` | The **LITE** Claude Code plugin bundle (commands, 18 agents, 31 curated skills). |
 | `.claude-plugin/marketplace.json` | Repo-as-marketplace catalog. |
 | `docs/adr/` | Architecture Decision Records. Read [ADR 0001](docs/adr/0001-plugin-vs-installer-split.md) before changing the plugin/installer split. |
 | `install.sh` / `install.ps1` | The merge-safe installers. |
@@ -113,7 +113,7 @@ for leaked secrets. Get it **all green** before you push. To run just the leak
 scan:
 
 ```bash
-node .claude/forge-bin/forge-doctor.cjs leakScan
+node .claude/forge-bin/forge-doctor.cjs   # runs the full self-test including the leak scan (there is no separate leakScan mode)
 ```
 
 **3. If you touched the onboarding / key flow**, also run the setup tests:

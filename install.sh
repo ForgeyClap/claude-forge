@@ -95,6 +95,25 @@ forge_seed_project_root() {
   fi
 }
 
+# Writes .claude/FORGE_VERSION.json — per-install state (gitignored by the snippet above), read by
+# `forge-sync status` to report the installed release next to the canonical template's hash.
+forge_write_version_marker() {
+  vm_project="$1"
+  vm_file="$vm_project/.claude/FORGE_VERSION.json"
+  if [ "$DRY_RUN" = "1" ]; then
+    forge_log "  would write: $vm_file (forge_version $FORGE_VERSION)"
+    return 0
+  fi
+  vm_now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
+  vm_template="$HOME/.claude/forge/template/.claude"
+  printf '{\n  "forge_version": "%s",\n  "synced_at": "%s",\n  "template": "%s",\n  "installed_by": "install.sh",\n  "_doc": "Written by the claude-forge installer. forge-sync status compares forge_version with the canonical template. Per-install state: keep it out of git (the installer ignores it for you)."\n}\n' \
+    "$FORGE_VERSION" "$vm_now" "$vm_template" > "$vm_file" || {
+    forge_err "could not write $vm_file (forge-sync status will report installed=none)"
+    return 0
+  }
+  forge_log "  wrote: $vm_file (forge_version $FORGE_VERSION)"
+}
+
 forge_usage() {
   cat <<'USAGE'
 claude-forge installer
@@ -379,6 +398,24 @@ main() {
     else
       GLOBAL_OK="0"
     fi
+    # The CANONICAL TEMPLATE (external audit II-A, 2026-09-23). The forge-core skill sends every
+    # "install Forge V2 into this project", every bare-folder auto-install and the whole "stay current"
+    # rule to ~/.claude/forge/template/ — and this installer never created it, so all three pointed at
+    # nothing, and `forge-sync status` compared each project with itself ("up to date" forever). The
+    # template is simply the project payload plus the two root seeds, kept where the skill looks for it.
+    TEMPLATE_DIR="$HOME/.claude/forge/template"
+    forge_log ""
+    forge_log "Installing canonical template -> $TEMPLATE_DIR (used by forge-sync and the auto-installer)"
+    if forge_copy_tree "$SOURCE_DIR/.claude" "$TEMPLATE_DIR/.claude"; then
+      if [ "$DRY_RUN" != "1" ]; then
+        [ -f "$SOURCE_DIR/templates/project-CLAUDE.md" ] && cp -- "$SOURCE_DIR/templates/project-CLAUDE.md" "$TEMPLATE_DIR/CLAUDE.md"
+        [ -f "$SOURCE_DIR/templates/gitignore.snippet" ] && cp -- "$SOURCE_DIR/templates/gitignore.snippet" "$TEMPLATE_DIR/gitignore.snippet"
+        [ -f "$SOURCE_DIR/.env.example" ] && cp -- "$SOURCE_DIR/.env.example" "$TEMPLATE_DIR/env.example"
+      fi
+    else
+      forge_err "canonical template copy had failures (project installs still work; forge-sync update checks will not)"
+      GLOBAL_OK="0"
+    fi
   fi
 
   if [ "$DO_PROJECT" = "1" ]; then
@@ -397,6 +434,10 @@ main() {
     # Both are merge-safe: an existing CLAUDE.md is never touched, and .gitignore only ever
     # gets lines it does not already have.
     forge_seed_project_root "$PROJECT_DIR"
+    # Record WHICH release this project got. `forge-sync status` reads forge_version from this file;
+    # without it a fresh install reports "installed=none" (2.4.0: the payload no longer ships a stale
+    # copy of this per-install file — the installer writes the real value).
+    forge_write_version_marker "$PROJECT_DIR"
   fi
 
   # -------------------------------------------------------------------------

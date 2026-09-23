@@ -39,11 +39,11 @@ const PORT = 9333;
 const BASE = 'http://127.0.0.1:4100';
 const EVIDENCE_DIR = path.resolve(__dirname, '../../mission/test-evidence/d3');
 const RESULTS_PATH = path.join(EVIDENCE_DIR, 'results.json');
-const GATEWAY_CWD = 'c:\\Users\\YOU\\Documents\\my-forge-project';
+const GATEWAY_CWD = 'c:\\Users\\YOU\\Documents\\my project (v2)!';
 const GATEWAY_ENTRY = 'command-center/gateway/bin.mjs';
 const LOG_EVENT_CJS = path.join(GATEWAY_CWD, '.claude', 'forge-dashboard', 'log-event.cjs');
 const RUN_ID = 'forge-2026-07-29-cc-finish';
-const PROJECT_NAME = 'my-forge-project';
+const PROJECT_NAME = 'my project (v2)!';
 
 const OUTAGE_TARGET_MS = 14000; // required: strictly over the app's own 5000ms HEALTH_POLL_MS, with margin
 const OUTAGE_SAMPLE_MS = 1500;
@@ -207,7 +207,7 @@ async function main() {
 
     await driver.setViewport(session, { width: 1440, height: 900, mobile: false });
 
-    // 1. Load, switch active project to "my-forge-project" (this run lives there), go to Activity
+    // 1. Load, switch active project to "my project (v2)!" (this run lives there), go to Activity
     //    (opens the exact /api/events/stream?project=...&run=... the mission targets).
     await driver.navigate(session, `${BASE}/#/`);
     await new Promise((r) => setTimeout(r, 700));

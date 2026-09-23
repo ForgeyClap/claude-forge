@@ -321,6 +321,9 @@ const SYSTEM = [
   // Quality Intelligence Layer (masterprompt 2026-08-11): missieprofiel -> lenzen -> omission mining
   // -> requirement cards + de ENE domeincatalogus met driftdetectie over router/evidence/intake/presets.
   'forge-bin/forge-quality.cjs', 'forge-bin/forge-quality.test.cjs',
+  // 2026-09-23 (external audit II-A): the /setup-forge engine — shipped in 2.0.0, deleted in 2.1.0 while 35 doc
+  // references kept calling it. Pinned here so a template sync can never drop it again.
+  'forge-bin/forge-setup.cjs',
   // F-20 (Codex herreview): knowledge cards zijn echte template-bestanden — laag 3 van progressive disclosure
   'config/quality/cards/website.md', 'config/quality/cards/api.md', 'config/quality/cards/n8n.md',
   'config/quality/cards/payments.md', 'config/quality/cards/rag.md', 'config/quality/cards/agent.md',
@@ -2339,9 +2342,30 @@ if (require.main === module) {
   const batchId = flags.batchId || ('sync-' + Date.now());
 
   if (cmd === 'status' || cmd === 'doctor') {
+    /** 2026-09-23 (external audit II-A): with no canonical template, TEMPLATE silently became this
+     *  project's OWN .claude, and status compared the tree with itself — printing "up to date ✓" on
+     *  every fresh install, forever, because a tree can never be behind itself. That is a tautology, not
+     *  a check. Say so plainly instead of pretending the update check ran. */
+    if (TEMPLATE_IS_FALLBACK) {
+      console.log('forge-sync status: NO canonical template at ' + GLOBAL_TEMPLATE);
+      console.log('  Without it this tree can only be compared with itself, which can never detect that it is behind.');
+      console.log('  Run the installer without --project-only to create the template, or set FORGE_SYNC_TEMPLATE_DIR.');
+      let vfStatus = {}; try { vfStatus = JSON.parse(fs.readFileSync(path.join(claudeDirOf(defaultProject), 'FORGE_VERSION.json'), 'utf8')); } catch { /* none */ }
+      console.log('  (installed version: ' + (vfStatus.forge_version || 'none') + ' · update check: NOT PERFORMED)');
+      process.exit(0);
+    }
     process.exit(status(TEMPLATE, defaultProject, flags.verbose));
   } else if (cmd === 'install') {
     if (!pos[0]) exitUsage('usage: forge-sync install <projectDir> [--dry-run] [--force-overwrite] [--unsafe] [--batch-id <id>] [--central-backup-root <dir>] [--no-central-backup] [--run-id <id>] [--allow-degraded] [--doctor-timeout <ms>] [--resume-batch]');
+    /** 2026-09-23 (external audit II-B): on a machine WITHOUT the canonical template, the template-refusal
+     *  below fired before anything looked at the target — so a user pointing `install` at a folder that
+     *  simply has no .claude/ yet got "the canonical template is missing" instead of the one message that
+     *  tells them what to do ("not a project (.claude missing) — run the installer"). The most specific,
+     *  actionable diagnosis goes first. */
+    if (fs.existsSync(pos[0]) && !fs.existsSync(claudeDirOf(pos[0]))) {
+      console.error('forge-sync: not a project (.claude missing): ' + path.resolve(pos[0]) + ' — forge-sync updates an EXISTING Forge project and never creates .claude/ itself. For a FIRST install run the installer: `bash install.sh --project "' + path.resolve(pos[0]) + '"` (or install.ps1 on Windows).');
+      process.exit(2);
+    }
     refuseForeignTargetOnFallback(pos[0]); // audit #23: never seed another project from this one
     // B5: default central backup hub lives OUTSIDE the project (its parent dir), never inside it.
     const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(path.dirname(path.resolve(pos[0])), '.forge-backup-hub'));
@@ -2398,13 +2422,18 @@ if (require.main === module) {
   } else if (cmd === 'sync-all') {
     const rootDir = pos[0] || process.env.FORGE_SYNC_ROOT; // B6
     if (!rootDir) exitUsage('usage: forge-sync sync-all <rootDir> [...] (root required — pass a positional root or set FORGE_SYNC_ROOT; no home-dir default)');
+    /** Argument validation comes BEFORE any environment check (2026-09-23, external audit II-B): the
+     *  template-refusal used to sit in front of the --force-overwrite/--force-all usage gate, so on a
+     *  machine without the canonical template a plain flag mistake was reported as a template problem, and
+     *  the usage gate itself was unreachable — its tests failed on every fresh install. Exit codes are now
+     *  distinct as well: 2 = you typed it wrong (usage), 3 = the environment cannot do it (no template). */
+    if (flags.forceOverwrite && !flags.forceAll) exitUsage('forge-sync: --force-overwrite in sync-all requires the explicit --force-all co-flag (prevents an accidental blanket override across every discovered project)');
     // audit #23: without a canonical template, sync-all would seed EVERY discovered project from this
     // one project's own .claude — the widest possible cross-project contamination. Fail closed.
     if (TEMPLATE_IS_FALLBACK) {
-      console.error('forge-sync: REFUSING sync-all — the canonical template is missing, so this project\'s own .claude would become the template for every discovered project. Install the global template, or set FORGE_SYNC_TEMPLATE_DIR explicitly.');
-      process.exit(2);
+      console.error('forge-sync: REFUSING sync-all — the canonical template is missing (' + GLOBAL_TEMPLATE + '), so this project\'s own .claude would become the template for every discovered project. Install the global template (install.sh / install.ps1 without --project-only creates it), or set FORGE_SYNC_TEMPLATE_DIR explicitly.');
+      process.exit(3);
     }
-    if (flags.forceOverwrite && !flags.forceAll) exitUsage('forge-sync: --force-overwrite in sync-all requires the explicit --force-all co-flag (prevents an accidental blanket override across every discovered project)');
     const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(rootDir, '.forge-backup-hub')); // B5
     if (flags.unsafe) console.warn('*** --unsafe: legacy-style sync-all — NO canary, NO validation; a real backup is still taken per project (never "no undo") ***');
     if (flags.forceOverwrite && flags.forceAll && !flags.dryRun) { // print the exact per-project file list BEFORE writing

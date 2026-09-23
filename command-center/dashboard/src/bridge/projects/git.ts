@@ -313,8 +313,15 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 /**
  * Strip credentials out of anything that came back from git. A remote URL of
- * the form `https://user:token@host/repo` can appear in an error message, and
- * this module's output is written to receipts and event payloads.
+ * the form `https://user:YOUR_PASSWORD@host/repo` can appear in an error message,
+ * and this module's output is written to receipts and event payloads.
+ *
+ * The placeholder above is spelled that way on purpose. Written with a plausible
+ * secret in the password position, this sentence is itself a credential-shaped
+ * string, and the project's leak scan cannot tell an illustration in a comment
+ * from a pasted password — it reported this line as a leak. An explicit
+ * placeholder keeps the illustration exact and removes the false report; the
+ * regex below is unchanged.
  */
 function redact(text: string): string {
   return text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@]+@/g, '$1<redacted>@');

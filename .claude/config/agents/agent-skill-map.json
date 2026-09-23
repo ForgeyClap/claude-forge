@@ -1,19 +1,106 @@
 {
-  "_doc": "Per-agent CORE skills (permanent, every project, auto-attached) — the project-type bundle from config/skills/global-skills.json comes ON TOP. Skill Boss validates before dispatch: an agent may not start without its core skills resolvable (real skill, playbook, ECC agent, or documented method) — missing → report + labeled safe fallback.",
-  "agents": {
-    "boss":             ["forge-router", "make-plan", "brainstorming", "forge-report"],
-    "head-chef":        ["make-plan", "writing-plans", "dispatching-parallel-agents", "subagent-driven-development"],
-    "review-boss":      ["code-review-excellence", "verification-before-completion", "design-is", "requesting-code-review"],
-    "test-boss":        ["test-driven-development", "verification-before-completion", "e2e-runner (ECC agent)", "systematic-debugging"],
-    "ui-boss":          ["frontend-design (ECC/plugin)", "design-is", "dataviz", "browser", "screenshot-loop (method)"],
-    "seo-boss":         ["seo-specialist (ECC agent)", "forge-website (SEO/perf sections)", "performance-optimizer (ECC agent)"],
-    "security-boss":    ["security-reviewer (ECC agent)", "security-review", "verification-before-completion"],
-    "skill-boss":       ["skill-builder", "using-superpowers", "global-skills registry (config/skills/global-skills.json)"],
-    "search-boss":      ["deep-research", "WebSearch/WebFetch (tools)", "docs-lookup (ECC agent)"],
-    "build-boss":       ["test-driven-development", "systematic-debugging", "code-review-excellence", "using-git-worktrees"],
-    "integration-boss": ["forge-integration", "n8n-mcp-tools-expert", "claude-api", "nvidia-provider (forge-bin/nvidia-provider.cjs)"],
-    "docs-boss":        ["forge-report", "writing-plans", "update-docs (ECC command)"]
-  },
-  "autoAttach": "At team-build time the Lead (Boss) reads this map + the project-type bundle and embeds the skill list in each subagent's prompt (skills load via the Skill tool inside the subagent). No manual per-project reconnection.",
-  "honesty": "Entries marked (ECC agent)/(method)/(tools) are agents, procedures, or tools — not SKILL.md files; they are invoked as what they are. Never claim a skill loaded that didn't."
+    "_doc": "Per-agent CORE skills (permanent, every project, auto-attached) — the project-type bundle from config/skills/global-skills.json comes ON TOP. Skill Boss validates before dispatch: an agent may not start without its core skills resolvable (real skill, playbook, ECC agent, or documented method) — missing → report + labeled safe fallback.",
+    "agents": {
+        "boss": [
+            "forge-router",
+            "forge-prd",
+            "forge-brainstorm",
+            "forge-report"
+        ],
+        "head-chef": [
+            "forge-prd",
+            "forge-worktrees",
+            "forge-router"
+        ],
+        "review-boss": [
+            "forge-code-review",
+            "forge-verify"
+        ],
+        "test-boss": [
+            "forge-skill-testing",
+            "forge-verify",
+            "forge-debug"
+        ],
+        "ui-boss": [
+            "forge-website",
+            "forge-mobile",
+            "forge-verify"
+        ],
+        "seo-boss": [
+            "forge-website",
+            "forge-scout",
+            "forge-verify"
+        ],
+        "security-boss": [
+            "forge-verify"
+        ],
+        "skill-boss": [
+            "forge-scout",
+            "forge-skill-testing",
+            "forge-router"
+        ],
+        "search-boss": [
+            "forge-scout"
+        ],
+        "build-boss": [
+            "forge-skill-testing",
+            "forge-debug",
+            "forge-code-review",
+            "forge-worktrees"
+        ],
+        "integration-boss": [
+            "forge-integration"
+        ],
+        "docs-boss": [
+            "forge-report",
+            "forge-prd"
+        ]
+    },
+    "autoAttach": "At team-build time the Lead (Boss) reads this map + the project-type bundle and embeds the skill list in each subagent's prompt (skills load via the Skill tool inside the subagent). No manual per-project reconnection.",
+    "honesty": "Entries marked (ECC agent)/(method)/(tools) are agents, procedures, or tools — not SKILL.md files; they are invoked as what they are. Never claim a skill loaded that didn't.",
+    "_unshipped_removed_2026_09_23": {
+        "_doc": "External audit II-E: these were the AUTHOR's global skills (~/.claude/skills), not part of the distribution, so on a clean install every Boss dispatch tripped the unresolvable-core-skill fallback by design. Known equivalents were remapped to the shipped Forge skill; the rest are listed here so the intent is not lost. An owner who installs them globally may add them back.",
+        "removed": {
+            "review-boss": [
+                "design-is"
+            ],
+            "test-boss": [
+                "e2e-runner (ECC agent)"
+            ],
+            "ui-boss": [
+                "frontend-design (ECC/plugin)",
+                "design-is",
+                "dataviz",
+                "browser",
+                "screenshot-loop (method)"
+            ],
+            "seo-boss": [
+                "seo-specialist (ECC agent)",
+                "forge-website (SEO/perf sections)",
+                "performance-optimizer (ECC agent)"
+            ],
+            "security-boss": [
+                "security-reviewer (ECC agent)",
+                "security-review"
+            ],
+            "skill-boss": [
+                "skill-builder",
+                "using-superpowers",
+                "global-skills registry (config/skills/global-skills.json)"
+            ],
+            "search-boss": [
+                "WebSearch/WebFetch (tools)",
+                "docs-lookup (ECC agent)"
+            ],
+            "integration-boss": [
+                "n8n-mcp-tools-expert",
+                "claude-api",
+                "nvidia-provider (forge-bin/nvidia-provider.cjs)"
+            ],
+            "docs-boss": [
+                "update-docs (ECC command)"
+            ]
+        },
+        "_refilled": "2026-09-23 (external audit, measured): after the unshipped skills were dropped, ui-boss, seo-boss and skill-boss were left with EMPTY core-skill lists and nvidia-provider.test (\"every registry agent has core skills\") went red on every fresh install. Refilled from skills that actually ship: ui-boss -> forge-website/forge-mobile/forge-verify, seo-boss -> forge-website/forge-scout/forge-verify, skill-boss -> forge-scout/forge-skill-testing/forge-router."
+    }
 }

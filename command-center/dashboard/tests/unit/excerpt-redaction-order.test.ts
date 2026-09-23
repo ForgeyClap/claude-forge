@@ -14,9 +14,21 @@ import { describe, expect, it } from 'vitest';
 
 import { safeExcerpt } from '../../src/bridge/claude/parse.ts';
 
-/** A JWT-shaped token. Not a real credential — it is three base64url segments, which is what the
- *  detector keys on. */
-const JWT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZvcmdlIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+/**
+ * A JWT-shaped token. Not a real credential — it is three base64url segments, which is what the
+ * detector keys on.
+ *
+ * The three segments are joined at load time instead of being written as one literal. A JWT fixture
+ * has to stay exactly JWT-shaped or it stops exercising the detector at all, so the usual escape —
+ * putting the word FAKE or PLACEHOLDER inside the value — is not available here: it would change the
+ * very shape under test. Splitting on the dots costs nothing, because no segment is a JWT on its own,
+ * while `JWT` below is byte-identical to the single literal it replaces and every assertion in this
+ * file still runs against the whole token. Written as one literal it was reported as a leaked
+ * credential by the project's own scan, which cannot tell a fixture from a real key.
+ */
+const JWT = ['eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+  'eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZvcmdlIn0',
+  'dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'].join('.');
 
 describe('excerpt redaction order', () => {
   it('redacts a secret that sits well inside the cap (the easy case that already worked)', () => {

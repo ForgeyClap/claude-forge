@@ -1021,9 +1021,26 @@ function mainCli() {
   } else if (args.length >= 2) {
     ev.run_id = args[0];
     ev.event_type = args[1];
-    if (args[2]) { try { Object.assign(ev, JSON.parse(args[2])); } catch (e) { console.error('Invalid extra JSON:', e.message); process.exit(1); } }
+    // --env <VAR> (2026-09-23, external audit II-G): the JSON payload is read from an ENVIRONMENT VARIABLE
+    // instead of an argv token. cmd.exe re-tokenises argv on = ; , and treats & as a command separator, so
+    // forge-log-event.cmd used to write silently rewritten payloads and could execute text after an &.
+    // An env var is never re-tokenised by any shell. The wrappers use this route; direct callers may too.
+    if (args[2] === '--env') {
+      const raw = process.env[String(args[3] || '')];
+      if (!raw) { console.error('--env ' + (args[3] || '<VAR>') + ': that environment variable is empty or unset'); process.exit(1); }
+      try { Object.assign(ev, JSON.parse(raw)); } catch (e) { console.error('Invalid extra JSON in env ' + args[3] + ':', e.message); process.exit(1); }
+    } else if (args[2] === '--file') {
+      // --file <path>: the payload is read from a file, so no shell ever tokenises it. This is the ONLY route
+      // that is safe from cmd.exe for JSON containing quotes AND an & — cmd toggles its quote state on every
+      // embedded quote, so even `set "VAR=..."` can expose an & inside a value (verified 2026-09-23).
+      const fp = String(args[3] || '');
+      if (!fp) { console.error('--file: a path is required'); process.exit(1); }
+      let raw;
+      try { raw = fs.readFileSync(fp, 'utf8'); } catch (e) { console.error('--file ' + fp + ': ' + e.message); process.exit(1); }
+      try { Object.assign(ev, JSON.parse(raw.replace(/^﻿/, ''))); } catch (e) { console.error('Invalid extra JSON in file ' + fp + ':', e.message); process.exit(1); }
+    } else if (args[2]) { try { Object.assign(ev, JSON.parse(args[2])); } catch (e) { console.error('Invalid extra JSON:', e.message); process.exit(1); } }
   } else {
-    console.error('Usage: node log-event.cjs <run_id> <event_type> [json] | node log-event.cjs <json> | node log-event.cjs --batch <run_id> < events.jsonl');
+    console.error('Usage: node log-event.cjs <run_id> <event_type> [json | --env <VAR>] | node log-event.cjs <json> | node log-event.cjs --batch <run_id> < events.jsonl');
     process.exit(1);
   }
   if (!ev.run_id) { console.error('run_id is required'); process.exit(1); }

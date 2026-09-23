@@ -196,7 +196,10 @@ function pcAdapter(t) { const v = String(t || '').toLowerCase(); return LOCAL_AD
 
 // Forward-slash path guard (BLOCKER-12/13): the durable standalone command path and the workspace
 // cwd sent to Paperclip must never contain a Windows backslash.
-function toForwardSlashes(p) { return p.split(path.sep).join('/'); }
+/** 2026-09-23 (external audit, CI on Linux): splitting on path.sep only converts the HOST's separator,
+ *  so a Windows-style input on a Linux runner kept its backslashes and the suite went red there. A path
+ *  fed to Paperclip must be forward-slashed regardless of which OS is doing the converting. */
+function toForwardSlashes(p) { return String(p).replace(/\\/g, '/'); }
 
 // Model tier per Forge role → Paperclip adapterConfig.model (+ effort). Mirrors .claude/FORGE_MODEL_ROUTING.json
 // (user decision 2026-07-03). WHY: with no explicit model, Paperclip falls back to the adapter's "cheap"

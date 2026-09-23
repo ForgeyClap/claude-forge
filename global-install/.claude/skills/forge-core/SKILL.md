@@ -47,7 +47,7 @@ The CLAUDE.md Forge section should cover: **project identity** (name/folder/type
 
 ## Project isolation (REQUIRED — always on)
 1. Work **only** in the active project folder where Forge was invoked. Never edit other projects or unrelated dirs.
-2. If the folder/project is ambiguous, **ask which exact project folder is meant before any edit**, then stop and wait.
+2. The target is the **current working directory** — state it in your first line and never ask (beginner-first, 2026-09-23; writing outside the root is already a hard gate). Only when two existing projects inside that directory are equally plausible targets and the goal does not say which, ask ONE question.
 3. No edits outside the target folder. No global project edits without the user's explicit permission.
 4. Don't modify global Claude/ECC folders unless the user explicitly says so.
 5. Inspect before editing; never delete meaningful files without approval.
@@ -173,7 +173,7 @@ This layer is the **default for every project** the moment its local Forge V2 in
 
 Whenever `/forge` / `gebruik Forge` runs in a project, the Lead Agent checks the project's Forge version against the canonical template and brings it current before working:
 - `node .claude/forge-bin/forge-sync.cjs status .` (or `forge-sync doctor`) reports `installed=<hash>` vs `template=<hash>`.
-- If the project is **behind** (or has no local install), offer / run the safe installer: `node ~/.claude/forge/template/.claude/forge-bin/forge-sync.cjs install "<projectDir>"` — it takes a per-project backup, validates with `forge-doctor` before+after, and rolls back on any regression (drift on a system file is refused, not clobbered, unless `--force-overwrite` is justified). Never overwrite a project's own app code — `forge-sync` only ever touches `.claude/` system files.
+- If the project is **behind** (or has no local install), RUN the safe installer — do not merely offer it: `node ~/.claude/forge/template/.claude/forge-bin/forge-sync.cjs install "<projectDir>"` — it takes a per-project backup, validates with `forge-doctor` before+after, and rolls back on any regression (drift on a system file is refused, not clobbered, unless `--force-overwrite` is justified). Never overwrite a project's own app code — `forge-sync` only ever touches `.claude/` system files.
 - The **canonical template** (`~/.claude/forge/template/.claude`) is the single source of truth; a new project install and an existing-project update both flow from it, so every project — present and future — runs the same current Forge.
 
 ## v8 subcommands (project-local, after install)

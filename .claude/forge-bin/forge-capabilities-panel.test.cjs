@@ -53,7 +53,11 @@ const realRunsDir = path.join(__dirname, '..', 'forge-runs');
 // vacuous when there are no run DIRECTORIES at all (nothing to validate on a fresh project), while
 // the case this test actually guards — run dirs present but none carrying events.jsonl, i.e. the
 // wiped-canary class — still FAILS exactly as before.
-const realRunDirs = fs.existsSync(realRunsDir) ? fs.readdirSync(realRunsDir, { withFileTypes: true }).filter((e) => e.isDirectory()) : [];
+// 2026-09-23 (external audit II-B): directories that start with '_' are bookkeeping, not runs — the
+// PostToolUse tool ledger creates forge-runs/_toollog/ on the very first tool call of a fresh install,
+// which made this "vacuously OK on zero runs" check see ONE directory with no events.jsonl and fail on
+// exactly the fresh project it claims to tolerate. A run directory is one that is not underscore-prefixed.
+const realRunDirs = fs.existsSync(realRunsDir) ? fs.readdirSync(realRunsDir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('_')) : [];
 const realRunIds = realRunDirs.filter((e) => fs.existsSync(path.join(realRunsDir, e.name, 'events.jsonl'))).map((e) => e.name);
 t('run dirs, when present, include at least one real run with events.jsonl (vacuously OK on a fresh project with zero runs)', realRunDirs.length === 0 || realRunIds.length > 0);
 if (realRunIds.length > 0) {

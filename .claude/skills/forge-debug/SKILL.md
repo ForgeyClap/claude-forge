@@ -29,7 +29,7 @@ which Boss does what.
    theories.
 3. **Root-cause, not symptom.** State the mechanism in one sentence: "X happens because Y does Z under
    condition W." If you can't state it that precisely, you don't have the root cause yet — keep isolating.
-4. **Fix** at the root, matching the existing architecture and conventions (see `coding-style.md`) — not a
+4. **Fix** at the root, matching the existing architecture and conventions (follow the project's own conventions — a `coding-style.md` or CLAUDE.md rules when the project has them) — not a
    parallel workaround bolted on beside the real cause.
 5. **Regression test.** Write a test that fails on the pre-fix code and passes on the post-fix code. It
    stays in the suite permanently — it is the proof, and it prevents the same bug returning silently.
@@ -48,7 +48,7 @@ which Boss does what.
 - Security-relevant bug (auth, secrets, data exposure) → also load `security-reviewer` per the project's
   security posture.
 - High-risk / hard-to-reproduce bug after one reasonable attempt fails → optional `codex-reviewer`
-  (Codex, read-only) as an independent second opinion, per `CODEX_GLOBAL_POLICY.md`. Not mandatory, never
+  (Codex, read-only) as an independent second opinion, per `CODEX_GLOBAL_POLICY.md` (an owner-level policy in `~/.claude` when present; on an install without it, the defaults stated in this skill apply — read-only, never a blocker). Not mandatory, never
   a blocker.
 - Build Boss owns implementation fixes; Test Boss owns the regression-test proof; Debug work that touches
   both stays with Build Boss, who hands the RED→GREEN evidence to Test Boss for confirmation.

@@ -53,7 +53,19 @@ switch ($cmd) {
   'open-report' { & $node "$dash\server.cjs" --open-report }
   'health'      { & $node "$dash\server.cjs" --health }
   'assign-only' { & $node "$dash\server.cjs" --assign-only }
-  'log-event'   { & $node "$dash\log-event.cjs" @rest }
+  'log-event'   {
+    # Windows PowerShell 5.1 strips the quotes off a JSON argument when it calls a native executable, so
+    # `.\forge.ps1 log-event <run> <type> '{"note":"x"}'` reached log-event.cjs as {note:x} and failed with
+    # "Invalid extra JSON" (external audit II-G, 2026-09-23). The payload now travels in an environment
+    # variable, which no shell re-tokenises; and the real exit code is returned instead of a silent 0.
+    if ($rest.Count -ge 3) {
+      $env:FORGE_EVENT_JSON = [string]$rest[2]
+      & $node "$dash\log-event.cjs" $rest[0] $rest[1] --env FORGE_EVENT_JSON
+    } else {
+      & $node "$dash\log-event.cjs" @rest
+    }
+    exit $LASTEXITCODE
+  }
   # reconciles the run's manifest.json from logged events and reports which work packages remain
   # unfinished (forge-swarm-resume.cjs). Usage: .\forge.ps1 resume --run <run_id> [--json]
   'resume'      { & $node "$PSScriptRoot\forge-swarm-resume.cjs" @rest }

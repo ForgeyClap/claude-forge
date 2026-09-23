@@ -3,7 +3,7 @@
 Forge ships **18 built-in agents** — **12 permanent Bosses** plus **6 on-demand specialists** — and turns Claude Code into a coordinated team that builds, tests, reviews and ships. Every one is a **real Claude Code Agent-tool subagent** defined in [`.claude/agents/*.md`](.claude/agents/), not a simulated persona or a fabricated name on a dashboard.
 
 > [!NOTE]
-> **Honest count.** Forge ships exactly **18 agents** and **23 skills**. Forge can also *route* to your wider agent ecosystem (ECC / Claude-Code agent types) when a task calls for something outside the built-ins — but those are not part of this repo. When you see large numbers elsewhere, that is the routable ecosystem, not what claude-forge ships. See [Routing to your wider ecosystem](#routing-to-your-wider-ecosystem).
+> **Honest count.** The full install ships **19 agents** (12 permanent Bosses + 7 specialists) and **59 skills**; the LITE plugin carries **18 agents** and **31 skills**. Counts are taken from the directories, not typed by hand. Forge can also *route* to your wider agent ecosystem (ECC / Claude-Code agent types) when a task calls for something outside the built-ins — but those are not part of this repo. When you see large numbers elsewhere, that is the routable ecosystem, not what claude-forge ships. See [Routing to your wider ecosystem](#routing-to-your-wider-ecosystem).
 
 ---
 

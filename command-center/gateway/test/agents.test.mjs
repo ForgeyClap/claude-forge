@@ -53,11 +53,13 @@ test('build-boss carries its real CORE skill list from agent-skill-map.json', ()
   assert.equal(result.sources.skill_map_present, true);
   const buildBoss = result.agents.find((a) => a.slug === 'build-boss');
   assert.ok(buildBoss);
+  // 2026-09-23 (external audit II-D): the map used to name four skills that exist only in the author's global
+  // ~/.claude; they were remapped to the shipped Forge equivalents. This pin follows the real file.
   assert.deepEqual(buildBoss.skills, [
-    'test-driven-development',
-    'systematic-debugging',
-    'code-review-excellence',
-    'using-git-worktrees',
+    'forge-skill-testing',
+    'forge-debug',
+    'forge-code-review',
+    'forge-worktrees',
   ]);
 });
 

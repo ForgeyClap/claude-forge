@@ -9,16 +9,7 @@
     "min_cli_version": "0.146.0",
     "_min_cli_doc": "gpt-5.6-sol EXISTS on older CLIs but the API refuses it with HTTP 400 'requires a newer version of Codex'. Verified live 2026-08-03: 0.142.3 refused, 0.146.0 accepted.",
     "command": "codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only \"<review prompt>\"",
-    "adversarial_command": "codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only \"ADVERSARIAL CODE REVIEW. <focus>\"",
-    "model_candidates": [
-      "gpt-5.6-sol",
-      "gpt-5.6-codex",
-      "gpt-5-codex"
-    ],
-    "_model_candidates_doc": "GEMETEN 2026-08-13: een enkele harde modelpin breekt bij iedereen met een ChatGPT-account — codex weigert dan ELK model met HTTP 400 \"not supported when using Codex with a ChatGPT account\" (getest: gpt-5.6-sol, gpt-5.6-codex, gpt-5.2-codex, gpt-5-codex en het eigen default gpt-6-astra). Probeer de kandidaten op volgorde; werkt geen enkele, laat dan de -m vlag weg zodat het account-default wordt gebruikt. Slaagt ook dat niet, dan is Codex NIET BESCHIKBAAR — dat is geen fout van dit project en mag de run nooit blokkeren.",
-    "on_all_models_refused": "Rapporteer BLOCKED met de letterlijke foutmelding en ga door. Nooit een reviewresultaat verzinnen, nooit de ECC-fallback als onafhankelijke review presenteren.",
-    "diagnose_command": "codex exec -s read-only --skip-git-repo-check \"Antwoord met exact het woord OK.\"",
-    "_diagnose_doc": "Slaagt dit kale commando niet, dan ligt het aan het Codex-account/-plan (of login), niet aan het gekozen model. Los dat eerst op met `codex login`."
+    "adversarial_command": "codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only \"ADVERSARIAL CODE REVIEW. <focus>\""
   },
   "naming": {
     "step_label": "Codex code-review (gpt-5.6-sol, effort xhigh)",

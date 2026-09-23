@@ -510,6 +510,10 @@ function looksLikeRealSecret(match) {
 // real store-redactable secret disguised as a `/pattern/flags` literal there. The two files that legitimately
 // DEFINE these patterns only ever live at exactly these two repo-relative paths — here and in every synced
 // project (the template copies them to the same location) — so the exemption is gated on the exact path.
+// 2026-09-23 (external audit II-C): the four leak-scan hits the audit saw in `command-center/` were a STALE copy of
+// that code in the distribution — the source had already rewritten those lines (a PEM header split across two
+// literals, comments without the dashed marker). Measured after the sync: 0 hits with the set exactly as below,
+// so the exemption surface was deliberately NOT widened to a third file.
 const PATTERN_DEFINITION_PATHS = new Set(['.claude/forge-bin/forge-store.cjs', '.claude/forge-bin/forge-doctor.cjs']);
 // isPatternDefinitionContext — CONTEXT-based (not character-based) check: does this match sit literally
 // inside a JS `/pattern/flags` regex literal, or inside the quoted first argument of a `new RegExp('...')`/
@@ -1563,6 +1567,10 @@ function detectVendorPin(text) {
  *  echte schrijf-API. Testbestanden tellen niet mee: fixtures schrijven van alles en zijn geen bron van waarheid. */
 const WRITE_API_RE = /\b(writeFileSync|appendFileSync|writeAtomic|createWriteStream|copyFileSync)\b/;
 const FILENAME_LITERAL_RE = /['"`](\.?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)['"`]/g;
+// The write call and its argument list on one line: `fs.writeFileSync(projMarkerPath, json, 'utf8')` ->
+// group 1 = api, group 2 = everything up to the first `)`. Used to find WHICH variable is being written.
+const WRITE_CALL_ARGS_RE = /\b(writeFileSync|appendFileSync|writeAtomic|createWriteStream|copyFileSync)\s*\(([^()]*)/;
+const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
 function generatedPathBasenames(root) {
   const out = new Set();
   for (const sub of ['forge-bin', 'forge-dashboard', 'hooks']) {
@@ -1572,12 +1580,35 @@ function generatedPathBasenames(root) {
       if (/\.test\.(cjs|mjs|js)$/.test(f)) continue;
       let lines;
       try { lines = fs.readFileSync(f, 'utf8').split(/\r?\n/); } catch { continue; }
+      const resolved = new Set(); // one declaration lookup per written variable per file
       for (let i = 0; i < lines.length; i++) {
         if (!WRITE_API_RE.test(lines[i])) continue;
         const window = lines[i] + '\n' + (lines[i + 1] || ''); // een gewrapte aanroep zet het pad op de volgende regel
         FILENAME_LITERAL_RE.lastIndex = 0;
         let m;
         while ((m = FILENAME_LITERAL_RE.exec(window)) !== null) out.add(m[1]);
+        // 2026-09-23 (measured on forge-setup.cjs, restored this release): the path is often built ONCE into a
+        // variable — `const projMarkerPath = path.join(projectDir, '.claude', '.forge-setup.json')` — and the
+        // write, fifteen lines later, only names that variable: `fs.writeFileSync(projMarkerPath, …)`. Neither
+        // line carries both the write API and the literal, so the marker fell through and forge-router's honest
+        // reference to `.claude/.forge-setup.json` came back as a "dangling" link. Resolve the written argument
+        // (the first one; for copyFileSync the second — that is the destination) to its declaration in the SAME
+        // file — const/let/var, one hop, no re-assignment chasing — and take the literals from that line. Still
+        // bounded: only a variable that is actually handed to a write API is ever looked up.
+        const call = WRITE_CALL_ARGS_RE.exec(lines[i]);
+        if (!call) continue;
+        const args = call[2].split(',').map((a) => a.trim());
+        const written = call[1] === 'copyFileSync' ? args[1] : args[0];
+        if (!written || !IDENTIFIER_RE.test(written) || resolved.has(written)) continue;
+        resolved.add(written);
+        const declRe = new RegExp('\\b(?:const|let|var)\\s+' + written.replace(/\$/g, '\\$') + '\\s*=');
+        for (let j = 0; j < lines.length; j++) {
+          if (!declRe.test(lines[j])) continue;
+          const declWindow = lines[j] + '\n' + (lines[j + 1] || '');
+          FILENAME_LITERAL_RE.lastIndex = 0;
+          let d;
+          while ((d = FILENAME_LITERAL_RE.exec(declWindow)) !== null) out.add(d[1]);
+        }
       }
     }
   }
@@ -1812,7 +1843,11 @@ function printSummary(rep) {
   out.push(line('tests', c.tests.ok, c.tests.suites + ' suites · ' + c.tests.passed + ' passed / ' + c.tests.failed + ' failed'
     + (c.tests.ok ? '' : ' · ' + (c.tests.reason || [c.tests.suitesFailed ? c.tests.suitesFailed + ' SUITE(S) FAILED' : '', c.tests.suitesBlocked ? c.tests.suitesBlocked + ' SUITE(S) BLOCKED (timeout)' : ''].filter(Boolean).join(' · ')))));
   out.push(line('honesty gate', c.strict_events.ok, 'known accepted=' + c.strict_events.known_accepted + ' · unknown rejected=' + c.strict_events.unknown_rejected));
-  out.push(line('dashboard SPA', c.dashboard_spa.ok, c.dashboard_spa.ok ? DASH_SPA.length + ' files present' : 'missing: ' + c.dashboard_spa.missing.join(', ')));
+  // 2026-09-23 (external audit II-G): this line used to read "dashboard SPA · 7 files present", which a
+  // new user reads as "the dashboard works" — but these seven files are the RETIRED per-project Control
+  // Center that is never started; the live Command Center is a separate build. Say what is actually being
+  // checked, so a green here is never mistaken for a working dashboard.
+  out.push(line('legacy SPA files', c.dashboard_spa.ok, c.dashboard_spa.ok ? DASH_SPA.length + ' retired per-project dashboard files intact (kept for log-event.cjs; never started — the live dashboard is the Command Center)' : 'missing: ' + c.dashboard_spa.missing.join(', ')));
   const lk = c.leak_scan;
   // MULTI-REPO ACCOUNTING (2026-08-02): when more than one repository under this root contributed files,
   // say so and say how many each gave. A single anonymous total is exactly what let "1146 tracked files ·
@@ -1991,6 +2026,25 @@ module.exports = {
 if (require.main === module) {
   const main = () => {
     const argv = process.argv.slice(2);
+    /** 2026-09-23 (external audit II-G): --help used to be an unknown flag that fell through into the FULL
+     *  multi-minute doctor (and with --run it even wrote doctor.json and logged an event). Help is a
+     *  no-op by contract: usage on stdout, exit 0, nothing measured, nothing written. A mistyped flag
+     *  likewise refuses instead of silently starting a self-test the caller did not ask for. */
+    if (argv.includes('--help') || argv.includes('-h')) {
+      console.log('Usage: node forge-doctor.cjs [--root <projectDir>] [--run <run_id>] [--json]');
+      console.log('');
+      console.log('  Runs the full Forge self-test: every *.test.cjs suite, the leak scan, agent/hook/event checks.');
+      console.log('  Takes several minutes. --json prints exactly one JSON report object; --run also writes');
+      console.log('  doctor.json into that run and logs a doctor_run event. --help never runs anything.');
+      return;
+    }
+    const bekend = new Set(['--root', '--run', '--json']);
+    const onbekend = argv.filter((a, i) => a.startsWith('-') && !bekend.has(a) && !(i > 0 && (argv[i - 1] === '--root' || argv[i - 1] === '--run')));
+    if (onbekend.length) {
+      console.error('forge-doctor: unknown flag(s) ' + onbekend.join(' ') + ' — see --help. Refusing to start a multi-minute self-test on a mistyped flag.');
+      process.exitCode = 2;
+      return;
+    }
     let root = path.resolve(__dirname, '..', '..'), run = null, wantJson = false;
     for (let i = 0; i < argv.length; i++) {
       if (argv[i] === '--root') root = argv[++i];

@@ -55,4 +55,7 @@ export {
   _isExecTimeoutPausedForAskForTests,
   _execTimeoutRemainingMsForTests,
   _resetExecBridgeForTests,
+  enterDrainMode,
+  isDraining,
+  interruptAllExecutions,
 } from './exec-lifecycle.mjs';

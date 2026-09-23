@@ -52,7 +52,7 @@ Load via the Skill tool when relevant: deep-research, docs-lookup.
 - Duplicate or near-duplicate results are consolidated rather than listed separately.
 - Searches stop once the question is answered with sufficient confidence — exhaustive searching for its own sake is not the goal.
 
-### Recovery / solution-first (`GLOBAL_RESEARCH_RECOVERY_POLICY.md`)
+### Recovery / solution-first (`.claude/config/orchestration/FORGE_RECOVERY_POLICY.json` — the shipped, machine-readable form; an owner may also keep a prose `GLOBAL_RESEARCH_RECOVERY_POLICY.md` in `~/.claude`)
 - A single failed method (401/403/404, no key, empty search, wrong path, one tool/MCP unavailable) is never reported as a dead end on its own — `forge-recovery.cjs classify` confirms it's a recoverable blocker, not a hard security stop.
 - `forge-recovery.cjs alternatives` was used to generate ≥3 safe alternatives (≥5 for a genuinely high-value item) before giving up on an item.
 - Every recovery attempt is logged (`recordAttempt`) with the real queries/tools/outcome — never a fabricated ledger entry.

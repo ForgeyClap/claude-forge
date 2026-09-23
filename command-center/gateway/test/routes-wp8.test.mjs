@@ -10,9 +10,13 @@ import { createServer } from '../src/server.mjs';
 import { PROJECT_ROOT } from '../src/paths.mjs';
 import { _resetProjectsCacheForTests } from '../src/projects.mjs';
 import { request } from '../test-support/helpers.mjs';
+import { needsRecoveryLedger } from './.real-data-guard.mjs';
 
 const THIS_PROJECT_NAME = path.basename(PROJECT_ROOT);
 const RUN_ID = 'forge-2026-07-26-command-center';
+// Only the ledger-content assertion depends on this project having recorded real recovery/docdrift
+// entries; the endpoint's shape, security and secret-boundary tests all stay unconditional.
+const NEEDS_LEDGER = needsRecoveryLedger();
 
 let server;
 let port;
@@ -94,7 +98,7 @@ test('GET /api/files/read with no ?path= is a clean 400, not a crash', async () 
 
 /* ---------------------------------------------------------------------------- /api/recovery --- */
 
-test('GET /api/recovery returns the real recovery-attempts + docdrift ledger for this project', async () => {
+test('GET /api/recovery returns the real recovery-attempts + docdrift ledger for this project', { skip: NEEDS_LEDGER }, async () => {
   const res = await request(port, '/api/recovery?project=' + encodeURIComponent(THIS_PROJECT_NAME));
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);

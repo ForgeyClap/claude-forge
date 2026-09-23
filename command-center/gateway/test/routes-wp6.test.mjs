@@ -42,13 +42,18 @@ test('GET /api/tools returns the real forge-bin tool inventory', async () => {
   assert.ok(res.json.tools.some((t) => t.name === 'forge-doctor.cjs' && t.has_test === true));
 });
 
-test('GET /api/mcp returns the real dormant 8-server MCP registry', async () => {
+// BIJGEWERKT (audit-reconciliatie 2026-08-06): deze test codificeerde het 8-server-register van vóór
+// 2026-08-04 — de MCP-drift-fix registreerde toen de ECHT draaiende claude-flow en n8n (status
+// 'connected' = werkelijkheid, geen toestemming). De echte invariant is niet "alles not-installed"
+// maar "nooit pre-ACTIVATED": elke server is not-installed OF eerlijk connected, nooit activated.
+test('GET /api/mcp returns the real MCP registry (10 servers, none pre-activated)', async () => {
   const res = await request(port, '/api/mcp?project=' + encodeURIComponent(THIS_PROJECT_NAME));
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
-  assert.equal(res.json.servers_count, 8);
-  assert.equal(res.json.installed_count, 0);
-  assert.ok(res.json.servers.every((s) => s.status === 'not-installed'));
+  assert.equal(res.json.servers_count, 10);
+  assert.ok(res.json.servers.some((s) => s.id === 'claude-flow' && s.status === 'connected'));
+  assert.ok(res.json.servers.some((s) => s.id === 'n8n' && s.status === 'connected'));
+  assert.ok(res.json.servers.every((s) => s.status === 'not-installed' || s.status === 'connected'), 'geen enkele server mag pre-activated zijn');
 });
 
 test('GET /api/capabilities runs the real report and returns real capabilities + summary', async () => {

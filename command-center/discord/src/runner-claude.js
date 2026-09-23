@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { redactSecrets } from './audit.js';
@@ -118,8 +119,71 @@ export function parseClaudeJson(stdout) {
   }
 }
 
+/** BROKER-ATTEST v2 (Codex r5 #30-rest, versioned refactor 2026-08-07).
+ *  v2: de gateway attesteert bij de servicestart niet alleen het GERESOLVEDE pad maar ook de
+ *  FILE-IDENTITEIT van het doel (size + mtimeMs + ino) via env CLAUDE_CLI_ATTEST. De runner
+ *  herverifieert die identiteit bij ELKE spawn — een binary die na de attest wordt vervangen of een
+ *  link die wordt omgelegd, wordt op het spawn-moment gedetecteerd en hard geweigerd (geen fallback).
+ *  v1 (alleen CLAUDE_CLI_PATH) blijft tijdens de gefaseerde migratie werken met de bestaande
+ *  realpath-validatie + een deprecatiewaarschuwing. CLI-contracten ongewijzigd. */
+export function verifyCliAttest(attest) {
+  if (!attest || attest.v !== 2 || typeof attest.path !== 'string') return { ok: false, reason: 'attest ontbreekt of heeft geen v2-vorm' };
+  if (!path.isAbsolute(attest.path)) return { ok: false, reason: 'attest-pad is niet absoluut: ' + attest.path };
+  if (typeof attest.sha256 !== 'string' || attest.sha256.length !== 64) return { ok: false, reason: 'attest mist een sha256-contentdigest (r6 #5)' };
+  let st;
+  try { st = fs.statSync(attest.path); } catch (e) { return { ok: false, reason: 'attest-doel onleesbaar: ' + e.message }; }
+  if (!st.isFile()) return { ok: false, reason: 'attest-doel is geen regulier bestand' };
+  if (st.size !== attest.size || Math.floor(st.mtimeMs) !== Math.floor(attest.mtime_ms)) {
+    return { ok: false, reason: 'CLI-binary veranderd sinds de attest (size ' + attest.size + '->' + st.size + ', mtime ' + Math.floor(attest.mtime_ms) + '->' + Math.floor(st.mtimeMs) + ') — spawn geweigerd; herstart de gateway voor een verse attest' };
+  }
+  /** r6 #5: size+mtime is geen identiteit (opvulbaar + terugzetbaar) — de CONTENT-digest is dat wel.
+   *  De hash-kost per spawn (een claude-turn duurt seconden-minuten) is een bewuste, kleine prijs. */
+  let digest;
+  try { digest = crypto.createHash('sha256').update(fs.readFileSync(attest.path)).digest('hex'); }
+  catch (e) { return { ok: false, reason: 'attest-doel niet hashbaar: ' + e.message }; }
+  if (digest !== attest.sha256) {
+    return { ok: false, reason: 'CLI-binary CONTENT gewijzigd sinds de attest (sha256-mismatch) — spawn geweigerd; herstart de gateway voor een verse attest' };
+  }
+  return { ok: true, path: attest.path };
+}
+/** r6 #6: een AANWEZIG maar corrupt/onbekend-versie-attest is een fout, GEEN stille v1-terugval —
+ *  het downgrade-pad zou het hele attest-mechanisme uitschakelbaar maken. */
+export function readCliAttestFromEnv() {
+  const raw = process.env.CLAUDE_CLI_ATTEST;
+  // r6b #3: alleen een ECHT afwezige variabele is 'absent'. Een aanwezige lege/whitespace waarde
+  // ('CLAUDE_CLI_ATTEST=') is een kapot attest en moet hard falen — anders schakelt een lege string
+  // de content-attest uit en glijdt de runner terug naar het zwakkere v1-pad.
+  if (raw === undefined) return { state: 'absent', attest: null };
+  if (String(raw).trim() === '') return { state: 'invalid', attest: null };
+  try { const a = JSON.parse(raw); return (a && a.v === 2) ? { state: 'v2', attest: a } : { state: 'invalid', attest: null }; }
+  catch { return { state: 'invalid', attest: null }; }
+}
+function requireBrokeredCliPath() {
+  const env = readCliAttestFromEnv();
+  if (env.state === 'invalid') throw new Error('CLAUDE_CLI_ATTEST is aanwezig maar corrupt/onbekende versie — dat is een fout, geen v1-terugval (r6 #6); herstart de gateway');
+  if (env.state === 'v2') {
+    const v = verifyCliAttest(env.attest);
+    if (!v.ok) throw new Error('CLAUDE_CLI_ATTEST (v2) faalt bij constructie: ' + v.reason);
+    return { path: v.path, attest: env.attest, protocol: 'v2' };
+  }
+  const p = process.env.CLAUDE_CLI_PATH;
+  if (!p) throw new Error('RUNNER=claude vereist een door de gateway gebrokerd CLAUDE_CLI_ATTEST (v2) of CLAUDE_CLI_PATH (v1, deprecated) — start de bot via de gateway; een kale PATH-lookup is verwijderd (Codex r4 #14)');
+  if (!path.isAbsolute(p)) throw new Error('CLAUDE_CLI_PATH moet een ABSOLUUT pad zijn, kreeg: ' + p);
+  // v1-pad (r5 #30): resolve symlinks/junctions naar het ECHTE doel en spawn dat.
+  let real;
+  try { real = fs.realpathSync.native(p); } catch (e) { throw new Error('CLAUDE_CLI_PATH bestaat niet of is niet resolvebaar: ' + p + ' (' + e.message + ')'); }
+  if (!fs.existsSync(real)) throw new Error('CLAUDE_CLI_PATH resolvet naar een niet-bestaand doel: ' + real);
+  console.error('[runner-claude] DEPRECATED: v1-broker (CLAUDE_CLI_PATH zonder attest) — de gateway hoort CLAUDE_CLI_ATTEST v2 mee te geven; per-spawn identiteitsverificatie is in v1 niet beschikbaar');
+  return { path: real, attest: null, protocol: 'v1' };
+}
+
 export function createClaudeRunner({
-  claudePath = 'claude',
+  // AUDIT G8.2 (2026-08-06) + Codex r4 #14 (2026-08-07): de bot spawnde 'claude' via kale PATH-lookup
+  // en viel bij ENOENT terug op ongevalideerd CLAUDE_BIN — een PATH/cwd-shadow werd dan alsnog
+  // uitgevoerd. De broker faalt nu GESLOTEN: zonder expliciete claudePath-parameter (een bewuste
+  // keuze van de aanroeper, bv. een test) is het door de gateway gebrokerde CLAUDE_CLI_PATH verplicht,
+  // absoluut en bestaand — anders weigert de constructie. Er bestaat geen kale-'claude'-fallback meer.
+  claudePath = null,
   cwd = process.cwd(),
   resolveProject = null, // (item) => { path, forgeMode, permissionMode } | null
   sessionStore = null,
@@ -130,13 +194,16 @@ export function createClaudeRunner({
   timeoutMs = (Number.parseInt(process.env.RUNNER_TIMEOUT_MIN ?? '30', 10) || 30) * 60 * 1000,
 } = {}) {
   const stream = typeof onProgress === 'function';
-
-  let triedAltPath = false;
+  // r6 #7: het brokerprotocol wordt EENMALIG bij constructie gepind in deze closure — een latere
+  // verwijdering/corruptie van de env kan de per-spawn verificatie niet meer uitschakelen.
+  const broker = claudePath !== null
+    ? { path: claudePath, attest: null, protocol: 'explicit' }
+    : requireBrokeredCliPath();
 
   function runOnce({ item, signal, sessionId, claudeBin = null }) {
     return new Promise((resolve, reject) => {
       const project = resolveProject?.(item) ?? {};
-      const bin = claudeBin ?? claudePath;
+      const bin = claudeBin ?? broker.path;
       const args = buildArgs({
         sessionId,
         permissionMode: project.permissionMode ?? null,
@@ -161,6 +228,13 @@ export function createClaudeRunner({
       // dat niet lukt (bv. .cmd-shim op een andere machine) via shell proberen.
       // NOOIT shell:true — Node escapet dan niets en plakt argumenten aan elkaar
       // tot één cmd.exe-regel (command-injectie via bv. een sessie-ID).
+      /** r5 #30-rest · r6 #7/#8: per-SPAWN herverificatie van de GEPINDE attest, DIRECT voor de
+       *  spawn-aanroep (na args/prompt/settings-opbouw) — het venster tussen check en exec is daarmee
+       *  minimaal, en een gewiste/gecorrumpeerde env na constructie schakelt niets uit. */
+      if (broker.protocol === 'v2' && claudeBin === null) {
+        const v = verifyCliAttest(broker.attest);
+        if (!v.ok) { reject(new Error('spawn geweigerd (attest v2): ' + v.reason)); return; }
+      }
       const child = spawn(bin, args, {
         cwd: project.path ?? cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -216,18 +290,9 @@ export function createClaudeRunner({
       });
       child.stderr.on('data', (d) => (stderr += d));
       child.on('error', (err) => {
-        if (err.code === 'ENOENT' && !triedAltPath) {
-          // Geen shell-fallback: probeer het expliciete pad uit CLAUDE_BIN, of het
-          // standaard Windows-pad van de claude-executable.
-          triedAltPath = true;
-          const alt =
-            process.env.CLAUDE_BIN ??
-            path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude');
-          if (alt && alt !== claudePath && fs.existsSync(alt)) {
-            finish(resolve, runOnce({ item, signal, sessionId, claudeBin: alt }));
-            return;
-          }
-        }
+        // Codex r4 #14: GEEN onafhankelijke fallbacks meer (CLAUDE_BIN / homedir-gok) — het gebrokerde
+        // pad is gevalideerd bij constructie; een spawn-fout is een eerlijke fout, nooit een reden om
+        // een ander, ongevalideerd binair te proberen.
         finish(reject, err);
       });
       child.on('close', (code) => {

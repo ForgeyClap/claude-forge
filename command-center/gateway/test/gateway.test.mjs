@@ -9,9 +9,16 @@ import { createServer } from '../src/server.mjs';
 import { PROJECT_ROOT } from '../src/paths.mjs';
 import { _resetProjectsCacheForTests } from '../src/projects.mjs';
 import { request } from '../test-support/helpers.mjs';
+import { needsProjectFleet, needsRunEvents } from './.real-data-guard.mjs';
 
-const THIS_PROJECT_NAME = path.basename(PROJECT_ROOT); // "my-forge-project" on this machine
+const THIS_PROJECT_NAME = path.basename(PROJECT_ROOT); // "my project (v2)!" on this machine
 const KNOWN_RUN_ID = 'forge-2026-07-26-command-center'; // the run this very slice was dispatched under
+
+// Preconditions for the three assertions below that read REAL environment data rather than the
+// gateway's own logic. Present -> the tests run exactly as strictly as before; absent -> they skip
+// out loud with the missing path named. See test/.real-data-guard.mjs for why.
+const NEEDS_FLEET = needsProjectFleet(10);
+const NEEDS_RUN_EVENTS = needsRunEvents(KNOWN_RUN_ID);
 
 let server;
 let port;
@@ -45,7 +52,7 @@ test('GET /api/health returns a live, structured, truthful-state health report',
   assert.equal(res.json.provenance, 'LIVE');
 });
 
-test('GET /api/projects returns the real discovered Forge project registry', async () => {
+test('GET /api/projects returns the real discovered Forge project registry', { skip: NEEDS_FLEET }, async () => {
   const res = await request(port, '/api/projects');
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
@@ -57,7 +64,7 @@ test('GET /api/projects returns the real discovered Forge project registry', asy
   assert.ok(typeof res.json.age_ms === 'number');
 });
 
-test('GET /api/runs?project=<real project> contains this very run', async () => {
+test('GET /api/runs?project=<real project> contains this very run', { skip: NEEDS_RUN_EVENTS }, async () => {
   const res = await request(port, '/api/runs?project=' + encodeURIComponent(THIS_PROJECT_NAME));
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
@@ -67,7 +74,7 @@ test('GET /api/runs?project=<real project> contains this very run', async () => 
   assert.ok(found.event_count > 0);
 });
 
-test('GET /api/events returns this run\'s real events', async () => {
+test('GET /api/events returns this run\'s real events', { skip: NEEDS_RUN_EVENTS }, async () => {
   const res = await request(port, '/api/events?project=' + encodeURIComponent(THIS_PROJECT_NAME) + '&run=' + KNOWN_RUN_ID + '&after=0');
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);

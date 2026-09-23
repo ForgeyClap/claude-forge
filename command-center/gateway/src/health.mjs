@@ -105,13 +105,19 @@ async function probeControlCenterCached(port) {
   return { ...result, age_ms: 0 };
 }
 
+import { getRuntimeState } from './runtime-state.mjs';
+
 export async function buildHealth(startedAtMs) {
   const port = readControlCenterPort();
   const controlCenter = await probeControlCenterCached(port);
   const doctorLast = findNewestDoctorReceipt();
   const now = new Date();
+  // AUDIT G8.1 (2026-08-06): health was onvoorwaardelijk ok:true — een DEGRADED runtime (uncaught
+  // exception) bleef onzichtbaar. Nu is de runtime-staat onderdeel van het oordeel: readiness-rood.
+  const runtime = getRuntimeState();
   return {
-    ok: true,
+    ok: runtime.state === 'OK',
+    runtime,
     gateway: {
       version: '0.1.0',
       uptime_s: Math.round((Date.now() - startedAtMs) / 1000),

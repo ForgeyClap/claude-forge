@@ -25,6 +25,7 @@ import path from 'node:path';
 import { buildMission, STALE_TASK_MS } from '../src/missions.mjs';
 import { PROJECT_ROOT } from '../src/paths.mjs';
 import { makeTempProjectRoot, writeEventsFile } from '../test-support/helpers.mjs';
+import { needsAnyRunEvents, needsAnyRunEventsOf, needsRunEvents } from './.real-data-guard.mjs';
 
 const HOUR = 60 * 60 * 1000;
 
@@ -658,7 +659,7 @@ const NAMED_STUCK_RUNS = [
   'forge-demo-10agents-layout-preview',
 ];
 
-test('REAL FLEET: none of the four reported dead runs still reports a running task', () => {
+test('REAL FLEET: none of the four reported dead runs still reports a running task', { skip: needsAnyRunEventsOf(NAMED_STUCK_RUNS) }, () => {
   for (const runId of NAMED_STUCK_RUNS) {
     if (!fs.existsSync(path.join(PROJECT_ROOT, '.claude', 'forge-runs', runId, 'events.jsonl'))) continue;
     const m = buildMission(PROJECT_ROOT, runId);
@@ -668,12 +669,13 @@ test('REAL FLEET: none of the four reported dead runs still reports a running ta
   }
 });
 
-test('REAL FLEET: promptmaster-intake closes only what it can name — the ambiguous pair is NOT completed', () => {
+test('REAL FLEET: promptmaster-intake closes only what it can name — the ambiguous pair is NOT completed', { skip: needsRunEvents('forge-2026-07-13-promptmaster-intake') }, () => {
   // The honest price of Z1, on real data. This run has 3 starts: Build Boss|builder twice (a
   // simultaneous pair, so no completion here can name its owner) and Test Boss|qa once (a single
   // candidate, still matched). Before Z1 all three read 'completed'; two of them were a coin flip.
+  // (the former silent `if (!exists) return` here is gone — absence is now an explicit skip above,
+  // so this test can no longer report green without having read anything)
   const runId = 'forge-2026-07-13-promptmaster-intake';
-  if (!fs.existsSync(path.join(PROJECT_ROOT, '.claude', 'forge-runs', runId, 'events.jsonl'))) return;
   const m = buildMission(PROJECT_ROOT, runId);
   assert.equal(m.tasks.length, 3);
   const matched = m.tasks.filter((t) => t.match_method === 'agent-role-fallback');
@@ -686,13 +688,14 @@ test('REAL FLEET: promptmaster-intake closes only what it can name — the ambig
   assert.equal(blocked.every((t) => t.completed_at === null), true);
 });
 
-test('REAL FLEET INVARIANT: across EVERY run, no task closed by the fallback shared its key with another open start', () => {
+test('REAL FLEET INVARIANT: across EVERY run, no task closed by the fallback shared its key with another open start', { skip: needsAnyRunEvents() }, () => {
   // The differential invariant, swept over the whole real fleet rather than a named subset: a task
   // may carry `match_method: 'agent-role-fallback'` ONLY if it was the sole open candidate for that
   // key. Equivalently — nothing is ever both fallback-matched and pairing-ambiguous, which is the
   // exact conjunction that produced the inversion.
+  // Absence of the fleet is an explicit skip (above), never a silent early return — the
+  // `scanned > 0` assertion at the bottom stays a real gate on an environment that DOES have runs.
   const runsDir = path.join(PROJECT_ROOT, '.claude', 'forge-runs');
-  if (!fs.existsSync(runsDir)) return;
   let scanned = 0;
   for (const runId of fs.readdirSync(runsDir)) {
     if (!fs.existsSync(path.join(runsDir, runId, 'events.jsonl'))) continue;

@@ -59,7 +59,7 @@ const VIEWPORTS = [
 
 // Chosen with live evidence (see PROJECT_EVIDENCE below), not on a hunch.
 const STATES = [
-  { key: 'gevuld', name: 'my-forge-project' },
+  { key: 'gevuld', name: 'my project (v2)!' },
   { key: 'leeg', name: 'forge-system-public' },
 ];
 

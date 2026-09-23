@@ -4,7 +4,7 @@
 
 # claude-forge
 
-Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **52 skills, 19 agents, one command: `/forge`.**
+Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **59 skills, 19 agents, one command: `/forge`.**
 
 [![Works with Claude Code](https://img.shields.io/badge/Works%20with-Claude%20Code-8A2BE2?style=for-the-badge)](https://claude.com/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -46,7 +46,7 @@ Inside Claude Code:
 /forge:setup-forge
 ```
 
-This gives you the commands, 18 agents and curated skills. It runs read-only from the plugin cache — no dashboard and no key setup (see the [comparison table](#-plugin-vs-installer)).
+This gives you the commands, 18 agents and 31 curated skills (the plugin is the LITE bundle; see the table below). It runs read-only from the plugin cache — no dashboard and no key setup (see the [comparison table](#-plugin-vs-installer)).
 
 ### Path B — One-line installer *(full system)*
 
@@ -95,7 +95,7 @@ Then run `/setup-forge` once, and you are ready.
 ---
 
 > [!TIP]
-> **New to Forge?** You do **not** need to learn 52 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
+> **New to Forge?** You do **not** need to learn 59 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
 
 ---
 
@@ -105,7 +105,7 @@ The plugin is **LITE**; the installer is **FULL**. This split is architectural, 
 
 | | 🔌 **Plugin** | 🛠️ **Installer / Manual** |
 |---|---|---|
-| **What you get** | Commands + 18 agents + curated skills | The full system |
+| **What you get** | Commands + 18 agents + 31 curated skills | The full system: 19 agents, 59 skills, 93 tools |
 | **Files written** | None (read-only cache) | `./.claude` + `~/.claude` core |
 | **Live dashboard** | No | ✅ Yes, localhost |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
@@ -136,18 +136,18 @@ Honest and non-adversarial — only rows that actually ship.
 | | |
 |---|---|
 | 🤖 **18 built-in agents** | 12 permanent Bosses (boss, head-chef, build, review, test, UI, SEO, search, security, integration, docs, skill) + 6 specialists — see [AGENTS.md](AGENTS.md) |
-| 🧠 **52 skills** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md) |
+| 🧠 **59 skills** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md) |
 | 📊 **Command Center dashboard** | one localhost app (`:4100`) that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |
 | 🪶 **Zero dependencies** | plain Node `.cjs` — no `npm install`, ever |
 
 > [!NOTE]
-> Forge **ships 18 agents** and drives them as real Claude Code Agent-tool subagents. It can also **route to your wider agent ecosystem** (any ECC / Claude Code agent types you have installed) when a task calls for it — but only these 18 come in the box, so that is the number we quote.
+> Forge **ships 19 agents** (12 permanent Bosses + 7 specialists; the LITE plugin carries 18) and drives them as real Claude Code Agent-tool subagents. It can also **route to your wider agent ecosystem** (any ECC / Claude Code agent types you have installed) when a task calls for it — but only these 18 come in the box, so that is the number we quote.
 
 ---
 
-## 🆕 What's new — v2.0.0
+## 🆕 What's new — v2.4.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
 
 <details>
 <summary><b>The first public release of Forge V2</b> — click to expand</summary>
@@ -156,7 +156,7 @@ Honest and non-adversarial — only rows that actually ship.
 - **`/setup-forge` onboarding wizard** with a beginner-safe, gitignored-by-default API-key flow (temp file → you fill → Forge places it safely → temp deleted; values never committed or echoed).
 - **Ships four ways:** Claude Code plugin, one-line installer (`sh`/`ps1`), first-run wizard, or manual copy.
 - **Live per-project dashboard**, honest agent ledger, project memory — all **zero-dependency** Node.
-- **Internationalized:** wizard, replies, reports and dashboard adapt to your language (English default).
+- **Speaks your language:** replies and reports follow the language you write in (English default). The dashboard UI itself is English-only today — a translated dashboard was documented before it was built and is not shipped.
 - **Hardened:** the key-flow was put through five adversarial break-swarm rounds; 31 real issues found and fixed, each mutation-verified. See [CHANGELOG.md](CHANGELOG.md).
 
 </details>
@@ -278,7 +278,7 @@ The gateway is zero-dependency Node and is the **only** layer allowed to spawn t
 
 ## 🌍 Internationalization
 
-**Forge speaks your language.** The onboarding wizard, replies, reports and dashboard adapt to the language you pick in `/setup-forge`. **English is the default**; translations are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+**Forge speaks your language.** The onboarding wizard, replies and reports follow the language you pick in `/setup-forge`. **English is the default**; translations are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -301,7 +301,7 @@ If Forge saves you time, a star helps others find it.
 | [**docs/HOW-IT-WORKS.md**](docs/HOW-IT-WORKS.md) | **Start here.** Plain-language walkthrough of a task from your sentence to a checked result, with a real example and the QA loop. |
 | [**docs/TOKEN-USAGE.md**](docs/TOKEN-USAGE.md) | Honest token & cost guide — model tiering, right-sized teams, the usage guard, and how to keep it cheap. |
 | [**docs/FEATURES.md**](docs/FEATURES.md) | The complete catalogue — every skill, playbook, tool and guarantee, explained in depth. |
-| [**AGENTS.md**](AGENTS.md) | All 18 agents (12 permanent Bosses + 6 specialists) — role, when-used, tools, and the QA fix-loop. |
+| [**AGENTS.md**](AGENTS.md) | All 19 agents (12 permanent Bosses + 7 specialists) — role, when-used, tools, and the QA fix-loop. |
 | [**COMMANDS-QUICK-REF.md**](COMMANDS-QUICK-REF.md) | Every command and terminal tool with examples (namespaced plugin vs bare installer forms). |
 | [**TROUBLESHOOTING.md**](TROUBLESHOOTING.md) | Symptom → cause → fix for common newcomer issues — run `/setup-forge doctor` first. |
 | [**CONTRIBUTING.md**](CONTRIBUTING.md) · [**SECURITY.md**](SECURITY.md) · [**CHANGELOG.md**](CHANGELOG.md) | How to contribute · report a vulnerability · release history. |

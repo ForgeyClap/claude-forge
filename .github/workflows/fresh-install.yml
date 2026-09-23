@@ -1,0 +1,145 @@
+name: fresh-install
+
+# THE test that was missing (external audit, 2026-09-23). Every release note since 2.1.0 said "fresh
+# installs work"; every one of those measurements was made on the author's machine, where ~/.claude already
+# held hooks, 40 plugins, policy files and the canonical template. A real user has none of that. This job
+# installs the product exactly the way a stranger does — into an EMPTY directory, with an EMPTY home — and
+# then asks the tool's own doctor whether it is green. If this job is red, the release is not shippable,
+# whatever the source-tree doctor says.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-install:
+    name: install into an empty dir with an empty HOME → doctor ALL GREEN
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['18', '22']
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # An EMPTY home is the point. Both the POSIX and the Windows home variables are redirected so
+      # os.homedir() resolves to a directory nothing has ever written to.
+      - name: Prepare an empty HOME and an empty target project (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/empty-home" "$RUNNER_TEMP/fresh-project"
+          cd "$RUNNER_TEMP/fresh-project" && git init -q && echo "# fresh" > README.md
+          echo "FORGE_TEST_HOME=$RUNNER_TEMP/empty-home" >> "$GITHUB_ENV"
+          echo "FORGE_TEST_PROJECT=$RUNNER_TEMP/fresh-project" >> "$GITHUB_ENV"
+
+      - name: Prepare an empty HOME and an empty target project (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $home = Join-Path $env:RUNNER_TEMP 'empty-home'
+          $proj = Join-Path $env:RUNNER_TEMP 'fresh-project'
+          New-Item -ItemType Directory -Force $home | Out-Null
+          New-Item -ItemType Directory -Force $proj | Out-Null
+          Set-Location $proj; git init -q; Set-Content README.md '# fresh'
+          "FORGE_TEST_HOME=$home" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "FORGE_TEST_PROJECT=$proj" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      # The installer, exactly as documented. Full install (global + project), because that is what
+      # AI-INSTALL.md tells an assistant to run — the global part must land in the EMPTY home too.
+      - name: Install with install.sh (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: bash install.sh --project "$FORGE_TEST_PROJECT" --yes
+
+      - name: Install with install.ps1 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir "$env:FORGE_TEST_PROJECT" -Yes
+
+      # What the installer promised: the two root files, the global core, and the canonical template.
+      - name: The install delivered what it documents
+        shell: bash
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          p="$FORGE_TEST_PROJECT"; h="$FORGE_TEST_HOME"
+          for f in "$p/CLAUDE.md" "$p/.gitignore" "$p/.claude/forge-bin/forge-doctor.cjs" "$p/.claude/forge-bin/forge-setup.cjs" "$p/.claude/settings.json" \
+                   "$h/.claude/skills/forge-core/SKILL.md" "$h/.claude/forge/template/.claude/forge-bin/forge-sync.cjs" "$h/.claude/forge/template/CLAUDE.md"; do
+            if [ -f "$f" ]; then echo "ok   $f"; else echo "::error::missing after install: $f"; exit 1; fi
+          done
+          # The settings.json PostToolUse hook must carry a matcher (no per-tool-call logging flood).
+          node -e '
+            const j = require(process.argv[1] + "/.claude/settings.json");
+            const post = (j.hooks && j.hooks.PostToolUse) || [];
+            const bad = post.filter((e) => e.matcher === undefined || e.matcher === "");
+            if (bad.length) { console.error("::error::PostToolUse hook without a matcher ships in settings.json"); process.exit(1); }
+            console.log("ok   PostToolUse hooks all carry a matcher (" + post.length + ")");
+          ' "$p"
+
+      # Running the installer twice must change nothing: proves merge-safety and idempotence.
+      - name: Second install is a no-op (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          before=$(find "$FORGE_TEST_PROJECT" -type f -newer README.md 2>/dev/null | wc -l)
+          gi_before=$(wc -l < "$FORGE_TEST_PROJECT/.gitignore")
+          bash install.sh --project "$FORGE_TEST_PROJECT" --yes | grep -E "kept:|wrote:.*(CLAUDE|gitignore)" | tail -3
+          gi_after=$(wc -l < "$FORGE_TEST_PROJECT/.gitignore")
+          [ "$gi_before" = "$gi_after" ] || { echo "::error::.gitignore grew on a second install ($gi_before -> $gi_after)"; exit 1; }
+          echo "ok   idempotent (.gitignore stayed at $gi_after lines)"
+
+      # The one check that matters: the tool's own full self-test, on the fresh install, with the empty
+      # home still in effect. ALL GREEN or the job is red.
+      - name: forge-doctor on the fresh install (empty HOME)
+        shell: bash
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          cd "$FORGE_TEST_PROJECT"
+          node .claude/forge-bin/forge-doctor.cjs --root . | tee doctor.txt
+          grep -q "⇒ ALL GREEN" doctor.txt || { echo "::error::the fresh-install doctor is not ALL GREEN — see the ✗ lines above"; exit 1; }
+
+      # /setup-forge's engine and the sync status must both work on a machine that has only what the
+      # installer put there.
+      - name: Setup engine and sync status work from the fresh install
+        shell: bash
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          cd "$FORGE_TEST_PROJECT"
+          node .claude/forge-bin/forge-setup.cjs --help >/dev/null 2>&1 || node .claude/forge-bin/forge-setup.cjs doctor >/dev/null 2>&1 || { echo "::error::forge-setup.cjs does not start"; exit 1; }
+          echo "ok   forge-setup.cjs starts"
+          out=$(node .claude/forge-bin/forge-sync.cjs status . 2>&1 || true)
+          echo "$out" | head -3
+          echo "$out" | grep -qiE "up to date|DRIFT" || { echo "::error::forge-sync status did not find the canonical template the installer just created"; exit 1; }
+          echo "ok   forge-sync compares against the installed canonical template"
+          # The installer must record the release it installed (2.3.0 shipped a stale marker; 2.4.0 writes the real one).
+          want="installed=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/VERSION")"
+          echo "$out" | grep -qF "$want" || { echo "::error::forge-sync status does not report $want (FORGE_VERSION.json missing or stale)"; exit 1; }
+          echo "ok   $want"

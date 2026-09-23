@@ -338,7 +338,7 @@ describe('useGatewayTools — GET /api/tools?project=', () => {
   it('a genuinely empty real project (0 tools) resolves to an empty array, not a fabricated row', async () => {
     stubFetchJson({ ok: true, tools: [], tools_count: 0, captured_at: 'x', age_ms: 0, provenance: 'DERIVED' });
 
-    const { result } = renderHook(() => useGatewayTools('my-forge-project'));
+    const { result } = renderHook(() => useGatewayTools('my project (v2)!'));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.error).toBeNull();
@@ -358,7 +358,7 @@ describe('useGatewayTools — GET /api/tools?project=', () => {
       fetchMock.mockRejectedValueOnce(new Error('HTTP 502'));
       vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
 
-      const { result } = renderHook(() => useGatewayTools('my-forge-project'));
+      const { result } = renderHook(() => useGatewayTools('my project (v2)!'));
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0); // the mount-time immediate poll resolves

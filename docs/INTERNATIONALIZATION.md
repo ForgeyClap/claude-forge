@@ -1,5 +1,7 @@
 # Internationalization (i18n)
 
+> **Status (corrected 2026-09-23 after an external audit): the dashboard i18n layer described in §2–3 below — `i18n.js`, `data-i18n` attributes, `#lang-toggle`, `window.i18nt` — was documented before it was built and does NOT exist in this repository (0 matches in the dashboard folder). What IS real: agents reply in the language the owner writes in, and the owner-profile `language` preference. Treat §2–3 as a design note, not as a feature.**
+
 Forge is built to be used in any language. **English is the default and the guaranteed
 fallback** everywhere — nothing breaks if a translation is missing; the English text is
 always shown instead.

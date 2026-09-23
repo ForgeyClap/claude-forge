@@ -25,7 +25,7 @@ const BASE = 'http://127.0.0.1:4100';
 const EVIDENCE_DIR = path.resolve(__dirname, '../../mission/test-evidence');
 const SHOT_DIR = path.join(EVIDENCE_DIR, 'clicktest');
 const RESULTS_PATH = path.join(EVIDENCE_DIR, 'WP-B-results.json');
-const PROJECT_NAME = 'my-forge-project';
+const PROJECT_NAME = 'my project (v2)!';
 
 const VIEWS = [
   ['home', '/'],
