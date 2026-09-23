@@ -45,7 +45,8 @@ jobs:
           echo "ok   no tracked file matches .gitignore"
           v=$(tr -d '[:space:]' < VERSION)
           for m in plugins/forge/.claude-plugin/plugin.json .claude-plugin/marketplace.json; do
-            mv=$(node -e 'const j=require(process.argv[1]);const p=j.version||(j.plugins&&j.plugins[0]&&j.plugins[0].version)||(j.metadata&&j.metadata.version)||"";console.log(p)' "$m")
+            # path.resolve: a bare relative path is a MODULE name to require() (measured on the first 2.4.0 run: "Cannot find module").
+            mv=$(node -e 'const j=require(require("path").resolve(process.argv[1]));const p=j.version||(j.plugins&&j.plugins[0]&&j.plugins[0].version)||(j.metadata&&j.metadata.version)||"";console.log(p)' "$m")
             if [ "$mv" != "$v" ]; then echo "::error::$m declares version '$mv' but VERSION is '$v'"; exit 1; fi
             echo "ok   $m = $v"
           done
