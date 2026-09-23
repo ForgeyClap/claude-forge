@@ -1250,6 +1250,17 @@ const ueGapSummary = D.printSummary(ueGapRep);
 t('printSummary: unregistered event line renders as ✗ (hard-fail), naming the gap', /✗ unreg\. events[^\n]*a_completely_made_up_type/.test(ueGapSummary));
 t('printSummary: overall verdict reads FAILURES ABOVE, not ALL GREEN', /FAILURES ABOVE/.test(ueGapSummary) && !/ALL GREEN/.test(ueGapSummary));
 
+// (2026-09-24, measured on the first v2.4.0 CI run) a suite that CRASHES before its tally used to leave the
+// tests line reading "… / 0 failed · 1 SUITE(S) FAILED" and naming nothing — useless on a runner where the
+// per-suite output is not at hand. The red suites are now named, with why.
+const CRASH_ROOT = makeCompletenessBase('forge-doctor-crash-suite-');
+fs.writeFileSync(path.join(CRASH_ROOT, '.claude', 'forge-bin', 'boom.test.cjs'), "const assert = require('assert');\nassert.ok(true);\nthrow new Error('boom before the tally');\n");
+const crashRep = D.runDoctor(CRASH_ROOT);
+t('runTests: a suite that throws before its tally counts as a FAILED suite with 0 failed assertions', crashRep.checks.tests.ok === false && crashRep.checks.tests.failed === 0 && crashRep.checks.tests.suitesFailed === 1);
+const crashSummary = D.printSummary(crashRep);
+t('printSummary: the tests line NAMES the crashed suite and says why (crashed or no tally)', /✗ tests[^\n]*boom\.test\.cjs \(crashed or no tally\)/.test(crashSummary), crashSummary.split('\n').find((l) => /tests/.test(l)));
+t('printSummary: a green suite in the same fixture is NOT listed as red', !/good\.test\.cjs/.test(crashSummary.split('\n').find((l) => /✗ tests/.test(l)) || ''));
+
 // (a') the SAME gap, but with a real, reasoned, logged doctor_check_overrides entry -> recovers to ok:true
 const UE_OVERRIDE_ROOT = makeCompletenessBase('forge-doctor-v9-ue-override-');
 fs.writeFileSync(path.join(UE_OVERRIDE_ROOT, '.claude', 'forge-bin', 'gap-tool.cjs'),

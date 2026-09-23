@@ -50,12 +50,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $home = Join-Path $env:RUNNER_TEMP 'empty-home'
+          # ($HOME is a read-only automatic variable in PowerShell — the first 2.4.0 run died on `$home = …`.)
+          $emptyHome = Join-Path $env:RUNNER_TEMP 'empty-home'
           $proj = Join-Path $env:RUNNER_TEMP 'fresh-project'
-          New-Item -ItemType Directory -Force $home | Out-Null
+          New-Item -ItemType Directory -Force $emptyHome | Out-Null
           New-Item -ItemType Directory -Force $proj | Out-Null
           Set-Location $proj; git init -q; Set-Content README.md '# fresh'
-          "FORGE_TEST_HOME=$home" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "FORGE_TEST_HOME=$emptyHome" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "FORGE_TEST_PROJECT=$proj" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       # The installer, exactly as documented. Full install (global + project), because that is what

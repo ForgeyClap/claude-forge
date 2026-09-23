@@ -71,6 +71,13 @@ directory with an empty HOME on Ubuntu and Windows and requires the doctor to pr
   resolves a written variable to its declaration; a variable never handed to a write API still counts as dangling.
 - New `forge-setup.test.cjs`: the tripwire that was missing for two releases (engine present, starts, `status`/`doctor`
   answer JSON on a throwaway project and write nothing).
+- `forge-sync.test.cjs` 58b crashed on Linux (found by the first 2.4.0 CI run): its "real OS" branch — taken when
+  `lstat` yields ENOTDIR, which Linux does and Windows does not — wrote a file where the fixture had already made a
+  directory (EISDIR). That branch had never executed on the author's machine.
+- `forge-doctor.cjs` now NAMES the red suites on its tests line, with why (`crashed or no tally` / `timeout` / `N failed`):
+  the CI line "6128 passed / 0 failed · 1 SUITE(S) FAILED" named nothing, and a runner has no per-suite output at hand.
+- `fresh-install.yml` (Windows) assigned to `$home`, a read-only PowerShell automatic variable; `validate.yml` passed a
+  bare relative path to `require()` (a module name). Both found by the first 2.4.0 runs, both fixed.
 
 ### Changed — beginner-first (Part IV of the audit)
 

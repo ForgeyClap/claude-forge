@@ -1830,6 +1830,10 @@ console.log('\n58) M-B3: fileStatus() catch branches -> kind:"unreadable" (never
     const usedInjection2 = !realNonEnoentLstatWorks;
     if (realNonEnoentLstatWorks) {
       fs.mkdirSync(path.join(p2, '.claude'), { recursive: true });
+      // makeProject() already created `.claude/forge-bin` as a DIRECTORY; writing a file at that path throws EISDIR.
+      // Measured on the first v2.4.0 CI run (ubuntu): this REAL branch had never executed on the author's Windows
+      // machine (whose probe yields ENOENT -> injection branch), so the whole suite crashed before its tally.
+      fs.rmSync(path.join(p2, '.claude', 'forge-bin'), { recursive: true, force: true });
       fs.writeFileSync(path.join(p2, '.claude', 'forge-bin'), 'FILE-NOT-DIR'); // forge-bin is a FILE, not a dir, here
       targetPath2 = path.join(p2, '.claude', 'forge-bin', 'tool.cjs');
     } else {

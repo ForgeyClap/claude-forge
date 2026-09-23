@@ -1840,8 +1840,14 @@ function printSummary(rep) {
   const out = [];
   out.push('Forge Doctor — ' + rep.root);
   out.push(line('node --check', c.node_check.ok, c.node_check.total + ' files' + (c.node_check.ok ? '' : ' · ' + (c.node_check.reason || (c.node_check.failed + ' FAILED')))));
+  // 2026-09-24 (measured on the first v2.4.0 CI run): "122 suites · 6128 passed / 0 failed · 1 SUITE(S) FAILED" named
+  // NOTHING — a suite that crashed before its tally (0 failed assertions, non-zero exit) was invisible on a runner
+  // where nobody can open the per-suite output. Name the red suites, with WHY (crashed / no tally / timeout).
+  const redSuites = Array.isArray(c.tests.perSuite) ? c.tests.perSuite.filter((s) => s && s.ok === false) : [];
+  const whySuite = (s) => s.timedOut ? 'timeout' : (s.passed === 0 && s.failed === 0 ? 'crashed or no tally' : (s.failed > 0 ? s.failed + ' failed' : 'non-zero exit'));
+  const redNames = redSuites.slice(0, 6).map((s) => s.suite + ' (' + whySuite(s) + ')').join(', ') + (redSuites.length > 6 ? ', +' + (redSuites.length - 6) + ' more' : '');
   out.push(line('tests', c.tests.ok, c.tests.suites + ' suites · ' + c.tests.passed + ' passed / ' + c.tests.failed + ' failed'
-    + (c.tests.ok ? '' : ' · ' + (c.tests.reason || [c.tests.suitesFailed ? c.tests.suitesFailed + ' SUITE(S) FAILED' : '', c.tests.suitesBlocked ? c.tests.suitesBlocked + ' SUITE(S) BLOCKED (timeout)' : ''].filter(Boolean).join(' · ')))));
+    + (c.tests.ok ? '' : ' · ' + (c.tests.reason || [c.tests.suitesFailed ? c.tests.suitesFailed + ' SUITE(S) FAILED' : '', c.tests.suitesBlocked ? c.tests.suitesBlocked + ' SUITE(S) BLOCKED (timeout)' : ''].filter(Boolean).join(' · ')) + (redNames ? ' → ' + redNames : ''))));
   out.push(line('honesty gate', c.strict_events.ok, 'known accepted=' + c.strict_events.known_accepted + ' · unknown rejected=' + c.strict_events.unknown_rejected));
   // 2026-09-23 (external audit II-G): this line used to read "dashboard SPA · 7 files present", which a
   // new user reads as "the dashboard works" — but these seven files are the RETIRED per-project Control
