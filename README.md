@@ -22,6 +22,16 @@ Turn Claude Code into a coordinated **team of agents** that builds, automates, r
 
 ---
 
+## 🤖 Letting Claude install it for you
+
+Paste this repository's link into Claude Code and say **"install this"**.
+
+Your assistant should read **[AI-INSTALL.md](AI-INSTALL.md)** — it contains the exact commands, the
+pre-flight checks, the verification it must actually run before claiming success, and what it must
+never do (no secrets in config, no touching your existing `.claude/`, no unverified "it works").
+
+---
+
 ## 🚀 Quickstart (60-second setup)
 
 Three ways in — **plugin is fastest**. Every path ends at the same first run: **`/setup-forge`**.
