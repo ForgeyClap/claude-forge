@@ -12,12 +12,12 @@
  *   Two things decide where the bridge writes: the workspace data directory and
  *   the projects root. The first is honoured from `FORGE_WORKSPACE_DIR`. The
  *   second is NOT an environment variable — the bridge derives it from the OS
- *   home directory (`<home>/Documents/ForgeProjecten`) on purpose, so that a
+ *   home directory (`<home>/Documents/ForgeProjects`) on purpose, so that a
  *   stray env var can never move it. The harness therefore gives the child its
  *   own home directory via `USERPROFILE`/`HOME` and creates a real `Documents`
  *   folder inside it, which is what makes the derived projects root land under a
  *   throwaway temp tree. The real `.forge-workspace` and the real
- *   `Documents/ForgeProjecten` are never touched, and the suite asserts this by
+ *   `Documents/ForgeProjects` are never touched, and the suite asserts this by
  *   proving the reported roots live under the temp base.
  *
  * CREDENTIALS — the one consequence of redirecting home, handled minimally.
@@ -363,7 +363,7 @@ export class TestBridge {
     this.homeDir = homeDir;
     this.documentsDir = documentsDir;
     this.workspaceDir = workspaceDir;
-    this.expectedProjectsRoot = path.join(documentsDir, 'ForgeProjecten');
+    this.expectedProjectsRoot = path.join(documentsDir, 'ForgeProjects');
     this.lockFilePath = path.join(workspaceDir, 'bridge.lock');
     this.child = child;
     this.credentialsBridged = credentialsBridged;

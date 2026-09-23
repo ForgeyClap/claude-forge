@@ -56,7 +56,7 @@ export const ATTACHMENTS_DIR = path.join(COMMAND_CENTER_DATA_DIR, 'attachments')
 // machine's Documents folder), so forge-sync.cjs's own bounded-depth scan (default maxDepth 3,
 // see findForgeProjects() in forge-bin/forge-sync.cjs) discovers a freshly created project on its
 // own next cache-refresh — no separate registration step is needed.
-export const FORGE_PROJECTS_ROOT = path.join(SYNC_SCAN_ROOT, 'ForgeProjecten');
+export const FORGE_PROJECTS_ROOT = path.join(SYNC_SCAN_ROOT, 'ForgeProjects');
 
 // WP-D1 (feat-discord-gateway): the imported Discord<->Forge remote-control bot (source-only —
 // see command-center/discord/README.md for its own history) — supervised by THIS gateway as its

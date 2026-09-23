@@ -81,6 +81,26 @@
       "install_hint": "MCP host config: { command: 'uvx', args: ['--from', 'git+https://github.com/oraios/serena', 'serena', 'start-mcp-server'] } — see https://github.com/oraios/serena",
       "status": "not-installed",
       "notes": "Purely local read (LSP over the project's own source) — no network call, lowest tier."
+    },
+    {
+      "id": "claude-flow",
+      "purpose": "claude-flow / Ruflo orchestration + memory MCP (~400 tools incl. terminal_execute, http_fetch, github_pr_manage)",
+      "tier": 3,
+      "network": "read-write",
+      "credentials_needed": false,
+      "install_hint": "enabled via .claude/settings.local.json enabledMcpjsonServers",
+      "status": "connected",
+      "notes": "REAL, CONNECTED on the owner machine (recorded 2026-08-04 after the audit found it governed by no tier at all). Tier 3 because it exposes write primitives (terminal execution, outbound HTTP, PR management). status:\"connected\" describes REALITY, not permission: use still requires the owner opt-in file plus a per-use, verified owner grant via forge-mcp-gate. Memory/coordination tools remain the sanctioned use per the owner CLAUDE.md."
+    },
+    {
+      "id": "n8n",
+      "purpose": "n8n workflow MCP (workflow read/write, credentials metadata)",
+      "tier": 3,
+      "network": "read-write",
+      "credentials_needed": true,
+      "install_hint": "global mcpServers in ~/.claude.json; requires OAuth authorization before its tools work",
+      "status": "connected",
+      "notes": "REAL, CONNECTED (global) on the owner machine, recorded 2026-08-04. Tier 3: it can create/activate workflows. Live activation stays owner-gated per the n8n governance; presence in this registry is NOT permission."
     }
   ]
 }

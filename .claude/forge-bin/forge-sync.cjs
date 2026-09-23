@@ -170,6 +170,8 @@ const SYSTEM = [
   'skills/gsap/llms.txt',
   'config/intake/question-bank.json', 'skills/forge-intake/SKILL.md',
   'skills/forge-router/SKILL.md',
+  'skills/forge-quality/SKILL.md',
+  'skills/forge-council/SKILL.md',
   'skills/forge-scraping/SKILL.md', 'skills/forge-rag/SKILL.md', 'skills/forge-integration/SKILL.md',
   'skills/forge-payments/SKILL.md', 'skills/forge-ecommerce/SKILL.md',
   'skills/forge-electron/SKILL.md', 'skills/forge-voice/SKILL.md',
@@ -183,6 +185,11 @@ const SYSTEM = [
   // silently drop the pairing between a config/orchestration/*.json source of truth and its reader tool.
   'config/orchestration/domain-presets.json', 'config/orchestration/required-evidence.json',
   'config/orchestration/web-quality-contract.md', 'config/orchestration/run-checklist.json',
+  // 2026-08-06 (a card-game project fresh-install failure, 9 tests): forge-codexreview.test.cjs ships via the
+  // forge-bin glob and asserts this config exists — but the config itself was never pinned, so every
+  // fresh install failed its own doctor on a file the template simply forgot to send. The classic
+  // ship-gap this pin-list's doc comment warns about, now including the pinned Codex review model.
+  'config/orchestration/codex-review.json',
   // 2026-07-23: solution-first recovery policy — read by forge-recovery.cjs (SYSTEM_GLOB-covered) and
   // asserted-present by forge-recovery.test.cjs (#13). Pinned so the config reaches every project (else
   // that test fails a synced project's doctor) and the config<->reader pair never silently drifts.
@@ -311,6 +318,14 @@ const SYSTEM = [
   'forge-bin/forge-secondbrain.cjs', 'forge-bin/forge-secondbrain.test.cjs',
   'forge-bin/forge-codemodel.cjs', 'forge-bin/forge-codemodel.test.cjs',
   'forge-bin/forge-briefing.cjs', 'forge-bin/forge-briefing.test.cjs',
+  // Quality Intelligence Layer (masterprompt 2026-08-11): missieprofiel -> lenzen -> omission mining
+  // -> requirement cards + de ENE domeincatalogus met driftdetectie over router/evidence/intake/presets.
+  'forge-bin/forge-quality.cjs', 'forge-bin/forge-quality.test.cjs',
+  // F-20 (Codex herreview): knowledge cards zijn echte template-bestanden — laag 3 van progressive disclosure
+  'config/quality/cards/website.md', 'config/quality/cards/api.md', 'config/quality/cards/n8n.md',
+  'config/quality/cards/payments.md', 'config/quality/cards/rag.md', 'config/quality/cards/agent.md',
+  'config/quality/cards/mobile.md',
+  'config/orchestration/domain-catalog.json',
   'skills/forge-nightshift/SKILL.md', 'skills/forge-guardian/SKILL.md',
   // V9-INTEGRATE (P1 forge-runcontract.cjs, P2 forge-capabilities.cjs, P4 forge-projectbrain.cjs,
   // P5 forge-scout.cjs, V9-INTEGRATE registration, 2026-07-22): a real-run non-negotiables contract checker
@@ -545,7 +560,73 @@ function readReceipt(projectDir) { try { return JSON.parse(fs.readFileSync(recei
 function readRawReceipt(projectDir) { // B2: raw bytes (for byte-exact backup/restore, mirrors readVersionFile)
   try { return { exists: true, content: fs.readFileSync(receiptPath(projectDir), 'utf8') }; } catch { return { exists: false, content: null }; }
 }
-function writeReceipt(projectDir, receipt) { fs.writeFileSync(receiptPath(projectDir), JSON.stringify(receipt, null, 2) + '\n', 'utf8'); }
+/** writeAtomic — temp file in the same directory + rename (broad Codex audit #22, 2026-08-05).
+ *  The version stamp and the receipt were two separate in-place writes AFTER validation, outside any
+ *  rollback protection: a crash or a full disk between them left an install whose files and version say
+ *  "synced" while the receipt — the thing every later drift/rollback decision reads — was absent or
+ *  half-written. Rename within one filesystem is atomic on both Windows and POSIX, so a reader sees
+ *  either the whole previous file or the whole new one, never a torn one. */
+function writeAtomic(file, contents) {
+  const tmp = file + '.' + process.pid + '.' + Math.random().toString(36).slice(2, 8) + '.tmp';
+  try {
+    fs.writeFileSync(tmp, contents, 'utf8');
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
+    throw e;
+  }
+}
+function writeReceipt(projectDir, receipt) { writeAtomic(receiptPath(projectDir), JSON.stringify(receipt, null, 2) + '\n'); }
+/** copyNoFollow — schrijf src-bytes naar out ZONDER ooit door een symlink/junction op de eindcomponent te
+ *  kunnen schrijven (uitgesteld punt 3, gesloten 2026-08-06). fs.copyFileSync VOLGT links, en tussen de
+ *  lstat-guard en de copy zat een TOCTOU-venster. Op Windows bestaat O_NOFOLLOW niet in Node (gemeten:
+ *  fs.constants.O_NOFOLLOW === undefined), maar dit sluit het leaf-venster per constructie: de bytes gaan
+ *  eerst naar een VERSE tempnaam in dezelfde directory, geopend met 'wx' (CREATE_NEW faalt op elke
+ *  bestaande naam — ook een link, want de naam bestaat dan); daarna vervangt renameSync de eindcomponent
+ *  ZELF in plaats van er doorheen te schrijven. Vlak voor de rename wordt de parent-directory nogmaals
+ *  realpath-gecontroleerd tegen de containment-basis: een junction die intussen op een TUSSENliggende
+ *  directory verscheen wordt zo ook gevangen (volledig sluiten van dat pad zou openat-semantiek vergen
+ *  die Node niet biedt — dat restrisico blijft benoemd, niet verstopt). */
+/** copyNoFollow (r4 #18, 2026-08-07): de containment-check kwam NA het vullen van de temp — was de parent
+ *  al een junction naar buiten, dan stonden de bytes al buiten het project toen de check ze ontdekte (en
+ *  een crash in dat venster liet ze daar staan). Nu: (1) resolve en verifieer de parent VOOR er ook maar
+ *  een byte wordt geschreven; (2) schrijf temp en doel op basis van het GERESOLVEDE parent-realpath —
+ *  een junction-swap na de check verlegt onze writes dan niet meer (wij houden het opgeloste pad vast);
+ *  (3) her-verifieer na het stagen en rename dan. Het restvenster is daarmee gereduceerd tot een swap
+ *  tussen de allereerste resolve en de open van de temp — en zelfs dan landen de bytes op het OUDE,
+ *  geverifieerde echte pad, nooit door de nieuwe junction heen. */
+function copyNoFollow(src, out, baseDir) {
+  const data = fs.readFileSync(src);
+  let realParent = null, realBase = null;
+  if (baseDir) {
+    try { realParent = fs.realpathSync.native(path.dirname(out)); } catch (e) { throw new Error('containment pre-check failed for ' + out + ': ' + e.message); }
+    try { realBase = fs.realpathSync.native(baseDir); } catch { realBase = path.resolve(baseDir); }
+    if (realParent !== realBase && !realParent.startsWith(realBase + path.sep)) {
+      throw new Error('containment guard tripped BEFORE staging: parent of ' + out + ' resolves outside ' + baseDir + ' — no bytes written');
+    }
+  }
+  // schrijf via het geresolvede parent-pad: een junction-swap na de pre-check raakt onze writes niet meer
+  const outReal = realParent ? path.join(realParent, path.basename(out)) : out;
+  const tmp = outReal + '.' + process.pid + '.' + Math.random().toString(36).slice(2, 8) + '.tmp';
+  let fd = null;
+  try {
+    fd = fs.openSync(tmp, 'wx');
+    fs.writeSync(fd, data);
+    fs.closeSync(fd); fd = null;
+    if (baseDir) {
+      // her-verificatie na het stagen (defense-in-depth): het opgeloste parent-pad moet nog steeds
+      // hetzelfde echte pad zijn en binnen de basis liggen.
+      let realParent2;
+      try { realParent2 = fs.realpathSync.native(path.dirname(outReal)); } catch (e) { throw new Error('containment re-check failed for ' + out + ': ' + e.message); }
+      if (realParent2 !== realParent) throw new Error('containment guard tripped at copy time: parent of ' + out + ' changed identity during staging');
+    }
+    fs.renameSync(tmp, outReal);
+  } catch (e) {
+    if (fd != null) { try { fs.closeSync(fd); } catch { } }
+    try { fs.unlinkSync(tmp); } catch { }
+    throw e;
+  }
+}
 /** receiptLastTemplateHashMap — B1: prefer the CUMULATIVE receipt.knownHashes (every system file's
  *  last-known-good hash, carried forward across every sync) over the old filesChanged-only map, which
  *  ERASED the baseline for any file that wasn't touched in the MOST RECENT sync (a same-since-last-sync file
@@ -692,14 +773,35 @@ function takeBackupUnsafe(projectDir, batchId, plan, templateVer, nowIso, opts, 
    *  a rel truly never reached by the prior attempt gets a fresh backup taken now. hadVersionFile/oldVersion/
    *  hadReceipt/oldReceipt are pinned to the FIRST attempt's recorded pre-batch values too, for the same reason. */
   let priorManifest = null;
-  try { priorManifest = JSON.parse(fs.readFileSync(path.join(bdir, 'manifest.json'), 'utf8')); } catch { /* first attempt for this batch — normal case */ }
+  // CODEX ronde-3 #5 (2026-08-06): een BESTAAND maar onparseerbaar manifest is geen "eerste poging" —
+  // het is een half geschreven/beschadigd transactielog. Het stilzwijgend negeren zou de rollback-dekking
+  // van de vorige poging weggooien terwijl haar writes wél op schijf staan. Weigeren, met het bestand
+  // als bewijs; ENOENT (echt de eerste poging) blijft het normale pad.
+  const manifestPath = path.join(bdir, 'manifest.json');
+  try { priorManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); }
+  catch (e) {
+    if (!e || e.code !== 'ENOENT') {
+      throw new Error('existing but unreadable/corrupt backup manifest for batch ' + batchId + ' (' + manifestPath + '): '
+        + e.message + ' — refusing to treat a damaged transaction log as a first attempt (a prior attempt\'s writes may be unprotected)');
+    }
+  }
+  // CODEX ronde-3 #5 stelde voor een resume tegen een ANDERE templateversie hard te weigeren (verouderde
+  // newHash-verwachtingen in unie-entries). Test 36 codificeert resume-met-nieuwere-template echter als
+  // ONTWORPEN gedrag; de echte zorg — een prior-entry wiens newHash niet meer beschrijft wat de resume
+  // gaat schrijven — wordt hieronder opgelost door de newHash van elk hergebruikt entry te verversen naar
+  // het HUIDIGE plan (oldHash + backup-bytes blijven heilig van poging 1). Een rel die buiten het nieuwe
+  // plan valt kan geen stale newHash dragen: viel hij eruit omdat de schijf al gelijk is aan de huidige
+  // template, dan wees zijn oude newHash daar ook al naar; anders zit hij per constructie IN het plan.
   const priorFilesByRel = {};
   if (priorManifest && Array.isArray(priorManifest.files)) for (const f of priorManifest.files) priorFilesByRel[f.rel] = f;
 
   const files = [];
   for (const entry of plan.toChange) {
     const already = priorFilesByRel[entry.rel];
-    if (already) { files.push(already); continue; } // S1: never re-back-up / never recompute oldHash on resume
+    // S1: never re-back-up / never recompute oldHash on resume — but DO refresh newHash to what THIS
+    // attempt will actually write (ronde-3 #5: a stale newHash from attempt 1 would misjudge divergence
+    // after the template moved between attempts).
+    if (already) { files.push(Object.assign({}, already, { newHash: entry.newHash })); continue; }
     if (entry.oldHash !== null) {
       const out = safeJoin(dst, entry.rel);
       const backupTarget = path.join(bdir, entry.rel);
@@ -707,6 +809,21 @@ function takeBackupUnsafe(projectDir, batchId, plan, templateVer, nowIso, opts, 
       fs.copyFileSync(out, backupTarget);
     }
     files.push({ rel: entry.rel, oldHash: entry.oldHash, newHash: entry.newHash, existed: entry.oldHash !== null });
+  }
+  /** AUDIT #19 (2026-08-05): the loop above builds files[] from the NEW plan only, and on a resume the new
+   *  plan is SMALLER by construction — a file the crashed first attempt already wrote now hashes equal to
+   *  the template, so preflight files it under `same` and it never re-enters plan.toChange. S1 (above)
+   *  protected the entries still IN the plan; entries that fell OUT of it were silently dropped from the
+   *  manifest that was then unconditionally rewritten below — and restoreFromManifest only iterates
+   *  manifest.files, so a rollback of the batch left exactly those files on template content while
+   *  reporting ok, with their pristine backup bytes lying orphaned in the backup dir. The manifest is now
+   *  a UNION: every prior-attempt entry that the new plan no longer names is carried forward verbatim
+   *  (its backup bytes are already on disk in bdir; the central-mirror loop below copies them through the
+   *  same existsSync non-clobber path). A rollback after a resume can therefore always reach the true
+   *  pre-batch state. */
+  const keptRels = new Set(files.map((f) => f.rel));
+  if (priorManifest && Array.isArray(priorManifest.files)) {
+    for (const f of priorManifest.files) if (!keptRels.has(f.rel)) { files.push(f); keptRels.add(f.rel); }
   }
   const versionState = priorManifest ? { exists: priorManifest.hadVersionFile, content: priorManifest.oldVersion } : readVersionFile(projectDir);
   const receiptState = priorManifest ? { exists: priorManifest.hadReceipt, content: priorManifest.oldReceipt } : readRawReceipt(projectDir);
@@ -725,8 +842,14 @@ function takeBackupUnsafe(projectDir, batchId, plan, templateVer, nowIso, opts, 
     projectId: pid, projectPath: path.resolve(projectDir), centralBackupRoot: centralBackupRootResolved,
     files, hadVersionFile: versionState.exists, oldVersion: versionState.exists ? versionState.content : null,
     hadReceipt: receiptState.exists, oldReceipt: receiptState.exists ? receiptState.content : null,
+    // CODEX ronde-3 #6: de scaffold-undo-informatie van de vorige poging moet een resume OVERLEVEN —
+    // deze herbouw schreef het manifest zonder dat veld en gooide daarmee het enige record weg waarmee
+    // een latere rollback de .gitignore-append/created files van poging 1 kon terugdraaien.
+    ...(priorManifest && priorManifest.scaffold ? { scaffold: priorManifest.scaffold } : {}),
   };
-  fs.writeFileSync(path.join(bdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  // CODEX ronde-3 #5: het manifest is het transactielog van deze batch — atomair schrijven (temp+rename),
+  // zodat een crash halverwege nooit een half JSON-bestand achterlaat dat de volgende resume zou weigeren.
+  writeAtomic(path.join(bdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
   let centralDir = null;
   if (opts.centralBackupRoot) {
@@ -741,7 +864,7 @@ function takeBackupUnsafe(projectDir, batchId, plan, templateVer, nowIso, opts, 
         }
       }
     }
-    fs.writeFileSync(path.join(centralDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    writeAtomic(path.join(centralDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n'); // atomair, ronde-3 #5
   }
   return { ok: true, backupDir: bdir, centralDir, manifest };
 }
@@ -750,14 +873,44 @@ function takeBackupUnsafe(projectDir, batchId, plan, templateVer, nowIso, opts, 
  *  the caller can roll back exactly what was actually applied. copyFileImpl is injectable (defaults to
  *  fs.copyFileSync) purely so a test can simulate a mid-batch write failure without monkey-patching the
  *  global fs module. */
+/** assertClaudeBaseContained (r5 #25, 2026-08-07): de containment-checks meten alles t.o.v. de
+ *  GERESOLVEDE .claude-basis — maar als <project>/.claude zelf een junction naar buiten is, resolvet
+ *  die basis naar buiten en "klopt" ieder doel eronder. Eis: de echte .claude-basis ligt binnen de
+ *  echte projectroot en is geen reparse-point. Fail-closed voor elke apply/restore. */
+function assertClaudeBaseContained(projectDir) {
+  const base = claudeDirOf(projectDir);
+  let lst = null;
+  try { lst = fs.lstatSync(base); } catch (e) { throw new Error('sync-basis onleesbaar (' + base + '): ' + e.message); }
+  if (lst.isSymbolicLink()) throw new Error('sync-basis ' + base + ' is zelf een symlink/junction — geweigerd (r5 #25): een omgeleide .claude-basis maakt elke containment-check zinloos');
+  let realBase, realRoot;
+  try { realBase = fs.realpathSync.native(base); } catch (e) { throw new Error('realpath van de sync-basis faalde: ' + e.message); }
+  try { realRoot = fs.realpathSync.native(projectDir); } catch (e) { throw new Error('realpath van de projectroot faalde: ' + e.message); }
+  if (realBase !== path.join(realRoot, '.claude')) {
+    throw new Error('sync-basis resolvet naar ' + realBase + ' — dat ligt niet als .claude direct onder de echte projectroot ' + realRoot + ' (r5 #25, fail-closed)');
+  }
+}
+
 function applyPlanSafely(templateDir, projectDir, plan, copyFileImpl) {
-  const copy = copyFileImpl || fs.copyFileSync;
+  assertClaudeBaseContained(projectDir);
+  // default is nu copyNoFollow (uitgesteld punt 3) — de copyFileImpl-injectieseam blijft voor tests
   const dst = claudeDirOf(projectDir);
+  const copy = copyFileImpl || ((src, out) => copyNoFollow(src, out, dst));
   const applied = [];
   try {
     for (const entry of plan.toChange) {
       const src = path.join(templateDir, entry.rel);
       const out = safeJoin(dst, entry.rel);
+      /** AUDIT #24 (2026-08-05): containment (isSymlinkPath + containmentSafe) ran ONLY at plan time in
+       *  preflight, and between plan and apply sits at minimum a full-file manifest plus preValidation —
+       *  an entire forge-doctor run, seconds to minutes. In that window a directory on the path (or the
+       *  leaf itself) can become a symlink/junction pointing outside the project; safeJoin is purely
+       *  lexical and copyFileSync follows links, so the "checked" write would then land outside the tree
+       *  it was checked against. Re-verify per entry at the WRITE moment, before mkdirSync; a trip is an
+       *  ordinary apply-failure so the existing applied-subset rollback handles it. The --unsafe path
+       *  calls this same function and gets the guard for free. */
+      if (out == null || isSymlinkPath(out) || !containmentSafe(dst, out)) {
+        return { ok: false, applied, error: 'containment guard tripped at write time: ' + entry.rel + ' resolves through a symlink or outside the project — refusing to write' };
+      }
       fs.mkdirSync(path.dirname(out), { recursive: true });
       copy(src, out);
       applied.push(entry.rel);
@@ -770,7 +923,7 @@ function applyPlanSafely(templateDir, projectDir, plan, copyFileImpl) {
 
 // ---- validation: H4 evidence-based gate + H3 pre/post baseline comparison ----
 // M10: build a human-copy-pasteable command STRING from an argv array with proper quoting — naive string
-// concatenation breaks on a project path containing a space and/or a "!" (e.g. "68 agents works!").
+// concatenation breaks on a project path containing a space and/or a "!" (e.g. "my project (v2)!").
 function quoteArg(a) {
   const s = String(a);
   return /[\s"!]/.test(s) ? ('"' + s.replace(/"/g, '\\"') + '"') : s;
@@ -801,10 +954,26 @@ function condenseDoctorSummary(parsed) {
   const pick = (obj, keys) => { if (!obj) return null; const o = {}; for (const k of keys) if (obj[k] !== undefined) o[k] = obj[k]; return o; };
   const checksOk = {};
   for (const k of Object.keys(c)) checksOk[k] = { ok: !!(c[k] && c[k].ok) };
+  // OPERABILITEIT (2026-08-06, a card-game project-vloot-diagnose): de samenvatting verzweeg WELKE suites rood of
+  // geblokkeerd (per-suite timeout) waren — een install meldde alleen "forge-doctor, exit 1" en elke
+  // diagnose moest de hele doctor handmatig herdraaien. De namen van falende/geblokkeerde suites reizen
+  // nu mee (afgekapt tot 8), en 'blocked' telt zichtbaar mee: de doctor rekent een geblokkeerde suite
+  // terecht als niet-groen, dus de samenvatting mag dat niet verstoppen.
+  const failing = [];
+  if (c.tests && Array.isArray(c.tests.perSuite)) {
+    for (const s of c.tests.perSuite) {
+      if ((s.failed || 0) > 0 || s.timedOut || s.blocked || s.ok === false) failing.push((s.suite || '?') + ((s.failed || 0) > 0 ? ' (' + s.failed + ' failed)' : (s.timedOut || s.blocked ? ' (blocked/timeout)' : ' (suite ok:false — non-zero exit of lege testrun)')));
+    }
+  } else if (c.tests && c.tests.perSuite && typeof c.tests.perSuite === 'object') {
+    for (const [k, s] of Object.entries(c.tests.perSuite)) {
+      if ((s.failed || 0) > 0 || s.timedOut || s.blocked || s.ok === false) failing.push((s.suite || k) + ((s.failed || 0) > 0 ? ' (' + s.failed + ' failed)' : (s.timedOut || s.blocked ? ' (blocked/timeout)' : ' (suite ok:false — non-zero exit of lege testrun)')));
+    }
+  }
   return {
     ok: parsed.ok,
     node_check: pick(c.node_check, ['ok', 'total', 'failed']),
-    tests: pick(c.tests, ['ok', 'suites', 'passed', 'failed']),
+    tests: pick(c.tests, ['ok', 'suites', 'passed', 'failed', 'suitesFailed', 'suitesBlocked']),
+    ...(failing.length ? { failing_suites: failing.slice(0, 8) } : {}),
     checksOk, // B1: EVERY doctor check's {ok}, not just node_check/tests -> regressionCheck can see all 8
   };
 }
@@ -875,24 +1044,29 @@ function runDoctorJson(projectDir, doctorPath, timeoutMs) {
 }
 /** runValidation — the gate for "did this sync leave the project provably OK". opts.doctorTimeoutMs
  *  overrides the default 180s (M4: `--doctor-timeout` makes this a real, settable flag). */
-function runValidation(projectDir, plan, opts) {
-  opts = opts || {};
-  const timeoutMs = Number.isFinite(opts.doctorTimeoutMs) && opts.doctorTimeoutMs > 0 ? opts.doctorTimeoutMs : 180000;
-  const doctorPath = path.join(claudeDirOf(projectDir), 'forge-bin', 'forge-doctor.cjs');
-  const cjsRels = (plan.toChange || []).map((e) => e.rel).filter((rel) => rel.endsWith('.cjs'));
-  if (fs.existsSync(doctorPath)) {
-    const { exitCode, parsed, timedOut, signal, cmdArgs } = runDoctorJson(projectDir, doctorPath, timeoutMs);
-    const commandStr = cmdArrToString(process.execPath, cmdArgs);
-    if (timedOut) return { tool: 'forge-doctor', exitCode, ok: false, timedOut: true, signal, commands: [commandStr] };
-    if (parsed && evidenceOk(parsed, cjsRels.length)) {
-      return { tool: 'forge-doctor', exitCode, ok: exitCode === 0 && parsed.ok !== false, commands: [commandStr], summary: condenseDoctorSummary(parsed) };
-    }
-    return {
-      tool: 'forge-doctor', exitCode, ok: false, noEvidence: true, commands: [commandStr], summary: condenseDoctorSummary(parsed),
-      reason: 'forge-doctor gave no positive evidence (--json missing/unparsable/0-count) — refusing to trust a bare exit code',
-    };
-  }
-  // DEGRADED fallback: no forge-doctor present -> node --check on every synced .cjs only.
+/** doctorProvenance — WHO WROTE THE GATE (broad Codex audit #2, fixed 2026-08-05).
+ *  The install validated itself with `<project>/.claude/forge-bin/forge-doctor.cjs` — a file this very sync
+ *  had just written. That is fine while the doctor really is the template's, but system files can legally
+ *  be SKIPPED (a forge-overrides.json entry, unresolved unknown_drift, a conflict), and a skipped doctor is
+ *  the PROJECT's own. A project holding a stub doctor that prints plausible JSON and exits 0 would then
+ *  approve every future sync into itself, forever, and the receipt would read "validated". The gate would
+ *  be authored by the thing it is gating. We hash the doctor that is about to run against the template's
+ *  and say plainly which one it is; only a byte-identical template doctor counts as the trusted gate. */
+function doctorProvenance(projectDir, templateDir) {
+  const rel = path.join('forge-bin', 'forge-doctor.cjs');
+  const projectDoctor = path.join(claudeDirOf(projectDir), rel);
+  if (!fs.existsSync(projectDoctor)) return { kind: 'absent' };
+  if (!templateDir) return { kind: 'unknown', reason: 'no template directory was given, so the doctor could not be compared with the canonical one' };
+  const templateDoctor = path.join(templateDir, rel);
+  if (!fs.existsSync(templateDoctor)) return { kind: 'unknown', reason: 'the template ships no forge-doctor.cjs to compare against' };
+  const a = sha256Normalized(projectDoctor), b = sha256Normalized(templateDoctor);
+  if (a && b && a === b) return { kind: 'template', hash: a };
+  return { kind: 'project-local', projectHash: a, templateHash: b, reason: 'the doctor in this project is NOT the template doctor (it was overridden, drifted or skipped) — an install may not be approved by a gate the project itself authored' };
+}
+/** installerSyntaxGate — the one check the doctor cannot fake, because the INSTALLER runs it: every .cjs
+ *  this sync wrote must parse under this Node runtime. It is a floor, not a substitute for the doctor —
+ *  but it holds even when the doctor is missing, lying, or the project's own (audit #2). */
+function installerSyntaxGate(projectDir, cjsRels) {
   const failures = [], commands = [];
   for (const rel of cjsRels) {
     const out = safeJoin(claudeDirOf(projectDir), rel);
@@ -901,7 +1075,60 @@ function runValidation(projectDir, plan, opts) {
     const r = spawnSync(process.execPath, argsArr, { encoding: 'utf8' });
     if (r.status !== 0) failures.push(rel);
   }
-  return { tool: 'node-check-fallback', exitCode: failures.length ? 1 : 0, ok: failures.length === 0, degraded: true, checked: cjsRels.length, failures, commands };
+  return { checked: cjsRels.length, failures, commands };
+}
+function runValidation(projectDir, plan, opts) {
+  opts = opts || {};
+  const timeoutMs = Number.isFinite(opts.doctorTimeoutMs) && opts.doctorTimeoutMs > 0 ? opts.doctorTimeoutMs : 180000;
+  const doctorPath = path.join(claudeDirOf(projectDir), 'forge-bin', 'forge-doctor.cjs');
+  const cjsRels = (plan.toChange || []).map((e) => e.rel).filter((rel) => rel.endsWith('.cjs'));
+  // ALWAYS run the installer-owned syntax gate first, whatever the doctor is going to say. A file that
+  // does not parse is broken no matter which doctor validates it, and this result is ours, not the
+  // doctor's — so a self-approving doctor still cannot turn a broken sync green.
+  const syntax = installerSyntaxGate(projectDir, cjsRels);
+  const provenance = doctorProvenance(projectDir, opts.templateDir);
+  if (syntax.failures.length) {
+    return {
+      tool: 'installer-syntax-gate', exitCode: 1, ok: false, commands: syntax.commands,
+      syntaxGate: syntax, doctorProvenance: provenance.kind,
+      reason: syntax.failures.length + ' just-synced .cjs file(s) do not parse (' + syntax.failures.join(', ')
+        + ') — the installer checked this itself; no doctor verdict can override it',
+    };
+  }
+  if (fs.existsSync(doctorPath)) {
+    const { exitCode, parsed, timedOut, signal, cmdArgs } = runDoctorJson(projectDir, doctorPath, timeoutMs);
+    const commandStr = cmdArrToString(process.execPath, cmdArgs);
+    const base = { tool: 'forge-doctor', doctorProvenance: provenance.kind, syntaxGate: syntax };
+    if (timedOut) return { ...base, exitCode, ok: false, timedOut: true, signal, commands: [commandStr] };
+    if (parsed && evidenceOk(parsed, cjsRels.length)) {
+      // Only a doctor that DIFFERS from a template doctor that actually exists is the hole this closes:
+      // the project overrode/skipped the canonical gate and would then approve its own installs. When the
+      // template ships no doctor at all ('unknown'), this sync did not install the gate, so it is not the
+      // "gated by its own artifact" case — it is still recorded on the result, never silently dropped.
+      const trusted = provenance.kind !== 'project-local';
+      const ok = exitCode === 0 && parsed.ok !== false;
+      if (ok && !trusted) {
+        // The doctor said yes, but it is not the canonical one. That is a DEGRADED pass — it still has to
+        // clear the installer's own syntax gate (it did, above), and decideValidationOutcome's existing
+        // degraded handling decides whether a degraded pass is acceptable for this run.
+        return {
+          ...base, exitCode, ok: true, degraded: true, commands: [commandStr], summary: condenseDoctorSummary(parsed),
+          reason: 'validated by a doctor that is not the template doctor — ' + (provenance.reason || 'provenance ' + provenance.kind)
+            + '; the independent evidence for this install is the installer syntax gate over ' + syntax.checked + ' file(s)',
+        };
+      }
+      return { ...base, exitCode, ok, commands: [commandStr], summary: condenseDoctorSummary(parsed) };
+    }
+    return {
+      ...base, exitCode, ok: false, noEvidence: true, commands: [commandStr], summary: condenseDoctorSummary(parsed),
+      reason: 'forge-doctor gave no positive evidence (--json missing/unparsable/0-count) — refusing to trust a bare exit code',
+    };
+  }
+  // DEGRADED fallback: no forge-doctor present -> the installer syntax gate is all we have, and it passed.
+  return {
+    tool: 'node-check-fallback', exitCode: 0, ok: true, degraded: true, checked: syntax.checked, failures: [],
+    commands: syntax.commands, syntaxGate: syntax, doctorProvenance: provenance.kind,
+  };
 }
 /** seedCanaryRun — CANARY-ONLY, opt-in via opts.seedRunForValidation (set ONLY on the dedicated canary's own
  *  sync options in runSyncAll, NEVER for a real project's syncOpts). WHY THIS EXISTS (root cause, found via
@@ -948,7 +1175,7 @@ function seedCanaryRun(projectDir, batchId, nowIso) {
  *  suites that assert the PROJECT ENVIRONMENT: CLAUDE.md exists (forge-configdrift), .gitignore carries the
  *  forge-runs/forge-index rules (forge-tool-index, forge-toolhook). Those files were Phase-16 duties of the
  *  INSTALLING AGENT — a step that by definition can only run AFTER forge-sync returns. Net effect measured
- *  live: every fresh-project install failed its own validation and rolled back all ~357 files ("Kalshi
+ *  live: every fresh-project install failed its own validation and rolled back all ~357 files ("a trading project
  *  trading", 2×, and a clean sandbox repro). The installer therefore seeds exactly the environment its own
  *  validation checks, from the template HOME (the directory above the template's .claude content dir):
  *    - .gitignore  — created verbatim from gitignore.snippet when absent; otherwise APPEND-ONLY: only
@@ -992,19 +1219,31 @@ function seedProjectScaffold(templateDir, projectDir) {
           fs.writeFileSync(target, snippet.endsWith('\n') ? snippet : snippet + '\n', { encoding: 'utf8', flag: 'wx' });
           out.gitignore = 'created';
           out.created.push('.gitignore');
+          out.createdHashes = Object.assign({}, out.createdHashes, { '.gitignore': sha256(target) }); // ronde-3 #7: alleen ONZE bytes mogen later verwijderd worden
         } catch (e) {
           if (e && e.code === 'EEXIST') { out.gitignore = 'raced-existing'; out.errors.push('.gitignore: created by another process during install — left untouched'); }
           else throw e;
         }
       } else {
-        const existing = new Set(fs.readFileSync(target, 'utf8').split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+        const priorBytes = fs.readFileSync(target, 'utf8');
+        const existing = new Set(priorBytes.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
         const missing = snippet.split(/\r?\n/)
           .map((l) => l.trim())
           .filter((l) => l && !l.startsWith('#') && !existing.has(l));
         if (missing.length === 0) out.gitignore = 'unchanged';
         else {
-          fs.appendFileSync(target, '\n# Forge scaffold rules (seeded by forge-sync install — append-only)\n' + missing.join('\n') + '\n', 'utf8');
+          const appended = '\n# Forge scaffold rules (seeded by forge-sync install — append-only)\n' + missing.join('\n') + '\n';
+          fs.appendFileSync(target, appended, 'utf8');
           out.gitignore = 'appended:' + missing.length;
+          /** AUDIT #21 (2026-08-05): the append was irreversible — the batch manifest only backs up files
+           *  under .claude/, never the root .gitignore, and undoScaffold only unlinks files it CREATED. A
+           *  failed install therefore left the Forge block in the owner's .gitignore forever, with no
+           *  record of the pre-append bytes anywhere. The exact prior bytes and the exact appended block
+           *  are now carried on the scaffold result, so undoScaffold can restore the file byte-for-byte —
+           *  and ONLY when the current content still equals prior+appended, so an owner edit made after
+           *  the append is never clobbered by a rollback. */
+          out.gitignorePrior = priorBytes;
+          out.gitignoreAppended = appended;
         }
       }
     }
@@ -1021,6 +1260,7 @@ function seedProjectScaffold(templateDir, projectDir) {
           fs.copyFileSync(stubPath, chk.path, fs.constants.COPYFILE_EXCL);
           out.claude_md = 'created';
           out.created.push('CLAUDE.md');
+          out.createdHashes = Object.assign({}, out.createdHashes, { 'CLAUDE.md': sha256(chk.path) }); // ronde-3 #7
         } catch (e) {
           if (e && e.code === 'EEXIST') { out.claude_md = 'raced-existing'; out.errors.push('CLAUDE.md: created by another process during install — left untouched'); }
           else throw e;
@@ -1035,9 +1275,11 @@ function seedProjectScaffold(templateDir, projectDir) {
  *  pre-existing file), so a rolled-back install leaves no half-provisioned root behind. Best-effort. */
 const SCAFFOLD_ALLOWED = new Set(['.gitignore', 'CLAUDE.md']); // the ONLY files seeding may ever create
 function undoScaffold(scaffold, projectDir) {
-  if (!scaffold || !Array.isArray(scaffold.created)) return;
+  const result = { removedCreated: [], keptForeign: [], gitignore: 'not-applicable', errors: [] };
+  if (!scaffold) return result;
   const root = path.resolve(projectDir);
-  for (const name of scaffold.created) {
+  const createdHashes = scaffold.createdHashes && typeof scaffold.createdHashes === 'object' ? scaffold.createdHashes : null;
+  for (const name of (Array.isArray(scaffold.created) ? scaffold.created : [])) {
     // CODEX finding #22: this deleted by filename string alone, so a caller-supplied created:["../victim"]
     // (the function IS exported) would delete outside the project, and a file REPLACED between creation
     // and rollback was removed even though it was no longer ours. Allow-list + containment + regular-file
@@ -1047,10 +1289,37 @@ function undoScaffold(scaffold, projectDir) {
     if (path.relative(root, p).startsWith('..') || path.dirname(p) !== root) continue;
     try {
       const st = fs.lstatSync(p);
-      if (!st.isFile()) continue; // a symlink/dir now sitting there is not the file we created
+      if (!st.isFile()) { result.keptForeign.push(name + ' (not a regular file anymore)'); continue; }
+      // CODEX ronde-3 #7 (2026-08-06): een LATE rollback (crash-pad, alleen het manifest) verwijderde een
+      // created bestand ongeacht de inhoud — een CLAUDE.md die de owner intussen bewerkte ging mee de
+      // prullenbak in. Met een vastgelegde creation-hash verwijderen we alleen exact ONZE bytes; zonder
+      // hash (legacy scaffold-object) blijft het oude gedrag, dat de in-run paden al beschermde.
+      if (createdHashes && typeof createdHashes[name] === 'string' && sha256(p) !== createdHashes[name]) {
+        result.keptForeign.push(name + ' (content changed since creation — owner work, not ours to delete)');
+        continue;
+      }
       fs.rmSync(p, { force: true });
-    } catch { /* already gone — nothing to undo */ }
+      result.removedCreated.push(name);
+    } catch (e) { result.errors.push(name + ': ' + e.message); }
   }
+  /** AUDIT #21 (2026-08-05): revert the .gitignore APPEND too — but only when the file's current bytes
+   *  are exactly prior+appended. Any other content means the owner (or another process) touched the file
+   *  after the seed, and clobbering their edit to undo ours would be worse than leaving both; that case
+   *  is left in place deliberately, matching the "never delete what is no longer ours" rule above. */
+  if (typeof scaffold.gitignorePrior === 'string' && typeof scaffold.gitignoreAppended === 'string') {
+    const p = path.join(root, '.gitignore');
+    try {
+      const st = fs.lstatSync(p);
+      if (st.isFile()) {
+        const now = fs.readFileSync(p, 'utf8');
+        if (now === scaffold.gitignorePrior + scaffold.gitignoreAppended) {
+          writeAtomic(p, scaffold.gitignorePrior);
+          result.gitignore = 'reverted';
+        } else result.gitignore = 'kept (content changed since the append — never clobber owner work)';
+      } else result.gitignore = 'kept (no longer a regular file)';
+    } catch (e) { result.gitignore = 'kept (' + (e.code === 'ENOENT' ? 'file gone' : e.message) + ')'; }
+  }
+  return result;
 }
 /** decideValidationOutcome — H3+H4 gating decision, kept as a pure function so it's directly unit-testable.
  *  Priority: timeout -> blocked. Degraded (no doctor) -> requires --allow-degraded even when clean, and NEVER
@@ -1182,6 +1451,12 @@ function computeDivergence(dst, manifest, doneSet) {
     if (out == null) continue;
     const currentHash = sha256(out);
     if (currentHash === f.newHash) continue;
+    // AUDIT #19 (2026-08-05): a file still at its recorded OLD hash is by definition the pre-batch state
+    // — the exact bytes this rollback would restore. Refusing it as "diverged" made every rollback of a
+    // half-applied batch (a crash left some files unwritten) refuse without --force-rollback-newer, which
+    // punished the one situation rollback exists for. Foreign work (neither newHash nor oldHash) is still
+    // refused; restoring an oldHash-file is a verified no-op.
+    if (Object.prototype.hasOwnProperty.call(f, 'oldHash') && currentHash === f.oldHash) continue;
     if (currentHash === null) continue; // missing entirely -> nothing to protect
     diverged.push({ rel: f.rel, expected: f.newHash, current: currentHash });
   }
@@ -1200,6 +1475,7 @@ function computeDivergence(dst, manifest, doneSet) {
  *  like FORGE_VERSION.json, so a rolled-back project's next preflight() sees a receipt consistent with its
  *  actual (reverted) file contents instead of a stale receipt describing the undone sync. */
 function restoreFromManifest(projectDir, manifestDir, manifest, opts) {
+  assertClaudeBaseContained(projectDir);
   opts = opts || {};
   const dst = claudeDirOf(projectDir);
   const jPath = journalPath(manifestDir);
@@ -1225,10 +1501,16 @@ function restoreFromManifest(projectDir, manifestDir, manifest, opts) {
     const out = safeJoin(dst, f.rel);
     let ok = true, reason = null;
     if (out == null) { ok = false; reason = 'unsafe path (containment guard tripped)'; }
+    // CODEX ronde-3 #8 (2026-08-06): het RESTORE-pad had geen symlink/realpath-guard — het scenario "A is
+    // toegepast, een junction verschijnt, B triggert de apply-refusal, en de rollback schrijft A dwars
+    // door diezelfde junction naar buiten" liep dus om de write-time guard van applyPlanSafely heen.
+    // Dezelfde check, op hetzelfde moment: vlak voor de write/delete. (Volledig raceloos kan alleen met
+    // no-follow-handles die fs.copyFileSync niet biedt — dat restrisico is gedocumenteerd, niet verstopt.)
+    else if (isSymlinkPath(out) || !containmentSafe(dst, out)) { ok = false; reason = 'containment guard tripped at restore time (symlink/junction on the path)'; }
     else if (f.oldHash === null) {
       try { fs.rmSync(out, { force: true }); } catch (e) { if (e && e.code !== 'ENOENT') { ok = false; reason = e.message; } }
     } else {
-      try { fs.mkdirSync(path.dirname(out), { recursive: true }); fs.copyFileSync(path.join(manifestDir, f.rel), out); }
+      try { fs.mkdirSync(path.dirname(out), { recursive: true }); copyNoFollow(path.join(manifestDir, f.rel), out, dst); }
       catch (e) { ok = false; reason = e.message; }
     }
     if (ok && out != null) { // H1: post-step verification — never trust "no exception" alone
@@ -1243,24 +1525,46 @@ function restoreFromManifest(projectDir, manifestDir, manifest, opts) {
   if (failed.length) return { ok: false, partial: true, restored, failed };
 
   if (!journal.versionRestored) {
-    if (manifest.hadVersionFile) fs.writeFileSync(versionFilePath(projectDir), manifest.oldVersion, 'utf8');
+    if (manifest.hadVersionFile) writeAtomic(versionFilePath(projectDir), manifest.oldVersion); // atomic on rollback too (audit #22)
     else { try { fs.rmSync(versionFilePath(projectDir), { force: true }); } catch { /* already gone */ } }
     journal.versionRestored = true;
     fs.writeFileSync(jPath, JSON.stringify(journal, null, 2));
   }
   if (!journal.receiptRestored) {
     if (Object.prototype.hasOwnProperty.call(manifest, 'hadReceipt')) {
-      if (manifest.hadReceipt) fs.writeFileSync(receiptPath(projectDir), manifest.oldReceipt, 'utf8');
+      if (manifest.hadReceipt) writeAtomic(receiptPath(projectDir), manifest.oldReceipt); // atomic on rollback too (audit #22)
       else { try { fs.rmSync(receiptPath(projectDir), { force: true }); } catch { /* already gone */ } }
     }
     journal.receiptRestored = true;
     fs.writeFileSync(jPath, JSON.stringify(journal, null, 2));
+  }
+  // AUDIT #21 (2026-08-05): a manifest written by a sync that seeded the project scaffold carries the
+  // undo-information for it (see safeSyncProject's manifest-persist step). A LATER rollback — the crash
+  // case that never reached the in-run undoScaffold — can therefore revert the scaffold too: created
+  // files via the same allow-listed remover, the .gitignore append only when the bytes still equal
+  // prior+appended (an owner edit in between is never clobbered).
+  let scaffoldAction = 'none';
+  if (manifest.scaffold) {
+    // CODEX ronde-3 #7 (2026-08-06): rapporteer wat de scaffold-undo WERKELIJK deed — "reverted" zonder
+    // te kijken was een claim, geen observatie. createdHashes beschermt owner-bewerkte created files.
+    const undone = undoScaffold({
+      created: manifest.scaffold.created || [],
+      createdHashes: manifest.scaffold.createdHashes,
+      gitignorePrior: manifest.scaffold.gitignorePrior,
+      gitignoreAppended: manifest.scaffold.gitignoreAppended,
+      errors: [],
+    }, projectDir);
+    scaffoldAction = 'created removed: [' + undone.removedCreated.join(', ') + ']'
+      + (undone.keptForeign.length ? ' · kept (owner work): [' + undone.keptForeign.join('; ') + ']' : '')
+      + ' · gitignore: ' + undone.gitignore
+      + (undone.errors.length ? ' · errors: ' + undone.errors.join('; ') : '');
   }
   journal.status = 'complete';
   fs.writeFileSync(jPath, JSON.stringify(journal, null, 2));
   return {
     ok: true, restored, versionAction: manifest.hadVersionFile ? 'restored' : 'removed',
     receiptAction: !('hadReceipt' in manifest) ? 'unknown (legacy manifest predates receipt backup)' : (manifest.hadReceipt ? 'restored' : 'removed'),
+    scaffoldAction,
   };
 }
 function latestBatchId(projectDir) {
@@ -1395,7 +1699,21 @@ function safeSyncProject(templateDir, projectDir, opts) {
   opts = opts || {};
   if (!fs.existsSync(projectDir)) return { ok: false, refused: true, reason: 'project path missing: ' + projectDir, projectDir };
   const dst = claudeDirOf(projectDir);
-  if (!fs.existsSync(dst)) return { ok: false, refused: true, reason: 'not a project (.claude missing): ' + projectDir, projectDir };
+  /** De weigering hieronder is een VEILIGHEIDSFEATURE, geen bug (heroverwogen 2026-08-13 na de
+   *  fresh-install audit): forge-sync werkt een BESTAAND Forge-project bij naar de nieuwste
+   *  template. Zou hij .claude/ zelf aanmaken, dan zet één typefout in een pad een willekeurige map
+   *  vol systeembestanden. De eerste installatie hoort via install.sh / install.ps1 te lopen, die
+   *  wél vanuit niets bootstrappen (gemeten 2026-08-13: verse map -> volledige install -> doctor).
+   *  Wat hier WEL fout was: de melding noemde de oplossing niet, dus een nieuwe gebruiker liep vast
+   *  op "not a project" zonder te weten wat dan wel. Die melding wijst nu de weg. */
+  if (!fs.existsSync(dst)) {
+    return {
+      ok: false, refused: true, projectDir,
+      reason: 'not a project (.claude missing): ' + projectDir
+        + ' — forge-sync updates an EXISTING Forge project; it deliberately never creates .claude/ itself, so a mistyped path can never fill a random folder.'
+        + ' For a FIRST install run the installer instead: `bash install.sh --project "' + projectDir + '"` (or install.ps1 on Windows).',
+    };
+  }
 
   const templateVer = templateVersion(templateDir);
   const plan = buildPlan(templateDir, projectDir, { forceOverwrite: !!opts.forceOverwrite });
@@ -1428,7 +1746,7 @@ function safeSyncProject(templateDir, projectDir, opts) {
   }
 
   const preManifest = fullFileManifest(templateDir, projectDir);
-  const preValidation = runValidation(projectDir, { toChange: [] }, { doctorTimeoutMs: opts.doctorTimeoutMs }); // H3 baseline
+  const preValidation = runValidation(projectDir, { toChange: [] }, { doctorTimeoutMs: opts.doctorTimeoutMs, templateDir }); // H3 baseline
   const backup = takeBackup(projectDir, batchId, plan, templateVer, nowIso, { centralBackupRoot: opts.centralBackupRoot, runId: opts.runId });
   if (!backup.ok) { // S8: a backup I/O failure is a clean refusal, never an uncaught crash — nothing was applied yet
     return { ok: false, refused: true, projectDir, plan, templateVersion: templateVer, preManifest, backup, reason: 'refusing to sync: ' + backup.error };
@@ -1438,7 +1756,13 @@ function safeSyncProject(templateDir, projectDir, opts) {
   if (!apply.ok) {
     // Only the subset that was ACTUALLY written needs restoring — a file applyPlanSafely never reached
     // (e.g. the one that threw, or anything after it) was never modified from its pre-sync state.
-    const appliedManifest = subsetManifest(backup.manifest, apply.applied);
+    // AUDIT #19 (2026-08-05): on a RESUME the union-manifest (see takeBackupUnsafe) also carries the
+    // PRIOR attempt's rels — files that crashed attempt already wrote and that this attempt's smaller
+    // plan no longer names. They were genuinely modified, so a failed resume must restore them too;
+    // "this attempt's applied list" alone would leave them on template content.
+    const planRels = new Set(plan.toChange.map((e) => e.rel));
+    const priorRels = backup.manifest.files.map((f) => f.rel).filter((rel) => !planRels.has(rel));
+    const appliedManifest = subsetManifest(backup.manifest, apply.applied.concat(priorRels));
     let restored = null, rollbackError = null;
     try { restored = restoreFromManifest(projectDir, backup.backupDir, appliedManifest); }
     catch (e) { rollbackError = e.message; }
@@ -1457,8 +1781,37 @@ function safeSyncProject(templateDir, projectDir, opts) {
   // see seedProjectScaffold's own doc. Runs for every real (non-dry-run) sync; created files are
   // removed again on every rollback path below.
   const scaffold = seedProjectScaffold(templateDir, projectDir);
+  // AUDIT #21 (2026-08-05): persist the scaffold's undo-information INTO the batch manifest. The in-run
+  // rollback paths below hold the scaffold object in memory, but a crashed process never reaches them —
+  // a LATER `forge-sync rollback` only has the manifest, which never mentioned the .gitignore append or
+  // the created files, so exactly the crash case left the scaffold edits behind forever. Best-effort:
+  // a manifest that cannot be rewritten leaves rollback no worse than it already was.
+  if (scaffold && (scaffold.created.length || typeof scaffold.gitignorePrior === 'string')) {
+    try {
+      const mPath = path.join(backup.backupDir, 'manifest.json');
+      const m = JSON.parse(fs.readFileSync(mPath, 'utf8'));
+      m.scaffold = {
+        created: scaffold.created,
+        ...(scaffold.createdHashes ? { createdHashes: scaffold.createdHashes } : {}),
+        ...(typeof scaffold.gitignorePrior === 'string' ? { gitignorePrior: scaffold.gitignorePrior, gitignoreAppended: scaffold.gitignoreAppended } : {}),
+      };
+      writeAtomic(mPath, JSON.stringify(m, null, 2) + '\n');
+      if (backup.centralDir) { try { writeAtomic(path.join(backup.centralDir, 'manifest.json'), JSON.stringify(m, null, 2) + '\n'); } catch { /* mirror only */ } }
+    } catch (e) {
+      // CODEX ronde-3 #6 (2026-08-06): een scaffold-mutatie waarvan het undo-record NIET persistent kon
+      // worden is op het crash-pad onherstelbaar. Dan liever de mutatie zelf DIRECT terugdraaien dan een
+      // niet-terugdraaibare wijziging laten staan met alleen een logregel als spoor.
+      const undone = undoScaffold(scaffold, projectDir);
+      scaffold.errors.push('manifest-persist: ' + e.message + ' — scaffold reverted immediately (created removed: '
+        + undone.removedCreated.join(',') + '; gitignore: ' + undone.gitignore + ') because a mutation without a durable undo-record must not outlive this process');
+      scaffold.gitignore = 'reverted (undo-record could not be persisted)';
+      scaffold.claude_md = scaffold.claude_md === 'created' ? 'reverted (undo-record could not be persisted)' : scaffold.claude_md;
+      scaffold.created = [];
+      delete scaffold.gitignorePrior; delete scaffold.gitignoreAppended;
+    }
+  }
 
-  const validation = runValidation(projectDir, plan, { doctorTimeoutMs: opts.doctorTimeoutMs });
+  const validation = runValidation(projectDir, plan, { doctorTimeoutMs: opts.doctorTimeoutMs, templateDir });
   const outcome = decideValidationOutcome(preValidation, validation, { allowDegraded: opts.allowDegraded });
   if (!outcome.ok) {
     let restored = null, rollbackError = null;
@@ -1494,7 +1847,6 @@ function safeSyncProject(templateDir, projectDir, opts) {
 
   const priorReceipt = readReceipt(projectDir);
   const ver = { forge_version: templateVer, synced_at: nowIso, template: templateDir, system_files: listSystemFiles(templateDir).length };
-  fs.writeFileSync(versionFilePath(projectDir), JSON.stringify(ver, null, 2) + '\n');
 
   const postManifest = fullFileManifest(templateDir, projectDir);
   // B1: rebuild the CUMULATIVE baseline — carry forward every prior known hash, then overlay this sync's
@@ -1535,7 +1887,20 @@ function safeSyncProject(templateDir, projectDir, opts) {
     rollbackStatus: 'not_rolled_back_as_of_this_write',
     syncedAt: nowIso,
   };
+  /** COMMIT ORDER (broad Codex audit #22, 2026-08-05). The version stamp and the receipt together are this
+   *  install's commit record, and they were two separate NON-ATOMIC in-place writes after validation, outside
+   *  any rollback protection — with the version stamped FIRST. A crash, a full disk, or a killed process
+   *  between them left the worst of the two orderings: FORGE_VERSION.json says "synced to X" (so the staleness
+   *  check never re-syncs) while the receipt — which holds the knownHashes drift baseline AND the backupRef
+   *  needed to roll this very sync back — is missing or torn. The project then looks current while its audit
+   *  trail and its undo pointer are gone, and the next drift check sees every system file as unknown drift.
+   *  Reversed: the RECEIPT is written first and the version stamp is the commit marker written LAST. Crashing
+   *  in between now leaves a project whose files+receipt are correct but whose stamp still reads the OLD
+   *  version — so the next `/forge` simply sees it as behind and re-syncs against an accurate baseline. That
+   *  is self-healing rather than silently wrong. Both writes are atomic (temp file + rename in the same
+   *  directory), so a concurrent reader always sees one whole file, never a half-written one. */
   writeReceipt(projectDir, receipt);
+  writeAtomic(versionFilePath(projectDir), JSON.stringify(ver, null, 2) + '\n');
   return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest };
 }
 
@@ -1655,7 +2020,7 @@ function rawInstall(templateDir, projectDir, opts) {
     return { ok: false, exitCode: 1, projectDir, applyError: apply.error, backup };
   }
   const ver = { forge_version: templateVersion(templateDir), synced_at: nowIso, template: templateDir, system_files: listSystemFiles(templateDir).length };
-  fs.writeFileSync(path.join(dst, 'FORGE_VERSION.json'), JSON.stringify(ver, null, 2) + '\n');
+  writeAtomic(path.join(dst, 'FORGE_VERSION.json'), JSON.stringify(ver, null, 2) + '\n'); // atomic here too (audit #22)
   console.log(path.basename(projectDir) + ': ' + toChange.length + ' updated (UNSAFE — no canary/no validation), ' + same + ' current' + (skippedOverrides.length ? (', ' + skippedOverrides.length + ' expected override(s) preserved') : '') + ' -> version ' + ver.forge_version + ' · backup at ' + backup.backupDir);
   return { ok: true, exitCode: 0, projectDir, copied: toChange.length, same, backup, skippedOverrides };
 }
@@ -1925,11 +2290,12 @@ function parseArgs(argv) {
 
 module.exports = {
   listSystemFiles, sha256, sha256Normalized, normalizeEolBuffer, fileStatus, templateVersion, claudeDirOf, safeJoin, isSymlinkPath,
-  containmentSafe, projectId, receiptPath, readReceipt, writeReceipt, receiptLastTemplateHashMap,
+  containmentSafe, projectId, receiptPath, readReceipt, writeReceipt, writeAtomic, receiptLastTemplateHashMap,
   overridesAllowlistPath, readOverrideAllowlist,
   preflight, buildPlan, fullFileManifest, aggregateManifestHash,
   versionFilePath, readVersionFile, backupDirFor, centralBackupDir, takeBackup, applyPlanSafely, runValidation,
   decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck, seedCanaryRun, seedProjectScaffold, undoScaffold,
+  doctorProvenance, installerSyntaxGate, copyNoFollow,
   verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches, restoreFromManifest, subsetManifest,
   journalPath, latestBatchId, acquireLock, releaseLock, lockPathFor,
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,
@@ -1939,9 +2305,27 @@ module.exports = {
 // ---- CLI ----
 if (require.main === module) {
   const GLOBAL_TEMPLATE = path.join(os.homedir(), '.claude', 'forge', 'template', '.claude');
+  const OWN_CLAUDE = path.resolve(__dirname, '..');
   const TEMPLATE = process.env.FORGE_SYNC_TEMPLATE_DIR
     ? path.resolve(process.env.FORGE_SYNC_TEMPLATE_DIR)
-    : (fs.existsSync(GLOBAL_TEMPLATE) ? GLOBAL_TEMPLATE : path.resolve(__dirname, '..'));
+    : (fs.existsSync(GLOBAL_TEMPLATE) ? GLOBAL_TEMPLATE : OWN_CLAUDE);
+  // FAIL CLOSED WHEN THE CANONICAL TEMPLATE IS MISSING (broad Codex audit #23, fixed 2026-08-05).
+  // The fallback above quietly turns THIS project's own .claude into "the template". Installing into
+  // another project then copies this project's governance and identity into it — a cross-project
+  // contamination that looks like a normal successful sync. The fallback is legitimate for one case
+  // only: operating on this very project (status / self-refresh). Any OTHER target must name a template
+  // explicitly, so nobody can seed project B from project A by accident.
+  const TEMPLATE_IS_FALLBACK = !process.env.FORGE_SYNC_TEMPLATE_DIR && !fs.existsSync(GLOBAL_TEMPLATE);
+  function refuseForeignTargetOnFallback(targetDir) {
+    if (!TEMPLATE_IS_FALLBACK || !targetDir) return;
+    const ownProject = path.resolve(OWN_CLAUDE, '..');
+    if (path.resolve(targetDir) === ownProject) return; // self-operation: fine
+    console.error('forge-sync: REFUSING to sync "' + path.resolve(targetDir) + '" — the canonical template is missing');
+    console.error('  (' + GLOBAL_TEMPLATE + ' does not exist), so the only template available is THIS project\'s own .claude.');
+    console.error('  Using it would copy this project\'s governance and identity into another project.');
+    console.error('  Install the global template, or pass one explicitly: FORGE_SYNC_TEMPLATE_DIR=<path-to-template/.claude>');
+    process.exit(2);
+  }
 
   const argv = process.argv.slice(2);
   const cmd = argv[0] || 'status';
@@ -1958,6 +2342,7 @@ if (require.main === module) {
     process.exit(status(TEMPLATE, defaultProject, flags.verbose));
   } else if (cmd === 'install') {
     if (!pos[0]) exitUsage('usage: forge-sync install <projectDir> [--dry-run] [--force-overwrite] [--unsafe] [--batch-id <id>] [--central-backup-root <dir>] [--no-central-backup] [--run-id <id>] [--allow-degraded] [--doctor-timeout <ms>] [--resume-batch]');
+    refuseForeignTargetOnFallback(pos[0]); // audit #23: never seed another project from this one
     // B5: default central backup hub lives OUTSIDE the project (its parent dir), never inside it.
     const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(path.dirname(path.resolve(pos[0])), '.forge-backup-hub'));
     const lock = flags.dryRun ? { ok: true, lockPath: null } : acquireLock(claudeDirOf(pos[0])); // M2
@@ -2013,6 +2398,12 @@ if (require.main === module) {
   } else if (cmd === 'sync-all') {
     const rootDir = pos[0] || process.env.FORGE_SYNC_ROOT; // B6
     if (!rootDir) exitUsage('usage: forge-sync sync-all <rootDir> [...] (root required — pass a positional root or set FORGE_SYNC_ROOT; no home-dir default)');
+    // audit #23: without a canonical template, sync-all would seed EVERY discovered project from this
+    // one project's own .claude — the widest possible cross-project contamination. Fail closed.
+    if (TEMPLATE_IS_FALLBACK) {
+      console.error('forge-sync: REFUSING sync-all — the canonical template is missing, so this project\'s own .claude would become the template for every discovered project. Install the global template, or set FORGE_SYNC_TEMPLATE_DIR explicitly.');
+      process.exit(2);
+    }
     if (flags.forceOverwrite && !flags.forceAll) exitUsage('forge-sync: --force-overwrite in sync-all requires the explicit --force-all co-flag (prevents an accidental blanket override across every discovered project)');
     const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(rootDir, '.forge-backup-hub')); // B5
     if (flags.unsafe) console.warn('*** --unsafe: legacy-style sync-all — NO canary, NO validation; a real backup is still taken per project (never "no undo") ***');

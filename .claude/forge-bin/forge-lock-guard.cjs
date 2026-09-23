@@ -59,42 +59,157 @@ function lockFile(dir, h) { return path.join(dir, keyOf(h) + '.json'); }
 function readLock(file) { try { const v = JSON.parse(fs.readFileSync(file, 'utf8')); return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null; } catch { return null; } }
 function writeLock(file, rec) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(rec, null, 2) + '\n'); }
 
-function acquire({ hotspot, runId, owner, note } = {}, opts = {}) {
+/** ATOMISCHE CLAIM MET CAS-TOKEN (audit G2, 2026-08-06 · Codex r4 #3/#4, 2026-08-07). acquire was
+ *  read-then-write: twee gelijktijdige contenders kregen beide ok:true. Daarna bleef over: (a) refresh op
+ *  run_id-gelijkheid — twee agents met DEZELFDE runId maar andere identiteit refreshten elkaars lock weg;
+ *  (b) release/reap die na hun read een verse opvolger konden verwijderen; (c) een nascent/corrupt lock
+ *  (crash tussen create en volledige write) die permanent onherstelbaar was. Nu:
+ *  - iedere acquire krijgt een uniek CAS-token (crypto.randomUUID); refresh en release slagen UITSLUITEND
+ *    met dat token — run_id-gelijkheid alleen is geen eigendom meer;
+ *  - de claim is full-content-atomair: JSON naar een gefsyncte temp, dan linkSync (hardlink) naar de
+ *    locknaam — EEXIST bij contention, en de naam draagt NOOIT een half geschreven record (#4);
+ *  - steal/reap verplaatst het verlopen bestand ino-geverifieerd naar een uniek graveyard-pad (rename)
+ *    i.p.v. unlink: raakt de rename per ongeluk toch een verse opvolger, dan detecteert die opvolger het
+ *    verlies bij zijn eerstvolgende token-refresh (bestand weg ⇒ ok:false) — één schrijver, nooit twee;
+ *  - een onparseerbaar lockbestand ouder dan NASCENT_MAX_MS is een crash-artefact en wordt gereapt;
+ *    jonger wachten we af (de schrijver kan er nog mee bezig zijn);
+ *  - een absurde expires_at wordt geklemd op acquired_at (of mtime) + TTL_CLAMP_MS zodat een
+ *    vooruitlopende klok een hotspot niet dagenlang kan vastzetten (#4). */
+const NASCENT_MAX_MS = 5000;
+const TTL_CLAMP_MS = 24 * 60 * 60 * 1000; // 24h — geen enkele legitieme Boss-taak houdt een hotspot langer
+function effectiveExpiry(rec, file) {
+  // r5 #13: acquired_at komt van de (mogelijk vooruitgesprongen) klok van de claimer — na klokherstel
+  // kon de klem zelf nog dagen in de toekomst liggen. De basis is nu het MINIMUM van acquired_at, de
+  // bestands-mtime en NU: geen enkele component kan de bovengrens verder dan TTL_CLAMP vooruit duwen.
+  let mtime = Infinity;
+  try { mtime = fs.statSync(file).mtimeMs; } catch { }
+  const base = Math.min(Number.isFinite(rec.acquired_at) ? rec.acquired_at : Infinity, mtime, Date.now());
+  const claimed = Number.isFinite(rec.expires_at) ? rec.expires_at : 0;
+  return Math.min(claimed, base + TTL_CLAMP_MS);
+}
+function tryCreateExclusive(file, rec) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + '.' + process.pid + '.' + Math.random().toString(36).slice(2, 8) + '.tmp';
+  try {
+    const fd = fs.openSync(tmp, 'w');
+    try { fs.writeSync(fd, JSON.stringify(rec, null, 2) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.linkSync(tmp, file);
+    fs.unlinkSync(tmp);
+    return true;
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { }
+    if (e.code === 'EEXIST') return false;
+    throw e;
+  }
+}
+function replaceOwnAtomic(file, rec) {
+  const tmp = file + '.' + process.pid + '.' + Math.random().toString(36).slice(2, 8) + '.tmp';
+  try { fs.writeFileSync(tmp, JSON.stringify(rec, null, 2) + '\n'); fs.renameSync(tmp, file); return true; }
+  catch (e) { try { fs.unlinkSync(tmp); } catch { } return false; }
+}
+/** reapToGraveyard — verwijder een verloren/verlopen lock zonder het gedeelde pad te unlinken: rename naar
+ *  een uniek pad. Ino-geverifieerd; het restvenster (rename raakt een NET vervangen bestand) wordt door de
+ *  token-refresh van de opvolger gedetecteerd (bestand weg ⇒ refresh faalt ⇒ opvolger stopt eerlijk). */
+function reapToGraveyard(file, st1) {
+  const grave = file + '.reaped.' + Date.now() + '.' + Math.random().toString(36).slice(2, 8);
+  try {
+    const st2 = fs.statSync(file, { bigint: true });
+    if (st2.ino !== st1.ino || st2.birthtimeMs !== st1.birthtimeMs) return false;
+    fs.renameSync(file, grave);
+    try { fs.unlinkSync(grave); } catch { /* opruimen is best-effort; het pad is vrij */ }
+    return true;
+  } catch { return false; }
+}
+function classifyLockFile(file) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (e) { return { state: 'missing' }; }
+  try { const v = JSON.parse(raw); if (v && typeof v === 'object' && !Array.isArray(v)) return { state: 'valid', rec: v }; } catch { }
+  let ageMs = 0;
+  try { ageMs = Date.now() - fs.statSync(file).mtimeMs; } catch { return { state: 'missing' }; }
+  return { state: ageMs > NASCENT_MAX_MS ? 'corrupt-old' : 'nascent', ageMs };
+}
+function acquire({ hotspot, runId, owner, note, token } = {}, opts = {}) {
   if (!hotspot || !runId) return { ok: false, reason: 'hotspot and runId are required' };
   const dir = dirOf(opts), t = clock(opts), ttl = (opts.ttlMs && opts.ttlMs > 0) ? opts.ttlMs : DEFAULT_TTL_MS;
   const file = lockFile(dir, hotspot);
-  const rec = { hotspot: normHotspot(hotspot), run_id: runId, owner: owner || runId, acquired_at: t, ttl_ms: ttl, expires_at: t + ttl, note: note || '' };
-  const existing = readLock(file);
-  if (existing) {
-    const expired = t >= (existing.expires_at || 0);
-    if (existing.run_id === runId) { writeLock(file, rec); return { ok: true, lock: rec, refreshed: true }; }
-    if (!expired) {
-      return { ok: false, reason: 'hotspot locked by another run', conflict: {
-        hotspot: existing.hotspot, held_by_run: existing.run_id, owner: existing.owner,
-        acquired_at: existing.acquired_at, expires_at: existing.expires_at, remaining_ms: Math.max(0, (existing.expires_at || 0) - t) } };
+  const myToken = token || crypto.randomUUID();
+  const rec = { hotspot: normHotspot(hotspot), run_id: runId, owner: owner || runId, token: myToken, acquired_at: t, ttl_ms: ttl, expires_at: t + ttl, note: note || '' };
+  let stolenFrom = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (tryCreateExclusive(file, rec)) return stolenFrom ? { ok: true, lock: rec, token: myToken, stolenFromExpired: stolenFrom } : { ok: true, lock: rec, token: myToken };
+    const cls = classifyLockFile(file);
+    if (cls.state === 'missing') continue; // verdween onder ons — opnieuw de exclusieve create proberen
+    if (cls.state === 'nascent') { if (opts.sleep !== false) sleepBrief(); continue; } // schrijver kan nog bezig zijn
+    if (cls.state === 'corrupt-old') {
+      // crash-artefact (#4): ino-geverifieerd reapen, daarna beslist de create-lus
+      try { const st1 = fs.statSync(file, { bigint: true }); reapToGraveyard(file, st1); } catch { }
+      continue;
     }
-    writeLock(file, rec); return { ok: true, lock: rec, stolenFromExpired: existing.run_id };
+    const existing = cls.rec;
+    const expired = t >= effectiveExpiry(existing, file);
+    if (!expired && existing.token && token && existing.token === token) {
+      // CAS-refresh: alleen de houder van het exacte token mag zijn eigen, niet-verlopen lock verversen.
+      if (replaceOwnAtomic(file, rec)) return { ok: true, lock: rec, token: myToken, refreshed: true };
+      continue;
+    }
+    if (!expired) {
+      return { ok: false, reason: 'hotspot locked by another holder', conflict: {
+        hotspot: existing.hotspot, held_by_run: existing.run_id, owner: existing.owner,
+        acquired_at: existing.acquired_at, expires_at: existing.expires_at, remaining_ms: Math.max(0, effectiveExpiry(existing, file) - t) } };
+    }
+    // expired (ook een eigen verlopen lock): ino-geverifieerde graveyard-rename, dan beslist de wx-create
+    try {
+      const st1 = fs.statSync(file, { bigint: true });
+      const again = readLock(file);
+      if (again && clock(opts) >= effectiveExpiry(again, file)) {
+        if (reapToGraveyard(file, st1)) stolenFrom = again.run_id;
+      }
+    } catch { /* bestand weg — prima, de create-lus beslist */ }
   }
-  writeLock(file, rec); return { ok: true, lock: rec };
+  return { ok: false, reason: 'lock kept changing under contention (4 attempts) — refusing to guess a winner' };
+}
+function sleepBrief() { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); } catch { } }
+
+/** refresh — expliciete CAS-verlenging: slaagt uitsluitend wanneer het lockbestand nog bestaat, niet
+ *  verlopen is en het exacte token draagt. Bestand weg of token anders = lock verloren ⇒ ok:false, zodat
+ *  een houder die (onterecht) bestolen is dat DETECTEERT en stopt in plaats van door te schrijven. */
+function refresh({ hotspot, runId, token } = {}, opts = {}) {
+  if (!hotspot || !runId || !token) return { ok: false, reason: 'hotspot, runId and token are required' };
+  const dir = dirOf(opts), t = clock(opts), ttl = (opts.ttlMs && opts.ttlMs > 0) ? opts.ttlMs : DEFAULT_TTL_MS;
+  const file = lockFile(dir, hotspot);
+  const existing = readLock(file);
+  if (!existing) return { ok: false, reason: 'lock lost (file gone) — holder must stop writing this hotspot' };
+  if (existing.token !== token) return { ok: false, reason: 'lock lost (token mismatch — taken over by ' + existing.run_id + ')' };
+  if (t >= effectiveExpiry(existing, file)) return { ok: false, reason: 'lock already expired — re-acquire instead of refresh' };
+  const rec = Object.assign({}, existing, { acquired_at: existing.acquired_at, ttl_ms: ttl, expires_at: t + ttl, refreshed_at: t });
+  if (replaceOwnAtomic(file, rec)) return { ok: true, lock: rec };
+  return { ok: false, reason: 'refresh write failed' };
 }
 
-function release({ hotspot, runId } = {}, opts = {}) {
-  if (!hotspot) return { ok: false, reason: 'hotspot is required' };
+function release({ hotspot, runId, token } = {}, opts = {}) {
+  if (!hotspot || !runId) return { ok: false, reason: 'hotspot and runId are required' };
   const file = lockFile(dirOf(opts), hotspot);
   const existing = readLock(file);
   if (!existing) return { ok: true, released: false, reason: 'no lock held' };
-  if (runId && existing.run_id !== runId) return { ok: false, released: false, reason: 'lock owned by ' + existing.run_id + ', not ' + runId };
-  try { fs.unlinkSync(file); } catch {}
+  if (existing.run_id !== runId) return { ok: false, released: false, reason: 'lock owned by ' + existing.run_id + ', not ' + runId };
+  // CAS: een lock MET token vereist het token (r4 #3); legacy-locks zonder token vallen terug op run_id.
+  if (existing.token && token !== existing.token) return { ok: false, released: false, reason: 'token mismatch — only the exact acquirer may release' };
+  try {
+    const st1 = fs.statSync(file, { bigint: true });
+    if (!reapToGraveyard(file, st1)) return { ok: false, released: false, reason: 'lock changed under release — refusing' };
+  } catch { return { ok: true, released: false, reason: 'no lock held' }; }
   return { ok: true, released: true };
 }
 
 function check({ hotspot } = {}, opts = {}) {
   if (!hotspot) return { held: false, reason: 'hotspot is required' };
   const t = clock(opts);
-  const existing = readLock(lockFile(dirOf(opts), hotspot));
-  if (!existing) return { held: false };
-  const expired = t >= (existing.expires_at || 0);
-  return { held: !expired, expired, lock: existing };
+  const file = lockFile(dirOf(opts), hotspot);
+  const cls = classifyLockFile(file);
+  if (cls.state === 'missing') return { held: false };
+  if (cls.state === 'nascent' || cls.state === 'corrupt-old') return { held: false, corrupt: true, state: cls.state };
+  const expired = t >= effectiveExpiry(cls.rec, file);
+  return { held: !expired, expired, lock: cls.rec };
 }
 
 function heldLocks(opts = {}) {
@@ -109,11 +224,19 @@ function reapStale(opts = {}) {
   const dir = dirOf(opts), t = clock(opts);
   let files = []; try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return { reaped: 0, reapedList: [] }; }
   let reaped = 0; const list = [];
-  for (const f of files) { const p = path.join(dir, f); const rec = readLock(p); if (rec && t >= (rec.expires_at || 0)) { try { fs.unlinkSync(p); reaped++; list.push(rec.hotspot); } catch {} } }
+  for (const f of files) {
+    const p = path.join(dir, f);
+    const cls = classifyLockFile(p);
+    // verlopen locks EN oude crash-artefacten (#4) — beide ino-geverifieerd via de graveyard-rename,
+    // zodat een verse opvolger nooit per unlink verdwijnt.
+    const reapIt = (cls.state === 'valid' && t >= effectiveExpiry(cls.rec, p)) || cls.state === 'corrupt-old';
+    if (!reapIt) continue;
+    try { const st1 = fs.statSync(p, { bigint: true }); if (reapToGraveyard(p, st1)) { reaped++; list.push(cls.rec ? cls.rec.hotspot : f); } } catch { }
+  }
   return { reaped, reapedList: list };
 }
 
-module.exports = { acquire, release, check, heldLocks, reapStale, keyOf, normHotspot, LOCK_DIR, DEFAULT_TTL_MS };
+module.exports = { acquire, refresh, release, check, heldLocks, reapStale, keyOf, normHotspot, classifyLockFile, LOCK_DIR, DEFAULT_TTL_MS, NASCENT_MAX_MS, TTL_CLAMP_MS };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
@@ -127,13 +250,21 @@ if (require.main === module) {
   const out = (obj, code) => { if (json) console.log(JSON.stringify(obj, null, 2)); process.exit(code); };
   try {
     if (cmd === 'acquire') {
-      if (!hotspot || !runId) { console.error('usage: acquire <hotspot> --run <id> [--owner <name>] [--ttl <ms>] [--note "..."]'); process.exit(2); }
-      const r = acquire({ hotspot, runId, owner: flag('--owner'), note: flag('--note') }, { ttlMs: ttl });
-      if (!json) console.log(r.ok ? ('LOCK acquired · ' + normHotspot(hotspot) + ' · run=' + runId + (r.refreshed ? ' (refreshed)' : r.stolenFromExpired ? ' (stolen from expired ' + r.stolenFromExpired + ')' : '')) : ('CONFLICT · ' + normHotspot(hotspot) + ' held by run=' + r.conflict.held_by_run + ' · ' + Math.round(r.conflict.remaining_ms / 1000) + 's remaining'));
+      if (!hotspot || !runId) { console.error('usage: acquire <hotspot> --run <id> [--owner <name>] [--ttl <ms>] [--token <cas-token>] [--note "..."]'); process.exit(2); }
+      const r = acquire({ hotspot, runId, owner: flag('--owner'), note: flag('--note'), token: flag('--token') }, { ttlMs: ttl });
+      if (!json) console.log(r.ok ? ('LOCK acquired · ' + normHotspot(hotspot) + ' · run=' + runId + ' · token=' + r.token + (r.refreshed ? ' (refreshed)' : r.stolenFromExpired ? ' (stolen from expired ' + r.stolenFromExpired + ')' : '')) : (r.conflict ? ('CONFLICT · ' + normHotspot(hotspot) + ' held by run=' + r.conflict.held_by_run + ' · ' + Math.round(r.conflict.remaining_ms / 1000) + 's remaining') : ('DENIED · ' + r.reason)));
+      out(r, r.ok ? 0 : 3);
+    } else if (cmd === 'refresh') {
+      const token = flag('--token');
+      if (!hotspot || !runId || !token) { console.error('usage: refresh <hotspot> --run <id> --token <cas-token> [--ttl <ms>]'); process.exit(2); }
+      const r = refresh({ hotspot, runId, token }, { ttlMs: ttl });
+      if (!json) console.log(r.ok ? ('REFRESHED · ' + normHotspot(hotspot) + ' · verloopt over ' + Math.round((r.lock.expires_at - Date.now()) / 1000) + 's') : ('LOST · ' + r.reason));
       out(r, r.ok ? 0 : 3);
     } else if (cmd === 'release') {
-      if (!hotspot) { console.error('usage: release <hotspot> --run <id>'); process.exit(2); }
-      const r = release({ hotspot, runId });
+      // r4 #3: release VEREIST --run (en bij een token-dragende lock ook --token) — een release zonder
+      // eigenaarsbewijs kon de lock van een ander stilletjes vrijgeven.
+      if (!hotspot || !runId) { console.error('usage: release <hotspot> --run <id> [--token <cas-token>]'); process.exit(2); }
+      const r = release({ hotspot, runId, token: flag('--token') });
       if (!json) console.log(r.ok ? ('RELEASED · ' + normHotspot(hotspot) + (r.released ? '' : ' (was not held)')) : ('DENIED · ' + r.reason));
       out(r, r.ok ? 0 : 3);
     } else if (cmd === 'check') {

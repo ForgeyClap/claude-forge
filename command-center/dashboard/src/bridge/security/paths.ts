@@ -106,7 +106,7 @@ function outside(message: string, input: unknown): never {
 /* ========================================================================== */
 
 /** The folder the workspace owns inside the user's Documents directory. */
-export const PROJECTS_ROOT_FOLDER_NAME = 'ForgeProjecten';
+export const PROJECTS_ROOT_FOLDER_NAME = 'ForgeProjects';
 
 /** A display name longer than this is not a name, it is a payload. */
 export const MAX_DISPLAY_NAME_LENGTH = 128;
@@ -628,7 +628,7 @@ function segmentsOf(absolute: string, win32: boolean): string[] {
  * `fs.realpathSync` throws ENOENT for a path we are about to CREATE, but the
  * ancestors of that path may still be links pointing out of the root. So: walk
  * up to the longest existing prefix, canonicalise that, then re-attach the tail.
- * Skipping this step is how a `ForgeProjecten\shared -> C:\Windows` junction
+ * Skipping this step is how a `ForgeProjects\shared -> C:\Windows` junction
  * turns "inside the root" into "System32".
  *
  * `realpathSync.native` is preferred because on Windows it goes through
@@ -987,7 +987,7 @@ export function resolveProjectsRootInfo(options?: PathGuardOptions): ProjectsRoo
 }
 
 /**
- * The canonical `<Documents>/ForgeProjecten` path. Resolution only — this
+ * The canonical `<Documents>/ForgeProjects` path. Resolution only — this
  * function never touches the filesystem for writing and never creates anything.
  */
 export function resolveProjectsRoot(options?: PathGuardOptions): string {

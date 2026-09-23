@@ -78,7 +78,7 @@ export default {
   // vitest pool ('forks'), but Node's worker_threads keep process.env local to
   // the worker's JS layer; the native os.homedir() binding does not observe
   // it. Under Stryker's forced threads pool the redirect silently no-ops, the
-  // operation resolves the machine's REAL Documents\ForgeProjecten instead of
+  // operation resolves the machine's REAL Documents\ForgeProjects instead of
   // the test's temp dir, and the assertion on the temp path throws ENOENT —
   // in the plain `npm test` run (pool: 'forks') this same test passes. See
   // docs/mutation-report.md for the exact error and why this is a tooling

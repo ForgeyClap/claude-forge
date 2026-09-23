@@ -76,16 +76,16 @@ CANONICAL PROJECTS ROOT
 
 All managed Forge projects must live under:
 
-~/Documents/ForgeProjecten/
+~/Documents/ForgeProjects/
 
 On Windows this must resolve safely to the authenticated user’s real Documents directory, equivalent to:
 
-C:\Users\<CURRENT_USER>\Documents\ForgeProjecten\
+C:\Users\<CURRENT_USER>\Documents\ForgeProjects\
 
 Examples:
 
-~/Documents/ForgeProjecten/webauto
-~/Documents/ForgeProjecten/100apps
+~/Documents/ForgeProjects/webauto
+~/Documents/ForgeProjects/100apps
 
 Do not hardcode:
 
@@ -96,7 +96,7 @@ Do not hardcode:
 
 Resolve the actual user Documents directory safely.
 
-If `ForgeProjecten` does not exist:
+If `ForgeProjects` does not exist:
 
 1. Resolve the canonical Documents directory.
 2. Confirm it belongs to the current user.
@@ -107,7 +107,7 @@ If `ForgeProjecten` does not exist:
 
 Every project created by the Workspace must be placed under:
 
-~/Documents/ForgeProjecten/<sanitized-project-slug>/
+~/Documents/ForgeProjects/<sanitized-project-slug>/
 
 Security rules:
 
@@ -327,7 +327,7 @@ secure Forge Workspace local bridge
 ↕
 real Forge runtime and local Claude Code CLI
 ↕
-projects under ~/Documents/ForgeProjecten
+projects under ~/Documents/ForgeProjects
 
 The bridge must bind by default only to:
 
@@ -1055,7 +1055,7 @@ Flow:
 6. Validate canonical path.
 7. Detect collisions.
 8. Create stable project ID.
-9. Create project folder under `~/Documents/ForgeProjecten`.
+9. Create project folder under `~/Documents/ForgeProjects`.
 10. Initialize Forge project structure.
 11. Create or safely merge project `CLAUDE.md`.
 12. Apply relevant global Forge instructions.
@@ -2600,7 +2600,7 @@ WP1 — ARCHITECTURE AND CONTRACTS
 
 WP2 — PROJECT ROOT AND REGISTRY
 
-- implement ForgeProjecten root;
+- implement ForgeProjects root;
 - discover projects;
 - import safe projects;
 - create projects;
@@ -2869,7 +2869,7 @@ The Workspace is complete only when:
 
 - the approved prototype is preserved in Git;
 - backup and rollback exist;
-- real projects use `~/Documents/ForgeProjecten`;
+- real projects use `~/Documents/ForgeProjects`;
 - new-project creation works;
 - each new project gets Forge initialization and local Git;
 - Claude Code uses the locally authenticated CLI;
@@ -3003,7 +3003,7 @@ USES_REAL_COMMANDS=true
 USES_MOCK_DATA=false
 USES_REAL_USAGE_TELEMETRY=true
 SUPPORTS_FILE_ATTACHMENTS=true
-PROJECTS_ROOT=~/Documents/ForgeProjecten
+PROJECTS_ROOT=~/Documents/ForgeProjects
 LAN_MODE=false
 REMOTE_ACCESS=false
 BIND_ADDRESS=127.0.0.1

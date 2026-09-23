@@ -1,6 +1,6 @@
 # Forge Workspace — architecture as it actually is
 
-Written 2026-07-24 against the working tree at `c:\Users\faitz\Desktop\Forge dashboard`.
+Written 2026-07-24 against the working tree at `c:\Users\YOU\Desktop\Forge dashboard`.
 
 This document describes what exists **now**, not what is planned. Where a claim comes from
 running something, the command and its real output are given. Where I could not establish a
@@ -81,7 +81,7 @@ flowchart TB
 
     subgraph disk["Local filesystem"]
         WORKSPACE[".forge-workspace/<br/>events · records · audit · meta · bridge.lock"]
-        PROJROOT["Documents/ForgeProjecten/<br/>(does not exist yet on this machine)"]
+        PROJROOT["Documents/ForgeProjects/<br/>(does not exist yet on this machine)"]
         CLI["Claude Code CLI 2.1.217<br/>%APPDATA% / Claude / claude-code / version / claude.exe"]
         GITEXE["MinGit git.exe<br/>%LOCALAPPDATA% / Programs / MinGit"]
     end
@@ -211,7 +211,7 @@ truthful outcome.
 Resolution order for the workspace directory: explicit option → `FORGE_WORKSPACE_DIR` →
 `<repoRoot>/.forge-workspace`. It must be absolute and must not be a filesystem root.
 
-Project data lives somewhere else entirely: `<Documents>/ForgeProjecten`. Documents is
+Project data lives somewhere else entirely: `<Documents>/ForgeProjects`. Documents is
 *discovered*, never assumed — see §8.
 
 `atomic.ts` guarantees, with their stated limits:
@@ -584,7 +584,7 @@ constraints:
 | Colons | NTFS alternate data streams: `report:$DATA` writes a hidden stream most tools never show. |
 | `\\?\` and `\\.\` prefixes; UNC | Raw Win32 mode stops normalising `..`; UNC is off-box by definition and leaks SMB credentials. |
 | `assertInsideRoot` compares **whole path segments** after canonicalising both sides | `startsWith('C:\root')` accepts `C:\rootEVIL` and `C:\root.evil`. |
-| `canonicalise()` walks up to the longest existing prefix, `realpathSync.native`, then re-attaches the tail | A `ForgeProjecten\shared -> C:\Windows` junction turning "inside the root" into System32, for a path that does not exist yet. |
+| `canonicalise()` walks up to the longest existing prefix, `realpathSync.native`, then re-attaches the tail | A `ForgeProjects\shared -> C:\Windows` junction turning "inside the root" into System32, for a path that does not exist yet. |
 
 The guard is honest about its own limit: `assertInsideRoot` is a **check, not a lock**.
 Between the check and the open a symlink can be swapped. Callers must use the canonical path
@@ -618,8 +618,8 @@ prompt that fires constantly is one nobody reads.
    refuses to create anything under it.
 
 On this machine the probe reported
-`projectsRoot: C:\Users\faitz\Documents\ForgeProjecten`, `projectsRootExists: false` —
-Documents was confirmed, `ForgeProjecten` has not been created yet.
+`projectsRoot: C:\Users\YOU\Documents\ForgeProjects`, `projectsRootExists: false` —
+Documents was confirmed, `ForgeProjects` has not been created yet.
 
 ### B5 — Child processes (`claude/adapter.ts`, `claude/locate.ts`, `projects/git.ts`)
 

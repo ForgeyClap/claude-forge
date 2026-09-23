@@ -8,7 +8,7 @@
  *   - Node          the running Node version can execute this workspace;
  *   - git           a `git` is on PATH and answers `--version`;
  *   - Claude CLI    the local Claude Code executable is present, and its version;
- *   - projects root a Documents directory exists to hold ForgeProjecten;
+ *   - projects root a Documents directory exists to hold ForgeProjects;
  *   - bridge port   the bridge port is free, or occupied by our own healthy
  *                   bridge — never silently blocked by a stranger;
  *   - workspace     the `.forge-workspace` layout, if present, is intact.
@@ -180,11 +180,11 @@ function checkProjectsRoot() {
     record(
       'projects-root',
       'FAIL',
-      `no Documents directory found under ${home}; the New Project flow has nowhere to create ForgeProjecten`,
+      `no Documents directory found under ${home}; the New Project flow has nowhere to create ForgeProjects`,
     );
     return;
   }
-  const projectsRoot = path.join(documents, 'ForgeProjecten');
+  const projectsRoot = path.join(documents, 'ForgeProjects');
   const exists = isDirectory(projectsRoot);
   record(
     'projects-root',

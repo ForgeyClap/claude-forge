@@ -349,8 +349,12 @@ function reconcile(input, opts) {
   const wps = load(runId, opts); // throws on missing/malformed manifest — fail closed
   const events = readEventsJsonl(eventsPath(root, runId));
   const projected = projectManifest(wps, events);
-  const file = manifestPath(root, runId);
-  atomicWriteFile(file, Buffer.from(JSON.stringify(projected, null, 2) + '\n', 'utf8'));
+  // r5 #16 (2026-08-07): persist:false levert dezelfde verse projectie ZONDER de manifest-write —
+  // voor read-only planners (swarm-resume --plan) die niet naast een uitvoerder mogen schrijven.
+  if (opts.persist !== false) {
+    const file = manifestPath(root, runId);
+    atomicWriteFile(file, Buffer.from(JSON.stringify(projected, null, 2) + '\n', 'utf8'));
+  }
   return summarize(runId, projected);
 }
 

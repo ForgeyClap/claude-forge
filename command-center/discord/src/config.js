@@ -36,7 +36,7 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), envFile = '
     maxQueuedPerThread: Number.parseInt(get('MAX_QUEUED_PER_THREAD', '10'), 10) || 10,
     globalMaxActiveRuns: Number.parseInt(get('GLOBAL_MAX_ACTIVE_RUNS', '2'), 10) || 2,
     stateDir: path.resolve(cwd, get('STATE_DIR', './state')),
-    projectsDir: get('FORGE_PROJECTS_DIR', 'C:\\Users\\YOU\\Documents\\ForgeProjecten'),
+    projectsDir: get('FORGE_PROJECTS_DIR', 'C:\\Users\\YOU\\Documents\\ForgeProjects'),
     botHttpPort: Number.parseInt(get('BOT_HTTP_PORT', '3979'), 10) || 3979,
     managerPort: Number.parseInt(get('MANAGER_PORT', '3987'), 10) || 3987,
     runner: get('RUNNER', 'fake'),

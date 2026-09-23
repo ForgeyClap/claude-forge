@@ -297,8 +297,8 @@ export function genDisplayName(rng: Rng): string {
 /*  2. Paths for assertInsideRoot                                              */
 /* ========================================================================== */
 
-export const POSIX_ROOT = '/home/fuzzer/Documents/ForgeProjecten';
-export const WIN_ROOT = 'C:\\Users\\fuzzer\\Documents\\ForgeProjecten';
+export const POSIX_ROOT = '/home/fuzzer/Documents/ForgeProjects';
+export const WIN_ROOT = 'C:\\Users\\fuzzer\\Documents\\ForgeProjects';
 
 /**
  * A candidate path to feed to `assertInsideRoot`. Some are legitimately inside

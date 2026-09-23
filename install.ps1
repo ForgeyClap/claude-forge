@@ -140,6 +140,67 @@ function Copy-ForgeTree {
   return $true
 }
 
+# Seed the project-root files Forge needs but the .claude payload does not carry:
+#   CLAUDE.md   -- created ONLY when absent (an existing file is never touched)
+#   .gitignore  -- missing Forge lines appended; existing lines left alone
+# Idempotent: a second run reports "kept" and changes nothing.
+function Add-ForgeProjectRootSeed {
+  param(
+    [Parameter(Mandatory = $true)][string] $ProjectDir,
+    [Parameter(Mandatory = $true)][string] $SourceDir,
+    [bool] $IsDryRun = $false
+  )
+
+  $claudeMd = Join-Path $ProjectDir 'CLAUDE.md'
+  $claudeTemplate = Join-Path $SourceDir 'templates\project-CLAUDE.md'
+  if (Test-Path -LiteralPath $claudeMd -PathType Leaf) {
+    Write-ForgeLog "  kept:  $claudeMd (already exists -- not touched)"
+  } elseif (Test-Path -LiteralPath $claudeTemplate -PathType Leaf) {
+    if ($IsDryRun) {
+      Write-ForgeLog "  would write: $claudeMd"
+    } else {
+      Copy-Item -LiteralPath $claudeTemplate -Destination $claudeMd -Force
+      Write-ForgeLog "  wrote: $claudeMd (project brain -- edit it, it is yours)"
+    }
+  }
+
+  $snippet = Join-Path $SourceDir 'templates\gitignore.snippet'
+  if (-not (Test-Path -LiteralPath $snippet -PathType Leaf)) { return }
+  $gitignore = Join-Path $ProjectDir '.gitignore'
+
+  $existing = @()
+  if (Test-Path -LiteralPath $gitignore -PathType Leaf) {
+    $existing = @(Get-Content -LiteralPath $gitignore -ErrorAction SilentlyContinue)
+  }
+  $existingSet = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($line in $existing) { [void] $existingSet.Add($line.Trim()) }
+
+  $toAdd = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($line in (Get-Content -LiteralPath $snippet)) {
+    $trimmed = $line.Trim()
+    if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+    if ($existingSet.Contains($trimmed)) { continue }
+    $toAdd.Add($trimmed)
+    [void] $existingSet.Add($trimmed)
+  }
+
+  if ($toAdd.Count -eq 0) {
+    Write-ForgeLog "  kept:  $gitignore (all Forge lines already present)"
+    return
+  }
+  if ($IsDryRun) {
+    Write-ForgeLog "  would add: $($toAdd.Count) line(s) to $gitignore"
+    return
+  }
+
+  $block = New-Object 'System.Collections.Generic.List[string]'
+  if ($existing.Count -gt 0) { $block.Add('') }
+  $block.Add('# --- Forge (added by the claude-forge installer) ---')
+  foreach ($line in $toAdd) { $block.Add($line) }
+  Add-Content -LiteralPath $gitignore -Value $block -Encoding utf8
+  Write-ForgeLog "  wrote: $gitignore (+$($toAdd.Count) Forge line(s); your existing rules kept)"
+}
+
 function Main {
   $projectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
   $assumeYes  = [bool]$Yes -or ($env:FORGE_YES -eq '1')
@@ -288,6 +349,11 @@ function Main {
         New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
       }
       $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun
+      # Seed the two project-root files Forge documents but the payload copy never delivered.
+      # Added 2026-08-13 after a real fresh-install measurement: without them three suites
+      # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and the
+      # first forge-doctor a new user runs reports FAILURES. Merge-safe and idempotent.
+      Add-ForgeProjectRootSeed -ProjectDir $projectDir -SourceDir $sourceDir -IsDryRun $isDryRun
     }
 
     # -------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 
 # claude-forge
 
-Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **23 skills, 18 agents, one command: `/forge`.**
+Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **52 skills, 19 agents, one command: `/forge`.**
 
 [![Works with Claude Code](https://img.shields.io/badge/Works%20with-Claude%20Code-8A2BE2?style=for-the-badge)](https://claude.com/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -85,7 +85,7 @@ Then run `/setup-forge` once, and you are ready.
 ---
 
 > [!TIP]
-> **New to Forge?** You do **not** need to learn 23 skills or 18 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
+> **New to Forge?** You do **not** need to learn 52 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
 
 ---
 
@@ -126,7 +126,7 @@ Honest and non-adversarial — only rows that actually ship.
 | | |
 |---|---|
 | 🤖 **18 built-in agents** | 12 permanent Bosses (boss, head-chef, build, review, test, UI, SEO, search, security, integration, docs, skill) + 6 specialists — see [AGENTS.md](AGENTS.md) |
-| 🧠 **23 skills** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md) |
+| 🧠 **52 skills** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md) |
 | 📊 **Command Center dashboard** | one localhost app (`:4100`) that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |

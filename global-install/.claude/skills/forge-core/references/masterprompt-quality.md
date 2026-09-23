@@ -1244,9 +1244,9 @@ END OF PER-TASK VERIFY-AND-CORRECT + SCREENSHOT-LOOP PROOF ADD-ON.
 
 END OF MODEL ROUTING & QUOTA TIERING ADD-ON.
 
-# FORGE GLOBAL ADD-ON — PAPERCLIP: PAUSE AGENTS, NEVER KILL THE DASHBOARD (user correction 2026-07-03, Moneymaker incident)
+# FORGE GLOBAL ADD-ON — PAPERCLIP: PAUSE AGENTS, NEVER KILL THE DASHBOARD (user correction 2026-07-03, an e-commerce project incident)
 
-**The incident.** During the Moneymaker build, Paperclip's heartbeat scheduler auto-ran the agent org the moment the runtime started (config: heartbeat enabled, ~60min interval) — the Lead CEO began orchestrating and agents wrote to the same tree as the main session. The session's "fix" was to STOP the whole runtime, which also killed the dashboard the owner wanted visible. Wrong tool. These rules prevent both failure modes.
+**The incident.** During the an e-commerce project build, Paperclip's heartbeat scheduler auto-ran the agent org the moment the runtime started (config: heartbeat enabled, ~60min interval) — the Lead CEO began orchestrating and agents wrote to the same tree as the main session. The session's "fix" was to STOP the whole runtime, which also killed the dashboard the owner wanted visible. Wrong tool. These rules prevent both failure modes.
 
 **§1 PAUSE, DON'T STOP.** To halt agents, NEVER stop/force-stop the Paperclip runtime. Use the bridge: `node .claude/forge-bin/forge-paperclip.cjs pause` (all company agents) or `pause --agent <slug>` (one). `resume` restarts them. The runtime + dashboard STAY UP and visible. `stop` is only for: the owner asks, the project is fully wrapped up, or the runtime itself is broken — and it is graceful-first, force only as last resort.
 
@@ -1308,7 +1308,7 @@ END OF PAPERCLIP OPT-IN AIRTIGHT ADD-ON.
 
 # FORGE GLOBAL ADD-ON — REAL AGENTS ONLY: NO FAKE SWARM, DASHBOARD MIRRORS THE LEDGER (deep-scan + Codex, user incident 2026-07-07)
 
-**The incident (boekhouder progamma).** The Control Center showed engine-boss/shell-boss/db-boss "working" while the ledger honestly recorded only "Boss (main) INTERNAL ROLE ONLY" — i.e. the main session did everything solo and LOGGED events that rendered as a fake multi-agent swarm. Root cause: forge.md/forge-core told the Lead to LOG `subagent_started` but never required a real Agent-tool dispatch, and the dashboard trusted any logged event. This add-on closes it (governance); `log-event.cjs` + the dashboard now ENFORCE it (code).
+**The incident (an accounting desktop app progamma).** The Control Center showed engine-boss/shell-boss/db-boss "working" while the ledger honestly recorded only "Boss (main) INTERNAL ROLE ONLY" — i.e. the main session did everything solo and LOGGED events that rendered as a fake multi-agent swarm. Root cause: forge.md/forge-core told the Lead to LOG `subagent_started` but never required a real Agent-tool dispatch, and the dashboard trusted any logged event. This add-on closes it (governance); `log-event.cjs` + the dashboard now ENFORCE it (code).
 
 **§1 A subagent node = a REAL Agent-tool dispatch.** A row/node shown as a working subagent MUST correspond to an actual `Agent({subagent_type, name, …})` (or Workflow `agent()`) invocation. When you dispatch, pass a `dispatch_id` (the Agent tool_use id) into that subagent's events. **If the main session does the work itself, that is fine — but log it under the Boss/lead node as `runtime:"internal"` / INTERNAL ROLE ONLY. NEVER emit a separate named `subagent_started/completed` for work no real subagent did.** `log-event.cjs` stamps `_forge_verify` and the dashboard shows `⚠ UNVERIFIED` / excludes it from the agent count; `FORGE_STRICT_EVENTS=1` hard-rejects it.
 
@@ -1334,12 +1334,12 @@ END OF REAL AGENTS ONLY ADD-ON.
 
 END OF CLAUDE-FIRST / NVIDIA BULK-ONLY ADD-ON.
 
-# FORGE GLOBAL ADD-ON — MANDATORY REAL DISPATCH FOR ASSIGNED WORK PACKAGES (closes the "solo is fine" loophole, boekhouder progamma incident 2026-07-07)
+# FORGE GLOBAL ADD-ON — MANDATORY REAL DISPATCH FOR ASSIGNED WORK PACKAGES (closes the "solo is fine" loophole, an accounting desktop app progamma incident 2026-07-07)
 
 ## APPEND-ONLY RULE
 Append-only add-on. Do not remove, rewrite, or replace existing global instructions.
 
-**The bug.** The ARM/START GATE add-on (2026-07-02, §3 rule 5) mandates: "the Lead Agent does NOT implement everything solo; implementation is delegated to subagents with live logging." The REAL AGENTS ONLY add-on (2026-07-07, §1), written to fix dashboard honesty, accidentally said the opposite: "If the main session does the work itself, that is fine — but log it under the Boss/lead node as internal." That permissive line let an entire real, multi-work-package project (boekhouder progamma — 3 runs, 500+ tests, real commits) ship with **zero real Agent-tool dispatch, zero permanent Boss names, and 1-2 sparse custom-named events per run** ("wp16_started", "contract_v8", "run_done") — technically "honest" under the old wording, but it defeated Forge's entire purpose: a multi-agent system that never used a second agent. This add-on closes that loophole. It applies to EVERY `gebruik forge` / `use forge` project, not just the incident project.
+**The bug.** The ARM/START GATE add-on (2026-07-02, §3 rule 5) mandates: "the Lead Agent does NOT implement everything solo; implementation is delegated to subagents with live logging." The REAL AGENTS ONLY add-on (2026-07-07, §1), written to fix dashboard honesty, accidentally said the opposite: "If the main session does the work itself, that is fine — but log it under the Boss/lead node as internal." That permissive line let an entire real, multi-work-package project (an accounting desktop app progamma — 3 runs, 500+ tests, real commits) ship with **zero real Agent-tool dispatch, zero permanent Boss names, and 1-2 sparse custom-named events per run** ("wp16_started", "contract_v8", "run_done") — technically "honest" under the old wording, but it defeated Forge's entire purpose: a multi-agent system that never used a second agent. This add-on closes that loophole. It applies to EVERY `gebruik forge` / `use forge` project, not just the incident project.
 
 **§1 MANDATORY DISPATCH.** Any work package that appears in `tasks/WORK_PACKAGES.md` / the task board with an owning Boss MUST be executed via a REAL `Agent({subagent_type, name, ...})` (or Workflow `agent()`) dispatch to that Boss, carrying a real `dispatch_id`. "Internal" / solo execution is reserved ONLY for: (a) the Lead's own orchestration glue — planning, merging outputs, writing the final report; (b) a genuinely trivial ask where NO work package was ever created (a one-line fix, a question, a single-file tweak below L1). It is NEVER a substitute for a Boss that owns a listed work package, regardless of how efficient solo execution feels. Small team ("smallest relevant team") means dispatching FEWER Bosses — never zero Bosses for real, assigned work.
 
@@ -1489,7 +1489,7 @@ END OF REAL BOSS AGENT-FILES + PER-BOSS MEMORY + ECC SECOND-OPINION ADD-ON.
 
 ---
 
-# ADD-ON: SCREENSHOT-LOOP FIDELITY + STACK-WEIGHT (black-box test, NovaDesk AI 2026-07-11)
+# ADD-ON: SCREENSHOT-LOOP FIDELITY + STACK-WEIGHT (black-box test, Helpdesk Assistant 2026-07-11)
 
 Lessons proven by running a full black-box `gebruik forge` build (a Claude.ai-style AI chat app) and observing everything. The Forge pipeline worked (autonomous contract-first decomposition, real Boss dispatches, and the QA-loop genuinely caught 5 real bugs the build agents missed). Three process fixes:
 

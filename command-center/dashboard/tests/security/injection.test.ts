@@ -532,7 +532,7 @@ const SYNTHETIC_LOCATED: LocatedClaude = {
   notes: [],
 };
 
-const PROJECT_PATH = 'C:\\Users\\test\\Documents\\ForgeProjecten\\demo';
+const PROJECT_PATH = 'C:\\Users\\test\\Documents\\ForgeProjects\\demo';
 
 function baseRequest(overrides: Partial<StartRunRequest> = {}): StartRunRequest {
   return {

@@ -46,7 +46,7 @@ function throws(fn) {
 
 const scratch = mkdtempSync(join(tmpdir(), 'forge-projects-smoke-'));
 const dataDir = join(scratch, 'workspace');
-const projectsRoot = join(scratch, 'ForgeProjecten');
+const projectsRoot = join(scratch, 'ForgeProjects');
 mkdirSync(projectsRoot);
 
 const store = openStore({ dataDir });

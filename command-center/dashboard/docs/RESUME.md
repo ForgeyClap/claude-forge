@@ -107,5 +107,5 @@ subscription. That is required by the mission but is not free. Mutation testing
 
 - Bridge stopped cleanly (no orphan node/Claude process, lock on
   `.forge-workspace` released).
-- 3 test projects created under `Documents/ForgeProjecten` during the e2e proof
+- 3 test projects created under `Documents/ForgeProjects` during the e2e proof
   were removed; that folder is empty again.

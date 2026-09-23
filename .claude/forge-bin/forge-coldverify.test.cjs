@@ -410,6 +410,16 @@ section('15 the one real writer', () => {
   const dashDir = path.join(CLAUDE_DIR, 'forge-dashboard');
   fs.mkdirSync(dashDir, { recursive: true });
   fs.copyFileSync(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), path.join(dashDir, 'log-event.cjs'));
+  // FAIL-CLOSED WRITER (Codex ronde-4 #2, 2026-08-06): log-event.cjs weigert nu terecht te appenden aan
+  // een log met een corrupte regel — precies de regel die de READER-fixture hierboven bewust seedde
+  // (die lezer-asserts zijn al gedraaid). Voor de SCHRIJF-tests hoort de log integer te zijn: haal de
+  // opzettelijk kapotte regel eruit. Dit versoepelt niets — appenden aan een beschadigde log MOET falen,
+  // en dat gedrag heeft zijn eigen test in log-event-concurrency.test.cjs.
+  {
+    const evFix = path.join(CLAUDE_DIR, 'forge-runs', RUN, 'events.jsonl');
+    const kept = fs.readFileSync(evFix, 'utf8').split('\n').map((l) => l.replace(/\r$/, '')).filter((l) => { const t2 = l.trim(); if (!t2) return false; try { JSON.parse(t2); return true; } catch { return false; } });
+    fs.writeFileSync(evFix, kept.join('\n') + '\n', 'utf8');
+  }
   const evFile = path.join(CLAUDE_DIR, 'forge-runs', RUN, 'events.jsonl');
   const before = fs.readFileSync(evFile, 'utf8');
   const r = C.reopen({ ticket_id: 'tk-prd-cold-4', projectRoot: TMP, confirm: true });

@@ -16,7 +16,7 @@ import { redact } from './redact.mjs';
 export const PROJECT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/;
 
 let projectsRootOverride = null;
-/** Test-only seam: point creation at an isolated temp dir instead of the real ForgeProjecten root. */
+/** Test-only seam: point creation at an isolated temp dir instead of the real ForgeProjects root. */
 export function _setProjectsRootForTests(dir) { projectsRootOverride = dir; }
 export function _resetProjectsRootForTests() { projectsRootOverride = null; }
 

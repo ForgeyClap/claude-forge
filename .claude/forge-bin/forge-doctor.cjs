@@ -1115,6 +1115,48 @@ function mcpDormancy(root, opts) {
     }
   }
 
+  // (a2) REGISTRY DRIFT (2026-08-04). The check above only ever read `.mcp.json`, which is exactly one of
+  // the places Claude Code takes MCP servers from — so servers enabled through `.claude/settings.local.json`
+  // (`enabledMcpjsonServers`) or `~/.claude.json` (global `mcpServers`) were invisible here. Measured on this
+  // machine: claude-flow (≈400 tools, incl. terminal_execute/http_fetch) and n8n were connected and in NO
+  // registry entry, so no tier and no per-Boss grant governed them — the tier-3 write gate hardened the day
+  // before applied only to servers that do not exist here. forge-mcp-gate.unregisteredServers() reads every
+  // real source; this stays ADVISORY and never auto-adds anything: inventing a tier for someone else's
+  // server would be the same fabricated authority the doctrine exists to prevent.
+  // Scope: the REAL machine only. Discovery reads machine-global sources (~/.claude.json,
+  // ~/.claude/settings.json) that exist regardless of which root is being checked, so running it against
+  // a hermetic fixture registry would report the machine's own servers as "missing" from a fixture — a
+  // finding about nothing. A caller that supplies its own registryPath is by definition testing the
+  // dormancy LOGIC on a fixture; drift is about reality, so it is checked only on the real config.
+  const isOwnProject = path.resolve(root) === path.resolve(__dirname, '..', '..');
+
+  // (a3) WAS THE GATE EVER REACHED? (broad Codex audit #1, wired 2026-08-05.) forge-mcp-gate enforces
+  // tiers, allow-lists and owner-verified tier-3 writes — but it is a library nobody must call, and
+  // `mcp_grant_validated` had ZERO occurrences across every run: the same shape as the run-contract gate,
+  // which existed and was tested for months while never once being evaluated. Forge cannot hook Claude
+  // Code's tool dispatcher, so this cross-references the PostToolUse tool ledger (which records every
+  // `mcp__*` call) against the gate's own decisions. A quiet machine reports "nothing to gate" — never
+  // "the gate works".
+  try {
+    const usage = require('./forge-mcp-usage.cjs');
+    const u = usage.check({ root });
+    if (u && u.ok === false) {
+      violations.push({ type: 'mcp_tool_used_without_gate', detail: u.reason, tools: (u.ungated || []).map((t) => t.tool + ' x' + t.count) });
+    }
+  } catch { /* sibling tool unavailable -> sub-check not run; never a fabricated all-clear */ }
+  try {
+    const gate = isOwnProject ? require('./forge-mcp-gate.cjs') : null;
+    if (gate && typeof gate.unregisteredServers === 'function') {
+      const drift = gate.unregisteredServers({ registryPath, projectRoot: root, homeDir: opts.homeDir });
+      for (const u of (drift.unregistered || [])) {
+        violations.push({
+          type: 'configured_server_not_in_registry', server: u.id, sources: u.sources,
+          detail: 'MCP server "' + u.id + '" is configured on this machine (' + u.sources.join(', ') + ') but is absent from mcp-registry.json — it is governed by no tier and no per-Boss grant',
+        });
+      }
+    }
+  } catch { /* sibling tool unavailable -> this sub-check is simply not run; never a fabricated all-clear */ }
+
   // (b)+(c) per-boss grant self-consistency
   const serverById = new Map(registry.servers.filter((s) => s && typeof s.id === 'string').map((s) => [s.id, s]));
   for (const [bossId, g] of Object.entries(grants.bosses)) {
@@ -1159,6 +1201,32 @@ function mcpDormancy(root, opts) {
  *  a genuine DISPATCHED Forge run, which always has a real run.json written by the orchestration layer.
  *  Without opts.requireDispatched, behavior is byte-for-byte the original "any real run dir" filter (must
  *  have a real run.json OR events.jsonl) — unchanged. */
+/** lastEventTimeMs(file) -> ms sinds epoch van het LAATSTE parseerbare event, of 0.
+ *  Leest alleen de staart (8 KiB): de rangschikking mag niet duurder worden naarmate een run groeit, en
+ *  het laatste event staat per definitie achteraan. Een half afgeknotte eerste regel in dat venster
+ *  parseert simpelweg niet en wordt overgeslagen — daarom van achter naar voren. */
+function lastEventTimeMs(file) {
+  let fd;
+  try { fd = fs.openSync(file, 'r'); } catch { return 0; }
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (!size) return 0;
+    const len = Math.min(size, 8192);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split(/\r?\n/).filter((l) => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const o = JSON.parse(lines[i]);
+        const t = Date.parse(o && o.timestamp);
+        if (Number.isFinite(t)) return t;
+      } catch { /* afgeknotte of corrupte regel — probeer de vorige */ }
+    }
+    return 0;
+  } catch { return 0; }
+  finally { try { fs.closeSync(fd); } catch { } }
+}
+
 function rankRunCandidates(root, opts) {
   opts = opts || {};
   const dir = path.join(claudeDir(root), 'forge-runs');
@@ -1185,9 +1253,18 @@ function rankRunCandidates(root, opts) {
       if (hasRunJson) mtimeMs = Math.max(mtimeMs, fs.statSync(runJsonPath).mtimeMs);
       mtimeMs = Math.max(mtimeMs, fs.statSync(runDir).mtimeMs);
     } catch { /* a stat race on an individual file never disqualifies the candidate — 0/partial mtime is still real evidence */ }
-    candidates.push({ name: e.name, mtimeMs });
+    /** REGRESSIE 2026-08-09: rangschikken op mtime laat ELKE metadata-write de geschiedenis herordenen.
+     *  forge-finalize's markRunFinalized() herschreef de run.json van een oude, groene run; die ene
+     *  aanraking maakte hem "laatste dispatched run", waardoor de doctor "run contract satisfied" meldde
+     *  terwijl de ECHT actieve run nog 5 verplichte regels miste — een reëel gat, onzichtbaar gemaakt door
+     *  boekhouding. forge-snapshot.cjs leerde dit al op 2026-08-01 en herrangschikte in zijn EIGEN code;
+     *  de gedeelde kern hield het gebrek, dus de volgende aanroeper erfde het. Daarom hier, één keer:
+     *  recentheid van een RUN is de recentheid van zijn WERK. Eventtijden worden één keer geschreven en
+     *  nooit herschreven; mtimes wel. Zonder eventlog blijft de mtime de eerlijke terugval. */
+    const activityMs = hasEvents ? lastEventTimeMs(eventsPath) : 0;
+    candidates.push({ name: e.name, mtimeMs, activityMs, rankMs: activityMs || mtimeMs });
   }
-  candidates.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+  candidates.sort((a, b) => (b.rankMs - a.rankMs) || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
   return candidates;
 }
 /** latestRunIdFor — the single most-recent run id under <root>/.claude/forge-runs/, ANY real run directory
@@ -1225,6 +1302,35 @@ function latestDispatchedRunIdFor(root) {
  *  read best-effort from that run's own run.json (`domain` field if present, else the free-text
  *  `project_type` — forge-runcontract.cjs's ruleApplies() degrades a domain it doesn't recognize to "no
  *  domain-scoped rule applies", never a fabricated match). */
+/** qualityCatalogDoctorCheck — ADVISORY. De domeincatalogus is de ENE verwachting; vier seams (router-
+ *  playbooks, required-evidence, intake-packs, domain-presets) zijn de werkelijkheid. Elke afwijking is
+ *  drift die hier zichtbaar wordt; tracked gaps (dashboard, tooling/meta) blijven benoemd, nooit stil.
+ *  Degradeert eerlijk wanneer de quality-module ontbreekt (kale installatie zonder Quality-laag). */
+function qualityCatalogDoctorCheck(root) {
+  let Q = null;
+  try { Q = require(path.join(claudeDir(root), 'forge-bin', 'forge-quality.cjs')); } catch { }
+  /** F-09 (Codex batch-1-review): 'module ontbreekt' was ok:true — maar de sync-manifest SHIPT deze
+   *  module, dus afwezigheid is een echte installatiefout, geen optionele feature. Fail-closed. */
+  if (!Q || typeof Q.catalogDrift !== 'function') return { ok: false, reason: 'forge-quality.cjs ontbreekt of laadt niet, terwijl de sync-manifest hem verwacht — de installatie is incompleet' };
+  try {
+    const d = Q.catalogDrift(root);
+    /** F-29 (Codex eindreview): het eindoordeel telt VIER afwijkingsvelden mee (missing, extra,
+     *  not_expected, stale_tracked) maar de reason noemde er maar twee — drift door een verouderde
+     *  tracked gap of een onverwachte preset gaf ok:false met een LEGE reden, dus geen
+     *  herstelrichting. Alle vier velden dragen nu bij aan de probleemselectie en de reden. */
+    const problemen = d.seams.filter((s2) => (s2.missing_in_seam || []).length || (s2.extra_in_seam || []).length || (s2.not_expected || []).length || (s2.stale_tracked || []).length);
+    const beschrijf = (s2) => {
+      const delen = [];
+      if ((s2.missing_in_seam || []).length) delen.push('missing=' + JSON.stringify(s2.missing_in_seam));
+      if ((s2.extra_in_seam || []).length) delen.push('extra=' + JSON.stringify(s2.extra_in_seam));
+      if ((s2.not_expected || []).length) delen.push('not_expected=' + JSON.stringify(s2.not_expected));
+      if ((s2.stale_tracked || []).length) delen.push('stale_tracked=' + JSON.stringify(s2.stale_tracked) + ' (de gap-notitie beschrijft een opgeloste werkelijkheid — ruim de known_gap op)');
+      return s2.seam + ': ' + delen.join(' ');
+    };
+    return { ok: d.ok, reason: d.ok ? '' : problemen.map(beschrijf).join(' · '), seams: d.seams.length, domains: d.domains_total };
+  } catch (e) { return { ok: false, reason: 'catalogDrift wierp: ' + e.message }; }
+}
+
 function runContractDoctorCheck(root) {
   if (!runContractTool) return { ok: true, reason: 'forge-runcontract.cjs module not available (run-contract check unavailable)', run_id: null };
   const runId = latestDispatchedRunIdFor(root);
@@ -1443,7 +1549,42 @@ function detectVendorPin(text) {
   return { source: source[1], pin: pin[1] };
 }
 
-/** skillHygiene(root) -> {ok, checked, vendored_exempt, skills:[{skill, ok, issues:[], vendored?, vendored_style?}]}
+/** generatedPathBasenames(root) -> Set<'naam.ext'> — bestandsnamen die onze EIGEN code wegschrijft.
+ *
+ *  MEASURED FALSE POSITIVE (2026-08-09, echte doctor-run): `skill-hygiene: forge-snapshot (1 dangling
+ *  reference(s): .claude/.forge-snapshot-due.json)`. Dat bestand wordt door forge-snapshot-marker.cjs
+ *  GESCHREVEN en door de SessionStart-hook geconsumeerd — afwezig zijn is zijn normale toestand. Je eigen
+ *  outputpad documenteren is geen kapotte link, en een advisory die volloopt met valse positieven wordt
+ *  niet meer gelezen — precies zo mist hij straks een ECHTE dangling reference.
+ *
+ *  Bewust op BASENAME: de schrijvende code stelt het pad samen (`path.join(dueDir, '.forge-snapshot-due.json')`),
+ *  dus het volledige pad bestaat nergens als literal. Om dat niet te laten ontsporen tot "elke bestandsnaam
+ *  die ergens in een schrijvend bestand voorkomt", tellen alleen literals op (of vlak onder) een regel met een
+ *  echte schrijf-API. Testbestanden tellen niet mee: fixtures schrijven van alles en zijn geen bron van waarheid. */
+const WRITE_API_RE = /\b(writeFileSync|appendFileSync|writeAtomic|createWriteStream|copyFileSync)\b/;
+const FILENAME_LITERAL_RE = /['"`](\.?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)['"`]/g;
+function generatedPathBasenames(root) {
+  const out = new Set();
+  for (const sub of ['forge-bin', 'forge-dashboard', 'hooks']) {
+    let files = [];
+    try { files = listByExt(path.join(claudeDir(root), sub), ['.cjs', '.mjs', '.js']); } catch { continue; }
+    for (const f of files) {
+      if (/\.test\.(cjs|mjs|js)$/.test(f)) continue;
+      let lines;
+      try { lines = fs.readFileSync(f, 'utf8').split(/\r?\n/); } catch { continue; }
+      for (let i = 0; i < lines.length; i++) {
+        if (!WRITE_API_RE.test(lines[i])) continue;
+        const window = lines[i] + '\n' + (lines[i + 1] || ''); // een gewrapte aanroep zet het pad op de volgende regel
+        FILENAME_LITERAL_RE.lastIndex = 0;
+        let m;
+        while ((m = FILENAME_LITERAL_RE.exec(window)) !== null) out.add(m[1]);
+      }
+    }
+  }
+  return out;
+}
+
+/** skillHygiene(root) -> {ok, checked, vendored_exempt, skills:[{skill, ok, issues:[], vendored?, vendored_style?, generated_refs?}]}
  *  ADVISORY-ONLY (see header doc).
  *  Unlike skill_evals above (opt-in evals.json), EVERY skill dir under .claude/skills/ that has a SKILL.md
  *  is IN SCOPE here — there is no opt-out.
@@ -1470,6 +1611,7 @@ function detectVendorPin(text) {
 function skillHygiene(root) {
   const cd = claudeDir(root);
   const skills = [];
+  const generatedNames = generatedPathBasenames(root); // één keer scannen, niet per skill
   for (const rel of listSkillFiles(root)) {
     const skillFile = path.join(cd, rel.split('/').join(path.sep));
     const skillDir = path.dirname(skillFile);
@@ -1494,15 +1636,21 @@ function skillHygiene(root) {
     const lineCount = text.split(/\r?\n/).length;
     if (lineCount > SKILL_BODY_MAX_LINES) styleIssue('SKILL.md is ' + lineCount + ' lines (max ' + SKILL_BODY_MAX_LINES + ')');
     const dangling = [];
+    const generatedRefs = [];
     for (const r of extractSkillPathRefs(text)) {
       if (!r.anchored) continue;
       const resolved = r.ref.startsWith('.claude/') ? path.resolve(root, r.ref) : path.resolve(skillDir, r.ref);
       let exists = false;
       try { exists = fs.statSync(resolved).isFile(); } catch { exists = false; }
-      if (!exists) dangling.push(r.ref);
+      if (exists) continue;
+      // afwezig én door onze eigen code geschreven = runtime-marker, geen kapotte link. Herclassificeren,
+      // niet verzwijgen: hij blijft zichtbaar onder generated_refs zodat de informatie niet verdwijnt.
+      if (generatedNames.has(path.basename(r.ref))) generatedRefs.push(r.ref);
+      else dangling.push(r.ref);
     }
     if (dangling.length) issues.push(dangling.length + ' dangling reference(s): ' + dangling.join(', '));
     const entry = { skill: skillId, ok: issues.length === 0, issues };
+    if (generatedRefs.length) entry.generated_refs = generatedRefs;
     if (vendored) { entry.vendored = vendored; entry.vendored_style = vendoredStyle; }
     skills.push(entry);
   }
@@ -1643,6 +1791,7 @@ function runDoctor(root) {
       // V9-INTEGRATE (2026-07-22): forge-runcontract.cjs wired in, advisory-only — see runContractDoctorCheck()
       // above for why this specific check is not yet safe to enforce.
       run_contract: runContractDoctorCheck(root),
+      quality_catalog: qualityCatalogDoctorCheck(root),
       // wp-skill-evals (2026-07-31): forge-skill-evals.cjs wired in, advisory-only — see
       // skillEvalsDoctorCheck() above for why this FOUNDATION piece is not yet safe to enforce.
       skill_evals: skillEvalsDoctorCheck(root),
@@ -1782,6 +1931,7 @@ function printSummary(rep) {
     if (cm.sync_completeness && !cm.sync_completeness.ok) parts.push('sync-completeness: ' + (cm.sync_completeness.missing ? cm.sync_completeness.missing.length + ' file(s) not in FILES manifest' : (cm.sync_completeness.reason || 'unavailable')));
     if (cm.memory_discipline && !cm.memory_discipline.ok) parts.push('memory-discipline: ' + (cm.memory_discipline.reason || 'unfilled placeholder(s)'));
     if (cm.mcp_dormancy && !cm.mcp_dormancy.ok) parts.push('mcp-dormancy: ' + (cm.mcp_dormancy.violations ? cm.mcp_dormancy.violations.length + ' violation(s)' : (cm.mcp_dormancy.reason || 'unavailable')));
+    if (cm.quality_catalog && !cm.quality_catalog.ok) parts.push('quality-catalog: ' + (cm.quality_catalog.reason || 'drift'));
     if (cm.run_contract && !cm.run_contract.ok) parts.push('run-contract: ' + (cm.run_contract.missing ? cm.run_contract.missing.length + ' rule(s) missing on latest dispatched run ' + (cm.run_contract.run_id || '') : (cm.run_contract.reason || 'unavailable')));
     if (cm.skill_evals && !cm.skill_evals.ok) {
       const se = cm.skill_evals;
@@ -1831,6 +1981,8 @@ module.exports = {
   installationProfile, detectVendorPin,
   // "pakket 2" (2026-08-01) — forge-runwatch.cjs wired in as an automatic advisory (see doc comment above)
   runLiveness, LIVENESS_WINDOW_MS, LIVENESS_RUNNING_STATUSES,
+  // F-23 (Codex herreview quality-laag, 2026-08-13) — geëxporteerd zodat de quality-suite dit als GEDRAG test (kale root => ok:false), niet als bron-regex
+  qualityCatalogDoctorCheck,
   // 2026-08-01 — forge-contextbudget.cjs wired in as an automatic advisory (see contextBudgetCheck above)
   contextBudgetCheck,
 };

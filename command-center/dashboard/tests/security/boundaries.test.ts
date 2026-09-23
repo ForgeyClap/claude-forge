@@ -69,7 +69,7 @@ beforeAll(() => {
   // realpath first: on Windows `os.tmpdir()` is often an 8.3 short path, and a
   // containment answer computed against a short path is not an answer.
   base = mkdtempSync(path.join(realpathSync.native(os.tmpdir()), 'forge-boundaries-'));
-  projectsRoot = path.join(base, 'ForgeProjecten');
+  projectsRoot = path.join(base, 'ForgeProjects');
   projectA = path.join(projectsRoot, 'alpha');
   projectABackup = path.join(projectsRoot, 'alpha-backup');
   projectB = path.join(projectsRoot, 'beta');

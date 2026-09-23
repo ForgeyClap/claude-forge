@@ -41,6 +41,60 @@ forge_have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Seed the project-root files Forge needs but the .claude payload does not carry:
+#   CLAUDE.md   — created ONLY when absent (your own file is never touched)
+#   .gitignore  — missing Forge lines appended; existing lines left alone
+# Both operations are idempotent: running the installer twice changes nothing the second time.
+forge_seed_project_root() {
+  seed_project="$1"
+
+  if [ -f "$seed_project/CLAUDE.md" ]; then
+    forge_log "  kept:  $seed_project/CLAUDE.md (already exists — not touched)"
+  elif [ -f "$SOURCE_DIR/templates/project-CLAUDE.md" ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      forge_log "  would write: $seed_project/CLAUDE.md"
+    else
+      cp -- "$SOURCE_DIR/templates/project-CLAUDE.md" "$seed_project/CLAUDE.md"
+      forge_log "  wrote: $seed_project/CLAUDE.md (project brain — edit it, it is yours)"
+    fi
+  fi
+
+  seed_snippet="$SOURCE_DIR/templates/gitignore.snippet"
+  [ -f "$seed_snippet" ] || return 0
+  seed_gi="$seed_project/.gitignore"
+  seed_added=0
+  # Append only the lines that are genuinely absent. Comments and blank lines are copied
+  # along with the first missing rule so the block stays readable.
+  while IFS= read -r seed_line || [ -n "$seed_line" ]; do
+    case "$seed_line" in
+      ''|'#'*) continue ;;
+    esac
+    if [ -f "$seed_gi" ] && grep -qxF -- "$seed_line" "$seed_gi" 2>/dev/null; then
+      continue
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+      seed_added=$((seed_added + 1))
+      continue
+    fi
+    if [ "$seed_added" = "0" ]; then
+      { [ -f "$seed_gi" ] && [ -s "$seed_gi" ] && printf '\n'; } >> "$seed_gi" 2>/dev/null || true
+      printf '%s\n' "# --- Forge (added by the claude-forge installer) ---" >> "$seed_gi"
+    fi
+    printf '%s\n' "$seed_line" >> "$seed_gi"
+    seed_added=$((seed_added + 1))
+  done < "$seed_snippet"
+
+  if [ "$seed_added" -gt 0 ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      forge_log "  would add: $seed_added line(s) to $seed_gi"
+    else
+      forge_log "  wrote: $seed_gi (+$seed_added Forge line(s); your existing rules kept)"
+    fi
+  else
+    forge_log "  kept:  $seed_gi (all Forge lines already present)"
+  fi
+}
+
 forge_usage() {
   cat <<'USAGE'
 claude-forge installer
@@ -234,6 +288,8 @@ main() {
         exit 1
       fi
 
+      # NOTE: SHA256SUMS is only present on tagged release archives. When it is absent (e.g. a plain
+      # git clone) the download is simply not hash-verified — that is stated, never silently skipped.
       if [ -f "$SCRIPT_DIR/SHA256SUMS" ] && forge_have_cmd sha256sum; then
         expected=$(grep "claude-forge.tar.gz" "$SCRIPT_DIR/SHA256SUMS" 2>/dev/null | awk '{print $1}' || true)
         if [ -n "$expected" ]; then
@@ -334,6 +390,13 @@ main() {
     else
       PROJECT_OK="0"
     fi
+    # Seed the two project-root files Forge documents but the payload copy never delivered.
+    # Added 2026-08-13 after a real fresh-install measurement: without these, three suites
+    # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and
+    # the very first `forge-doctor` a new user runs reports FAILURES.
+    # Both are merge-safe: an existing CLAUDE.md is never touched, and .gitignore only ever
+    # gets lines it does not already have.
+    forge_seed_project_root "$PROJECT_DIR"
   fi
 
   # -------------------------------------------------------------------------

@@ -853,7 +853,7 @@ export interface CreateProjectResponse {
  * The real New Project flow, wired to the contract.
  *
  * The projects root is created HERE rather than inside the flow, so that
- * bringing `Documents/ForgeProjecten` into existence is one auditable act with
+ * bringing `Documents/ForgeProjects` into existence is one auditable act with
  * its own ledger line, instead of a side effect buried in step 3. The flow is
  * then called with `ensureRoot: false`, because by the time it runs the root
  * either exists or the caller explicitly said not to make one.

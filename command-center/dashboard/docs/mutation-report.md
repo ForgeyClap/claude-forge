@@ -70,7 +70,7 @@ Three test files are deliberately excluded from this run's sandbox (`ignorePatte
    normal `pool: 'forks'` vitest run, but `@stryker-mutator/vitest-runner` unconditionally forces
    `pool: 'threads'` (see [obstacle 1](#obstacle-1-stryker-forces-worker_threads-which-breaks-one-env-based-test)); under `threads`, a
    worker's `process.env` write does not reach the native `os.homedir()` binding, so the test
-   silently resolves the *real* `Documents\ForgeProjecten` on this machine instead of its temp
+   silently resolves the *real* `Documents\ForgeProjects` on this machine instead of its temp
    dir and fails with `ENOENT`. Confirmed: this exact test passes in plain `npm test`.
 2. **`tests/unit/no-runtime-contact.test.ts`** and **`tests/unit/runtime-declarations.test.ts`** —
    both `readFileSync` every `src/**/*.ts` file and regex-scan the raw text for banned patterns
@@ -254,7 +254,7 @@ default `pool: 'forks'`, but under `worker_threads` the write does not reach the
 First dry run failed with:
 
 ```
-ENOENT: no such file or directory, scandir 'C:\...\Temp\forge-idem-Gtwo0f\home\Documents\ForgeProjecten'
+ENOENT: no such file or directory, scandir 'C:\...\Temp\forge-idem-Gtwo0f\home\Documents\ForgeProjects'
 ```
 
 **Fix:** excluded that one test file via `ignorePatterns` (see [Scope](#scope-what-this-number-is-and-is-not) item 1).

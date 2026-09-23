@@ -144,6 +144,18 @@
       "cannot_override": true
     },
     {
+      "id": "independent-verification",
+      "rule": "A completion claim must be confirmed by someone OTHER than the agent that did the work, via ONE route: a review_completed (or codex_review_completed) logged by a registered agent who did no work in this run, causally linked to that same agent's earlier review_started with the same review_id, carrying an explicitly positive review_verdict, bound to the exact commit + run state (subject_log_hash == prev_hash) + evidence digest, with every gate green and no work logged after it. NOTE: this separation is by agent LABEL, not by runtime principal — see OWNER-GATED.md.",
+      "trigger": "complexity:>=L2",
+      "check": {
+        "type": "independent-verification"
+      },
+      "severity": "block",
+      "override": "UN-OVERRIDABLE — self-approval is exactly what this rule exists to prevent; an owner_override would defeat it",
+      "source": "research-lane A 2026-08-09 (RED-baseline: een Boss keurde zijn eigen werk goed en kreeg CONTRACT OK) + arXiv:2410.21819 self-preference bias + Anthropic subagent-richtlijn (context-geisoleerde reviewer)",
+      "cannot_override": true
+    },
+    {
       "id": "report-present",
       "rule": "A real final-report artifact must actually exist in the run's own directory before the run is called done.",
       "trigger": "always",

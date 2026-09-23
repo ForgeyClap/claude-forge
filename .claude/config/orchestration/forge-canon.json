@@ -1,0 +1,47 @@
+{
+  "_doc": "FORGE CANON (audit G7, 2026-08-06) — DE machineleesbare bron voor versie, paden, dashboardstatus en installerregels. Aanleiding: vier gedocumenteerde tegenspraken in de governance-tekst (retired server.cjs vs wrappers/npm-scripts die hem starten; Phase 8 'maak geen DASHBOARD_STATE' vs Phase 9 'DASHBOARD_STATE moet bestaan'; kapotte .Codex-padspiegels; v7/v8/v10 append-only banners die verouderde fases bindend hielden naast latere edits). PRECEDENTIE: waar proza (CLAUDE.md/AGENTS.md/skills/wrappers) en deze canon elkaar tegenspreken, WINT DEZE CANON — proza hoort hiernaar te verwijzen of eruit gegenereerd te worden. Wijzigingen aan deze canon zijn gewone reviewbare edits (geen append-only-fictie).",
+  "version": {
+    "forge": "v10",
+    "note": "sectienamen als 'Forge Studio v7' in oudere skill-fases zijn HISTORISCH; het systeemgedrag is v10 + deze canon"
+  },
+  "paths": {
+    "agent_tree": ".claude",
+    "runs": ".claude/forge-runs",
+    "event_writer": ".claude/forge-dashboard/log-event.cjs",
+    "codex_mirrors": {
+      "status": "generated",
+      "truth": ".claude",
+      "note": "AGENTS.md/.agents/.codex zijn (deels automatisch gegenereerde) spiegels; elke .Codex/-padverwijzing is een kapotte vervangspiegel van .claude — bij twijfel is .claude de waarheid"
+    }
+  },
+  "dashboard": {
+    "authoritative": "command-center (Forge Command Center, 127.0.0.1:4100, supervisor.mjs als enige herstart-autoriteit)",
+    "control_center_server_cjs": {
+      "status": "retired",
+      "auto_start": "forbidden",
+      "wrapper_fallback": "forbidden — een wrapper mag server.cjs NOOIT automatisch starten als command-center ontbreekt; hij meldt eerlijk dat het Command Center niet aanwezig is",
+      "explicit_owner_request_only": "een expliciete owner-vraag ('legacy dashboard') is de ENIGE toegestane startroute",
+      "log_event_cjs": "blijft de per-project event-writer (in actieve dienst, geen onderdeel van de retirement)"
+    },
+    "dashboard_state_json": {
+      "new_installs": "never-create",
+      "existing_legacy": "read-only toegestaan (lezers mogen een bestaand bestand tonen); ontbreken is NOOIT een installatiefout",
+      "readers": [".claude/commands/forge.md (/forge status)", ".claude/forge-bin/forge-mcp.cjs", ".claude/forge-bin/forge-registry.cjs"]
+    }
+  },
+  "installer": {
+    "npm_forge_dashboard_script": "forbidden — geen package.json-script dat server.cjs start; de oude Phase-7-instructie is hierbij vervallen",
+    "phase_9_dashboard_state_check": "vervallen — een verse install bevestigt juist de AFWEZIGHEID van DASHBOARD_STATE.json (Phase 8 wint)",
+    "safe_installer": "forge-sync install (backup + doctor-validatie in het doelproject + rollback) is de enige vloot-route"
+  },
+  "append_only_rules": {
+    "policy": "superseded-by-canon",
+    "note": "de 'nothing above removed'-banners in forge-core SKILL.md maken oudere fases NIET bindend waar latere in-place edits of deze canon ze vervangen; de laatste edit + deze canon winnen"
+  },
+  "done_verdict": {
+    "authoritative": ".claude/forge-bin/forge-finalize.cjs (run-finalized.json receipt tegen een eventlog-digest)",
+    "completion_path": "node .claude/forge-bin/forge-runcontract.cjs check --run <id> --log-event --finalize (Codex r4 #7, 2026-08-07: het contract en de finalize-receipt in EEN stap; exit 0 alleen met receipt)",
+    "receipt_semantics": "de receipt pint digest+bytes van de VOLLEDIGE log inclusief exact een run_finalized-slotevent; check() = exacte match, elke afwijking = STALE (r4 #9/#10)",
+    "note": "runwatch/runcontract/verify/trace/tickets/budget/dashboard zijn voortgangsweergaven; het EINDverdict is de finalize-receipt (audit G4)"
+  }
+}

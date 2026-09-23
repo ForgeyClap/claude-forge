@@ -480,7 +480,7 @@ function rankByWorkRecency(root, ranked, opts) {
  *  Two things this criterion deliberately does NOT do, both decided from the real forge-runs/ data:
  *   - it does NOT require a run.json. Measured on 2026-08-01: 6 of the 10 most recent real work runs
  *     (07-26-command-center, 07-27-cc-wp8-13, 07-30-discord, 07-31-ultieme-forge, 07-25-full-audit,
- *     07-11-novadesk-ai) have NO run.json, so requiring one would skip the newest genuine work — the exact
+ *     07-11-helpdesk-ai) have NO run.json, so requiring one would skip the newest genuine work — the exact
  *     class of bug being fixed. A run.json is a positive signal, never a gate.
  *   - it does NOT blacklist run-id name patterns (`doctor-selfcheck-*` and friends). A name rule would only
  *     describe the one dir that happened to break us today; a content rule states what the snapshot actually

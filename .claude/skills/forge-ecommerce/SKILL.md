@@ -5,7 +5,7 @@ description: Forge playbook for e-commerce and cashflow shops. Use for shop, sto
 
 # Forge playbook — E-commerce / store / digital products
 
-Storefront UI defers to `forge-website`; anything that charges a card defers to **`forge-payments`** (this playbook never re-implements card handling). This file owns the commerce-specific concerns: catalog, cart, inventory correctness, orders, and connectors. Forge context: CASHFLOWWW / Moneymaker / Etsy-style shops.
+Storefront UI defers to `forge-website`; anything that charges a card defers to **`forge-payments`** (this playbook never re-implements card handling). This file owns the commerce-specific concerns: catalog, cart, inventory correctness, orders, and connectors. Forge context: a cashflow or digital-goods shop / Etsy-style shops.
 
 ## Hard rules
 - **Real product/listing data with honest empty states.** No lorem/placeholder products passed off as a real catalog; an empty catalog renders a real empty state, never fake inventory or fabricated sales/metrics.

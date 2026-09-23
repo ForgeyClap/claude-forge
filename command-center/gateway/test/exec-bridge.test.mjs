@@ -657,7 +657,7 @@ const REAL_TOOL_USE_EDIT = {
   name: 'Edit',
   input: {
     replace_all: false,
-    file_path: 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\littlebazzar\\serve.mjs',
+    file_path: 'C:\\Users\\YOU\\Documents\\ForgeProjects\\littlebazzar\\serve.mjs',
     old_string: "location.replace('/');",
     new_string: "location.replace('/'+location.hash);",
   },
@@ -669,7 +669,7 @@ const REAL_TOOL_USE_WRITE = {
   id: 'toolu_01CkaBSNLzuFQeRY4Tgt2DyQ',
   name: 'Write',
   input: {
-    file_path: 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\test\\index.html',
+    file_path: 'C:\\Users\\YOU\\Documents\\ForgeProjects\\test\\index.html',
     content: '<!doctype html>\n<html lang="en">\n<head><meta charset="utf-8"><title>LittleBazzar</title></head>\n<body></body>\n</html>\n',
   },
   caller: { type: 'direct' },
@@ -720,7 +720,7 @@ test('TOOL ACTIVITY: _extractFileEditForTests reads a real Edit tool_use block\'
   const edit = _extractFileEditForTests(REAL_TOOL_USE_EDIT);
   assert.deepEqual(edit, {
     tool: 'Edit',
-    file_path: 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\littlebazzar\\serve.mjs',
+    file_path: 'C:\\Users\\YOU\\Documents\\ForgeProjects\\littlebazzar\\serve.mjs',
     old_string: "location.replace('/');",
     new_string: "location.replace('/'+location.hash);",
   });
@@ -729,7 +729,7 @@ test('TOOL ACTIVITY: _extractFileEditForTests reads a real Edit tool_use block\'
 test('TOOL ACTIVITY: _extractFileEditForTests reads a real Write tool_use block\'s file_path/content (no old_string/new_string — Write has no "before")', () => {
   const edit = _extractFileEditForTests(REAL_TOOL_USE_WRITE);
   assert.equal(edit.tool, 'Write');
-  assert.equal(edit.file_path, 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\test\\index.html');
+  assert.equal(edit.file_path, 'C:\\Users\\YOU\\Documents\\ForgeProjects\\test\\index.html');
   assert.match(edit.content, /<title>LittleBazzar<\/title>/);
   assert.equal('old_string' in edit, false);
   assert.equal('new_string' in edit, false);

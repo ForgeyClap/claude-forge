@@ -9,7 +9,7 @@ import { Router } from './router.js';
 import { AuditLedger } from './audit.js';
 
 const config = loadConfig();
-const baseDir = process.argv[2] ?? 'C:\\Users\\YOU\\Documents\\ForgeProjecten';
+const baseDir = process.argv[2] ?? 'C:\\Users\\YOU\\Documents\\ForgeProjects';
 const CATEGORY_NAME = '🔨 FORGE PROJECTS';
 
 const projectDirs = fs

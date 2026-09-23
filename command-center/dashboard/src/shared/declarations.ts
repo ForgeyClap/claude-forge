@@ -92,7 +92,7 @@ export interface ProjectsRootObservation {
   readonly documentsDirExists: boolean;
   /** `fallback-unverified` means the location is a convention, not a finding. */
   readonly source: string;
-  /** Whether `<Documents>/ForgeProjecten` itself is currently a directory. */
+  /** Whether `<Documents>/ForgeProjects` itself is currently a directory. */
   readonly projectsRootExists: boolean;
 }
 

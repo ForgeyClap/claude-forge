@@ -32,7 +32,7 @@ REM WP7d: if THIS project has a Command Center (command-center/gateway/bin.mjs),
 REM real dashboard — start it (port 4100) instead of the old Control Center. If it exists but
 REM dashboard/dist hasn't been built yet, say so honestly rather than failing silently. If
 REM command-center/ doesn't exist at all (most projects today, no command-center yet), fall back
-REM to the original per-project Control Center exactly as before. This fallback is MANDATORY:
+REM to the original per-project Control Center exactly as before. Deze fallback is VERVALLEN (audit G7):
 REM this wrapper syncs to every other Forge project via the template, most of which have no
 REM command-center. Old Control Center stays reachable regardless via "legacy-dashboard".
 if exist "%CC_GW%" (
@@ -42,7 +42,10 @@ if exist "%CC_GW%" (
     echo Command Center found but not built yet. Run: cd command-center\dashboard ^&^& npm install ^&^& npm run build
   )
 ) else (
-  "%NODE_CMD%" "%DASH%\server.cjs"
+  REM AUDIT G7 (2026-08-06): de auto-fallback naar de RETIRED server.cjs is verwijderd — de
+  REM canon (config/orchestration/forge-canon.json) verbiedt elke automatische start; alleen een
+  REM expliciete owner-vraag (legacy-dashboard) mag hem nog starten.
+  echo Forge Command Center niet aanwezig in dit project. De oude per-project Control Center (server.cjs) is RETIRED en start NOOIT automatisch (forge-canon.json). Vraag de owner expliciet om een legacy dashboard, of gebruik het centrale Command Center op 127.0.0.1:4100.
 )
 goto end
 :logevent

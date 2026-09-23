@@ -408,7 +408,7 @@ async function cmdTicket() {
 
 // pause/resume: halt or restart the AGENTS without touching the runtime — the dashboard stays up.
 // WHY: killing the runtime to stop an agent stampede (heartbeats auto-run agents ~60min after the
-// runtime starts) took the user's dashboard down (Moneymaker 2026-07-03). Agents are the thing to
+// runtime starts) took the user's dashboard down (an e-commerce project 2026-07-03). Agents are the thing to
 // halt; the runtime/dashboard should stay visible. `pause` = all company agents (or --agent <slug>).
 async function companyAgents() {
   const b = readBinding();

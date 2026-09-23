@@ -9,9 +9,24 @@ before intake — never re-derive this ordering elsewhere; point back to this fi
 1. **Hard gates** — `.claude/config/orchestration/hard-gates.json`, read via
    `.claude/forge-bin/forge-actiongate.cjs::classify()`. An irreversible action (deploy, git-push,
    spend, DNS change, prod-activate, credential attach/rotate, workflow-activate, outbound SMS) or a
-   project-isolation escape (write-outside-root) **always** stops the run, regardless of every layer
-   below — including a standing rule, an owner-profile pref, or the current owner instruction. This is
-   also tier 2 of `.claude/forge-bin/forge-autonomy.cjs::decide()`.
+   project-isolation escape (write-outside-root) stops the run **whenever the classifier fires**,
+   regardless of every layer below — including a standing rule, an owner-profile pref, or the current
+   owner instruction. This is also tier 2 of `.claude/forge-bin/forge-autonomy.cjs::decide()`.
+
+   **What "hard" does and does not mean** (reconciled 2026-08-03, after the audit sweep found this
+   file and `hard-gates.json` contradicting each other — one promising an action "always" stops, the
+   other calling the same gates "ADVISORY … never blocking"; an agent reading only one of them drew
+   the wrong conclusion either way):
+   - **Hard = highest precedence, and it interrupts.** When the classifier fires, no lower layer —
+     not a standing rule, not a stored pref, not autonomy mode, not even an explicit current
+     instruction — may wave it through. That part of "always" is real, and it is what tier 1 means.
+   - **Hard ≠ complete coverage, and ≠ technical enforcement.** The gate is a REGEX CLASSIFIER over
+     an action's text, not a kernel that can physically prevent a command. It has deliberate,
+     documented non-coverage (see `hard-gates.json`'s `_not_caught` block, which lists exactly what
+     it does not see). An action it does not recognise is simply not gated — so the absence of an
+     interrupt is never evidence that an action was safe.
+   The honest one-line summary, and the sentence both files must agree on: **a fired gate always
+   interrupts and cannot be overridden; an unfired gate proves nothing.**
 2. **Current owner instruction** — whatever the owner explicitly asked for in THIS turn/session always
    outranks a stored default. A stored pref/rule pre-fills and advises; it never silently overrides an
    explicit, current, in-scope owner instruction. (It does not outrank tier 1 — an explicit instruction

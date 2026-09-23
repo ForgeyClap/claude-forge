@@ -1298,6 +1298,16 @@ t('applyDoctorOverride: a failing check with NO matching override entry is retur
 // --- runContractDoctorCheck() / latestRunIdFor() — direct pure-function proof (real forge-runs fixtures) ---
 t('latestRunIdFor: a fresh project with no forge-runs dir returns null', D.latestRunIdFor(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-norunsdir-'))) === null);
 const RC_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-runcontract-'));
+/** R6-06 (zesde Codex-herreview): `opts.root` stuurt sinds die fix ook de REGELSET — een run uit root B
+ *  mag niet tegen de regels van installatie A worden beoordeeld. Deze fixture leunde op precies die
+ *  fallback (temp-root zonder regelbestand), dus hij brengt zijn regels nu zelf mee, zoals een echt
+ *  project dat ook doet. */
+const seedRules = (root) => {
+  fs.mkdirSync(path.join(root, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'),
+    path.join(root, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'));
+};
+seedRules(RC_ROOT);
 fs.mkdirSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-01-01-old'), { recursive: true });
 fs.mkdirSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-06-01-newest'), { recursive: true });
 fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-01-01-old', 'events.jsonl'), '');
@@ -1310,6 +1320,41 @@ fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-01-01-o
 fs.writeFileSync(path.join(RC_ROOT, '.claude', 'forge-runs', 'forge-2026-06-01-newest', 'run.json'), '{}');
 t('latestRunIdFor: picks the lexically-newest run id, not just readdir order', D.latestRunIdFor(RC_ROOT) === 'forge-2026-06-01-newest');
 t('latestDispatchedRunIdFor: agrees with latestRunIdFor when every candidate genuinely has a real run.json', D.latestDispatchedRunIdFor(RC_ROOT) === 'forge-2026-06-01-newest');
+/** MEASURED REGRESSION (2026-08-09, on this very project): ranking by file mtime means ANY metadata write
+ *  reorders history. forge-finalize's new markRunFinalized() rewrote an old run's run.json; that single
+ *  touch promoted a long-finished (green) run to "latest dispatched run", so runContractDoctorCheck
+ *  reported "run contract satisfied" while the genuinely active run still had 5 required rules missing —
+ *  a real gap made INVISIBLE by a bookkeeping write. forge-snapshot.cjs already learned this exact lesson
+ *  on 2026-08-01 and re-ranked by work recency in ITS OWN code; the shared core kept the flaw, so the next
+ *  caller inherited it. Recency of a RUN is the recency of its WORK: event timestamps are written once and
+ *  never rewritten, file mtimes are not. */
+{
+  const R = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rank-mtime-'));
+  const mk = (naam, laatsteEventISO) => {
+    const d = path.join(R, '.claude', 'forge-runs', naam);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'run.json'), JSON.stringify({ run_id: naam, status: 'completed' }));
+    fs.writeFileSync(path.join(d, 'events.jsonl'), JSON.stringify({ event_type: 'run_started', timestamp: laatsteEventISO }) + '\n');
+    return d;
+  };
+  const oud = mk('forge-2026-01-01-oud', '2026-01-01T10:00:00.000Z');
+  mk('forge-2026-08-01-actief', '2026-08-01T10:00:00.000Z');
+  t('rankRunCandidates: het echte werk bepaalt de volgorde, niet de bestandsdatum',
+    D.latestDispatchedRunIdFor(R) === 'forge-2026-08-01-actief');
+  // nu exact de regressie: alleen de METADATA van de oude run aanraken, geen enkel nieuw event
+  fs.writeFileSync(path.join(oud, 'run.json'), JSON.stringify({ run_id: 'forge-2026-01-01-oud', status: 'completed', finalized_at: 'nu' }));
+  t('rankRunCandidates: een metadata-write op een OUDE run promoveert hem NIET tot nieuwste',
+    D.latestDispatchedRunIdFor(R) === 'forge-2026-08-01-actief', 'gekozen: ' + D.latestDispatchedRunIdFor(R));
+  t('rankRunCandidates: de activiteitstijd is zichtbaar naast de mtime (controleerbaar, niet verstopt)',
+    D.rankRunCandidates(R, { requireDispatched: true }).every((c) => Number.isFinite(c.activityMs)));
+  // en zonder events valt hij eerlijk terug op de mtime — een run zonder eventlog mag niet onzichtbaar worden
+  const geenEvents = path.join(R, '.claude', 'forge-runs', 'forge-2026-09-01-geen-events');
+  fs.mkdirSync(geenEvents, { recursive: true });
+  fs.writeFileSync(path.join(geenEvents, 'run.json'), JSON.stringify({ run_id: 'x', status: 'running' }));
+  t('rankRunCandidates: zonder eventlog is de mtime de eerlijke terugval',
+    D.latestDispatchedRunIdFor(R) === 'forge-2026-09-01-geen-events', 'gekozen: ' + D.latestDispatchedRunIdFor(R));
+}
+
 const rcCheck = D.runContractDoctorCheck(RC_ROOT);
 t('runContractDoctorCheck: an empty (no research_done etc.) real dispatched run is honestly ok:false, naming the missing rules', rcCheck.ok === false && Array.isArray(rcCheck.missing) && rcCheck.missing.length > 0 && rcCheck.run_id === 'forge-2026-06-01-newest');
 const rcNoRuns = D.runContractDoctorCheck(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rc-norun-'))); // no .claude/forge-runs at all yet
@@ -1323,6 +1368,7 @@ t('runContractDoctorCheck: a project with zero runs at all degrades honestly to 
 // this project's own forge-runs/ — see build-boss MEMORY.md).
 // ===========================================================================================================
 const RECEIPT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-receiptonly-'));
+seedRules(RECEIPT_ROOT); // R6-06: elke root draagt zijn eigen regels (zie seedRules hierboven)
 const receiptDir = path.join(RECEIPT_ROOT, '.claude', 'forge-runs', 'forge-2026-07-22-receipt-only');
 fs.mkdirSync(receiptDir, { recursive: true });
 fs.writeFileSync(path.join(receiptDir, 'doctor.json'), JSON.stringify({ ok: true }));
@@ -1353,6 +1399,7 @@ t('runContractDoctorCheck: with a real dispatched run present, it is evaluated (
 // per candidate (fs.utimesSync) so the assertion never depends on real wall-clock execution speed.
 // ===========================================================================================================
 const DEFECT4_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-defect4-'));
+seedRules(DEFECT4_ROOT); // R6-06: elke root draagt zijn eigen regels
 const decoyDir = path.join(DEFECT4_ROOT, '.claude', 'forge-runs', 'zzz-decoy-clean-run'); // name sorts HIGHEST
 const violatingDir = path.join(DEFECT4_ROOT, '.claude', 'forge-runs', 'aaa-real-violating-run'); // name sorts LOWEST
 const strayDir = path.join(DEFECT4_ROOT, '.claude', 'forge-runs', 'zzzz-not-a-real-run-dir'); // not a real run dir at all
@@ -1432,7 +1479,7 @@ t('printSummary: clean fixture never renders a ✗ completeness line', !/✗ com
 // — a legitimate, surgical way to prove the format string itself is correct without re-building every other
 // advisory's own clean-state fixture.
 const shCleanRepAllOk = JSON.parse(JSON.stringify(shCleanRep));
-for (const k of ['sync_completeness', 'memory_discipline', 'mcp_dormancy', 'run_contract', 'skill_evals']) shCleanRepAllOk.advisory.completeness[k].ok = true;
+for (const k of Object.keys(shCleanRepAllOk.advisory.completeness)) if (k !== 'skill_hygiene') shCleanRepAllOk.advisory.completeness[k].ok = true;
 const shCleanAllOkSummary = D.printSummary(shCleanRepAllOk);
 t('printSummary: once every completeness sub-check is clean, shows "skill hygiene 1/1" in the composed clean sentence', /skill hygiene 1\/1/.test(shCleanAllOkSummary), shCleanAllOkSummary);
 t('printSummary: that fully-clean sentence renders as ✓ completeness, never ⚠', /✓ completeness \(advisory\)/.test(shCleanAllOkSummary) && !/⚠ completeness/.test(shCleanAllOkSummary));
@@ -1476,6 +1523,29 @@ t('skillHygiene dangling-reference fixture: names BOTH dangling refs (root-ancho
 t('skillHygiene dangling-reference fixture: an advisory-only hygiene gap does NOT flip doctor.ok to false', shDangleRep.ok === true);
 const shDangleSummary = D.printSummary(shDangleRep);
 t('printSummary: names the failing skill+dangling refs under "skill-hygiene:"', /skill-hygiene: dangling-ref/.test(shDangleSummary) && /dangling reference/.test(shDangleSummary), shDangleSummary);
+
+// (4b) RUNTIME-GENERATED marker is NOT dangling (2026-08-09). MEASURED FALSE POSITIVE: the real doctor run
+// reported `skill-hygiene: forge-snapshot (1 dangling reference(s): .claude/.forge-snapshot-due.json)` — a
+// file that forge-snapshot-marker.cjs WRITES and the SessionStart hook consumes, so its normal state is
+// "not on disk". Documenting your own output path is not a broken link, and an advisory that fills up with
+// false positives stops being read — which is how it would miss a REAL dangling reference. The reference is
+// reclassified (still reported, under generated_refs) rather than silenced.
+const SH_GEN_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-generated-');
+fs.writeFileSync(path.join(SH_GEN_ROOT, '.claude', 'forge-bin', 'marker.cjs'),
+  "'use strict';\nconst fs = require('fs');\nfs.writeFileSync(require('path').join(dir, '.a-runtime-marker.json'), '{}');\n");
+fs.mkdirSync(path.join(SH_GEN_ROOT, '.claude', 'skills', 'gen-ref'), { recursive: true });
+fs.writeFileSync(path.join(SH_GEN_ROOT, '.claude', 'skills', 'gen-ref', 'SKILL.md'),
+  '---\nname: gen-ref\ndescription: A short, valid description.\n---\n\n# gen-ref\n\n'
+  + 'Writes `.claude/.a-runtime-marker.json` and also mentions `.claude/forge-bin/really-missing.cjs`.\n');
+const shGenRep = D.runDoctor(SH_GEN_ROOT);
+const shGenSkill = shGenRep.advisory.completeness.skill_hygiene.skills.find((s) => s.skill === 'gen-ref') || {};
+t('skillHygiene: a path our OWN code writes is not counted as dangling',
+  !JSON.stringify(shGenSkill.issues || []).includes('.a-runtime-marker.json'), JSON.stringify(shGenSkill));
+t('skillHygiene: but it is still REPORTED, under generated_refs (reclassified, not silenced)',
+  Array.isArray(shGenSkill.generated_refs) && shGenSkill.generated_refs.includes('.claude/.a-runtime-marker.json'), JSON.stringify(shGenSkill));
+t('skillHygiene: a genuinely missing reference in the SAME skill is still flagged',
+  (shGenSkill.issues || []).some((i) => i.includes('.claude/forge-bin/really-missing.cjs')), JSON.stringify(shGenSkill));
+t('skillHygiene: so the skill is still not ok (the real gap survives the reclassification)', shGenSkill.ok === false);
 
 // (5) prose-with-slash NOT flagged: an alternation phrase ("manifest.json/events.jsonl", meaning "either
 // file", not a nested directory) and an UNANCHORED path-shaped example (a generic downstream-project
@@ -1640,8 +1710,8 @@ const realSkillHygiene = D.skillHygiene(REAL_PROJECT_ROOT);
 // simply made the 8 gsap sub-skills VISIBLE to a check that had never once looked at them. Measured both
 // ways on this project the same day: `ls .claude/skills/*/SKILL.md | wc -l` = 49 vs
 // `find .claude/skills -name SKILL.md | wc -l` = 57.
-pinned('skillHygiene: the real project has exactly 57 skills evaluated — all 8 NESTED ones included (no drift)', () =>
-  t('skillHygiene: the real project has exactly 57 skills evaluated — all 8 NESTED ones included (no drift)', realSkillHygiene.checked === 57, 'checked=' + realSkillHygiene.checked));
+pinned('skillHygiene: the real project has exactly 59 skills evaluated — all 8 NESTED ones included (no drift)', () =>
+  t('skillHygiene: the real project has exactly 59 skills evaluated — all 8 NESTED ones included (no drift)', realSkillHygiene.checked === 59, 'checked=' + realSkillHygiene.checked));
 // FINDINGS (2026-08-01, second revision): 10 -> 1. The 9 that left are ALL third-party skills copied at a
 // recorded pin (humanizer @1b48564, the 8 gsap sub-skills @aed9cfd) and they did NOT disappear — they moved
 // to `vendored_style`, numbers intact, because their shape is upstream's editorial choice while their
@@ -1652,16 +1722,26 @@ pinned('skillHygiene: the real project has exactly 57 skills evaluated — all 8
 //   (a) exactly ONE real finding remains, named — a NEW regression cannot hide inside a total;
 //   (b) exactly NINE skills carry vendored_style with a real source+pin — if a future edit made the
 //       exemption too broad and swallowed one of ours, this count moves and the test fails.
-const KNOWN_HYGIENE_FINDINGS = [
-  'forge-snapshot',    // its own transient marker-file mention (pre-existing, 2026-07-31)
-].sort();
+// 2026-08-09: this list is now EMPTY, and that is a fix rather than a loosening. Its only entry was
+// forge-snapshot, flagged for documenting `.claude/.forge-snapshot-due.json` — a marker its own
+// forge-snapshot-marker.cjs writes and the SessionStart hook consumes, so "absent" is its normal state.
+// generatedPathBasenames() now reclassifies such a reference under generated_refs instead of counting it
+// as a broken link. Guard (c) below asserts that reclassification really happened, so an empty findings
+// list can never be reached by simply switching the check off.
+const KNOWN_HYGIENE_FINDINGS = [].sort();
 const KNOWN_VENDORED_EXEMPT = [
   'humanizer',         // 626-line body — github.com/blader/humanizer @1b48564
   'gsap/gsap-core', 'gsap/gsap-frameworks', 'gsap/gsap-performance', 'gsap/gsap-plugins',
   'gsap/gsap-react', 'gsap/gsap-scrolltrigger', 'gsap/gsap-timeline', 'gsap/gsap-utils', // @aed9cfd
 ].sort();
-devTreeOnly('skillHygiene: the real project has exactly the 1 known, already-real, non-blocking finding — never a silent NEW regression', () =>
-  t('skillHygiene: the real project has exactly the 1 known, already-real, non-blocking finding — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok))));
+devTreeOnly('skillHygiene: the real project carries exactly the KNOWN findings — never a silent NEW regression', () =>
+  t('skillHygiene: the real project carries exactly the KNOWN findings — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok))));
+// (c) the empty findings list above must be earned by RECLASSIFICATION, not by a check that stopped
+// looking: forge-snapshot still has to surface its marker reference, now under generated_refs.
+devTreeOnly('skillHygiene: forge-snapshot still REPORTS its runtime marker, now as a generated ref', () =>
+  t('skillHygiene: forge-snapshot still REPORTS its runtime marker, now as a generated ref',
+    (realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot') || {}).generated_refs?.some((r) => r.includes('.forge-snapshot-due.json')) === true,
+    JSON.stringify(realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot'))));
 // The three assertions below all describe the VENDORED skills specifically, which is exactly the surface
 // the distribution strips. Note that two of them are `every(...)` over a filtered array: in a tree with no
 // vendored skills they would not fail, they would pass VACUOUSLY over an empty list — a silent green that

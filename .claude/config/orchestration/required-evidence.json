@@ -5,67 +5,1064 @@
   "domains": {
     "website": {
       "evidence": [
-        { "id": "responsive-screenshot-mobile", "label": "A real mobile-breakpoint screenshot artifact exists.", "kind": "artifact", "any_of_substrings": ["mobile", "320", "375", "390", "414"] },
-        { "id": "responsive-screenshot-tablet", "label": "A real tablet-breakpoint screenshot artifact exists.", "kind": "artifact", "any_of_substrings": ["tablet", "768"] },
-        { "id": "responsive-screenshot-desktop", "label": "A real desktop-breakpoint screenshot artifact exists.", "kind": "artifact", "any_of_substrings": ["desktop", "1024", "1440", "1920"] },
-        { "id": "zero-console-errors-note", "label": "A zero-console-errors note (artifact or logged event) exists.", "kind": "artifact_or_event", "any_of_substrings": ["console-error", "console_error", "zero-console", "zero_console"], "any_of_events": ["zero_console_errors_noted"] }
+        {
+          "id": "responsive-screenshot-mobile",
+          "label": "A real mobile-breakpoint screenshot artifact exists.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "mobile",
+            "320",
+            "375",
+            "390",
+            "414"
+          ],
+          "specific": true
+        },
+        {
+          "id": "responsive-screenshot-tablet",
+          "label": "A real tablet-breakpoint screenshot artifact exists.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "tablet",
+            "768"
+          ],
+          "specific": true
+        },
+        {
+          "id": "responsive-screenshot-desktop",
+          "label": "A real desktop-breakpoint screenshot artifact exists.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "desktop",
+            "1024",
+            "1440",
+            "1920"
+          ],
+          "specific": true
+        },
+        {
+          "id": "zero-console-errors-note",
+          "label": "A zero-console-errors note (artifact or logged event) exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "console-error",
+            "console_error",
+            "zero-console",
+            "zero_console"
+          ],
+          "any_of_events": [
+            "zero_console_errors_noted"
+          ],
+          "specific": true
+        }
       ]
     },
     "fullstack": {
       "evidence": [
-        { "id": "e2e-test-result", "label": "A real e2e test result artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["e2e", "end-to-end", "end_to_end"], "any_of_events": ["e2e_passed", "e2e_result"] },
-        { "id": "integration-gate-result", "label": "An integration-gate result artifact/event exists (assembled app boots clean, real flow works).", "kind": "artifact_or_event", "any_of_substrings": ["integration-gate", "integration_gate"], "any_of_events": ["integration_gate_passed"] }
+        {
+          "id": "e2e-test-result",
+          "label": "A real e2e test result artifact/event exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "e2e",
+            "end-to-end",
+            "end_to_end"
+          ],
+          "any_of_events": [
+            "e2e_passed",
+            "e2e_result"
+          ],
+          "specific": true
+        },
+        {
+          "id": "integration-gate-result",
+          "label": "An integration-gate result artifact/event exists (assembled app boots clean, real flow works).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "integration-gate",
+            "integration_gate"
+          ],
+          "any_of_events": [
+            "integration_gate_passed"
+          ]
+        }
       ]
     },
     "n8n": {
       "evidence": [
-        { "id": "validate-workflow-output", "label": "A validate_workflow (or validate_node) output artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["validate_workflow", "validate-workflow", "validate_node"], "any_of_events": ["validate_workflow_passed", "workflow_validated"] },
-        { "id": "inactive-import-note", "label": "A note confirming the workflow was imported inactive-by-default exists.", "kind": "artifact_or_event", "any_of_substrings": ["inactive-import", "inactive_import", "imported-inactive", "imported_inactive"], "any_of_events": ["workflow_imported_inactive"] }
+        {
+          "id": "validate-workflow-output",
+          "label": "A validate_workflow (or validate_node) output artifact/event exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "validate_workflow",
+            "validate-workflow",
+            "validate_node"
+          ],
+          "any_of_events": [
+            "validate_workflow_passed",
+            "workflow_validated"
+          ],
+          "specific": true
+        },
+        {
+          "id": "inactive-import-note",
+          "label": "A note confirming the workflow was imported inactive-by-default exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "inactive-import",
+            "inactive_import",
+            "imported-inactive",
+            "imported_inactive"
+          ],
+          "any_of_events": [
+            "workflow_imported_inactive"
+          ],
+          "specific": true
+        }
       ]
     },
     "scraping": {
       "evidence": [
-        { "id": "source-robots-note", "label": "A source/robots compliance note artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["robots", "source-note", "source_note", "source-compliance"], "any_of_events": ["robots_checked", "source_compliance_noted"] }
+        {
+          "id": "source-robots-note",
+          "label": "A source/robots compliance note artifact/event exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "robots",
+            "source-note",
+            "source_note",
+            "source-compliance"
+          ],
+          "any_of_events": [
+            "robots_checked",
+            "source_compliance_noted"
+          ],
+          "specific": true
+        }
       ]
     },
     "rag": {
       "evidence": [
-        { "id": "citation-grounding-note", "label": "A source-grounded citation note/example exists.", "kind": "artifact_or_event", "any_of_substrings": ["citation", "source-grounded", "source_grounded"], "any_of_events": ["citation_verified"] },
-        { "id": "idempotent-ingestion-note", "label": "An idempotent-ingestion verification note exists.", "kind": "artifact_or_event", "any_of_substrings": ["idempotent-ingestion", "idempotent_ingestion"], "any_of_events": ["ingestion_idempotency_verified"] }
+        {
+          "id": "citation-grounding-note",
+          "label": "A source-grounded citation note/example exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "citation",
+            "source-grounded",
+            "source_grounded"
+          ],
+          "any_of_events": [
+            "citation_verified"
+          ],
+          "specific": true
+        },
+        {
+          "id": "idempotent-ingestion-note",
+          "label": "An idempotent-ingestion verification note exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "idempotent-ingestion",
+            "idempotent_ingestion"
+          ],
+          "any_of_events": [
+            "ingestion_idempotency_verified"
+          ],
+          "specific": true
+        }
       ]
     },
     "prediction": {
       "evidence": [
-        { "id": "backtest-result", "label": "A real backtest result artifact/event exists.", "kind": "artifact_or_event", "any_of_substrings": ["backtest"], "any_of_events": ["backtest_completed"] },
-        { "id": "uncertainty-label-note", "label": "An uncertainty/confidence/risk label note exists.", "kind": "artifact_or_event", "any_of_substrings": ["uncertainty", "confidence-label", "confidence_label", "risk-label", "risk_label"], "any_of_events": ["uncertainty_labels_applied"] }
+        {
+          "id": "backtest-result",
+          "label": "A real backtest result artifact/event exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "backtest"
+          ],
+          "any_of_events": [
+            "backtest_completed"
+          ],
+          "specific": true
+        },
+        {
+          "id": "uncertainty-label-note",
+          "label": "An uncertainty/confidence/risk label note exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "uncertainty",
+            "confidence-label",
+            "confidence_label",
+            "risk-label",
+            "risk_label"
+          ],
+          "any_of_events": [
+            "uncertainty_labels_applied"
+          ],
+          "specific": true
+        }
       ]
     },
     "integration": {
       "evidence": [
-        { "id": "webhook-auth-check-note", "label": "A webhook auth/signature check note exists.", "kind": "artifact_or_event", "any_of_substrings": ["webhook-auth", "webhook_auth", "signature-check", "signature_check"], "any_of_events": ["webhook_auth_verified"] },
-        { "id": "outreach-drafted-only-note", "label": "A drafted-only-outreach confirmation note exists.", "kind": "artifact_or_event", "any_of_substrings": ["drafted-only", "drafted_only"], "any_of_events": ["outreach_drafted_only_noted"] }
+        {
+          "id": "webhook-auth-check-note",
+          "label": "A webhook auth/signature check note exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "webhook-auth",
+            "webhook_auth",
+            "signature-check",
+            "signature_check"
+          ],
+          "any_of_events": [
+            "webhook_auth_verified"
+          ],
+          "specific": true
+        },
+        {
+          "id": "outreach-drafted-only-note",
+          "label": "A drafted-only-outreach confirmation note exists.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "drafted-only",
+            "drafted_only"
+          ],
+          "any_of_events": [
+            "outreach_drafted_only_noted"
+          ],
+          "specific": true
+        }
       ]
     },
     "tooling": {
       "evidence": [
-        { "id": "verified-check-or-doctor-run", "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.", "kind": "artifact_or_event", "any_of_substrings": ["doctor.json", "doctor-report", "forge-doctor"], "any_of_events": ["check_passed", "doctor_run"] },
-        { "id": "final-report-artifact", "label": "A real, non-empty final-report artifact exists for this run.", "kind": "artifact", "any_of_substrings": ["final-report"] },
-        { "id": "audit-or-analysis-artifact", "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.", "kind": "artifact_or_event", "any_of_substrings": ["audit-evidence", "audit_evidence", "capabilities-report", "capabilities_report", "audit-report"], "any_of_events": ["audit_iteration", "audit_finding", "capabilities_reported"] }
+        {
+          "id": "verified-check-or-doctor-run",
+          "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "doctor.json",
+            "doctor-report",
+            "forge-doctor"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "doctor_run"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "audit-or-analysis-artifact",
+          "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "audit-evidence",
+            "audit_evidence",
+            "capabilities-report",
+            "capabilities_report",
+            "audit-report"
+          ],
+          "any_of_events": [
+            "audit_iteration",
+            "audit_finding",
+            "capabilities_reported"
+          ],
+          "specific": true
+        }
       ]
     },
     "meta": {
       "evidence": [
-        { "id": "verified-check-or-doctor-run", "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.", "kind": "artifact_or_event", "any_of_substrings": ["doctor.json", "doctor-report", "forge-doctor"], "any_of_events": ["check_passed", "doctor_run"] },
-        { "id": "final-report-artifact", "label": "A real, non-empty final-report artifact exists for this run.", "kind": "artifact", "any_of_substrings": ["final-report"] },
-        { "id": "audit-or-analysis-artifact", "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.", "kind": "artifact_or_event", "any_of_substrings": ["audit-evidence", "audit_evidence", "capabilities-report", "capabilities_report", "audit-report"], "any_of_events": ["audit_iteration", "audit_finding", "capabilities_reported"] }
+        {
+          "id": "verified-check-or-doctor-run",
+          "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "doctor.json",
+            "doctor-report",
+            "forge-doctor"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "doctor_run"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "audit-or-analysis-artifact",
+          "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "audit-evidence",
+            "audit_evidence",
+            "capabilities-report",
+            "capabilities_report",
+            "audit-report"
+          ],
+          "any_of_events": [
+            "audit_iteration",
+            "audit_finding",
+            "capabilities_reported"
+          ],
+          "specific": true
+        }
       ]
     },
     "dev-tooling": {
       "evidence": [
-        { "id": "verified-check-or-doctor-run", "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.", "kind": "artifact_or_event", "any_of_substrings": ["doctor.json", "doctor-report", "forge-doctor"], "any_of_events": ["check_passed", "doctor_run"] },
-        { "id": "final-report-artifact", "label": "A real, non-empty final-report artifact exists for this run.", "kind": "artifact", "any_of_substrings": ["final-report"] },
-        { "id": "audit-or-analysis-artifact", "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.", "kind": "artifact_or_event", "any_of_substrings": ["audit-evidence", "audit_evidence", "capabilities-report", "capabilities_report", "audit-report"], "any_of_events": ["audit_iteration", "audit_finding", "capabilities_reported"] }
+        {
+          "id": "verified-check-or-doctor-run",
+          "label": "A real verification signal exists: a check_passed event (proof-verified by log-event.cjs's own content oracle at write time) or a doctor_run event / doctor.json artifact from forge-doctor.cjs.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "doctor.json",
+            "doctor-report",
+            "forge-doctor"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "doctor_run"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "audit-or-analysis-artifact",
+          "label": "At least one real audit/analysis artifact or event exists: a logged audit_iteration/audit_finding/capabilities_reported event, or an audit-evidence/capabilities-report artifact file.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "audit-evidence",
+            "audit_evidence",
+            "capabilities-report",
+            "capabilities_report",
+            "audit-report"
+          ],
+          "any_of_events": [
+            "audit_iteration",
+            "audit_finding",
+            "capabilities_reported"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "agent": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "eval-or-guardrail-evidence",
+          "label": "A real eval/guardrail result exists for the agent (its own eval harness run, a fallback/refusal probe, or a logged uncertainty label) — never a claim that it behaves well.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "eval",
+            "guardrail",
+            "fallback",
+            "prompt-injection"
+          ],
+          "any_of_events": [
+            "uncertainty_labels_applied",
+            "audit_finding"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "api": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "contract-or-auth-evidence",
+          "label": "A real API contract/auth check exists (schema or contract-test output, or a verified webhook/auth check).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "openapi",
+            "contract",
+            "schema",
+            "postman"
+          ],
+          "any_of_events": [
+            "webhook_auth_verified"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "bots": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "webhook-auth-verified",
+          "label": "The bot webhook/interaction endpoint was really authenticated or signature-checked.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "webhook",
+            "signature",
+            "interaction"
+          ],
+          "any_of_events": [
+            "webhook_auth_verified"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "cli": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "real-invocation-output",
+          "label": "A real CLI invocation with its output/exit code exists (--help, a real subcommand run, or a recorded exit code).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "cli-output",
+            "exit-code",
+            "usage"
+          ],
+          "any_of_events": [
+            "command_run"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "cms": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "real-ui-screenshot",
+          "label": "A real screenshot of the running interface exists (not a mock-up or a description of one).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "screenshot",
+            ".png",
+            "desktop",
+            "mobile"
+          ],
+          "any_of_events": [
+            "browser_screenshot_captured",
+            "browser_layout_verified"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "data": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "pipeline-or-quality-evidence",
+          "label": "A real data-quality/pipeline result exists (row counts, a schema/contract check, or a data-quality report) — never a described pipeline.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "data-quality",
+            "row-count",
+            "schema",
+            "dbt",
+            "profiling"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "ecommerce": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "order-or-inventory-evidence",
+          "label": "A real order/inventory/checkout path was exercised or validated (no fabricated sales or stock numbers).",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "order",
+            "inventory",
+            "checkout",
+            "cart"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "electron": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "real-build-or-launch-evidence",
+          "label": "The desktop app really built and/or launched (installer/build artifact, or a launch screenshot).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "installer",
+            "dist",
+            "build",
+            "screenshot"
+          ],
+          "any_of_events": [
+            "browser_screenshot_captured"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "extension": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "manifest-or-load-evidence",
+          "label": "The extension really loaded (manifest validation output or a loaded-extension screenshot).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "manifest",
+            "extension",
+            "screenshot"
+          ],
+          "any_of_events": [
+            "browser_screenshot_captured"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "figma": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "real-ui-screenshot",
+          "label": "A real screenshot of the running interface exists (not a mock-up or a description of one).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "screenshot",
+            ".png",
+            "desktop",
+            "mobile"
+          ],
+          "any_of_events": [
+            "browser_screenshot_captured",
+            "browser_layout_verified"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "game": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "playable-loop-evidence",
+          "label": "The game was really played: a screenshot/recording of the running loop or a logged playtest check — not a described mechanic.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "screenshot",
+            "playtest",
+            "gameplay"
+          ],
+          "any_of_events": [
+            "browser_screenshot_captured"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "migration": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "parity-or-rollback-evidence",
+          "label": "A real parity/characterization result or a rehearsed rollback exists — a migration called safe without either is unverified.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "parity",
+            "characterization",
+            "rollback",
+            "cutover"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "mlops": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "model-eval-evidence",
+          "label": "A real offline/online evaluation result exists with its numbers (never a claimed accuracy).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "eval",
+            "metrics",
+            "mlflow",
+            "rollout"
+          ],
+          "any_of_events": [
+            "backtest_completed",
+            "uncertainty_labels_applied"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "mobile": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "device-or-build-evidence",
+          "label": "The app really built or ran on a device/simulator (build artifact or a device screenshot).",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "apk",
+            "ipa",
+            "simulator",
+            "device",
+            "screenshot"
+          ],
+          "any_of_events": [
+            "browser_screenshot_captured"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "payments": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "security-surface-checked",
+          "label": "The security surface of this domain was really examined: a security/secret audit finding or a passed security check, not an assertion that it is fine.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "security",
+            "threat-model",
+            "secret-scan",
+            "audit"
+          ],
+          "any_of_events": [
+            "audit_finding"
+          ],
+          "specific": true
+        },
+        {
+          "id": "idempotency-or-webhook-evidence",
+          "label": "Payment safety was really exercised: a verified webhook signature check or an idempotency test — never a described guarantee.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "idempotency",
+            "webhook",
+            "signature",
+            "stripe",
+            "mollie"
+          ],
+          "any_of_events": [
+            "webhook_auth_verified"
+          ],
+          "specific": true
+        }
+      ]
+    },
+    "voice": {
+      "evidence": [
+        {
+          "id": "verified-check-or-gate",
+          "label": "A real verification signal exists: a check_passed event (content-verified by log-event.cjs at write time), an integration_gate_passed, or a quality_gate_passed.",
+          "kind": "artifact_or_event",
+          "any_of_substrings": [
+            "test-report",
+            "test-results",
+            "junit",
+            "coverage"
+          ],
+          "any_of_events": [
+            "check_passed",
+            "integration_gate_passed",
+            "quality_gate_passed"
+          ]
+        },
+        {
+          "id": "final-report-artifact",
+          "label": "A real, non-empty final-report artifact exists for this run.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "final-report"
+          ]
+        },
+        {
+          "id": "real-call-or-transcript-evidence",
+          "label": "A real call/turn-taking transcript or logged voice check exists — never a described conversation.",
+          "kind": "artifact",
+          "any_of_substrings": [
+            "transcript",
+            "call",
+            "turn-taking",
+            "barge-in"
+          ],
+          "specific": true
+        }
       ]
     }
-  }
+  },
+  "_doc_domain_coverage": "COVERAGE FIX 2026-08-04 (audit sweep). FORGE_HARD_RULES.json rule \"evidence-satisfied\" is severity:block + cannot_override:true + domain_aware, yet only 10 domains had an entry here while config/rubrics/ defined 17. A run classified payments/mobile/game/api/... could therefore NEVER satisfy a rule it could never be excused from — the same coverage gap the tooling domain hit on 2026-07-22, left open for 16 other domains. Every block added references ONLY event types really registered in log-event.cjs KNOWN_EVENT_TYPES (verified at authoring time), so none of these is a rule that cannot be met."
 }

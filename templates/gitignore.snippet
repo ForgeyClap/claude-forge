@@ -1,0 +1,27 @@
+# --- Forge (added by the claude-forge installer) ---
+# Run/event logs are local-only: they record what happened on YOUR machine.
+# Ignore the run CONTENTS, not the directory itself, so the directory can keep a README.
+.claude/forge-runs/*/*
+.claude/forge-index/
+.claude/forge-backups/
+.claude/agent-memory/
+.claude/forge-dashboard/PORT
+.claude/forge-dashboard/DASHBOARD_STATE.json
+.claude/.forge-setup.json
+.claude/FORGE_USAGE_GUARD_ACK.json
+
+# Secrets — never commit real env files (placeholders live in .env.example)
+.env
+.env.*
+!.env.example
+
+# Dependencies / build output
+node_modules/
+dist/
+build/
+.cache/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log

@@ -23,7 +23,18 @@ console.log('forge-mcp-gate offline tests');
 const realRegistry = G.loadRegistry({});
 const realGrants = G.loadGrants({});
 t('real registry has >=7 seeded servers', realRegistry.servers.length >= 7);
-t('every real server is dormant (status "not-installed")', realRegistry.servers.every((s) => s.status === 'not-installed'));
+// CORRECTED 2026-08-04 (audit follow-up). This used to assert `status === 'not-installed'` for EVERY
+// entry, which quietly encoded "the registry only ever lists servers that do not exist here" — and that
+// assumption is precisely what let the registry stay blind while claude-flow and n8n were really
+// connected and governed by no tier at all. The safety property was never "nothing is installed"; it is
+// **nothing is pre-ACTIVATED** (loadRegistry hard-errors on status:"active" for the same reason).
+// A registry that may record reality can be checked against reality; one that may not, cannot.
+t('no registry entry is ever pre-ACTIVATED (the real dormancy invariant)',
+  realRegistry.servers.every((s) => s.status !== 'active' && s.active !== true));
+t('an entry that records a REAL connected server still grants nothing by itself (status is reality, not permission)',
+  realRegistry.servers.filter((s) => s.status === 'connected').every((s) => G.status({}).find((x) => x.id === s.id).active === false));
+t('the registry has NOT drifted away from what this machine actually configures',
+  G.unregisteredServers({}).ok === true, JSON.stringify(G.unregisteredServers({}).unregistered));
 t('every real server has a valid tier 0-3', realRegistry.servers.every((s) => [0, 1, 2, 3].includes(s.tier)));
 {
   const r = realRegistry.servers.find((s) => s.id === 'github-read');
@@ -72,6 +83,13 @@ fs.writeFileSync(gatesAlwaysPath, JSON.stringify({ gates: [{ id: 'test-always-ga
 fs.writeFileSync(gatesNeverPath, JSON.stringify({ gates: [{ id: 'test-never-gate', class: 'irreversible', reason: 'fixture gate that never matches', match: { kind: 'regex', pattern: '^this-will-never-appear-in-any-text$' } }] }));
 
 const baseOpts = () => ({ registryPath, grantsPath, optInPath: optInAllPath });
+// AUDIT FIX (2026-08-03): a tier-3 owner grant is now VERIFIED against an owner-written secret, so a
+// fixture exercising the real write-primitive path must plant that secret first — exactly like a real
+// owner would. Fixtures asserting a REFUSAL deliberately do not call this.
+const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gate-grant-'));
+fs.mkdirSync(path.join(grantRoot, '.claude', 'config'), { recursive: true });
+fs.writeFileSync(path.join(grantRoot, '.claude', 'config', 'forge-mcp-owner-grant.txt'), 'FIXTURE-OWNER-GRANT\n', 'utf8');
+const ownerGrantOpts = () => ({ ownerGrant: 'FIXTURE-OWNER-GRANT', projectRoot: grantRoot, env: {} });
 const baseOptsNoOptIn = () => ({ registryPath, grantsPath, optInPath: optInNonePath });
 
 // ---- validateGrant: tiers 0-2 standard path ----
@@ -110,18 +128,18 @@ const baseOptsNoOptIn = () => ({ registryPath, grantsPath, optInPath: optInNoneP
 {
   // WITH a fake owner grant but a hard-gate config that NEVER matches -> still denied (proves classify() is
   // REALLY consulted, not just bypassed by the presence of ownerGrant alone).
-  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), ownerGrant: 'fake-token-1', gatesPath: gatesNeverPath });
+  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), ...ownerGrantOpts(), gatesPath: gatesNeverPath });
   t('owner grant + a hard-gate config that never matches -> STILL denied (real classify() call, no blind bypass)', r.allowed === false && /no matching hard gate/.test(r.reason));
 }
 {
   // WITH a fake owner grant AND a hard-gate config that always matches -> allowed, and the result carries the
   // REAL matched gate id from that fixture (proves the actual forge-actiongate.classify() call, not a stub).
-  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), ownerGrant: 'fake-token-1', gatesPath: gatesAlwaysPath });
+  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), ...ownerGrantOpts(), gatesPath: gatesAlwaysPath });
   t('owner grant + a hard-gate config that matches -> allowed, carries the real matched gate id', r.allowed === true && r.gate && r.gate.id === 'test-always-gate');
 }
 {
   // custom action text still flows through to the real classifier.
-  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), ownerGrant: 'fake-token-1', gatesPath: gatesAlwaysPath, text: 'push commits to origin' });
+  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), ...ownerGrantOpts(), gatesPath: gatesAlwaysPath, text: 'push commits to origin' });
   t('opts.text is forwarded to the real actiongate classify() call', r.allowed === true && r.gate.matched.includes('test-always-gate'));
 }
 
@@ -259,6 +277,171 @@ function run(args) { return spawnSync(process.execPath, [BIN, ...args], { encodi
 {
   const r = run([]);
   t('CLI with no command exits 2 (usage error)', r.status === 2);
+}
+
+// ============================================================================================
+// TIER-3 GRANT MUST BE VERIFIABLE, AND THE CLASSIFIED TEXT MUST CARRY THE REAL ACTION
+// (audit sweep, 2026-08-03). MEASURED DEFECT: both halves of the write-primitive gate were supplied
+// by the party asking for permission. `opts.ownerGrant` was any truthy value, and the text handed to
+// the hard-gate classifier was free-form caller input — so
+//   validateGrant({...}, { ownerGrant: 'x', text: 'deploy to production' })
+// produced ALLOWED for whatever the caller actually intended to do. The grant is now checked against
+// an owner-controlled secret, and the caller's text can only ADD to the canonical action description,
+// never replace it.
+// ============================================================================================
+{
+  const secretRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gate-secret-'));
+  const secretPath = path.join(secretRoot, '.claude', 'config', 'forge-mcp-owner-grant.txt');
+  fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+  fs.writeFileSync(secretPath, 'REAL-OWNER-GRANT\n', 'utf8');
+  const withSecret = (extra) => ({ ...baseOpts(), gatesPath: gatesAlwaysPath, projectRoot: secretRoot, env: {}, ...extra });
+
+  {
+    const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, withSecret({ ownerGrant: 'guessed' }));
+    t('T3a an arbitrary truthy ownerGrant is NO LONGER accepted (self-granted write is refused)', r.allowed === false, r.reason);
+    t('T3a the refusal names the unverifiable grant, not a missing gate', /grant/i.test(r.reason || ''), r.reason);
+  }
+  {
+    const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, withSecret({ ownerGrant: 'REAL-OWNER-GRANT' }));
+    t('T3b the token matching the owner secret IS accepted (happy path intact)', r.allowed === true, r.reason);
+  }
+  {
+    // no secret configured anywhere -> refuse rather than fall back to "any string is fine"
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gate-nosecret-'));
+    const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' }, { ...baseOpts(), gatesPath: gatesAlwaysPath, projectRoot: bare, env: {}, ownerGrant: 'anything' });
+    t('T3c with NO owner grant secret configured the write-primitive stays blocked', r.allowed === false, r.reason);
+  }
+  {
+    // the caller's text may add context, but the canonical action (server/tool/boss) is always classified too
+    const r = G.validateGrant({ boss: 'search-boss', server: 'github-write', tool: 'create_pull_request' },
+      withSecret({ ownerGrant: 'REAL-OWNER-GRANT', text: 'harmless sounding text' }));
+    t('T3d the classified text still contains the REAL action identity, not only the caller string',
+      r.allowed === true && typeof r.classifiedText === 'string'
+      && r.classifiedText.includes('github-write') && r.classifiedText.includes('create_pull_request')
+      && r.classifiedText.includes('harmless sounding text'), r.classifiedText);
+  }
+}
+
+// ============================================================================================
+// REGISTRY-DRIFT DETECTION (audit sweep 2026-08-03, built 2026-08-04).
+// MEASURED DEFECT: mcp-registry.json calls itself "the authoritative server catalog" and every one of
+// its 8 entries is `not-installed` — while this machine really had claude-flow (≈400 tools, incl.
+// terminal_execute/http_fetch) and n8n connected, neither of them in the registry. The tier-3 write
+// gate hardened the day before therefore governed only servers that do not exist here, while the ones
+// that DO exist fell outside the doctrine entirely. A catalog that cannot notice reality drifting away
+// from it is a document, not a control — so the drift is now detectable, and reported, never auto-added.
+// ============================================================================================
+{
+  const dRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-discover-'));
+  fs.mkdirSync(path.join(dRoot, '.claude'), { recursive: true });
+  const dHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-home-'));
+  fs.mkdirSync(path.join(dHome, '.claude'), { recursive: true });
+
+  fs.writeFileSync(path.join(dRoot, '.mcp.json'), JSON.stringify({ mcpServers: { 'from-mcp-json': {} } }));
+  fs.writeFileSync(path.join(dRoot, '.claude', 'settings.local.json'), JSON.stringify({ enabledMcpjsonServers: ['from-settings-local'] }));
+  fs.writeFileSync(path.join(dHome, '.claude.json'), JSON.stringify({
+    mcpServers: { 'from-global': {} },
+    projects: { [dRoot]: { mcpServers: { 'from-project-entry': {} } }, 'C:/some/other/project': { mcpServers: { 'other-project-only': {} } } },
+  }));
+  const dOpts = { projectRoot: dRoot, homeDir: dHome, registryPath, grantsPath, optInPath: optInAllPath };
+
+  {
+    const ids = G.discoverConfiguredServers(dOpts).map((s) => s.id).sort();
+    t('D1 discovery reads .mcp.json, settings.local.json, global mcpServers AND this project\'s entry',
+      ids.includes('from-mcp-json') && ids.includes('from-settings-local') && ids.includes('from-global') && ids.includes('from-project-entry'), ids.join(','));
+    t('D1 another project\'s servers are NOT attributed to this project', !ids.includes('other-project-only'), ids.join(','));
+  }
+  {
+    const found = G.discoverConfiguredServers(dOpts).find((s) => s.id === 'from-settings-local');
+    t('D2 each discovered server carries the source it came from (so a finding is actionable)',
+      !!found && /settings\.local\.json/.test(found.source), found && found.source);
+  }
+  {
+    const r = G.unregisteredServers(dOpts);
+    t('D3 a configured server absent from the registry is reported as UNREGISTERED', r.ok === false && r.unregistered.length === 4, JSON.stringify(r.unregistered.map((u) => u.id)));
+    t('D3 the reason names the servers and says they are governed by no tier/grant',
+      /no tier and no per-Boss grant/.test(r.reason) && /from-global/.test(r.reason), r.reason);
+    t('D3 nothing is auto-added to the registry (reported, never invented)',
+      G.loadRegistry(dOpts).servers.every((s) => !String(s.id).startsWith('from-')));
+  }
+  {
+    // a registry that DOES know the configured server -> clean
+    const regPath2 = path.join(dRoot, 'registry-complete.json');
+    fs.writeFileSync(regPath2, JSON.stringify({ servers: [
+      { id: 'from-mcp-json', purpose: 'x', tier: 1, network: 'read', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: '' },
+      { id: 'from-settings-local', purpose: 'x', tier: 1, network: 'read', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: '' },
+      { id: 'from-global', purpose: 'x', tier: 1, network: 'read', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: '' },
+      { id: 'from-project-entry', purpose: 'x', tier: 1, network: 'read', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: '' },
+    ] }));
+    const r = G.unregisteredServers({ ...dOpts, registryPath: regPath2 });
+    t('D4 when the registry knows every configured server the check is clean', r.ok === true && r.unregistered.length === 0, r.reason);
+  }
+  {
+    // no config sources at all -> honest empty, never a crash
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-bare-'));
+    const r = G.unregisteredServers({ projectRoot: bare, homeDir: bare, registryPath, grantsPath, optInPath: optInAllPath });
+    t('D5 a machine with no MCP config at all is clean, not a crash', r.ok === true && r.configured.length === 0);
+  }
+}
+
+// ============================================================================================
+// THE REQUESTER MAY NOT CHOOSE WHICH RULES APPLY TO IT (broad Codex audit #7, fixed 2026-08-05).
+// validateGrant used to PREFER a caller-supplied `tier`, so passing tier:0 for a registry tier-3 server
+// skipped the whole tier-3 owner-verification branch — the party asking for write access decided it was
+// not a write. The registry is now the floor; a caller may only raise.
+// ============================================================================================
+{
+  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write', tier: 0 }, baseOpts());
+  t('T7 a caller cannot DOWNGRADE a registry tier-3 server to tier 0 to dodge the write gate',
+    r.allowed === false && r.tier === 3, 'tier=' + r.tier + ' allowed=' + r.allowed);
+  t('T7 the refusal is the tier-3 owner-grant path, not a lucky miss elsewhere',
+    /owner grant|write-primitive/i.test(r.reason || ''), r.reason);
+}
+{
+  // raising still works (an escalation probe asking "would tier 2 be allowed here?")
+  const r = G.validateGrant({ boss: 'build-boss', server: 'serena-lsp', tier: 2 }, baseOpts());
+  t('T7 a caller may still RAISE the tier (escalation probe intact)', r.allowed === false && /exceeds/.test(r.reason));
+}
+{
+  const badReg = path.join(TMP, 'registry-bad-tier.json');
+  fs.writeFileSync(badReg, JSON.stringify({ servers: [{ id: 'weird', purpose: 'x', tier: '3', network: 'read', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: '' }] }));
+  let threwOrRefused = false;
+  try {
+    const r = G.validateGrant({ boss: 'search-boss', server: 'weird' }, { ...baseOpts(), registryPath: badReg });
+    threwOrRefused = r.allowed === false;
+  } catch { threwOrRefused = true; } // loadRegistry hard-rejects a non-number tier — also acceptable
+  t('T7 a non-integer registry tier is refused, never silently treated as 0', threwOrRefused);
+}
+
+// ============================================================================================
+// UNREADABLE IS NOT EMPTY (broad Codex audit #28, fixed 2026-08-05). Every config source was read with
+// a catch-all that turned a malformed/permission-denied file into `null` — i.e. into "no servers
+// configured" — so the drift check reported CLEAN exactly when it could not see. And the env channel
+// for the tier-3 owner grant was settable by the very process requesting the write (#8).
+// ============================================================================================
+{
+  const uRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-unreadable-'));
+  fs.mkdirSync(path.join(uRoot, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(uRoot, '.mcp.json'), '{ "mcpServers": {  '); // truncated on purpose
+  const uHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-unreadable-home-'));
+  const r = G.unregisteredServers({ projectRoot: uRoot, homeDir: uHome, registryPath, grantsPath, optInPath: optInAllPath });
+  t('U1 a config that exists but cannot be parsed makes the check NOT ok (blind, not clean)', r.ok === false, r.reason);
+  t('U1 the unreadable source is named so the finding is actionable', Array.isArray(r.unreadable) && r.unreadable.length === 1 && /\.mcp\.json/.test(r.unreadable[0].source), JSON.stringify(r.unreadable));
+  t('U1 the reason says it is blind rather than clean', /blind rather than clean/.test(r.reason || ''), r.reason);
+
+  const okRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-absent-'));
+  const r2 = G.unregisteredServers({ projectRoot: okRoot, homeDir: uHome, registryPath, grantsPath, optInPath: optInAllPath });
+  t('U2 a genuinely ABSENT config is still clean (absent != unreadable)', r2.ok === true && (r2.unreadable || []).length === 0, r2.reason);
+}
+{
+  // #8: an env-only owner grant must no longer authorise a tier-3 write
+  const envOnly = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-envonly-'));
+  const r = G.validateGrant({ boss: 'search-boss', server: 'github-write' },
+    { ...baseOpts(), gatesPath: gatesAlwaysPath, projectRoot: envOnly, env: { FORGE_MCP_OWNER_GRANT: 'self-chosen' }, ownerGrant: 'self-chosen' });
+  t('U3 an env-supplied owner grant alone does NOT authorise a write-primitive', r.allowed === false, r.reason);
+  const r2 = G.validateGrant({ boss: 'search-boss', server: 'github-write' },
+    { ...baseOpts(), gatesPath: gatesAlwaysPath, projectRoot: envOnly, env: { FORGE_MCP_OWNER_GRANT: 'self-chosen' }, ownerGrant: 'self-chosen', allowEnv: true });
+  t('U3 the explicit test seam still exercises the env path', r2.allowed === true, r2.reason);
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

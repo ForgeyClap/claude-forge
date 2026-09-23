@@ -24,7 +24,8 @@ start_dashboard_or_fallback() {
       echo "Command Center found but not built yet. Run: cd command-center/dashboard && npm install && npm run build"
     fi
   else
-    "$NODE_CMD" "$DASH/server.cjs"
+    # AUDIT G7 (2026-08-06): auto-fallback naar de retired server.cjs verwijderd (forge-canon.json)
+    echo "Forge Command Center niet aanwezig in dit project. De oude per-project Control Center (server.cjs) is RETIRED en start NOOIT automatisch (forge-canon.json). Vraag de owner expliciet om een legacy dashboard, of gebruik het centrale Command Center op 127.0.0.1:4100."
   fi
 }
 cmd="${1:-help}"; shift 2>/dev/null || true

@@ -101,12 +101,13 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const RULES_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_HARD_RULES.json');
 const DEFAULT_ROOT = path.resolve(__dirname, '..', '..');
 
 const KNOWN_TRIGGER_LITERALS = new Set(['always', 'web', 'correctness-critical']);
-const KNOWN_CHECK_TYPES = new Set(['event-present', 'artifact-present', 'doctor-check']);
+const KNOWN_CHECK_TYPES = new Set(['event-present', 'artifact-present', 'doctor-check', 'independent-verification']);
 const KNOWN_SEVERITIES = new Set(['block', 'warn']);
 const WEB_DOMAINS = new Set(['web', 'website']);
 const CRITICAL_DOMAINS_FALLBACK = ['finance', 'parser', 'ocr', 'data', 'prediction']; // used only if forge-fixtures.cjs can't be loaded
@@ -170,6 +171,9 @@ function loadRulesMeta(rulesPath) {
   if (_rulesCache && _rulesCache.path === p) return _rulesCache;
 
   const raw = fs.readFileSync(p, 'utf8');
+  /** R10-04: de hash hoort bij de EXACT gelezen bytes van dit proces — zie het resultaatveld
+   *  `ruleset_sha256_used` waarmee finalize het A→B→A-venster rond de contractcheck sluit. */
+  const rawSha = crypto.createHash('sha256').update(raw, 'utf8').digest('hex');
   let data;
   try { data = JSON.parse(raw); }
   catch (e) { throw new Error('forge-runcontract: ' + p + ' is not valid JSON: ' + e.message); }
@@ -199,8 +203,25 @@ function loadRulesMeta(rulesPath) {
     if (!KNOWN_CHECK_TYPES.has(r.check.type)) {
       throw new Error('forge-runcontract: rule "' + r.id + '" has an unknown check.type "' + r.check.type + '" in ' + p + ' (must be one of ' + Array.from(KNOWN_CHECK_TYPES).join(', ') + ')');
     }
-    if (r.check.key == null || !(typeof r.check.key === 'string' ? r.check.key.length > 0 : (Array.isArray(r.check.key) && r.check.key.length > 0))) {
-      throw new Error('forge-runcontract: rule "' + r.id + '" has an invalid/empty check.key in ' + p);
+    // KEYLOZE CHECKTYPES (2026-08-09): een check die de HELE eventstroom beoordeelt i.p.v. op een
+    // eventnaam te matchen heeft per definitie geen `key`. Ze staan expliciet in deze set — een
+    // TYPFOUT in een key-gebaseerd type blijft dus gewoon een harde configfout.
+    const KEYLESS_CHECK_TYPES = new Set(['doctor-check', 'independent-verification']);
+    if (!KEYLESS_CHECK_TYPES.has(r.check.type)) {
+      if (r.check.key == null || !(typeof r.check.key === 'string' ? r.check.key.length > 0 : (Array.isArray(r.check.key) && r.check.key.length > 0))) {
+        throw new Error('forge-runcontract: rule "' + r.id + '" has an invalid/empty check.key in ' + p);
+      }
+    } else if (r.check.key != null) {
+      throw new Error('forge-runcontract: rule "' + r.id + '" is a keyless check type (' + r.check.type + ') but carries a check.key in ' + p + ' — remove it so the rule cannot silently look key-driven');
+    }
+    /** F-07 (Codex-review 2026-08-09, high — GEMETEN op de echte productieconfig): de belofte staat in
+     *  VRIJE TEKST (`override: "UN-OVERRIDABLE — ..."`) maar de handhaving hangt aan een BOOLEAN
+     *  (`cannot_override`, zie de override-lookup verderop). Niets verbond die twee, dus de regel die
+     *  zelf-goedkeuring verbiedt was zélf wegdrukbaar met een geldige owner_override — gereproduceerd:
+     *  hij verscheen gewoon in `overridden`. Een belofte die niet afdwingbaar is, is erger dan geen
+     *  belofte: hij wekt vertrouwen dat de code niet waarmaakt. Daarom is de tekst nu bindend. */
+    if (/UN-?OVERRIDABLE/i.test(String(r.override || '')) && r.cannot_override !== true) {
+      throw new Error('forge-runcontract: rule "' + r.id + '" declares UN-OVERRIDABLE in its override text but does not carry cannot_override:true in ' + p + ' — the promise is enforced by the boolean, not by prose, so without it a valid owner_override silently clears this rule');
     }
     if (!KNOWN_SEVERITIES.has(r.severity)) {
       throw new Error('forge-runcontract: rule "' + r.id + '" has an invalid "severity" in ' + p + ' (must be "block" or "warn")');
@@ -215,7 +236,7 @@ function loadRulesMeta(rulesPath) {
     throw new Error('forge-runcontract: ' + p + ' has a non-array "owners_allowlist"');
   }
 
-  _rulesCache = { path: p, data, unknownTriggers };
+  _rulesCache = { path: p, sha256: rawSha, data, unknownTriggers };
   return _rulesCache;
 }
 
@@ -363,16 +384,50 @@ function resolveComplexity(events, runMeta, paramLevel) {
 /** readEventsJsonl(eventsPath) -> event[] — line-delimited JSON, BOM-tolerant, malformed lines silently
  *  skipped (mirrors forge-verify.cjs/forge-orchestrate.cjs's own readEventsJsonl tolerance). Throws only
  *  when the file itself cannot be read (missing/unreadable run). */
-function readEventsJsonl(eventsPath) {
+function readEventsJsonl(eventsPath, runId) {
+  // AUDIT G6 (2026-08-06): een onparseerbare regel werd hier STIL geskipt — een afgekapte staart (crash
+  // mid-append) of een corrupte middenregel verdween geruisloos uit het bewijs waar dit CONTRACT zijn
+  // block-oordeel op velt. Een completion-gate is fail-closed: de centrale classifier (log-event.cjs,
+  // missing|empty|partial|corrupt|valid) beslist, en alles behalve valid/empty is een harde weigering
+  // met de exacte toestand en regelnummers — nooit "die regel telt gewoon niet mee".
+  // BEWUST de EIGEN module (__dirname-relatief), nooit de writer van de doel-root: een vreemde root kan
+  // daar elk willekeurig script hebben staan en require() VOERT dat uit (de eigen testfixture bewees het
+  // — een capture-stub draaide mee als "classifier"). Classificatie is puur lezen; onze module volstaat.
+  let cls = null;
+  try {
+    const M = require(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'));
+    // Codex r5 #6 (2026-08-07): het CONTRACT leest met de STRIKTE bril — schema + hashketen + run-binding.
+    // Een omgezet event met een stale hash of een geketend event van een andere run is hier corrupt.
+    if (M && typeof M.readEventsClassified === 'function') cls = M.readEventsClassified(eventsPath, { verifyChain: true, runId });
+  } catch (e) {
+    /** R3-06 (derde herreview): de terugval parseert alleen JSON en verifieert de HASHKETEN NIET. Op een
+     *  beschadigde installatie werd een completion-oordeel daarmee fail-OPEN: oudere entries konden zijn
+     *  gewijzigd zonder dat iets dat opmerkte, terwijl de poort gewoon groen gaf. Een contractcheck zonder
+     *  ketenvalidatie is geen contractcheck — dus geen stille terugval meer, maar een harde fout. */
+    throw new Error('forge-runcontract: de event-classifier (.claude/forge-dashboard/log-event.cjs) kon niet worden geladen: ' + (e && e.message ? e.message : String(e)) + ' — zonder ketenvalidatie is een completion-oordeel niet te vertrouwen, dus fail-closed');
+  }
+  if (!cls) {
+    throw new Error('forge-runcontract: de event-classifier levert geen readEventsClassified() — deze installatie kan de hashketen niet verifieren, dus geen completion-oordeel (fail-closed)');
+  }
+  if (cls) {
+    if (cls.status === 'missing') throw new Error('forge-runcontract: could not read events file ' + eventsPath + ': ' + (cls.error || 'missing'));
+    if (cls.status === 'partial' || cls.status === 'corrupt') {
+      throw new Error('forge-runcontract: events log is ' + cls.status.toUpperCase() + ' (regel ' + cls.badLines.map((b) => b.line + (b.reason ? ':' + b.reason : '')).join(',') + ') — a completion contract never judges a damaged log (fail-closed); repair or investigate ' + eventsPath);
+    }
+    return cls.entries;
+  }
   let raw;
   try { raw = fs.readFileSync(eventsPath, 'utf8'); }
   catch (e) { throw new Error('forge-runcontract: could not read events file ' + eventsPath + ': ' + e.message); }
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // strip BOM
   const events = [];
+  let lineNo = 0;
   for (const line of raw.split(/\r?\n/)) {
+    lineNo++;
     const s = line.trim();
     if (!s) continue;
-    try { events.push(JSON.parse(s)); } catch { /* malformed line — skip, never crash */ }
+    try { events.push(JSON.parse(s)); }
+    catch { throw new Error('forge-runcontract: events log has an unparseable line ' + lineNo + ' — fail-closed (was: silently skipped)'); }
   }
   return events;
 }
@@ -431,10 +486,573 @@ function hasDoctorRun(events) {
  *  evidenceCheck(events, domain) (reused, never re-implemented) as an OR-fallback — see FORGE_HARD_RULES.json
  *  header doc for the exact contract. Never throws; a sibling-tool load/config failure is treated as "no
  *  domain-specific proof available", never a fabricated pass. */
+/** independentVerification(events) — WIE bevestigde de claim? (research-lane A, 2026-08-09)
+ *  Het defect dat dit sluit is gemeten en gereproduceerd: de un-overridable `verify-checked`-regel werd
+ *  bevredigd door ELK check_passed-event, ongeacht wie het logde. Een Boss kon dus zijn eigen werk
+ *  goedkeuren en CONTRACT OK krijgen (RED-baseline: red-baseline-imp001.txt). Externe onderbouwing:
+ *  self-preference bias bij LLM-als-jury (arXiv:2410.21819) en Anthropic's eigen subagent-richtlijn om
+ *  review door een CONTEXT-GEÏSOLEERDE agent te laten doen.
+ *
+ *  Een run telt als onafhankelijk geverifieerd zodra ÉÉN van deze drie waar is — elk is een echte,
+ *  gelogde gebeurtenis, geen vertrouwensverklaring:
+ *   (1) DIVERSITEIT — een pass-claim (check_passed/quality_gate_passed/retest_completed) is gelogd door
+ *       een agent die in deze run GEEN werk-event logde (de waarnemer is niet de uitvoerder);
+ *   (2) EXTERNE REVIEWER — een event met runtime 'codex' (of een verify_result/codex_review-event):
+ *       een onafhankelijke reviewer buiten deze agent heeft echt gedraaid;
+ *   (3) EXPLICIETE ATTRIBUTIE — een pass-claim draagt `verified_by` met een andere naam dan zijn eigen
+ *       `agent`; dat maakt de tweede waarnemer expliciet en controleerbaar in de log.
+ *  Geeft {ok, route, workers, verifiers, reason} terug — de reden gaat mee in de contract-uitvoer zodat
+ *  een rode uitslag zegt WAT er ontbreekt, niet alleen DAT er iets ontbreekt. */
+
+/** Waarom niet "elke agent die iets logde": `run_started`, notities en audit-events zijn geen werk, en
+ *  die actor-benadering maakte `run_started(A) + review(B)` tot een geldige verificatie van een run
+ *  waarin NIEMAND iets deed (F-06). Zie de omkering hieronder voor hoe "werk" nu wordt bepaald. */
+/** NON_WORK_EVENT_TYPES — de OMKERING (R3-01, derde herreview 2026-08-09).
+ *
+ *  Twee rondes lang was dit een allowlist van "werk". Die faalt structureel ONVEILIG: elk eventtype dat
+ *  je vergeet — of dat later wordt toegevoegd — telt dan automatisch NIET als werk, waardoor de
+ *  uitvoerder buiten de werkersverzameling valt en zichzelf mag goedkeuren. Ronde 2 vond zo zes gaten
+ *  (report_generated, prd_generated, …), ronde 3 nóg een (`research_done`). Een lijst die je moet
+ *  aanvullen om veilig te blijven, is de verkeerde vorm.
+ *
+ *  Daarom omgekeerd: ALLES is werk, tenzij het hier expliciet als niet-werk staat. Vergeet je iets, dan
+ *  is de uitkomst STRENGER (te veel als werk geteld), niet zwakker. Deze lijst bevat uitsluitend events
+ *  die per definitie niets produceren of veranderen: lifecycle, waarnemingen, notities, audit en de
+ *  review-events zelf. Een parametrische test toetst elk geregistreerd type tegen deze indeling, zodat
+ *  een nieuw type niet stilzwijgend in de verkeerde bak belandt. */
+const NON_WORK_EVENT_TYPES = new Set([
+  // lifecycle
+  'run_started', 'run_completed', 'run_finalized',
+  // waarnemen/laden — leest, verandert niets
+  'project_scanned', 'profile_loaded', 'memory_loaded', 'skill_loaded', 'file_read', 'owner_prefs_loaded',
+  'claude_md_checked', 'project_skill_dir_checked', 'ecc_inventory',
+  /** DISPATCH — bewust non-work, met reden: `agent_started`/`subagent_started` worden door de LEAD gelogd
+   *  OVER een agent, inclusief over de reviewer zelf. Telden die als werk, dan zou elke gedispatchte
+   *  reviewer automatisch uitvoerder zijn en kon niemand ooit reviewen — de poort zou zichzelf blokkeren.
+   *  Dit is dus geen vergeten geval maar een gemotiveerde uitzondering. */
+  'agent_selected',
+  /** R5-01 (vijfde herreview): `agent_progress`, `check_started`, `fix_started`, `retest_started`,
+   *  `merge_started` en `rework_started` stonden hier ook, maar de writer en het dashboard behandelen ze
+   *  als ACTIEVE UITVOERING. Een reviewer die zelf `fix_started` logde bleef daardoor "buitenstaander",
+   *  en zulke activiteit ná een review maakte hem niet stale. Ze zijn nu werk: wie begint te fixen,
+   *  voert uit. */
+  // zuiver narratief: een aantekening of een volgende-stap is geen uitkomst
+  'agent_note', 'agent_next_action',
+  // governance/audit
+  'owner_override', 'gate_evaluated',
+  /** R4-02 (vierde herreview): hier stonden ook `agent_output`, `decision_logged`, `rework_assigned` en
+   *  `rejected_approach`. Dat was fout, en precies de valkuil van de omkering: de uitzonderingslijst mag
+   *  alleen INERTE events bevatten. `rejected_approach` eist bij de writer zelfs BEWIJS en geldt later als
+   *  vertrouwd resultaat; `agent_output` en `decision_logged` leveren inhoud op. Een reviewer die zoiets
+   *  zelf produceerde viel daardoor buiten de werkersverzameling, en zulk werk ná een review maakte hem
+   *  niet stale. Ze zijn nu gewoon werk — wie iets oplevert, is een uitvoerder. */
+]);
+/** IV_DISPATCH_TYPES — `agent_started`/`subagent_started` worden door de Lead gelogd OVER een agent.
+ *
+ *  R6-02 (zesde herreview) weerlegde mijn eerdere aanname dat ze daarom categorisch geen werk zijn: een
+ *  probe met `agent_started {agent:"Review Boss", task:"implement patch"}` liet de log letterlijk zien dat
+ *  de bevestiger voor IMPLEMENTATIE was gedispatcht, terwijl de poort hem als buitenstaander behandelde.
+ *  Ik had die uitzondering zelf al gemarkeerd als het punt waar ik twijfelde — terecht.
+ *
+ *  Nu omgekeerd: een dispatch is WERK, tenzij hij aantoonbaar een REVIEW-opdracht is. Bewijzen dat je
+ *  voor review bent ingezet ligt bij het event; ontbreekt dat bewijs, dan is de veilige lezing dat er
+ *  uitvoerend werk is gedispatcht. */
+const IV_DISPATCH_TYPES = new Set(['agent_started', 'subagent_started']);
+/** R7-04 (zevende herreview) — MIJN EIGEN R6-02-FIX WAS TE RUIM. Het volstond dat "review" ergens in een
+ *  vrij tekstveld voorkwam, dus `task: "implement review feedback"` gold als reviewopdracht: precies de
+ *  implementatie-dispatch die R6-02 juist moest vangen. Vrije tekst laten beslissen over een
+ *  veiligheidsgrens is de fout; een woord dat toevallig voorkomt is geen bewijs van intentie.
+ *
+ *  Nu twee eisen tegelijk: (1) een expliciet, gestructureerd veld dat de rol vastlegt, en (2) die rol
+ *  moet de HELE waarde zijn, niet een woord in een zin. Zo blijft een dispatch die naar review verwijst
+ *  maar iets anders doet gewoon werk — de veilige lezing. */
+/** R8-01 (achtste herreview) — IK MAAKTE DEZELFDE FOUT ALS BIJ R3-01, één laag dieper. Mijn R7-04-fix
+ *  gebruikte een DENYLIST van uitvoeringswerkwoorden (implement|fix|patch|…): alles wat daar niet in
+ *  stond, gold als review. `task: "develop production feature"` kwam er dus gewoon door. Een denylist
+ *  faalt open op precies de gevallen die je niet hebt bedacht — dat is de fout die ik bij de
+ *  work-taxonomie al had omgekeerd en hier opnieuw introduceerde.
+ *
+ *  Nu POSITIEF BEWIJS aan beide kanten: een dispatch telt alleen als review wanneer het rolveld exact een
+ *  reviewrol is EN de taak — als die er is — zelf aantoonbaar reviewwerk beschrijft. Onbekende of
+ *  onbeschreven taken vallen aan de strenge kant: werk. */
+const REVIEW_ROLE_RE = /^(review|reviewer|independent[ _-]?review|code[ _-]?review|verify|verification|audit|controle)$/i;
+const REVIEW_TAAK_RE = /^(?:[a-z ]*\b(?:review|reviewing|verify|verifying|verification|audit|auditing|inspect|inspection|assess|assessment|controleer|controle|beoordeel|beoordeling)\b[a-z0-9 _./:#-]*)$/i;
+/** R9-01 (negende herreview): mijn "positief bewijs" was nog steeds te ruim. Drie gaten bleven open:
+ *   - een reviewrol ZONDER taak gold als review — terwijl "waarvoor is deze agent ingezet" dan juist
+ *     onbekend is, en onbekend hoort aan de strenge kant te vallen;
+ *   - `task:"review and implement production feature"` paste op de reviewregex, want die keek of de
+ *     zin ergens reviewwoorden bevatte in plaats van of hij UITSLUITEND review beschrijft;
+ *   - `role:"review"` naast `dispatch_role:"implementation"` telde als review: één passend veld won van
+ *     een tegenstrijdig veld, precies de "verstop een afkeuring"-vorm uit R5-02.
+ *  Nu: ALLE aanwezige rolvelden moeten een reviewrol zijn (geen tegenspraak), er MOET een taak zijn, en
+ *  die taak mag geen uitvoerende component bevatten. */
+/** R10-01 — DERDE KEER DEZELFDE FOUT. R3-01 leerde: een lijst die je moet aanvullen om veilig te blijven
+ *  is de verkeerde vorm. In R8-01 bouwde ik hem toch als denylist van uitvoeringswerkwoorden, en in R9-01
+ *  breidde ik die denylist uit in plaats van hem om te keren. Nu komt `task:"review code and update
+ *  production source"` erdoor, want "update" stond er niet in. Elke uitbreiding lost één geval op en laat
+ *  de rest open.
+ *
+ *  Daarom nu een echte ALLOWLIST op tokenniveau: elk woord in de taak moet uit een kleine, vaste
+ *  reviewwoordenschat komen (of een onschuldige verwijzing zijn zoals WP2, #123, een pad). Eén onbekend
+ *  woord — welk woord dan ook — maakt het uitvoerend werk. Vergeet ik een legitiem reviewwoord, dan valt
+ *  een echte review ten onrechte af en vraagt iemand om herformulering; dat is de goede richting om in te
+ *  falen. */
+const REVIEW_WOORDEN = new Set([
+  'review', 'reviewing', 'reviewed', 'rereview', 're-review', 'code-review', 'codereview',
+  'verify', 'verifying', 'verification', 'validate', 'validating', 'validation',
+  'audit', 'auditing', 'inspect', 'inspecting', 'inspection', 'assess', 'assessing', 'assessment',
+  'check', 'checking', 'controleer', 'controle', 'beoordeel', 'beoordeling', 'nakijken', 'toets', 'toetsen',
+  'independent', 'onafhankelijk', 'onafhankelijke', 'of', 'the', 'a', 'an', 'de', 'het', 'een', 'van',
+  'and', 'en', 'op', 'in', 'for', 'voor', 'this', 'deze', 'dit', 'run', 'diff', 'patch', 'pr', 'commit',
+  'changes', 'wijzigingen', 'work', 'werk', 'package', 'pakket', 'only', 'alleen', 'read-only',
+]);
+const ONSCHULDIGE_VERWIJZING_RE = /^(?:wp[-_]?\d+|#\d+|[a-f0-9]{7,40}|[\w./-]+\.(?:js|cjs|mjs|ts|json|md)|\d+)$/i;
+function isReviewDispatch(e) {
+  if (!e || typeof e !== 'object') return false;
+  // Alleen gestructureerde rolvelden tellen — `note`/`goal` zijn narratief en beslissen hier niets meer.
+  const rolVelden = ['role', 'dispatch_role', 'purpose'].filter((f) => typeof e[f] === 'string' && e[f].trim() !== '');
+  if (!rolVelden.length) return false;
+  // Eén tegenstrijdig rolveld is genoeg om de reviewclaim te laten vervallen.
+  if (!rolVelden.every((f) => REVIEW_ROLE_RE.test(e[f].trim()))) return false;
+  // Zonder taak is onbekend waarvoor de agent is ingezet — dat is geen bewijs van review.
+  const taak = typeof e.task === 'string' ? e.task.trim() : '';
+  if (!taak) return false;
+  /** ALLOWLIST (R10-01): elk woord moet uit de reviewwoordenschat komen of een onschuldige verwijzing
+   *  zijn. Eén onbekend woord maakt het uitvoerend werk — ook een woord dat ik nooit heb bedacht. */
+  const woorden = taak.toLowerCase().split(/[\s,;:()[\]]+/).filter(Boolean);
+  if (!woorden.length) return false;
+  if (!woorden.some((w) => /review|verif|validat|audit|inspect|assess|controle|beoorde|toets|nakijk/.test(w))) return false;
+  return woorden.every((w) => REVIEW_WOORDEN.has(w) || ONSCHULDIGE_VERWIJZING_RE.test(w));
+}
+function isWorkEventType(type) {
+  return !NON_WORK_EVENT_TYPES.has(type) && !REVIEW_START_TYPES.has(type) && !REVIEW_DONE_TYPES.has(type);
+}
+/** isWorkEvent(e) — de EVENT-variant: kijkt ook naar de inhoud, want bij een dispatch bepaalt de opdracht
+ *  of het werk of review was. Alle andere types volgen puur hun type. */
+function isWorkEvent(e) {
+  const type = e && typeof e.event_type === 'string' ? e.event_type.toLowerCase() : '';
+  if (!type) return false;
+  if (IV_DISPATCH_TYPES.has(type)) return !isReviewDispatch(e);
+  return isWorkEventType(type);
+}
+/** Het CAUSALE reviewprotocol op eventtypes die de writer echt registreert (F-08). Een completion telt
+ *  alleen met een eerdere start van DEZELFDE reviewer onder hetzelfde review_id. */
+/** R5-06 (zelf gevonden bij het draaien van ronde 5):  hoort NIET in dit protocol.
+ *  forge-verify.cjs logt lead_review_completed juist BIJ EEN MISMATCH, als trigger voor rework — het is
+ *  een afkeuring, geen goedkeuring. Codex wees daar in R4-01 al op; ik had het type toen laten staan
+ *  omdat de verdict-eis het toch zou tegenhouden. Dat is te slim: een eventtype dat 'review afgerond'
+ *  heet maar 'er is werk mislukt' betekent, hoort geen kandidaat te zijn. Weg uit beide sets. */
+const REVIEW_START_TYPES = new Set(['review_started', 'codex_review_started']);
+const REVIEW_DONE_TYPES = new Set(['review_completed', 'codex_review_completed']);
+/** R4-01: alleen een EXPLICIET goedkeurend verdict telt. Bewust een korte, gesloten lijst: alles wat er
+ *  niet in staat — CHANGES_REQUIRED, blocked, of niets — is geen goedkeuring. */
+const POSITIEVE_REVIEW_VERDICTS = new Set(['pass', 'passed', 'approved', 'ok', 'akkoord', 'goedgekeurd']);
+/** Events die een eerdere review STALE maken (F-04): alles wat het beoordeelde subject nog kan veranderen. */
+// staleness volgt exact dezelfde definitie: alles wat het beoordeelde subject nog kan veranderen
+/** Staleness volgt de werkdefinitie, PLUS `owner_override` (R6-03, zesde herreview): een override kan een
+ *  ontbrekende contractregel rechtstreeks opheffen, waardoor het contract ná het oordeel van "niet klaar"
+ *  naar "klaar" verschuift zonder dat er ooit opnieuw is gekeken. De owner is daarmee géén uitvoerder —
+ *  hij hoort niet in de werkersverzameling — maar zijn ingreep maakt een eerdere review wel verouderd. */
+function isStalingEvent(e) {
+  const type = e && typeof e.event_type === 'string' ? e.event_type.toLowerCase() : '';
+  return type === 'owner_override' || isWorkEvent(e);
+}
+const SHA1_RE = /^[0-9a-f]{40}$/i;
+const SHA256_RE = /^[0-9a-f]{64}$/i;
+
+/** independentVerification(events, opts) -> {ok, route, workers, reviewer, reason, review}
+ *
+ *  HERBOUWD 2026-08-09 na een onafhankelijke Codex-review (VERDICT CHANGES_REQUIRED, F-01..F-10). De
+ *  eerste versie accepteerde drie routes die alle drie door de gecontroleerde partij zelf te vullen waren:
+ *   - `runtime:'codex'` in de eigen eventpayload  -> een worker riep zichzelf externe reviewer (F-01);
+ *   - vrije `verified_by:'wie dan ook'`           -> een verzonnen naam volstond (F-05);
+ *   - `codex_review`/`verify_result`              -> types die de strict writer niet eens kent (F-08).
+ *  Alle drie zijn VERWIJDERD, niet verzacht: caller-JSON is geen provenance. Wat overblijft is één route
+ *  die volledig uit de gelogde, hash-geketende werkelijkheid volgt:
+ *
+ *    een REVIEW-COMPLETION door een agent die géén werk deed in deze run, causaal gekoppeld aan zijn
+ *    EIGEN eerdere review-start onder hetzelfde review_id, gebonden aan het exacte subject, en niet stale.
+ *
+ *  SUBJECTBINDING (F-03) zonder externe aanroep: de log is hash-geketend, dus het `prev_hash` van het
+ *  completion-event IS per constructie de digest van de runstaat vlak vóór die review. Een review die
+ *  `subject_log_hash` draagt dat daarvan afwijkt, beoordeelde een andere staat en telt niet. `commit_sha`
+ *  moet aanwezig en welgevormd zijn; is de actuele commit bekend (opts.commitSha), dan moet hij exact
+ *  matchen. `evidence_digest` legt de bewijsset vast waarop het oordeel rust.
+ *
+ *  EERLIJKE GRENS (F-02, bewust NIET weggepoetst): dit scheidt op AGENTLABEL, niet op runtimeprincipal.
+ *  Er bestaat in deze codebase geen writer-gestempelde principal-identiteit — de writer is een CLI die de
+ *  aanroeper zelf start. Eén uitvoerder die twee geregistreerde labels voert, kan deze scheiding dus nog
+ *  steeds omzeilen. Echte provenance vereist dat de gateway een ondertekend dispatchreceipt stempelt; dat
+ *  raakt command-center/ en is OWNER-GATED. Tot die tijd rapporteert `label_only:true` deze grens mee, in
+ *  plaats van hem stil te verzwijgen. */
+/** isGoedkeuring(ev) -> {ok:true} of {ok:false, reden}. DE ENE definitie van "deze review keurde goed".
+ *  R7-05: er stonden er twee, en de zwakkere zat in de staleness-check — dus een latere afkeuring met een
+ *  leeg veld of `ok:"true"` telde daar niet als afkeuring terwijl de hoofdvalidator hem wél zou weigeren.
+ *  Twee ingangen naar hetzelfde oordeel die van elkaar verschillen, zijn erger dan één strenge. */
+const UITKOMST_VELDEN = ['review_verdict', 'verdict', 'status', 'result', 'outcome'];
+function isGoedkeuring(ev) {
+  const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
+  const aanwezig = UITKOMST_VELDEN.filter((f) => ev[f] !== undefined).map((f) => ({ f, v: norm(ev[f]) }));
+  if (!aanwezig.length) return { ok: false, reden: 'geen machineleesbaar review_verdict — een review zonder uitslag bevestigt niets' };
+  const leeg = aanwezig.filter((g) => g.v === '');
+  if (leeg.length) return { ok: false, reden: leeg.map((g) => g.f).join(', ') + ' is aanwezig maar LEEG — een uitspraak zonder inhoud is geen goedkeuring' };
+  const negatief = aanwezig.filter((g) => !POSITIEVE_REVIEW_VERDICTS.has(g.v));
+  if (negatief.length) return { ok: false, reden: 'de uitkomst is niet eenduidig goedgekeurd (' + negatief.map((g) => g.f + '="' + g.v + '"').join(', ') + ') — verwacht een van: ' + [...POSITIEVE_REVIEW_VERDICTS].join(', ') };
+  if (ev.ok !== undefined && ev.ok !== true) return { ok: false, reden: 'het event draagt ok=' + JSON.stringify(ev.ok) + ' — alleen de boolean true telt als goedkeuring' };
+  return { ok: true };
+}
+
+function independentVerification(events, opts) {
+  opts = opts || {};
+  const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
+  const list = Array.isArray(events) ? events : [];
+
+  const workers = new Set();
+  const anoniemWerk = [];
+  const starts = new Map(); // review_id -> {agent, index}
+  const completions = [];
+  let lastWorkIndex = -1;
+
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    if (!e || typeof e !== 'object' || typeof e.event_type !== 'string') continue;
+    const type = e.event_type.toLowerCase();
+    const agent = norm(e.agent);
+    /** N-01 (post-fix herreview): een work-event ZONDER agent viel stilzwijgend buiten de werkersverzameling.
+     *  Dat is de gevaarlijkste variant: de uitvoerder logt zijn werk anoniem, verdwijnt uit `workers`, en
+     *  keurt het daarna onder een naam goed. Anoniem werk maakt de onafhankelijkheid dus ONBEPAALBAAR —
+     *  fail-closed, niet onzichtbaar. */
+    if (isWorkEvent(e)) {
+      if (agent) workers.add(agent);
+      else anoniemWerk.push(type);
+    }
+    if (isStalingEvent(e)) lastWorkIndex = i;
+    if (REVIEW_START_TYPES.has(type)) {
+      const id = typeof e.review_id === 'string' ? e.review_id.trim() : '';
+      /** R3-03: een review_id dat twee keer als start voorkomt is ambigu — welke van de twee hoort bij
+       *  welke completion? Volgorde-afhankelijke uitkomsten zijn precies wat een poort niet mag hebben,
+       *  dus zo'n id wordt vergiftigd in plaats van "de eerste wint". */
+      if (id) starts.has(id) ? starts.get(id).dubbel = true : starts.set(id, { agent, index: i });
+    } else if (REVIEW_DONE_TYPES.has(type)) {
+      completions.push({ ev: e, agent, index: i });
+    }
+  }
+
+  const base = { workers: [...workers], label_only: true };
+  /** R3-02 (derde herreview): de registrycheck van de writer dekt maar een deel van de eventtypes en faalt
+   *  OPEN — ontbreekt de registry, dan geldt elke naam als geregistreerd. Een uitvoerder kon zijn werk dus
+   *  onder "Phantom Worker" schrijven en het daarna onder een echt label goedkeuren. De poort toetst nu
+   *  zelf: elke werker en de reviewer moeten een BEKENDE naam dragen, en zonder registry is dat niet vast
+   *  te stellen — dan telt geen enkele verificatie (fail-closed, niet fail-open). */
+  if (opts.knownAgents !== undefined) {
+    if (!(opts.knownAgents instanceof Set) || opts.knownAgents.size === 0) {
+      return Object.assign({ ok: false, route: null, reason: 'de agentregistry kon niet worden gelezen, dus namen zijn niet te toetsen — fail-closed (een niet te verifieren identiteit is geen identiteit)' }, base);
+    }
+    const onbekendeWerkers = [...workers].filter((w) => !opts.knownAgents.has(w));
+    if (onbekendeWerkers.length) {
+      return Object.assign({ ok: false, route: null, reason: 'werk gelogd onder niet-geregistreerde naam/namen: ' + onbekendeWerkers.join(', ') + ' — wie dat was is niet vast te stellen, dus onafhankelijkheid evenmin' }, base);
+    }
+  }
+  if (anoniemWerk.length) {
+    return Object.assign({ ok: false, route: null, reason: 'er is werk gelogd ZONDER agent (' + [...new Set(anoniemWerk)].join(', ') + ') — wie het deed is dan onbekend, dus onafhankelijkheid is onbepaalbaar (fail-closed)' }, base);
+  }
+  if (!workers.size) {
+    // F-06: geen enkel toegelaten werk-event — ook wanneer de run vol notities of lifecycle-events staat,
+    // en ook wanneer de strict writer alle werk-events weigerde (die staan dan simpelweg niet in de log).
+    return Object.assign({ ok: false, route: null, reason: 'geen enkel toegelaten work-event in deze run — er is niets om onafhankelijk van te zijn (lifecycle-, notitie- en audit-events tellen niet als werk)' }, base);
+  }
+  if (!completions.length) {
+    return Object.assign({ ok: false, route: null, reason: 'geen review-completion in deze run — verwacht ' + [...REVIEW_DONE_TYPES].join('/') + ' met review_id, subject_log_hash, commit_sha en evidence_digest, gelogd door een agent die hier geen werk deed' }, base);
+  }
+
+
+  /** R8-02 (achtste herreview): elke completion gaat nu door EEN volledige protocolvalidator, en het
+   *  resultaat wordt bewaard. Vroeger stopte de lus bij de eerste geldige completion, waardoor een
+   *  latere ONGELDIGE completion (hergebruikt review_id, verkeerde commit, ontbrekende start) onzichtbaar
+   *  bleef: alleen een expliciet NEGATIEF verdict werd nog gezien. Een ongeldige review na een
+   *  goedkeuring is net zo goed een signaal dat er iets niet klopt. Startconsumptie gebeurt in deze ene
+   *  pass, dus precies een keer per completion — ongeacht de uitkomst.
+   *  Geen vroege return meer: eerst alles beoordelen, dan pas oordelen. */
+  function valideerCompletion(c) {
+    const e = c.ev;
+    const id = typeof e.review_id === 'string' ? e.review_id.trim() : '';
+    const subjectLogHash = typeof e.subject_log_hash === 'string' ? e.subject_log_hash.trim() : '';
+    const commitSha = typeof e.commit_sha === 'string' ? e.commit_sha.trim() : '';
+    const evidenceDigest = typeof e.evidence_digest === 'string' ? e.evidence_digest.trim() : '';
+    const noem = e.event_type + '#' + (id || 'zonder-review_id');
+
+    /** R5-04 (vijfde herreview): de consumptie stond NA de verdict- en reviewercontroles, dus een
+     *  afgekeurde poging verbruikte niets — start -> CHANGES_REQUIRED -> approved werkte gewoon op
+     *  dezelfde start. Ik had in de vorige ronde geclaimd dat dit al opgelost was; dat was onjuist.
+     *  De koppeling wordt daarom als EERSTE bepaald en de start onmiddellijk verbruikt: één start hoort
+     *  bij één afrondingspoging, ongeacht de uitkomst daarvan. */
+    if (!id) { return { ok: false, reden: 'mist review_id, dus er is geen causale koppeling met een review-start' }; }
+    const start = starts.get(id);
+    if (!start) { return { ok: false, reden: 'er bestaat geen review-start met dit review_id' }; }
+    if (start.dubbel) { return { ok: false, reden: 'dit review_id komt meer dan eens als start voor — ambigu, dus onbruikbaar als causale koppeling' }; }
+    if (start.consumed) { return { ok: false, reden: 'deze review-start is al door een eerdere completion gebruikt — één start hoort bij één afronding' }; }
+    start.consumed = true;
+    if (!c.agent) { return { ok: false, reden: 'geen agent op het completion-event' }; }
+    /** R4-01 (vierde herreview) — het pijnlijkste gat van allemaal: de poort keek of er EEN review was,
+     *  niet of die review POSITIEF eindigde. Een `review_completed` met verdict CHANGES_REQUIRED telde
+     *  dus als bevestiging van afronding. Erger nog: forge-verify.cjs emitteert `lead_review_completed`
+     *  juist bij FOUTEN ("Never marks anything done"), dus een afkeuring bevestigde de afronding.
+     *  Een review zonder expliciet, machineleesbaar positief verdict bewijst niets — en het ontbreken
+     *  van dat veld is geen "waarschijnlijk goed", maar fail-closed. */
+    /** R5-02 (vijfde herreview): `review_verdict` won altijd van `verdict`, en alleen exact `ok:false`
+     *  werd bekeken. Een event met review_verdict:"approved" naast verdict:"CHANGES_REQUIRED",
+     *  status:"failed", outcome:"blocked" en ok:"false" kwam er dus doorheen. Nu telt ELK uitkomstveld
+     *  mee en moet het beeld eenduidig positief zijn: één afwijkend of tegenstrijdig veld is genoeg om
+     *  te weigeren. Tegenstrijdigheid is geen detail — het is precies hoe je een afkeuring verstopt. */
+    /** R6-08 (zesde herreview): LEGE waarden werden genegeerd, dus `review_verdict:"approved", ok:""`
+     *  kwam erdoor — terwijl ik claimde dat ieder AANWEZIG uitkomstveld ondubbelzinnig positief moet
+     *  zijn. Een leeg veld is geen afwezig veld: het is een aanwezige uitspraak zonder inhoud, en dat is
+     *  geen goedkeuring. Aanwezig ⇒ niet-leeg ⇒ positief; en `ok` moet exact de boolean true zijn. */
+    const oordeel = isGoedkeuring(e);
+    if (!oordeel.ok) { return { ok: false, reden: noem + ': ' + oordeel.reden }; }
+    if (opts.knownAgents instanceof Set && opts.knownAgents.size && !opts.knownAgents.has(c.agent)) { return { ok: false, reden: 'de reviewer "' + c.agent + '" staat niet in de agentregistry — een naam die niemand kent bewijst geen tweede partij' }; }
+    if (workers.has(c.agent)) { return { ok: false, reden: 'de reviewer (' + c.agent + ') deed in deze run zelf werk — dat is zelf-goedkeuring' }; }
+    if (start.index >= c.index) { return { ok: false, reden: 'de review-start staat NA de completion — geen causale volgorde' }; }
+    if (start.agent !== c.agent) { return { ok: false, reden: 'de start is van ' + (start.agent || '(naamloos)') + ' maar de completion van ' + c.agent + ' — een review sluit je zelf af' }; }
+    /** N-05 (post-fix herreview): de start moet NA al het werk liggen dat aan deze completion voorafgaat.
+     *  Zonder die eis werkte hergebruik van een review_id: work → start → complete → NIEUW werk →
+     *  nogmaals complete. Die tweede completion leunde op dezelfde oude start en gold weer als geldig,
+     *  terwijl er intussen werk bij was gekomen. Eén regel dekt replay, ID-hergebruik én "verse review
+     *  vereist na nieuw werk": een review die begon vóór het werk kan dat werk niet beoordeeld hebben. */
+    const werkVoorDeze = list.slice(0, c.index).reduce((max, x, idx) => (x && typeof x === 'object' && typeof x.event_type === 'string' && isWorkEvent(x) ? idx : max), -1);
+    if (start.index < werkVoorDeze) { return { ok: false, reden: 'de review-start ligt VOOR werk dat daarna nog kwam (' + list[werkVoorDeze].event_type + ') — die review kan dat werk niet beoordeeld hebben; open een verse review' }; }
+    if (!subjectLogHash) { return { ok: false, reden: 'mist subject_log_hash, dus het oordeel is aan geen enkele runstaat gebonden' }; }
+    const prev = typeof e.prev_hash === 'string' ? e.prev_hash.trim() : '';
+    if (!prev) { return { ok: false, reden: 'het event draagt geen prev_hash — subjectbinding is niet verifieerbaar op een ongeketende log' }; }
+    if (subjectLogHash !== prev) { return { ok: false, reden: 'subject_log_hash (' + subjectLogHash.slice(0, 12) + '…) wijkt af van de werkelijke runstaat bij dit event (' + prev.slice(0, 12) + '…) — er is een ANDERE staat beoordeeld' }; }
+    /** Zonder deze koppeling zou `prev_hash === subject_log_hash` te vervullen zijn door BEIDE zelf te
+     *  verzinnen. De keten is de enige partij die dit niet kan liegen: prev_hash moet exact de entry_hash
+     *  van het voorgaande event zijn. Is de log helemaal niet geketend, dan is subjectbinding onbewijsbaar
+     *  en weigeren we — fail-closed, geen zachte route voor "log zonder keten". */
+    /** N-06 (post-fix herreview): "zoek achteruit naar enig eerder entry_hash" liet een ONMIDDELLIJKE
+     *  voorganger zonder hash toe — dan sluit prev_hash aan op een event dat twee plekken terug ligt en is
+     *  de keten in werkelijkheid onderbroken. Het moet exact de directe voorganger zijn, met een
+     *  welgevormde sha256. */
+    const vorige = c.index > 0 ? list[c.index - 1] : null;
+    const vorigeHash = vorige && typeof vorige === 'object' && typeof vorige.entry_hash === 'string' ? vorige.entry_hash.trim() : '';
+    if (!SHA256_RE.test(vorigeHash)) { return { ok: false, reden: 'de directe voorganger draagt geen welgevormde entry_hash — de keten is hier onderbroken, dus subject_log_hash is door de aanroeper zelf te verzinnen' }; }
+    if (vorigeHash !== prev) { return { ok: false, reden: 'prev_hash sluit niet aan op de directe voorganger (verwacht ' + vorigeHash.slice(0, 12) + '…) — het event is losgekoppeld van de runstaat' }; }
+    if (!SHA1_RE.test(commitSha)) { return { ok: false, reden: 'commit_sha ontbreekt of is niet welgevormd — onbekend welke code beoordeeld is' }; }
+    /** N-02 (post-fix herreview): een vormcontrole zonder vergelijking is geen binding — élke geldige
+     *  40-hex waarde kwam erdoor. Nu FAIL-CLOSED: is de actuele HEAD niet vast te stellen, dan kan de
+     *  commitbinding niet worden getoetst en telt de review niet. Liever geen verificatie dan een
+     *  verificatie waarvan niemand weet waarop hij sloeg. */
+    if (!opts.commitSha) { return { ok: false, reden: 'de actuele HEAD kon niet worden vastgesteld, dus commit_sha is niet te toetsen — fail-closed' }; }
+    if (norm(commitSha) !== norm(opts.commitSha)) { return { ok: false, reden: 'beoordeelde commit ' + commitSha.slice(0, 12) + '… is niet de actuele commit ' + String(opts.commitSha).slice(0, 12) + '…' }; }
+    if (!SHA256_RE.test(evidenceDigest)) { return { ok: false, reden: 'evidence_digest ontbreekt of is niet welgevormd — onbekend welke bewijsset beoordeeld is' }; }
+    /** N-03: vorm is geen binding. Zonder herberekening voldeed élke 64-hex waarde en sloeg het oordeel
+     *  nergens op. De digest wordt nu tegen de CANONIEKE bewijsset van deze run gelegd; ontbreekt die set,
+     *  dan is er niets om aan te binden en telt de review niet — fail-closed, geen zachte route. */
+    if (!opts.evidenceDigest) { return { ok: false, reden: 'er is geen bewijsset (gate-evidence.json) voor deze run, dus evidence_digest is nergens aan te binden — fail-closed' }; }
+    if (norm(evidenceDigest) !== norm(opts.evidenceDigest)) { return { ok: false, reden: 'beoordeelde bewijsset ' + evidenceDigest.slice(0, 12) + '… is niet de actuele (' + String(opts.evidenceDigest).slice(0, 12) + '…) — het bewijs is sinds de review veranderd' }; }
+    if (opts.evidenceAllGreen === false) { return { ok: false, reden: 'de bewijsset bevat gefaalde poort(en) (' + (opts.evidenceFailed || []).join(', ') + ') — een goedkeuring bovenop rood bewijs bevestigt niets' }; }
+    /** R9-02 (negende herreview): de canonicalizer LEVERDE de gatecommit al, maar check() gaf hem niet
+     *  door — dus niets vergeleek waarop het bewijs draaide met de commit die beoordeeld wordt. Een run
+     *  kon zo groen zijn met bewijs van heel andere code. Zit de commit in de bewijsset, dan moet hij
+     *  gelijk zijn aan de commit die deze review claimt te beoordelen. */
+    if (opts.evidenceCommit && norm(opts.evidenceCommit) !== norm(commitSha)) { return { ok: false, reden: 'het bewijs draaide op commit ' + String(opts.evidenceCommit).slice(0, 12) + '… maar de review claimt commit ' + commitSha.slice(0, 12) + '… — bewijs en oordeel gaan over verschillende code' }; }
+    if (lastWorkIndex > c.index) { return { ok: false, reden: 'er is NA deze review nog werk gelogd (' + (list[lastWorkIndex].event_type) + ') — de review is stale' }; }
+
+    return {
+      ok: true,
+      review: { review_id: id, commit_sha: commitSha, subject_log_hash: subjectLogHash, evidence_digest: evidenceDigest },
+      reviewer: c.agent,
+      reden: 'review ' + id + ' afgerond door ' + c.agent + ' (deed zelf geen werk), gekoppeld aan zijn eigen start, gebonden aan commit ' + commitSha.slice(0, 12) + '… en runstaat ' + subjectLogHash.slice(0, 12) + '…, en niet stale',
+    };
+  }
+  const beoordeeld = completions.map((c) => ({ c, res: valideerCompletion(c) }));
+  const afgewezenRedenen = beoordeeld.filter((x) => !x.res.ok).map((x) => x.c.ev.event_type + '#' + (x.c.ev.review_id || 'zonder-review_id') + ': ' + x.res.reden);
+  /** R9-07 (negende herreview) — REGRESSIE UIT MIJN EIGEN R8-02-FIX. Ik verankerde het oordeel aan de
+   *  EERSTE geldige goedkeuring en blokkeerde daarna op elke latere ongeldige completion. Gevolg:
+   *  `goedkeuring -> ongeldig -> verse start -> geldige goedkeuring` bleef rood, terwijl mijn eigen
+   *  foutmelding letterlijk zegt "open een verse review". Een gate die de voorgeschreven herstelweg
+   *  afsluit, dwingt geen kwaliteit af maar blokkeert werk.
+   *  Nu telt de LAATSTE completion: die bepaalt de eindstand. Is die geldig, dan is de run geverifieerd;
+   *  is die ongeldig of afkeurend, dan niet — ongeacht wat ervoor stond. Herstel is daarmee mogelijk
+   *  zonder dat een oude goedkeuring een nieuwere afkeuring kan overstemmen. */
+  const laatste = beoordeeld.length ? beoordeeld[beoordeeld.length - 1] : null;
+  if (laatste && laatste.res.ok) {
+    const c = laatste.c;
+    return Object.assign({ ok: true, route: 'causal-review', reviewer: c.agent, review: laatste.res.review, reason: laatste.res.reden }, base);
+  }
+  if (laatste && beoordeeld.some((x) => x.res.ok)) {
+    return Object.assign({ ok: false, route: null, reason: 'de LAATSTE review-completion is niet geldig (' + laatste.c.ev.event_type + ' door ' + (laatste.c.agent || '(naamloos)') + ': ' + laatste.res.reden + ') — een eerdere goedkeuring telt niet meer; sluit af met een geldige verse review' }, base);
+  }
+  return Object.assign({ ok: false, route: null, reason: 'geen bruikbare review-completion: ' + afgewezenRedenen.join(' | ') }, base);
+}
+
+/** sanitizeIv — alleen wat een lezer nodig heeft om te begrijpen WAAROM, nooit ruwe eventpayloads:
+ *  daar kan vrije tekst (paden, commando's, output) in staan die niet in een contractuitslag hoort. */
+function sanitizeIv(iv) {
+  const kort = (s) => String(s == null ? '' : s).slice(0, 400);
+  return {
+    ok: iv.ok === true, route: iv.route || null, workers: (iv.workers || []).slice(0, 20),
+    reviewer: iv.reviewer || null, label_only: iv.label_only === true,
+    review: iv.review ? {
+      review_id: kort(iv.review.review_id),
+      commit_sha: kort(iv.review.commit_sha),
+      subject_log_hash: kort(iv.review.subject_log_hash),
+      evidence_digest: kort(iv.review.evidence_digest),
+    } : null,
+    reason: kort(iv.reason),
+  };
+}
+
+/** resolveHeadCommit(root) -> 40-hex sha of null.
+ *
+ *  GEMETEN FOUT (post-fix herreview 2026-08-09, N-02): de eerste versie stond inline in de CLI en
+ *  verwees naar een variabele `root` die daar niet bestaat. Dat gooide een ReferenceError, die door de
+ *  eigen `catch {}` STIL werd opgeslokt — commitSha bleef null en de HEAD-vergelijking heeft nooit
+ *  gedraaid, terwijl ik hem als werkend rapporteerde. Twee lessen, hier vastgelegd: (1) een catch die
+ *  een programmeerfout niet onderscheidt van een verwachte omgevingsfout maakt een bug onzichtbaar;
+ *  (2) een pad dat alleen in productie loopt heeft een eigen test nodig. Daarom is dit nu een
+ *  geëxporteerde functie met een expliciete parameter, en gooit een ReferenceError/TypeError door
+ *  in plaats van te verdwijnen. */
+/** canonicalEvidenceDigest(root, runId) -> {digest, gates} of null.
+ *
+ *  N-03 (post-fix herreview 2026-08-09): `evidence_digest` werd alleen op VORM gecontroleerd — elke
+ *  willekeurige 64-hex waarde voldeed, dus de review was aan geen enkel werkelijk bewijs gebonden. Een
+ *  digest die niets samenvat is een placeholder, geen binding.
+ *
+ *  De canonieke vorm is bewust MINIMAAL en stabiel: per poort alleen `name`, `exit_code` en
+ *  `output_sha256`, gesorteerd op naam. Timestamps, duur en paden horen er NIET in — die veranderen bij
+ *  elke herhaling zonder dat het bewijs verandert, en zouden de digest onbruikbaar maken. Wat er wél in
+ *  zit is precies wat een oordeel draagt: welke poort, of hij slaagde, en de hash van zijn uitvoer. */
+function canonicalEvidenceDigest(root, runId) {
+  const file = path.join(root, '.claude', 'forge-runs', runId, 'gate-evidence.json');
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  let j;
+  try { j = JSON.parse(raw); } catch { return null; }
+  const gates = Array.isArray(j && j.gates) ? j.gates : null;
+  if (!gates || !gates.length) return null;
+  /** R3-04 (derde herreview): zonder schemavalidatie leverde zelfs `{gates:[{}]}` een bruikbare digest —
+   *  een betekenisloze bewijsset ging dan door voor exact gebonden bewijs. Elke poort moet een niet-lege
+   *  UNIEKE naam, een integer exitcode en een welgevormde sha256 dragen; anders is er geen bewijsset en
+   *  telt de review niet. Duplicaatnamen zijn expliciet fataal: die maken de sortering ambigu, waardoor
+   *  dezelfde inhoud twee verschillende digests kan opleveren. */
+  /** R6-05 (zesde herreview): de canonicalizer keek alleen naar naam, exitcode en een ZELFGERAPPORTEERDE
+   *  output-hash. Een poort die is afgekapt (`timed_out`), nooit gestart (`spawn_error`) of waarvan de
+   *  recorder de hash niet kon herverifiëren (`evidence_verified:false`) telde gewoon mee als bewijs. Ook
+   *  het `run_id` in het manifest werd niet vergeleken, dus de bewijsset van een ANDERE run paste net zo
+   *  goed. Al die gevallen zijn nu fataal: liever geen bewijsset dan een bewijsset die iets anders
+   *  beschrijft dan wat er gedraaid heeft. */
+  /** R7-06 (zevende herreview): `run_id` was OPTIONEEL, dus oud of cross-run bewijs kon worden hergebruikt
+   *  door het veld simpelweg weg te laten. En de codepin die ik in het vorige blok toevoegde was voor de
+   *  contractlogica puur decoratief: hij zat niet in de digest, dus dezelfde poorten op andere code gaven
+   *  dezelfde digest. Beide zijn nu bindend: run_id verplicht en exact, en de commit per poort telt mee in
+   *  de canonieke vorm — ander bewijs op andere code is dan ook een andere digest. */
+  if (String(j.run_id || '') !== String(runId)) return null;
+  const namen = new Set();
+  const canon = [];
+  for (const g of gates) {
+    if (!g || typeof g !== 'object') return null;
+    const name = typeof g.name === 'string' ? g.name.trim() : '';
+    if (!name || namen.has(name)) return null;
+    /** R10-03 (tiende herreview): een handgeschreven `noop`-poort ZONDER command en zonder outputbestand
+     *  leverde een groene digest — de canonicalizer accepteerde elk zelfbenoemd record. Een poort zonder
+     *  command is geen uitgevoerde poort, en een poort zonder outputverwijzing heeft geen verifieerbare
+     *  uitvoer. Beide zijn nu verplicht. (Een volledige VERWACHTE gatecatalogus per domein hoort bij de
+     *  Quality-laag / required-evidence-integratie — daar wordt afgedwongen WELKE poorten er moeten zijn;
+     *  hier wordt afgedwongen dat elke aanwezige poort echt en verifieerbaar is.) */
+    const heeftCommand = (typeof g.command === 'string' && g.command.trim() !== '')
+      || (Array.isArray(g.argv) && g.argv.length > 0);
+    if (!heeftCommand) return null;
+    if (typeof g.output_file !== 'string' || g.output_file.trim() === '') return null;
+    namen.add(name);
+    if (!Number.isInteger(g.exit_code)) return null;
+    if (g.timed_out === true) return null;              // afgekapt = geen uitslag
+    if (g.spawn_error) return null;                     // nooit gedraaid = geen bewijs
+    if (g.evidence_verified !== true) return null;      // R7-06: alleen een EXPLICIET bevestigde hash telt
+    /** R9-05: `evidence_verified` is het woord van de RECORDER. Ligt de ruwe uitvoer er nog, dan
+     *  controleert de poort dat zelf — een manifest dat niet meer bij zijn eigen bestanden past, is geen
+     *  bewijs. Ontbreekt het bestand (gitignored, andere machine), dan blijft het manifest de enige bron;
+     *  dat is een bewuste beperking, geen stilzwijgend vertrouwen. */
+    if (typeof g.output_file === 'string' && g.output_file) {
+      try {
+        const opSchijf = fs.readFileSync(path.join(root, g.output_file), 'utf8');
+        if (crypto.createHash('sha256').update(opSchijf, 'utf8').digest('hex') !== String(g.output_sha256).trim().toLowerCase()) return null;
+      } catch { /* bestand is er niet meer — het manifest blijft de bron, zie commentaar hierboven */ }
+    }
+    const sha = typeof g.output_sha256 === 'string' ? g.output_sha256.trim().toLowerCase() : '';
+    if (!/^[0-9a-f]{64}$/.test(sha)) return null;
+    /** R8-03 (achtste herreview): `code.commit` werd wél aan de digest toegevoegd maar niet VERPLICHT of
+     *  gevalideerd — probes leverden groene digests voor ontbrekende code, `commit:"not-a-sha"` en
+     *  `worktree_clean:false`. Een codepin die je niet afdwingt, bindt niets. Een poort telt nu alleen mee
+     *  met een stabiele meting, een welgevormde commit én een schone bron: bewijs dat op bewegende of
+     *  ongecommitte code draaide, kan niet aan die code worden opgehangen. */
+    const code = g.code;
+    if (!code || typeof code !== 'object') return null;
+    if (code.stable !== true) return null;
+    const commit = typeof code.commit === 'string' ? code.commit.trim().toLowerCase() : '';
+    if (!/^[0-9a-f]{40}$/.test(commit)) return null;
+    if (code.worktree_clean !== true) return null;
+    canon.push({ name, exit_code: g.exit_code, output_sha256: sha, commit });
+  }
+  canon.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  /** R5-03 (vijfde herreview): de digest vatte ook een RODE bewijsset samen, en de evaluator keek alleen
+   *  of hij matchte — een positieve review kon dus een run met een gefaalde poort bevestigen en
+   *  finaliseren. De digest blijft bewust over ALLE poorten gaan (anders is hij geen eerlijke
+   *  samenvatting van wat er gedraaid heeft), maar een completion eist daarnaast dat elke poort groen is. */
+  const rood = canon.filter((g) => g.exit_code !== 0).map((g) => g.name);
+  /** R8-03: poorten die op VERSCHILLENDE commits draaiden vormen samen geen bewijs over één staat. */
+  const commits = [...new Set(canon.map((g) => g.commit))];
+  if (commits.length > 1) return null;
+  return { digest: crypto.createHash('sha256').update(JSON.stringify(canon)).digest('hex'), gates: canon.length, allGreen: rood.length === 0, failed: rood, commit: commits[0] || null };
+}
+
+/** knownAgentNames(root) -> Set van gecanonicaliseerde, BEKENDE agentnamen (registry + .claude/agents/*.md
+ *  + de generieke rollen), of null wanneer er geen registry te lezen is. null betekent fail-closed bij de
+ *  aanroeper — niet 'dan maar iedereen toestaan' (R3-02). */
+function knownAgentNames(root) {
+  const namen = new Set(['lead', 'boss', 'orchestrator', 'system', 'forge-router', 'main', 'codex']);
+  let uitRegistry = 0;
+  try {
+    const raw = fs.readFileSync(path.join(root, '.claude', 'config', 'agents', 'agent-registry.json'), 'utf8');
+    for (const m of raw.matchAll(/"(?:name|id)"\s*:\s*"([^"]+)"/g)) { namen.add(m[1].trim().toLowerCase()); uitRegistry++; }
+  } catch { return null; }
+  if (!uitRegistry) return null;
+  try {
+    for (const f of fs.readdirSync(path.join(root, '.claude', 'agents'))) {
+      if (f.endsWith('.md')) { const n = f.replace(/\.md$/, '').toLowerCase(); namen.add(n); namen.add(n.replace(/-/g, ' ')); }
+    }
+  } catch { /* geen agents-map is geen fout: de registry is de bron */ }
+  return namen;
+}
+
+function resolveHeadCommit(root) {
+  if (typeof root !== 'string' || !root) throw new TypeError('resolveHeadCommit: root moet een pad zijn, kreeg ' + typeof root);
+  let g;
+  try {
+    const { spawnSync } = require('child_process'); // lazy: een kale check() blijft puur
+    g = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+  } catch (e) {
+    /** R5-09 (vijfde herreview): hier stond een allowlist van DOORGOOI-fouten (ReferenceError/TypeError),
+     *  waardoor elke ANDERE onverwachte uitzondering stil naar null degradeerde — precies de vorm die
+     *  R3-01 leerde te vermijden. Nu omgekeerd: alleen het bekende, verwachte geval (git bestaat niet)
+     *  degradeert; al het onverwachte gaat door, zodat een bug zichtbaar blijft. */
+    if (e && (e.code === 'ENOENT' || e.code === 'EACCES')) return null;
+    throw e;
+  }
+  if (!g || g.status !== 0) return null; // geen git-repo (of git faalde) — eerlijke beperking
+  const s = String(g.stdout || '').trim();
+  return /^[0-9a-f]{40}$/i.test(s) ? s : null;
+}
+
 function checkSatisfied(rule, ctx) {
   const c = rule.check;
   let satisfied = false;
   if (c.type === 'event-present') satisfied = hasEvent(ctx.events, c.key);
+  else if (c.type === 'independent-verification') {
+    const iv = independentVerification(ctx.events, { commitSha: ctx.commitSha, evidenceDigest: ctx.evidenceDigest, evidenceAllGreen: ctx.evidenceAllGreen, evidenceFailed: ctx.evidenceFailed, evidenceCommit: ctx.evidenceCommit, knownAgents: ctx.knownAgents });
+    satisfied = iv.ok;
+    ctx._independentVerification = iv; // reden meegeven aan de rapportage (F-12)
+  }
   else if (c.type === 'artifact-present') satisfied = hasArtifact(ctx.artifacts, c.key);
   else if (c.type === 'doctor-check') satisfied = hasDoctorRun(ctx.events);
 
@@ -537,9 +1155,13 @@ function check(params, opts) {
   const eventsPath = opts.eventsPath || path.join(runDir, 'events.jsonl');
   const artifactsDir = path.dirname(eventsPath);
 
-  const events = readEventsJsonl(eventsPath);
+  const events = readEventsJsonl(eventsPath, params.run_id);
   const artifacts = listRunArtifacts(artifactsDir);
-  const meta = loadRulesMeta(opts.rulesPath);
+  /** R6-06 (zesde herreview): `opts.root` stuurde run, registry, bewijs en HEAD, maar NIET de regelset —
+   *  die viel terug op het `__dirname`-gebonden RULES_PATH van de installatie. `--root project-B` kon
+   *  daardoor events uit B beoordelen tegen de regels van A en CONTRACT OK geven. De E2E verborg dat
+   *  juist, omdat die het script naar de tijdelijke root kopieert. Eén root bepaalt nu ook de regels. */
+  const meta = loadRulesMeta(opts.rulesPath || path.join(root, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'));
   const rulesData = meta.data;
   const rules = rulesData.rules;
   const ownerAllowlist = loadOwnerAllowlist(rulesData, opts);
@@ -563,10 +1185,42 @@ function check(params, opts) {
     reason: 'unknown trigger "' + u.trigger + '" — this rules file is newer than forge-runcontract.cjs; rule skipped, not judged',
   }));
 
+  const ruleDetails = {};
+  /** R9-09/R9-06 (gehesen, R10): één HEAD-resolutie en één bewijsset-lezing voor de HELE check — niet
+   *  per regel opnieuw. De velden gaan ook mee in het resultaat (ruleset_sha256_used e.d.), dus ze
+   *  moeten buiten de lus leven. */
+  const effectieveCommit = params.commit_sha !== undefined ? params.commit_sha : resolveHeadCommit(root);
+  const evidenceSet = canonicalEvidenceDigest(root, params.run_id);
   for (const rule of rules) {
     if (unknownTriggerIds.has(rule.id)) continue;
-    if (!ruleApplies(rule, domain, cx.level)) continue;
-    if (checkSatisfied(rule, { events, artifacts, domain })) { satisfied.push(rule.id); continue; }
+    if (!ruleApplies(rule, domain, cx.level)) {
+      /** F-09/punt 10: op L1 triggert deze regel niet. Stilzwijgen zou de gevaarlijkste uitkomst zijn —
+       *  een lezer (of dashboard) leest "geen missing rules" dan als "onafhankelijk geverifieerd". Daarom
+       *  expliciet NOT_APPLICABLE, zodat L1 nergens verificatie CLAIMT die niet heeft plaatsgevonden. */
+      if (rule.check && rule.check.type === 'independent-verification') {
+        ruleDetails['independent-verification'] = { ok: false, applicable: false, route: null, workers: [], reviewer: null, label_only: true, review: null, reason: 'NOT_APPLICABLE — deze regel geldt vanaf ' + rule.trigger + ' en deze run is ' + cx.level + '; er is dus GEEN onafhankelijke verificatie vastgesteld (dat is iets anders dan geslaagd)' };
+      }
+      continue;
+    }
+    /** F-12: de evaluator schreef zijn reden naar een WEGGEGOOIDE ctx, dus een rood contract toonde
+     *  alleen de regel-ID — niet welke workers/reviewer of welke stale binding het afkeurde. Eén ctx die
+     *  blijft leven, en de gesaneerde uitkomst gaat mee in `result.rule_details`. */
+    /** R9-09 (negende herreview): alleen de CLI resolveerde HEAD. Productie-aanroepers (server.cjs,
+     *  forge-doctor) riepen check() zonder commit_sha aan, waarna een TOEPASSELIJKE onafhankelijke
+     *  verificatie altijd fail-closed rood werd — de poort blokkeerde dus op een detail van de
+     *  aanroeper in plaats van op de werkelijkheid. check() resolveert nu zelf wanneer de aanroeper
+     *  niets meegeeft; expliciet meegeven blijft winnen (tests kunnen zo een vaste commit forceren). */
+
+    /** R9-06: de canonicalizer werd DRIE KEER aangeroepen voor digest, allGreen en failed — drie losse
+     *  lezingen van een bestand dat tussendoor kan wijzigen. Nu een keer lezen en dat ene resultaat
+     *  gebruiken, zodat de drie velden gegarandeerd bij dezelfde bewijsset horen. */
+
+    const ruleCtx = { events, artifacts, domain, commitSha: effectieveCommit || null, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
+    if (checkSatisfied(rule, ruleCtx)) {
+      if (ruleCtx._independentVerification) ruleDetails['independent-verification'] = sanitizeIv(ruleCtx._independentVerification);
+      satisfied.push(rule.id); continue;
+    }
+    if (ruleCtx._independentVerification) ruleDetails['independent-verification'] = sanitizeIv(ruleCtx._independentVerification);
 
     // V9-fix (DEFECT 2): a rule flagged cannot_override:true is NEVER even eligible for the override lookup —
     // not "eligible but never matched", genuinely never consulted, so no future change to findOwnerOverride()
@@ -582,11 +1236,20 @@ function check(params, opts) {
 
   const result = {
     ok: missing.length === 0, run_id: params.run_id, domain, satisfied, missing, warnings, overridden,
+    // F-12: waarom een keyloze check faalde/slaagde, gesaneerd — anders toont een rood contract alleen een ID
+    rule_details: ruleDetails,
     // complexity_* is reported on EVERY result, even when no rule is scoped to it — a caller must always be
     // able to see which level a verdict was reached at, and whether that level was declared or only derived.
     complexity: cx.level, complexity_source: cx.source, complexity_declared: cx.declared,
     complexity_derived: cx.derived, complexity_units: cx.units,
     unevaluated,
+    /** R10-04: wat DIT proces werkelijk las. Een aanroeper (finalize) kan zelf alleen eindpunten
+     *  vergelijken; het venster waarin dit kind las blijft dan onzichtbaar (A→B→A). Door de gebruikte
+     *  hashes in het resultaat te rapporteren, kan finalize zijn eigen pins tegen de WERKELIJK
+     *  beoordeelde staat leggen in plaats van tegen een herlezenaanname. */
+    ruleset_sha256_used: meta.sha256 || null,
+    evidence_digest_used: (evidenceSet || {}).digest || null,
+    evidence_commit_used: (evidenceSet || {}).commit || null,
   };
 
   // gate_evaluated proof event (2026-08-02, opt-in — the gap this closes: this checker existed, was
@@ -644,6 +1307,10 @@ function logGateEvaluated(result, opts) {
 }
 
 module.exports = {
+  independentVerification,
+  // geëxporteerd zodat tests kunnen AFDWINGEN dat elk gebruikt eventtype echt bij de writer geregistreerd
+  // staat (F-08) — een magic string die niemand kan loggen is een route die alleen op papier bestaat.
+  NON_WORK_EVENT_TYPES, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
   check, listRules, loadRules, loadRulesMeta, ruleApplies, checkSatisfied, findOwnerOverride, isMeaningfulReason, loadOwnerAllowlist,
   readEventsJsonl, listRunArtifacts, hasEvent, hasArtifact, logGateEvaluated,
   resolveComplexity, countUnits, levelFromUnits, declaredLevel, parseLevel, isValidTrigger, isWellFormedTrigger,
@@ -665,15 +1332,18 @@ function parseArgs(argv) {
     else if (a === '--complexity') opts.complexity = rest[++i];
     else if (a === '--json') opts.json = true;
     else if (a === '--log-event') opts.logEvent = true;
+    else if (a === '--finalize') opts.finalize = true;
   }
   return opts;
 }
 function printUsage() {
-  console.error('Usage: node forge-runcontract.cjs check --run <id> [--domain <d>] [--complexity L1|L2|L3|L4] [--root <projectRoot>] [--rules <path>] [--json] [--log-event]');
+  console.error('Usage: node forge-runcontract.cjs check --run <id> [--domain <d>] [--complexity L1|L2|L3|L4] [--root <projectRoot>] [--rules <path>] [--json] [--log-event] [--finalize]');
   console.error('  --complexity  raise the run\'s fan-out level (it is otherwise read from run.json and/or derived from real');
   console.error('                dispatch volume; this flag can only RAISE, never lower — see resolveComplexity())');
   console.error('  --rules       evaluate against a specific FORGE_HARD_RULES.json (default: this project\'s own)');
   console.error('  --log-event   also append a gate_evaluated proof event to the run (via log-event.cjs, one act)');
+  console.error('  --finalize    on a green contract, immediately run forge-finalize (the ONE authoritative DONE');
+  console.error('                receipt) and require it green too — the canonical completion path in one command');
 }
 
 if (require.main === module) {
@@ -688,7 +1358,17 @@ if (require.main === module) {
         if (opts.root) callOpts.root = opts.root;
         if (opts.rules) callOpts.rulesPath = opts.rules;
         if (opts.logEvent) callOpts.logEvent = true;
-        const result = check({ run_id: opts.run, domain: opts.domain, complexity: opts.complexity }, callOpts);
+        /** F-03: zonder de ACTUELE commit is `commit_sha` op een review een veld dat niemand controleert.
+         *  De CLI kent de werkbare boom, dus die levert hem aan. Geen git-repo (of git ontbreekt) =>
+         *  null: de evaluator eist dan nog steeds een welgevormde commit_sha op de review, maar kan hem
+         *  niet kruiselings toetsen — dat is een eerlijke beperking, geen stille goedkeuring. */
+        /** R4-04 (vierde herreview): `check()` valt zonder --root terug op DEFAULT_ROOT (de installatie
+         *  waarin dit script staat), maar de HEAD werd uit `process.cwd()` gehaald. Een absolute aanroep
+         *  vanuit repo B beoordeelde dan een run uit repo A tegen de HEAD van B — de commitbinding wees
+         *  naar de verkeerde geschiedenis. Eén effectieve root voor run, regels, registry, bewijs én HEAD. */
+        const effectiveRoot = callOpts.root ? path.resolve(callOpts.root) : DEFAULT_ROOT;
+        const commitSha = resolveHeadCommit(effectiveRoot);
+        const result = check({ run_id: opts.run, domain: opts.domain, complexity: opts.complexity, commit_sha: commitSha }, callOpts);
         // json-mode contract: `logged` must be present whenever --log-event was asked for, so a caller
         // can always distinguish "proof written" from "proof failed" from "proof not requested".
         if (opts.logEvent && !('logged' in result)) result.logged = { ok: false, reason: 'internal: check() did not report a logging outcome' };
@@ -704,7 +1384,15 @@ if (require.main === module) {
               (result.warnings.length ? ', ' + result.warnings.length + ' warning(s)' : '') + ')');
           } else {
             console.log('NOT DONE — ' + opts.run + ' is missing ' + result.missing.length + ' required rule(s):');
-            for (const m of result.missing) console.log('  ✗ MISSING ' + m);
+            /** N-09: de gesaneerde reden bestond al in `rule_details`, maar alleen de JSON-modus toonde
+             *  hem. Een operator die de gewone uitvoer las, zag "MISSING independent-verification" en
+             *  moest zelf raden of het zelf-goedkeuring, stale werk, een verkeerde commit of een
+             *  gebroken ketenbinding was. De reden staat er nu gewoon bij. */
+            for (const m of result.missing) {
+              console.log('  ✗ MISSING ' + m);
+              const d = result.rule_details && result.rule_details[m];
+              if (d && d.reason) console.log('      ↳ ' + String(d.reason).slice(0, 300));
+            }
           }
           console.log(cxLine);
           for (const w of result.warnings) console.log('  ⚠ warn: ' + w);
@@ -713,7 +1401,17 @@ if (require.main === module) {
           // the failure this degrade path exists to make visible.
           for (const u of result.unevaluated) console.log('  ⚠ unevaluated: ' + u.id + ' — ' + u.reason);
         }
-        process.exitCode = result.ok ? 0 : 3;
+        // r4 #7 (2026-08-07): het gezaghebbende eindverdict zit nu IN het completionpad — met --finalize
+        // eindigt een groen contract pas in exit 0 wanneer ook forge-finalize zijn digest-receipt schreef.
+        if (result.ok && opts.finalize) {
+          const finMod = require(path.join(__dirname, 'forge-finalize.cjs'));
+          const fin = finMod.finalize(opts.root ? path.resolve(opts.root) : path.resolve(__dirname, '..', '..'), opts.run);
+          if (opts.json) console.log(JSON.stringify({ finalize: fin.ok ? 'finalized' : 'refused', reason: fin.reason || null }));
+          else console.log(fin.ok ? '  ⇒ FINALIZED @ ' + fin.receipt.digest.slice(0, 16) + '…' + (fin.idempotent ? ' (idempotente herbevestiging)' : '') : '  ⇒ FINALIZE REFUSED — ' + fin.reason);
+          process.exitCode = fin.ok ? 0 : 3;
+        } else {
+          process.exitCode = result.ok ? 0 : 3;
+        }
       }
     } else {
       printUsage();

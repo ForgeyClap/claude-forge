@@ -96,17 +96,26 @@ function classifyRunDir(dir, name) {
   const hasRunJson = exists(runJsonPath), hasEvents = exists(eventsPath);
   if (!hasRunJson && !hasEvents) return { isRun: false, synthetic: false, recency: 0 };
   let synthetic = false;
+  // MALFORMED metadata is not the same as ABSENT metadata (Codex adversarial review #20, 2026-08-03).
+  // A truncated `{ "_demo": true` used to fail open: the parse threw, `synthetic` stayed false, and the
+  // demo could become "latest" again. Absent run.json = an ordinary run (many real runs have none);
+  // PRESENT-but-unparseable = we cannot tell what it is, so it is listed but never eligible for "latest".
+  let malformed = false;
   if (hasRunJson) {
     try {
       const j = JSON.parse(fs.readFileSync(runJsonPath, 'utf8'));
-      synthetic = j && (j._demo === true || j.synthetic === true);
-    } catch { /* unreadable run.json is not evidence of anything — treat as a normal run */ }
+      synthetic = !!(j && (j._demo === true || j.synthetic === true));
+    } catch { malformed = true; }
   }
-  let recency = 0;
-  for (const p of [eventsPath, runJsonPath, dir]) {
-    try { const t = fs.statSync(p).mtimeMs; if (t > recency) recency = t; } catch { /* ignore */ }
-  }
-  return { isRun: true, synthetic: !!synthetic, recency, name };
+  // Recency prefers the newest EVENT (Codex #19): taking the max across events/run.json/dir mtime let an
+  // unrelated child write (e.g. dropping a final-report.md into an old run today) bump a stale run above
+  // a genuinely newer one, because a directory's mtime changes whenever anything inside it is created.
+  const mtimeOf = (p) => { try { return fs.statSync(p).mtimeMs; } catch { return NaN; } };
+  const evT = mtimeOf(eventsPath);
+  const rjT = mtimeOf(runJsonPath);
+  const dirT = mtimeOf(dir);
+  const recency = Number.isFinite(evT) ? evT : (Number.isFinite(rjT) ? rjT : (Number.isFinite(dirT) ? dirT : 0));
+  return { isRun: true, synthetic, malformed, recency, name };
 }
 /** orderRunRows — pure ordering rule, exported so it is tested directly instead of through a server
  *  that deliberately refuses to be pointed at a fixture project (detectProjectRoot's isolation guard).
@@ -148,18 +157,19 @@ function memoryState() {
   }
   return out;
 }
-function latestRunId() { // newest by run.json started timestamp; fall back to lexicographic id order on ties/missing
-  const ids = listRunIds();
-  if (!ids.length) return null;
-  let best = null, bestT = -Infinity;
-  for (const id of ids) {
-    let t = NaN;
-    const rj = safeRead(path.join(RUNS_DIR, id, 'run.json'));
-    if (rj) { try { t = Date.parse(JSON.parse(rj).started); } catch {} }
-    if (Number.isFinite(t)) { if (t > bestT) { bestT = t; best = id; } }
-    else if (best === null && bestT === -Infinity) best = best || null; // keep scanning for a dated run
+/** latestRunId — ONE selector, shared with the listing (Codex adversarial review #18, 2026-08-03).
+ *  This used to re-select independently by `run.json.started`, which silently undid the listing's own
+ *  rules: a self-declared demo run carrying a later `started` than any real run would win "latest" again,
+ *  and the synthetic flag was never consulted here at all. Health, state and the dashboard header all
+ *  read THIS function, so a second opinion here is a second truth. It now simply takes the first entry
+ *  the listing already ordered — real runs first, newest real time first, demos never first — and returns
+ *  null when there is nothing but synthetic/unusable runs rather than presenting one as current. */
+function latestRunId() {
+  for (const id of listRunIds()) {
+    const c = classifyRunDir(path.join(RUNS_DIR, id), id);
+    if (c.isRun && !c.synthetic && !c.malformed) return id;
   }
-  return best || ids[0]; // ids already sorted desc → ids[0] is the lexicographic fallback
+  return null;
 }
 function eccMode() { // ECC-first default: Normal ON, Full Test OFF. Reads .claude/FORGE_ECC_MODE.json (+ ECC_TEST_MODE.md opt-in marker).
   let normal = 'on', full = 'off';
@@ -486,7 +496,7 @@ function buildState() {
     project: { name: PROJECT_NAME, dir: PROJECT_DIR, id: PROJECT_ID, isolation: isolationStatus() },
     port: CURRENT_PORT, generated_at: new Date().toISOString(), settings: readSettings(),
     runs: ids.map((id) => { const run = readRunMeta(id) || {}; return { id, status: run.status || 'unknown', request: run.request || '', started: run.started || '', project_mismatch: runMismatch(run) || undefined }; }),
-    latest: ids.length ? readRun(ids[0]) : null,
+    latest: (() => { const lid = latestRunId(); return lid ? readRun(lid) : null; })(), // one selector (audit #25)
     memory: memoryState(),
     ecc_mode: eccMode(),
     session: sessionMode(),
@@ -511,18 +521,18 @@ if (ARGV.includes('--assign-only')) {
   process.exit(0);
 }
 if (ARGV.includes('--status')) {
-  const p = preferredPort(); const ids = listRunIds(); const latest = ids[0] ? readRun(ids[0]) : null;
+  const p = preferredPort(); const ids = listRunIds(); const lid = latestRunId(); const latest = lid ? readRun(lid) : null; // one selector (audit #25)
   const st = readSettings();
   console.log('Forge status — ' + path.basename(PROJECT_DIR));
   console.log('  project folder : ' + PROJECT_DIR);
   console.log('  dashboard port : ' + p + '   URL: http://localhost:' + p);
   console.log('  update mode    : ' + st.refresh_mode + ' (SSE /api/events/stream; polling fallback ' + st.polling_interval_ms + 'ms' + (st.fast_mode ? ', fast 100ms' : '') + ')');
-  console.log('  latest run     : ' + (ids[0] || '(none)'));
+  console.log('  latest run     : ' + (lid || '(none)'));
   console.log('  events         : ' + (latest ? latest.events.length : 0) + (latest && latest.malformed ? ('  (' + latest.malformed + ' malformed, skipped)') : ''));
   console.log('  total runs     : ' + ids.length);
   console.log('  memory files   :');
   for (const f of MEMORY_FILES) console.log('    [' + (exists(path.join(CLAUDE_DIR, f)) ? 'x' : ' ') + '] ' + f);
-  const rp = ids[0] ? path.join(RUNS_DIR, ids[0], 'final-report.md') : null;
+  const rp = lid ? path.join(RUNS_DIR, lid, 'final-report.md') : null;
   console.log('  latest report  : ' + (rp && exists(rp) ? rp : '(none)'));
   process.exit(0);
 }
@@ -534,9 +544,11 @@ if (ARGV.includes('--runs')) {
   process.exit(0);
 }
 if (ARGV.includes('--open-report')) {
-  const ids = listRunIds();
-  if (!ids.length) { console.log('No runs yet.'); process.exit(0); }
-  const rp = path.join(RUNS_DIR, ids[0], 'final-report.md');
+  // one selector (broad audit #25): this used to take listRunIds()[0] directly, so it could still open
+  // a synthetic demo's (non-existent) report even after latestRunId() learned to exclude those.
+  const lid = latestRunId();
+  if (!lid) { console.log('No real (non-demo) run with a report yet.'); process.exit(0); }
+  const rp = path.join(RUNS_DIR, lid, 'final-report.md');
   console.log('Latest report: ' + rp + '\n');
   console.log(safeRead(rp) || '(no final-report.md for the latest run yet)');
   process.exit(0);
@@ -566,7 +578,7 @@ function sseSend(res, event, dataObj) { try { res.write('event: ' + event + '\nd
 function streamTick() {
   if (sseClients.size === 0) return;
   const ids = listRunIds();
-  const latestId = ids[0] || null;
+  const latestId = latestRunId(); // one selector (audit #25)
   const r = latestId ? readRun(latestId) : { run: {}, events: [], report: null, malformed: 0 };
   for (const res of sseClients) {
     if (res.writableEnded) { sseClients.delete(res); continue; }
@@ -733,4 +745,4 @@ if (require.main === module) {
   listen(preferredPort(), PORT_SPAN);
 }
 
-module.exports = { artifactIdOk, resolveArtifactPath, runIdOk, readCapabilities, readRunContract, classifyRunDir, orderRunRows, listRunIds };
+module.exports = { artifactIdOk, resolveArtifactPath, runIdOk, readCapabilities, readRunContract, classifyRunDir, orderRunRows, listRunIds, latestRunId };

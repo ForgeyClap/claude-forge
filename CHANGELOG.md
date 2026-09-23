@@ -9,6 +9,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.3.0] - 2026-08-13
+
+Release theme: **a fresh install on someone else's machine now behaves exactly like the author's.**
+Every item below was found by measuring a real install into a clean folder — not by reasoning about it.
+
+### Fixed — the "works here, breaks there" class
+
+- **The installer never delivered the two project-root files Forge documents.** `CLAUDE.md` and
+  `.gitignore` were only ever created by hand in the author's tree, so on a brand-new project three
+  suites failed (`forge-configdrift`, `forge-tool-index`, `forge-toolhook`) and the very first
+  `forge-doctor` a new user ran reported `FAILURES ABOVE`. Both installers now seed them from
+  `templates/`: an existing `CLAUDE.md` is never touched, and `.gitignore` only receives lines it
+  does not already have. Running the installer twice changes nothing the second time.
+- **A test read the author's local mission history.** `forge-quality.test.cjs` did an unguarded
+  `readFileSync` on a run directory that exists only on the development machine. Anywhere else the
+  `ENOENT` crashed the whole test file — and with it `forge-doctor` and the post-install validation.
+  It now skips honestly, stating why, and stays fully strict where that history does exist.
+- **`forge-killswitch` claimed to be cross-platform.** Every real collector shells out to
+  `powershell`/`taskkill`/`schtasks` with no `process.platform` check, while the suite injects those
+  collectors and never touches the real paths — green on every OS, `spawn powershell ENOENT` on
+  macOS/Linux. It now refuses honestly with an explanation (exit 2, also under `--json`).
+- **The Codex review pinned a single model with no fallback.** Any user on a ChatGPT account gets
+  `HTTP 400 — model not supported` for *every* model, including the CLI default. The config now
+  carries an ordered candidate list, a diagnosis command, and an explicit rule: if Codex cannot run,
+  report it blocked and continue — never fabricate a review, never pass the local fallback off as an
+  independent one.
+- **`forge-sync`'s "not a project" refusal did not say what to do instead.** The refusal itself is a
+  safety feature and stays (one mistyped path would otherwise fill a random folder with system
+  files); the message now points to the installer, which does bootstrap from nothing.
+
+### Added
+
+- **[AI-INSTALL.md](AI-INSTALL.md)** — instructions for the AI assistant a user asks to install this
+  repo: pre-flight checks, the exact commands, the verification it must run, what it must never do,
+  and how to report back honestly. The README points at it up front.
+- **Quality Intelligence Layer** (`forge-quality.cjs`, `config/orchestration/domain-catalog.json`,
+  `config/quality/cards/`) — turns a mission into a multi-label profile, ten quality lenses that each
+  carry an explicit disposition with a reason, omission mining along five axes, validated requirement
+  cards, and a bounded context pack. One canonical domain list, with drift against four seams
+  reported instead of silently carried.
+- **LLM Council** (`skills/forge-council`) — the full protocol (neutral framing, five independent
+  advisors, anonymous peer review, chairman synthesis with a minority report) with append-only,
+  atomically written decision records. Deliberately not always-on: council consensus is never evidence.
+- **Evidence tooling** — `forge-gate-evidence.cjs` (per-gate command, exit code, output hash and
+  commit binding), `forge-finalize.cjs` (one authoritative run receipt), and `forge-ownergrant.cjs`.
+
+### Changed
+
+- Documentation states the real counts (52 skills, 19 agents) instead of the outdated 23/18.
+- `install.sh` documents that `SHA256SUMS` exists only on tagged release archives, so a plain clone
+  is honestly "not hash-verified" rather than silently unverified.
+
+### Security / privacy
+
+- Removed a personal file that had shipped in the distribution
+  (`command-center/dashboard/CLAUDE.laptop-orig.md`).
+- Sanitised owner-identifying data the previous pass missed **because its scan was case-sensitive**:
+  lowercase `users/YOU` home paths in four dashboard docs and a fixture, plus private
+  project/business names used as examples across 19 files. The pre-publish gate is now
+  case-insensitive and includes project-name patterns.
+- The sync into this distribution runs against an explicit blocklist: owner profile, project memory,
+  task history, agent ledger, per-agent memory, run logs, research, audit trails and local state are
+  never copied.
+
+### Verified
+
+- Fresh install into a clean directory (both `install.sh` and `install.ps1`), then the full doctor:
+  **ALL GREEN**, 121 suites. The same measurement on 2.2.0 gave 3 failing suites.
+- Source tree doctor: **ALL GREEN**, 121 suites / 6623 assertions.
+- Installer idempotence verified by running it twice and comparing the result.
+
 ## [2.2.0] - 2026-08-04
 
 Installing into a fresh project was structurally impossible, and the usage guard was watching the wrong

@@ -504,6 +504,24 @@ module.exports = {
 
 // ---- CLI ---------------------------------------------------------------------------------------------
 if (require.main === module) {
+  /** PLATFORM-GUARD (2026-08-13, fresh-install audit): elke echte collector hieronder spawnt
+   *  powershell/taskkill/schtasks — Windows-only. De testsuite injecteert die collectors en raakt
+   *  de echte paden nooit, dus zij bleef groen op elk OS en verhulde dat de tool op macOS/Linux
+   *  crasht met `spawn powershell ENOENT`. Liever eerlijk weigeren met uitleg dan een cryptische
+   *  crash: de rest van Forge is platformneutraal, deze ene tool is dat aantoonbaar niet. */
+  if (process.platform !== 'win32') {
+    const uitleg = 'forge-killswitch is Windows-only: het inventariseert en stopt processen via powershell/taskkill/schtasks, waarvoor op ' + process.platform + ' geen equivalent is geïmplementeerd.';
+    if (process.argv.includes('--json')) {
+      console.log(JSON.stringify({ ok: false, supported: false, platform: process.platform, reason: uitleg }, null, 2));
+    } else {
+      console.error('NOT SUPPORTED ON THIS OS — ' + uitleg);
+      // BEWUST geen kill-by-name-voorbeeld hier: de eigen suite verbiedt zo'n construct zelfs in de
+      // brontekst, omdat naam-gebaseerd killen ook onschuldige processen raakt. Verwijs naar de
+      // exacte PID-route, nooit naar een patroon dat op naam matcht.
+      console.error('Stop Forge-processen op dit platform via de EXACTE PID die je zelf hebt vastgesteld (bijv. de listener op poort 4100 opzoeken met `lsof -i :4100` en precies dat proces stoppen). Stop nooit processen op naam — dat raakt ook niet-Forge-processen.');
+    }
+    process.exit(2);
+  }
   const argv = process.argv.slice(2);
   const cmd = argv[0] || 'status';
   const confirm = argv.includes('--confirm');

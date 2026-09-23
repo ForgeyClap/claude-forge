@@ -158,7 +158,7 @@ describe('bridge lifecycle over the real HTTP + WebSocket protocol', () => {
     expect(derived.CONNECTED_TO_FORGE.value).toBe(true);
 
     // The projects root the bridge reports is inside our throwaway sandbox, never
-    // the real Documents/ForgeProjecten.
+    // the real Documents/ForgeProjects.
     expect(h.projectsRoot).toBe(bridge.expectedProjectsRoot);
     expect(h.projectsRoot.startsWith(bridge.baseDir)).toBe(true);
   });

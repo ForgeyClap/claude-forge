@@ -54,6 +54,25 @@ be followed by an independent `codex-reviewer` pass (`/codex:review` read-only, 
 `/codex:adversarial-review` for the required-review areas in `CODEX_GLOBAL_POLICY.md`). If Codex is
 unavailable, report that honestly — the review above still stands on its own.
 
+**The model is pinned, and it is NOT a detail you restate from memory.** Read
+`.claude/config/orchestration/codex-review.json` — it holds the engine, model, reasoning effort,
+sandbox and the exact command, and it is the ONLY place any of those are defined. Owner directive
+2026-08-04: the independent review runs on **`gpt-5.6-sol` at `model_reasoning_effort=xhigh`**. Before
+that file existed the model was pinned nowhere, so `/codex:review` silently used whatever default the
+plugin happened to carry — and reaching gpt-5.6-sol at all needed a Codex CLI ≥ 0.146.0 (0.142.3 got
+an HTTP 400 telling it to upgrade, measured 2026-08-03).
+
+**Name the step for what it is.** The planned work package is the **Codex code-review**, not an "ECC
+code-review". ECC `code-reviewer`/`security-reviewer` is the *fallback* you use when Codex genuinely
+could not run, and it is always labelled
+`FALLBACK (non-independent) review — Codex did not run because: <reason>`. Planning the fallback as
+the step quietly downgrades an independent review into a second opinion from the same model family
+that wrote the code.
+
+**Never attribute a review to a model that did not run it.** If the pinned model is refused
+(400 / CLI too old / not authenticated), say which model actually ran, or that the review was blocked
+— a verdict stamped with the wrong provenance is a fabricated review.
+
 ## Relationship to Review Boss
 `forge-code-review` is the **method** — the checklist and severity scale anyone applies when reviewing
 code, including Build Boss self-reviewing before handoff. **Review Boss** (`.claude/agents/review-boss.md`)

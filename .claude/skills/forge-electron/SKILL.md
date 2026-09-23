@@ -5,7 +5,7 @@ description: Forge playbook for Electron desktop apps. Use for electron, desktop
 
 # Forge playbook — Electron / desktop app
 
-The `electron-pro` specialist (`.claude/agents/electron-pro.md`) leads the Electron-specific work under Build Boss or Integration Boss. Renderer UI defers to `forge-website` (real content, responsive, a11y); anything that talks to a gateway/API defers to `forge-integration` / `forge-payments`. Forge context: the boekhouder (accounting) desktop app — offline-first, safe IPC, an installer that opens on a clean machine. Modern Electron (v20+) ships these secure defaults; **the rule is to never regress them**, and to prove they hold.
+The `electron-pro` specialist (`.claude/agents/electron-pro.md`) leads the Electron-specific work under Build Boss or Integration Boss. Renderer UI defers to `forge-website` (real content, responsive, a11y); anything that talks to a gateway/API defers to `forge-integration` / `forge-payments`. Forge context: the an accounting desktop app (accounting) desktop app — offline-first, safe IPC, an installer that opens on a clean machine. Modern Electron (v20+) ships these secure defaults; **the rule is to never regress them**, and to prove they hold.
 
 ## Hard rules (verify, don't assume — cite the exact config line)
 - **`contextIsolation: true` on every `BrowserWindow`** — no exceptions. Required even with nodeIntegration off; it is what separates preload/renderer JS contexts from Electron internals.

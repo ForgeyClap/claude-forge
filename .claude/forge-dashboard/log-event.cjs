@@ -162,7 +162,7 @@
  * It writes into THIS project's .claude/forge-runs/<run_id>/events.jsonl only.
  * Use this for real activity — do not log agents/notes/checks that did not actually happen.
  *
- * EVENT VOCABULARY IS ENFORCED (fix 2026-07-07, boekhouder progamma incident): event_type MUST be one
+ * EVENT VOCABULARY IS ENFORCED (fix 2026-07-07, an accounting desktop app progamma incident): event_type MUST be one
  * of the names listed above (KNOWN_EVENT_TYPES). Do NOT invent new event_type names for free-form
  * progress (e.g. "wp16_started", "contract_v8", "run_done" are FORBIDDEN — they render as nothing on
  * the dashboard and break the lenses). Put narrative/detail in `note`/`output`/`decision_summary` on a
@@ -180,28 +180,17 @@ const RUNS_DIR = path.join(CLAUDE_DIR, 'forge-runs');
 
 function nowIso() { return new Date().toISOString(); }
 
-let ev = {};
-const args = process.argv.slice(2);
-if (args.length === 1) {
-  try { ev = JSON.parse(args[0]); } catch (e) { console.error('Invalid JSON:', e.message); process.exit(1); }
-} else if (args.length >= 2) {
-  ev.run_id = args[0];
-  ev.event_type = args[1];
-  if (args[2]) { try { Object.assign(ev, JSON.parse(args[2])); } catch (e) { console.error('Invalid extra JSON:', e.message); process.exit(1); } }
-} else {
-  console.error('Usage: node log-event.cjs <run_id> <event_type> [json] | node log-event.cjs <json>');
-  process.exit(1);
+/** resolveRunDir — run-id-vorm + containment (zelfde guard als server.cjs). Retourneert {ok,runDir} of
+ *  {ok:false,message}; de CLI mapt message naar stderr+exit 1. Functie i.p.v. top-level code (H1-refactor
+ *  2026-08-06) zodat batch-modus en tests dezelfde guard delen. */
+function resolveRunDir(runId) {
+  if (!runId) return { ok: false, message: 'run_id is required' };
+  if (!/^[A-Za-z0-9_-]+$/.test(runId)) return { ok: false, message: 'invalid run_id (allowed: A-Z a-z 0-9 _ -): ' + runId };
+  const runDir = path.join(RUNS_DIR, runId);
+  const base = path.resolve(RUNS_DIR), resolved = path.resolve(runDir);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) return { ok: false, message: 'run_id escapes forge-runs — refused' };
+  return { ok: true, runDir };
 }
-
-if (!ev.run_id) { console.error('run_id is required'); process.exit(1); }
-if (!ev.event_type) { console.error('event_type is required'); process.exit(1); }
-if (!ev.timestamp) ev.timestamp = nowIso();
-
-// same containment guard as server.cjs: run ids are alphanumeric + _ - only (no path chars, no traversal)
-if (!/^[A-Za-z0-9_-]+$/.test(ev.run_id)) { console.error('invalid run_id (allowed: A-Z a-z 0-9 _ -): ' + ev.run_id); process.exit(1); }
-const runDir = path.join(RUNS_DIR, ev.run_id);
-const base = path.resolve(RUNS_DIR), resolved = path.resolve(runDir);
-if (resolved !== base && !resolved.startsWith(base + path.sep)) { console.error('run_id escapes forge-runs — refused'); process.exit(1); }
 // ── HONESTY ENFORCEMENT (deep-scan 2026-07-07) ──────────────────────────────────────────────
 // Stamp every event with `_forge_verify` so the dashboard can tell a REAL dispatched/proven event
 // from a claim the main session merely logged. This is what stops a solo session painting a fake
@@ -284,12 +273,25 @@ const WORKING_AGENT_EVENTS = new Set(['subagent_started', 'subagent_completed', 
   // agent_model_used (2026-08-01) is name-checked here — a model must be attributable to an agent that
   // really exists — but it is NOT in DISPATCH_PROOF_EVENTS below, so a self-logging agent can record its
   // own model without knowing the parent's dispatch_id.
-  'agent_model_used']);
+  'agent_model_used',
+  /** R6-07 (zesde Codex-herreview): de identiteitscontrole dekte alleen agent-/subagent-events, dus een
+   *  phantom of naamloze actor kon nog gewoon `file_changed`, `report_generated` of `wp_completed`
+   *  schrijven. De onafhankelijkheidspoort weigert zulk werk later fail-closed, maar dan staat het al in
+   *  de audittrail — en mijn claim dat de writer work-identiteit afdwingt was dus te sterk. Deze drie
+   *  dragen het meeste gewicht in die poort (ze bepalen wie "uitvoerder" is) en worden nu wél
+   *  naamgecontroleerd. Ze staan bewust NIET in DISPATCH_PROOF_EVENTS: een zelf-loggende agent kent de
+   *  dispatch_id van zijn ouder niet. */
+  'file_changed', 'report_generated', 'wp_completed']);
 // dispatch_id proves a REAL Agent-tool call — but only the PARENT (Lead) knows the tool_use id, and it
 // logs it on the START/creation event. A running subagent self-logs its own progress/output/completion
 // and CANNOT know that id (fix 2026-07-09 checkup: strict-mode was rejecting the mandated self-logging
 // contract). So the dispatch_id requirement applies ONLY to the start/creation events below; all other
 // working events are still Boss-name-checked, just not dispatch-checked.
+/** De events waarop de independent-verification-poort haar identiteitsoordeel bouwt. Hun agent MOET
+ *  aanwezig en geregistreerd zijn (N-01) — anders is 'wie reviewde dit' een vrij invulbaar veld. */
+// lead_review_* staat hier BEWUST niet in: forge-verify logt lead_review_completed bij een MISMATCH
+// (rework-trigger), niet als goedkeuring — het is geen onafhankelijk reviewprotocol (R5-06).
+const REVIEW_IDENTITY_EVENTS = new Set(['review_started', 'review_completed', 'codex_review_started', 'codex_review_completed']);
 const DISPATCH_PROOF_EVENTS = new Set(['subagent_started', 'agent_started', 'custom_subagent_created']);
 // Canonical vocabulary (fix 2026-07-07) — the exact set documented in the header comment above, incl. back-compat names.
 const KNOWN_EVENT_TYPES = new Set([
@@ -366,6 +368,10 @@ const KNOWN_EVENT_TYPES = new Set([
   // WAVE H (H1/H2/H4 + H-INTEGRATE, 2026-07-19): doc_generated (REAL call site, forge-docs.cjs --run) /
   // repomap_generated / bead_added / bead_closed (forward-declared — see header comment above).
   'doc_generated', 'repomap_generated', 'bead_added', 'bead_closed',
+  // AUDIT G4 (2026-08-06): run_finalized — de audittrail van forge-finalize.cjs, het ene gezaghebbende
+  // eindverdict. De receipt (run-finalized.json) pint de log-digest; dit event legt de finalisatie vast.
+  // Geen aanhalingsteken in dit commentaarblok — de doctor-scanner leest deze Set inclusief comments.
+  'run_finalized',
   // WAVE G (G1 forge-mcp-gate.cjs + G-INTEGRATE, 2026-07-19): MCP-as-client least-privilege events — the
   // gate module itself does NOT call logEvent (see forge-mcp-gate.cjs header, "shared-file rule for this
   // wave"); these are forward-declared for the Bosses/Head Chef call sites that will invoke validateGrant()/
@@ -440,14 +446,28 @@ function verifyEvent(ev) {
     v.event_type_unknown = true;
     v.event_type_warning = 'unknown event_type "' + et + '" — not in the standard vocabulary (see file header). Use a standard event_type and put free-form narrative in note/output/decision_summary, not a new event_type.';
   }
-  if (WORKING_AGENT_EVENTS.has(et) && ev.agent != null) {
+  /** N-01 (Codex post-fix herreview 2026-08-09): review-events vielen buiten WORKING_AGENT_EVENTS, dus
+   *  hun `agent` werd NOOIT tegen de registry gelegd — een niet-bestaande reviewer ("No Such Reviewer")
+   *  kwam er gewoon door. En omdat de naamcheck alleen liep bij `agent != null`, kon je hem ook helemaal
+   *  weglaten. Voor de events waarop de onafhankelijkheidspoort steunt is een naamloze of onbekende
+   *  actor geen detail maar het hele punt: dan is niet vast te stellen WIE iets deed of goedkeurde. */
+  if (REVIEW_IDENTITY_EVENTS.has(et) && (ev.agent == null || String(ev.agent).trim() === '')) {
+    v.agent_registered = false;
+    v.agent_warning = 'event_type "' + et + '" vereist een `agent`: zonder naam is niet vast te stellen wie deze review opende of afsloot, en de onafhankelijkheidspoort steunt daarop.';
+  }
+  else if ((WORKING_AGENT_EVENTS.has(et) || REVIEW_IDENTITY_EVENTS.has(et)) && ev.agent != null) {
     const name = String(ev.agent).toLowerCase();
     const boss = loadBossNames();
     const internalRole = ['internal', 'native'].includes(String(ev.runtime || '').toLowerCase());
     const isBoss = boss ? boss.has(name) : false;
     const isGeneric = GENERIC_AGENTS.has(name);
     const isProjectAgent = PROJECT_AGENTS.names.has(name);
-    v.agent_registered = boss ? (isBoss || isGeneric || isProjectAgent) : true;
+    /** R5-05 (vijfde herreview): zonder registry stond dit standaard op `true` — fail-OPEN op precies het
+     *  veld dat identiteit moet bewijzen. Voor gewone events blijft dat zo (een kale installatie zonder
+     *  registry moet gewoon kunnen loggen), maar voor REVIEW-events niet: daar is "ik kan het niet
+     *  controleren" gelijk aan "niet aangetoond". */
+    v.agent_registered = boss ? (isBoss || isGeneric || isProjectAgent) : !REVIEW_IDENTITY_EVENTS.has(et);
+    if (!boss && REVIEW_IDENTITY_EVENTS.has(et)) v.agent_warning = 'geen agentregistry beschikbaar, dus de reviewer "' + ev.agent + '" is niet te verifieren — bij review-events is dat fail-closed';
     if (!v.agent_registered) v.agent_warning = 'unregistered agent "' + ev.agent + '" — not a permanent Boss (config/agents/agent-registry.json) and no matching agent definition in .claude/agents/. Use a Boss name, or add a real agent file first; put specialization in `role`.';
     // A real-but-not-permanent agent is ACCEPTED and LABELLED, never silently promoted (2026-08-01) — the
     // dashboard/certify/ledger readers can tell a permanent Boss from an optional project specialist.
@@ -509,56 +529,518 @@ function verifyEvent(ev) {
   }
   return Object.keys(v).length ? v : null;
 }
-// Canonicalize agent-referencing fields to the registry's display name BEFORE verify + write, so a slug
-// ("build-boss") and its display name ("Build Boss") never split into two dashboard nodes for one agent.
-for (const _f of ['agent', 'to', 'target', 'handoff']) { if (ev[_f] != null) ev[_f] = canonicalAgent(ev[_f]); }
-const _v = verifyEvent(ev);
-if (_v) ev._forge_verify = _v;
-// STRICT is the DEFAULT since 2026-07-07 (was opt-in via =1; nobody turned it on, which let a fake
-// swarm + free-form event names through undetected — boekhouder progamma incident). Opt OUT with =0.
-const STRICT = process.env.FORGE_STRICT_EVENTS !== '0';
-if (STRICT && _v && (_v.agent_registered === false || _v.proof_verified === false || _v.dispatch_unverified || _v.event_type_unknown || _v.model_unverified)) {
-  console.error('STRICT REFUSED ' + ev.event_type + ' — ' + (_v.event_type_warning || _v.agent_warning || _v.proof_reason || _v.model_reason || 'unproven dispatch (no dispatch_id, runtime not internal/native)') + ' (set FORGE_STRICT_EVENTS=0 to opt out of strict mode — not recommended)');
-  process.exit(2);
+/** validateForWrite — canonicaliseer + verify + STRICT-poort voor EEN event (muteert ev). Exact dezelfde
+ *  regels als de oude top-level flow; alleen als functie zodat single-event CLI, batch-modus en tests een
+ *  identieke poort delen (H1-refactor 2026-08-06). Retourneert {ok:true,verify} of {ok:false,exitCode:2,message}. */
+function validateForWrite(ev) {
+  if (!ev.timestamp) ev.timestamp = nowIso();
+  // Canonicalize agent-referencing fields to the registry's display name BEFORE verify + write, so a slug
+  // ("build-boss") and its display name ("Build Boss") never split into two dashboard nodes for one agent.
+  for (const f of ['agent', 'to', 'target', 'handoff']) { if (ev[f] != null) ev[f] = canonicalAgent(ev[f]); }
+  const v = verifyEvent(ev);
+  if (v) ev._forge_verify = v;
+  // STRICT is the DEFAULT since 2026-07-07 (was opt-in via =1; nobody turned it on, which let a fake
+  // swarm + free-form event names through undetected — an accounting desktop app progamma incident). Opt OUT with =0.
+  const STRICT = process.env.FORGE_STRICT_EVENTS !== '0';
+  /** R4-05 (vierde Codex-herreview 2026-08-09): identiteit op REVIEW-events is niet opt-out. Met
+   *  FORGE_STRICT_EVENTS=0 kwam een spookreviewer er alsnog door, en juist die events dragen het hele
+   *  onafhankelijkheidsoordeel. Strict mode uitzetten mag een build soepeler maken; het mag niet betekenen
+   *  dat "wie dit goedkeurde" een vrij invulbaar veld wordt. Deze weigering staat daarom BUITEN de vlag. */
+  if (!STRICT && v && v.agent_registered === false && REVIEW_IDENTITY_EVENTS.has(ev.event_type)) {
+    return { ok: false, exitCode: 2, message: 'REFUSED ' + ev.event_type + ' — ' + (v.agent_warning || 'onbekende reviewer') + ' (identiteit op review-events is NIET opt-out: FORGE_STRICT_EVENTS=0 verandert hier niets)' };
+  }
+  if (STRICT && v && (v.agent_registered === false || v.proof_verified === false || v.dispatch_unverified || v.event_type_unknown || v.model_unverified)) {
+    return { ok: false, exitCode: 2, message: 'STRICT REFUSED ' + ev.event_type + ' — ' + (v.event_type_warning || v.agent_warning || v.proof_reason || v.model_reason || 'unproven dispatch (no dispatch_id, runtime not internal/native)') + ' (set FORGE_STRICT_EVENTS=0 to opt out of strict mode — not recommended)' };
+  }
+  return { ok: true, verify: v };
 }
 
-fs.mkdirSync(runDir, { recursive: true });
-// TAMPER-EVIDENT HASH CHAIN (2026-07-11): each event carries entry_hash = sha256(canonical(event)+prev_hash),
-// chaining it to the previous event's entry_hash (genesis = 'genesis:'+run_id). Makes the append-only log
-// tamper-EVIDENT (not tamper-proof): forge-doctor walks the chain and detects any edited/removed event.
-const _eventsFile = path.join(runDir, 'events.jsonl');
-// Fix (2026-07-15, HIGH bug): this used to read ONLY the file's last line and use ITS entry_hash (or fall
-// straight to 'genesis:'+run_id if that one line had none). On a LEGACY run (events written before the hash
-// chain existed — 7 such runs are real in this project), that meant appending one new chained event set
-// prev_hash='genesis:'+run_id even though the run already had prior (unchained) events — the doctor/certify
-// chain-walk then read the run as 2 unchained + 1 chained event, indistinguishable from a truncated/edited
-// chain. This is still the CORRECT prev_hash for that exact case (a fresh chain legitimately starts at
-// genesis when no prior event had a hash) — the actual bug was on the READING side (forge-doctor.cjs
-// chainCheck / forge-certify.cjs verifyChain), fixed there to validate only from the first chained event
-// onward. This write-side fix is a belt-and-suspenders companion: search BACKWARD past any blank lines for
-// the nearest event that already carries an entry_hash (continuing an existing chain correctly instead of
-// silently trusting only the literal last line), falling back to genesis only when no chained event exists
-// anywhere yet in this run.
-const _prevHash = (() => {
-  try {
-    const d = fs.readFileSync(_eventsFile, 'utf8');
-    const lines = d.split(/\r?\n/);
+/** ================= VERGRENDELDE HASH-KETEN-APPEND (audit G1, 2026-08-06) =================
+ *  De append was read-tail → hash → append ZONDER enige vergrendeling: twee gelijktijdige writers lazen
+ *  dezelfde staart-hash, stempelden allebei prev_hash=H en de keten VORKTE — elke lineaire chain-walk
+ *  (forge-doctor/forge-certify) las de run daarna als getamperd terwijl beide events eerlijk waren. De
+ *  kritieke sectie zit nu achter een exclusieve lock-file (open 'wx' — atomair op Windows en POSIX) met
+ *  retry/backoff+jitter; een stale lock (ouder dan ~10s of dode pid) wordt overgenomen; een timeout is
+ *  een EERLIJKE fout (exit != 0), nooit een stille ongelockte append. Elk event krijgt bovendien een
+ *  monotone `seq` (onder dezelfde lock bepaald, mee-gehasht via de canonical) zodat gaten/duplicaten ook
+ *  zonder hash-walk detecteerbaar zijn. */
+const LOCK_STALE_MS = 10000;
+// Onder een burst van tientallen gelijktijdige writers serialiseert de lock ze allemaal; met de
+// node-bootstorm erbij kan de staart van de rij ruim boven 5s uitkomen. 30s default (env-instelbaar)
+// — een eerlijke wachttijd onder pathologische contentie is beter dan een valse timeout.
+const LOCK_TIMEOUT_MS = Number(process.env.FORGE_EVENTS_LOCK_TIMEOUT_MS) > 0 ? Number(process.env.FORGE_EVENTS_LOCK_TIMEOUT_MS) : 30000;
+function sleepMs(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* geen SAB: dan best-effort spin-vrij doorgaan */ } }
+function pidAliveHere(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+/** DE LOCK IS HANDLE-GEDRAGEN (definitieve vorm na de 120-writer stresstrace, 2026-08-06).
+ *  Eerste versie: wx-create + stale-takeover op pid/leeftijd. De trace op 120 echte writers toonde 70
+ *  onterechte takeovers via een ABA-race: wachter leest houder-pid X, X is intussen klaar en GEËXIT, een
+ *  nieuwe houder Y heeft een verse lock — de wachter beoordeelt X als dood en unlinkt daarmee Y's levende
+ *  lock (leeftijden van 17-300ms in de trace). Vorken dus, ondanks de lock.
+ *  De sluitende eigenschap op Windows (libuv opent met FILE_SHARE_DELETE): de houder HOUDT ZIJN FD OPEN.
+ *  Een unlink van een levend-gehouden lock maakt de naam slechts delete-pending — een nieuwe CREATE op
+ *  die naam faalt (EACCES/EPERM) tot de houder zijn handle sluit. Een onterechte takeover-unlink is
+ *  daarmee ONSCHADELIJK: de echte houder maakt gewoon af (zijn fd blijft geldig), en niemand kan de
+ *  kritieke sectie binnen tot hij sluit. Exclusie is kernel-afgedwongen, niet evidence-gebaseerd.
+ *  Takeover gebeurt UITSLUITEND via unlink (nooit rename — rename geeft de naam direct vrij en heropent
+ *  de race); EACCES/EPERM/EBUSY op de create is contentie (delete-pending venster), geen fout. */
+function acquireEventsLock(runDir, opts) {
+  opts = opts || {};
+  const lockPath = path.join(runDir, 'events.jsonl.lock');
+  const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : LOCK_TIMEOUT_MS;
+  // Monotone deadline (Codex r4 #1): een NTP-stap mag de wachttijd niet oprekken of inkorten.
+  const t0 = process.hrtime.bigint();
+  const elapsedMs = () => Number((process.hrtime.bigint() - t0) / 1000000n);
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts: new Date().toISOString() })); } catch { /* token is diagnostisch; de FD is de echte lock */ }
+      // Eigen identiteit vastleggen voor de fencing-verificatie bij append en release: is de naam
+      // intussen door een (onterechte) takeover vervangen, dan wijkt ino/birthtime af en ABORT de
+      // houder eerlijk in plaats van een gevorkte keten te schrijven.
+      let ino = null, birthtimeMs = null;
+      try { const st = fs.fstatSync(fd, { bigint: true }); ino = st.ino; birthtimeMs = st.birthtimeMs; } catch { /* fencing degradeert tot best-effort */ }
+      return { ok: true, lockPath, fd, ino, birthtimeMs };
+    } catch (e) {
+      const contention = e.code === 'EEXIST' || e.code === 'EACCES' || e.code === 'EPERM' || e.code === 'EBUSY';
+      if (!contention) return { ok: false, message: 'could not create events lock (' + e.message + ')' };
+      if (e.code === 'EEXIST') {
+        /** TAKEOVER: LEEFTIJD ÉN DOODSBEWIJS, INO-GEVERIFIEERD (Codex r4 #1, 2026-08-07).
+         *  Historie: pid-ALLEEN was ABA-gevoelig (70 onterechte takeovers in de 120-writer trace:
+         *  ms-houders exitten en hun pid las als dood terwijl de naam al een verse lock droeg);
+         *  leeftijd-ALLEEN stal vervolgens een LEVENDE houder die >10s in de kritieke sectie zat en
+         *  liet een voorwaartse kloksprong een levende lock stelen. De conjunctie kent geen van beide:
+         *  leeftijd filtert de ms-ABA weg (een verse lock is nooit >10s oud), het pid-doodsbewijs
+         *  beschermt de levende lange houder en de kloksprong (pid leeft -> geen takeover). Een
+         *  onleesbaar/leeg lockbestand ouder dan de drempel is een crash-artefact (de houder schrijft
+         *  zijn token direct na de wx-create) en mag weg. ageMs < 0 (mtime in de toekomst) is verdacht:
+         *  reap alleen met een leesbaar, aantoonbaar dood pid — anders eerlijk wachten/timeouten. */
+        try {
+          const st1 = fs.statSync(lockPath, { bigint: true });
+          const ageMs = Date.now() - Number(st1.mtimeMs);
+          let tokenPid = null;
+          try { const tok = JSON.parse(fs.readFileSync(lockPath, 'utf8')); if (Number.isFinite(Number(tok.pid))) tokenPid = Number(tok.pid); } catch { /* leeg/onparseerbaar token */ }
+          const holderDead = tokenPid !== null ? !pidAliveHere(tokenPid) : true;
+          const reapable = (ageMs > LOCK_STALE_MS && holderDead) || (ageMs < 0 && tokenPid !== null && holderDead);
+          if (reapable) {
+            const st2 = fs.statSync(lockPath, { bigint: true });
+            if (st2.ino === st1.ino && st2.birthtimeMs === st1.birthtimeMs) {
+              try { fs.unlinkSync(lockPath); } catch { /* iemand anders was eerder */ }
+            }
+            continue;
+          }
+        } catch { continue; /* lock verdween onder ons: opnieuw proberen */ }
+      }
+      if (elapsedMs() >= timeoutMs) return { ok: false, message: 'events lock not acquired within ' + timeoutMs + 'ms (' + lockPath + ' held) — refusing an UNLOCKED append (the chain would fork)' };
+      sleepMs(15 + Math.floor(Math.random() * 35));
+    }
+  }
+}
+/** stillOwnsLock — fencing-verificatie: draagt de locknaam nog ONZE inode? Na een onterechte takeover
+ *  (of welke verstoring dan ook) wijkt de identiteit af en hoort de houder te ABORTEN, niet te schrijven.
+ *  Zonder vastgelegde identiteit (fstat faalde bij acquire) degradeert dit eerlijk tot true. */
+function stillOwnsLock(lock) {
+  if (!lock || lock.ino == null) return true;
+  try { const st = fs.statSync(lock.lockPath, { bigint: true }); return st.ino === lock.ino && st.birthtimeMs === lock.birthtimeMs; }
+  catch { return false; /* naam weg = lock verloren */ }
+}
+function releaseEventsLock(lock) {
+  if (!lock) return;
+  // Fencing ook hier (Codex r4 #1): unlink alleen als de naam nog ONZE lock draagt — na een takeover
+  // zou de unlink anders de VERSE lock van de opvolger verwijderen. Daarna pas de handle sluiten:
+  // zolang de fd open is kan een 'wx'-create de naam niet herclaimen, dus het verify->unlink-venster
+  // is niet door een legitieme nieuwe houder te raken.
+  const owns = stillOwnsLock(lock);
+  if (owns && lock.lockPath) { try { fs.unlinkSync(lock.lockPath); } catch { /* al weg */ } }
+  if (lock.fd != null) { try { fs.closeSync(lock.fd); } catch { /* al dicht */ } }
+}
+
+/** chainTail — bepaal {prevHash, lastSeq} uit het bestand. Leest eerst alleen de laatste 64KB (de
+ *  volledige-file-read per append was O(n^2) over de levensduur van een run — audit G3-bijvangst); alleen
+ *  wanneer dat venster GEEN geketend event bevat en het bestand groter is dan het venster, volgt de
+ *  volledige read (legacy-runs met een lange ongeketende kop behouden hun oude semantiek exact). */
+function chainTail(eventsFile, runId) {
+  const scan = (text) => {
+    const lines = text.split(/\r?\n/);
     for (let i = lines.length - 1; i >= 0; i--) {
       const s = lines[i].trim();
       if (!s) continue; // blank/whitespace-only line — skip, not the chain tail
       let parsed;
       try { parsed = JSON.parse(s); } catch { continue; } // defensively skip an unparseable line rather than crash
-      if (parsed && parsed.entry_hash) return parsed.entry_hash;
+      if (parsed && parsed.entry_hash) return { prevHash: parsed.entry_hash, lastSeq: Number.isFinite(Number(parsed.seq)) ? Number(parsed.seq) : 0 };
       // a real, parseable event without entry_hash — keep searching further back for an earlier chained one
     }
     return null;
-  } catch { return null; }
-})() || ('genesis:' + ev.run_id);
-ev.prev_hash = _prevHash;
-const _canon = (() => { const k = Object.keys(ev).filter((x) => x !== 'entry_hash' && x !== 'prev_hash').sort(); const o = {}; for (const x of k) o[x] = ev[x]; return JSON.stringify(o); })();
-ev.entry_hash = crypto.createHash('sha256').update(_canon + _prevHash).digest('hex');
-fs.appendFileSync(_eventsFile, JSON.stringify(ev) + '\n', 'utf8');
-// only emit a tag when there is real flag content — otherwise accepted events printed a confusing ' []' (fix 2026-07-09)
-const _flags = _v ? [_v.event_type_unknown ? 'UNKNOWN-TYPE' : '', _v.agent_registered === false ? 'UNREGISTERED' : '', _v.proof_verified === false ? 'UNVERIFIED' : '', _v.dispatch_unverified ? 'NO-DISPATCH-ID' : '', _v.model_unverified ? 'MODEL-UNVERIFIED' : ''].filter(Boolean) : [];
-const vtag = _flags.length ? ' [' + _flags.join(' ') + ']' : '';
-console.log('logged ' + ev.event_type + ' -> ' + path.join('forge-runs', ev.run_id, 'events.jsonl') + vtag);
+  };
+  try {
+    const st = fs.statSync(eventsFile);
+    const WINDOW = 64 * 1024;
+    if (st.size > WINDOW) {
+      const fd = fs.openSync(eventsFile, 'r');
+      let tailText;
+      try {
+        const buf = Buffer.alloc(WINDOW);
+        fs.readSync(fd, buf, 0, WINDOW, st.size - WINDOW);
+        tailText = buf.toString('utf8');
+      } finally { fs.closeSync(fd); }
+      const hit = scan(tailText);
+      if (hit) return hit;
+      // venster zonder geketend event: volledige read als eerlijke fallback (legacy-run kop)
+    }
+    const full = scan(fs.readFileSync(eventsFile, 'utf8'));
+    if (full) return full;
+  } catch { /* bestand ontbreekt nog — verse run */ }
+  return { prevHash: 'genesis:' + runId, lastSeq: 0 };
+}
+
+/** walRecover — maak een eerder afgebroken append transactioneel af of ongedaan (Codex r4 #2, 2026-08-07).
+ *  De WAL (events.jsonl.wal) wordt VOOR de append geschreven en gefsynct en NA een geslaagde append
+ *  verwijderd. Bestaat hij nog bij de volgende lock-houder, dan is er precies een afgebroken poging:
+ *    log == base_bytes           -> append landde nooit: payload alsnog appenden;
+ *    log == base + payload       -> append landde volledig: alleen de WAL opruimen;
+ *    base < log < base+payload   -> short write/ENOSPC-fragment: terugkappen naar base en her-appenden;
+ *    log > base + payload        -> na het fragment is doorgeschreven zonder recovery: dat kan alleen
+ *                                   buiten deze writer om — fail-closed laten aan de damage-classifier;
+ *    log < base                  -> extern ingekort: fail-closed (niet "repareren" over tamper heen).
+ *  Een onparseerbare/sha-mismatchende WAL is zelf het crash-artefact (de crash viel IN de WAL-write;
+ *  de log is dan per constructie onaangeroerd) en wordt verwijderd. */
+/** writeAllSync (Codex r6 #3): fs.writeSync mag partieel schrijven — lus tot ALLE bytes staan. */
+function writeAllSync(fd, str, position) {
+  const buf = Buffer.from(str, 'utf8');
+  let off = 0;
+  while (off < buf.length) {
+    const n = fs.writeSync(fd, buf, off, buf.length - off, position === null || position === undefined ? null : position + off);
+    if (!(n > 0)) throw new Error('writeSync schreef 0 bytes (ENOSPC/afgebroken) — append geweigerd');
+    off += n;
+  }
+  return buf.length;
+}
+
+function walRecover(eventsFile, walFile) {
+  let wal;
+  try { wal = JSON.parse(fs.readFileSync(walFile, 'utf8')); } catch { try { fs.unlinkSync(walFile); } catch { } return { ok: true, action: 'discarded-broken-wal' }; }
+  const payload = typeof wal.payload === 'string' ? wal.payload : null;
+  const base = Number(wal.base_bytes);
+  if (payload === null || !Number.isFinite(base) || wal.payload_sha256 !== crypto.createHash('sha256').update(payload, 'utf8').digest('hex')) {
+    try { fs.unlinkSync(walFile); } catch { } return { ok: true, action: 'discarded-broken-wal' };
+  }
+  const payloadBytes = Buffer.byteLength(payload, 'utf8');
+  let size = 0;
+  try { size = fs.statSync(eventsFile).size; } catch { size = 0; }
+  if (size < base) return { ok: false, message: 'events log (' + size + 'B) is SMALLER than the WAL base (' + base + 'B) — externally truncated; refusing to repair over tampering (fail-closed)' };
+  if (size === base + payloadBytes) {
+    // r6 #4: verifieer dat de staart ECHT de payload is en fsync de log voordat de WAL verdwijnt —
+    // anders kan een latere power loss de nog-vuile staart verliezen terwijl het vangnet al weg is.
+    const fdv = fs.openSync(eventsFile, 'r+');
+    try {
+      const tailBuf = Buffer.alloc(payloadBytes);
+      fs.readSync(fdv, tailBuf, 0, payloadBytes, base);
+      if (!tailBuf.equals(Buffer.from(payload, 'utf8'))) {
+        fs.closeSync(fdv);
+        return { ok: false, message: 'events log heeft de WAL-lengte maar NIET de WAL-inhoud op de staart — extern bewerkt; fail-closed' };
+      }
+      fs.fsyncSync(fdv);
+    } finally { try { fs.closeSync(fdv); } catch { } }
+    try { fs.unlinkSync(walFile); } catch { }
+    return { ok: true, action: 'append-was-complete' };
+  }
+  if (size > base + payloadBytes) return { ok: false, message: 'events log grew past an unresolved WAL (log ' + size + 'B, wal wil ' + (base + payloadBytes) + 'B) — a writer bypassed recovery; investigate (fail-closed)' };
+  // base <= size < base+payload: fragment terugkappen en de volledige payload alsnog schrijven.
+  const fd = fs.openSync(eventsFile, size === 0 && base === 0 ? 'a' : 'r+');
+  try {
+    fs.ftruncateSync(fd, base);
+    writeAllSync(fd, payload, base);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+  try { fs.unlinkSync(walFile); } catch { }
+  return { ok: true, action: size === base ? 'replayed' : 'truncated-and-replayed' };
+}
+
+/** appendChainedLocked — schrijf een of meer GEVALIDEERDE events onder EEN lock: WAL-recovery, damage-
+ *  check, tail-read, per event prev_hash/seq/entry_hash, dan WAL -> append -> fsync -> WAL weg. De
+ *  append is daarmee transactioneel: een crash/ENOSPC op elk punt laat of een intacte log zonder batch,
+ *  of een intacte log met de VOLLEDIGE batch achter — nooit een fragment dat met een volgende regel
+ *  versmelt (Codex r4 #2). Fencing: direct voor de append wordt geverifieerd dat de lock nog van ons is
+ *  (Codex r4 #1) — zo niet, dan is er NIETS geschreven en faalt de aanroep eerlijk. */
+/** opts.txnId (Codex r5 #3, 2026-08-07): een CALLER-stabiele idempotency-key maakt de append
+ *  exact-once over crash-retries heen. De key wordt op elk event van de batch gestempeld (txn_id,
+ *  mee-gehasht) en een volgende aanroep met dezelfde key is een bevestigde no-op
+ *  (alreadyApplied:true) — ook wanneer een crash mid-append via de WAL is gerepareerd (de replay
+ *  draagt dezelfde txn_id). Elk event krijgt bovendien een event_id (uuid, mee-gehasht) als de
+ *  caller er geen meegaf. Additief schema: aanroepen zonder txnId gedragen zich exact als voorheen. */
+function appendChainedLocked(runDir, events, opts) {
+  opts = opts || {};
+  fs.mkdirSync(runDir, { recursive: true });
+  const eventsFile = path.join(runDir, 'events.jsonl');
+  const walFile = eventsFile + '.wal';
+  const lock = acquireEventsLock(runDir, opts);
+  if (!lock.ok) return { ok: false, message: lock.message };
+  try {
+    /** r6 #1: txn_id/txn_sha/txn_count zijn WRITER-gestempelde velden. Een caller die ze zelf in de
+     *  event-body meegeeft kan anders andermans toekomstige transactie voor-vervuilen (spoofing: de
+     *  echte txn krijgt dan een valse "already applied"). Input met die velden wordt geweigerd. */
+    for (const ev of events) {
+      if (ev.txn_id !== undefined || ev.txn_sha256 !== undefined || ev.txn_count !== undefined) {
+        return { ok: false, message: 'txn_id/txn_sha256/txn_count zijn writer-gestempelde velden — geef de idempotency-key via --txn / opts.txnId, nooit in de event-body (r6 #1)' };
+      }
+    }
+    /** r6 #2: de idempotency-key is gebonden aan de CALLER-inhoud van de batch — dezelfde key met een
+     *  ANDERE payload is geen retry maar een bug/aanval en wordt geweigerd i.p.v. stil ge-no-op't.
+     *  De digest dekt uitsluitend de SEMANTISCHE caller-inhoud: alle volatiele/writer-gestempelde
+     *  velden (timestamp — per aanroep vers gestempeld door validateForWrite —, _forge_verify,
+     *  event_id en de keten-/txn-velden) zijn uitgesloten, anders is geen enkele retry ooit gelijk. */
+    const TXN_VOLATILE = new Set(['timestamp', '_forge_verify', 'event_id', 'prev_hash', 'seq', 'entry_hash', 'txn_id', 'txn_sha256', 'txn_count']);
+    const txnNormalize = (ev) => { const k = Object.keys(ev).filter((x) => !TXN_VOLATILE.has(x)).sort(); const o = Object.create(null); for (const x of k) o[x] = ev[x]; return o; };
+    /** r6b #2: de digest sluit timestamp/event_id uit omdat de WRITER ze stempelt — maar een caller
+     *  die ze ZELF meegaf kreeg daardoor dezelfde digest voor andere inhoud, en zijn tweede batch
+     *  verdween stil. Onder een txn zijn deze velden daarom writer-only: caller-aangeleverde waarden
+     *  worden geweigerd i.p.v. genegeerd. (Zonder txn verandert er niets — dan is er geen digest.) */
+    if (opts.txnId) {
+      for (const ev of events) {
+        if (ev.event_id !== undefined) return { ok: false, message: 'event_id is onder een txn een WRITER-veld — geef het niet zelf mee (r6b #2); de writer stempelt een uniek, hash-gebonden id' };
+      }
+    }
+    const txnSha = opts.txnId ? crypto.createHash('sha256').update(JSON.stringify(events.map(txnNormalize)), 'utf8').digest('hex') : null;
+    if (fs.existsSync(walFile)) {
+      const rec = walRecover(eventsFile, walFile);
+      if (!rec.ok) return { ok: false, message: rec.message };
+    }
+    // Codex ronde-4 #2 (2026-08-06): appenden aan een PARTIAL/CORRUPT log liet de nieuwe regel met een
+    // afgekapt fragment versmelten en ketende verder over kapot bewijs heen. Fail-closed ook op de
+    // SCHRIJFkant: een beschadigde log wordt eerst onderzocht/gerepareerd, nooit stil doorgeschreven.
+    // Sinds r4 #11 verifieert dit ook schema en hashketen, niet alleen JSON-parseerbaarheid.
+    if (fs.existsSync(eventsFile)) {
+      // schrijversbril: geketende hashes/linkage/seq hard geverifieerd, maar de legacy BACKSEARCH-vorm
+      // (echte ongeketende events tussen geketende) blijft appendbaar — zie readEventsClassified.
+      const cls = readEventsClassified(eventsFile, { verifyChain: true, runId: events[0].run_id, allowUnchainedAfterChained: true });
+      if (cls.status === 'partial' || cls.status === 'corrupt') {
+        return { ok: false, message: 'events log is ' + cls.status.toUpperCase() + ' (regel ' + cls.badLines.map((b) => b.line).join(',') + ') — refusing to append over a damaged log (fail-closed); investigate/repair first' };
+      }
+      // exact-once (r5 #3 · inhoudsgebonden sinds r6 #2 · fail-closed op ambiguïteit sinds r6b #1):
+      // dedupe ONDER de lock. Zelfde key + zelfde inhoud = bevestigde no-op; zelfde key + ANDERE
+      // inhoud = harde weigering; zelfde key ZONDER verifieerbare digest = ambigu, dus ook geweigerd.
+      if (opts.txnId) {
+        const hit = cls.entries.find((e) => e && e.txn_id === opts.txnId);
+        if (hit) {
+          /** r6b #1: een hit ZONDER opgeslagen digest is niet te verifiëren — het kan een record van
+           *  vóór de digest-invoering zijn, maar net zo goed een gespoofte legacy-regel die een echte
+           *  latere transactie stil laat no-oppen. Ambigu = FAIL-CLOSED: de aanroeper moet het
+           *  onderzoeken en desnoods een nieuwe key kiezen, nooit stilzwijgend "al toegepast" horen. */
+          if (!hit.txn_sha256) {
+            return { ok: false, message: 'txn-key ' + opts.txnId + ' komt voor in de log ZONDER verifieerbare digest (pre-r6-record of gespoofd) — ambigu, dus fail-closed (r6b #1): onderzoek de regel of gebruik een nieuwe key' };
+          }
+          if (hit.txn_sha256 !== txnSha || Number(hit.txn_count) !== events.length) {
+            return { ok: false, message: 'txn-key ' + opts.txnId + ' is al gebruikt met ANDERE inhoud (digest/count wijkt af) — sleutelhergebruik met een andere batch is geen retry; kies een nieuwe key (r6 #2)' };
+          }
+          return { ok: true, written: 0, alreadyApplied: true, txn_id: opts.txnId, message: 'txn ' + opts.txnId + ' is al toegepast — idempotente no-op (exact-once, digest geverifieerd)' };
+        }
+      }
+    }
+    const tail = chainTail(eventsFile, events[0].run_id);
+    let prevHash = tail.prevHash;
+    let seq = tail.lastSeq;
+    const lines = [];
+    for (const ev of events) {
+      if (!ev.event_id) ev.event_id = crypto.randomUUID();
+      if (opts.txnId) { ev.txn_id = opts.txnId; ev.txn_sha256 = txnSha; ev.txn_count = events.length; }
+      ev.prev_hash = prevHash;
+      ev.seq = ++seq;
+      const canon = (() => { const k = Object.keys(ev).filter((x) => x !== 'entry_hash' && x !== 'prev_hash').sort(); const o = Object.create(null); for (const x of k) o[x] = ev[x]; return JSON.stringify(o); })();
+      ev.entry_hash = crypto.createHash('sha256').update(canon + prevHash).digest('hex');
+      prevHash = ev.entry_hash;
+      lines.push(JSON.stringify(ev));
+    }
+    const payload = lines.join('\n') + '\n';
+    let baseBytes = 0;
+    try { baseBytes = fs.statSync(eventsFile).size; } catch { baseBytes = 0; }
+    if (!stillOwnsLock(lock)) return { ok: false, message: 'events lock lost before append (fencing) — refusing to write; nothing was appended' };
+    // WAL eerst (durable), dan de append, dan fsync van de log, dan pas de WAL weg.
+    const wfd = fs.openSync(walFile, 'w');
+    try {
+      writeAllSync(wfd, JSON.stringify({ base_bytes: baseBytes, payload_sha256: crypto.createHash('sha256').update(payload, 'utf8').digest('hex'), payload })); // r6 #3: alle bytes, gegarandeerd
+      fs.fsyncSync(wfd);
+    } finally { fs.closeSync(wfd); }
+    const afd = fs.openSync(eventsFile, 'a');
+    try {
+      writeAllSync(afd, payload); // r6 #3
+      fs.fsyncSync(afd);
+    } finally { fs.closeSync(afd); }
+    try { fs.unlinkSync(walFile); } catch { /* recovery ruimt hem anders op als append-was-complete */ }
+    return { ok: true, written: events.length };
+  } finally { releaseEventsLock(lock); }
+}
+
+/** readEventsClassified — DE centrale JSONL-foutsemantiek (audit G6, 2026-08-06). Elke completion-gate
+ *  hoort deze toestanden te onderscheiden i.p.v. "onleesbaar = geen events" (fail-open):
+ *    missing — bestand bestaat niet · empty — bestaat maar bevat geen enkele regel ·
+ *    partial — alleen de LAATSTE regel is onparseerbaar (afgekapte staart: een crash mid-append) ·
+ *    corrupt — een NIET-laatste regel is onparseerbaar (echte beschadiging/bewerking) · valid.
+ *  entries bevat alle wel-parseerbare events; badLines de onparseerbare met regelnummer. */
+function readEventsClassified(file, opts) {
+  opts = opts || {};
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (e) { return { status: 'missing', entries: [], badLines: [], error: e.code || e.message }; }
+  const rawLines = raw.split(/\r?\n/);
+  const entries = [], badLines = [], entryLines = [];
+  let lastNonBlank = -1;
+  for (let i = 0; i < rawLines.length; i++) { if (rawLines[i].trim()) lastNonBlank = i; }
+  if (lastNonBlank === -1) return { status: 'empty', entries: [], badLines: [] };
+  for (let i = 0; i <= lastNonBlank; i++) {
+    const s = rawLines[i].trim();
+    if (!s) continue;
+    try { entries.push(JSON.parse(s)); entryLines.push(i + 1); }
+    catch { badLines.push({ line: i + 1, snippet: s.slice(0, 80) }); }
+  }
+  if (badLines.length > 0) {
+    const onlyTail = badLines.length === 1 && badLines[0].line === lastNonBlank + 1;
+    return { status: onlyTail ? 'partial' : 'corrupt', entries, badLines };
+  }
+  /** verifyChain (Codex r4 #11, 2026-08-07): "parseert als JSON" was hier het hele oordeel — een
+   *  omgezette check_failed->check_passed (hash klopt niet meer), een seq-gat/fork of een kaal {a:1}
+   *  telde als 'valid' en completion-consumers (runcontract/finalize) vertrouwden het. Onder deze vlag
+   *  wordt schema + keten hard gevalideerd: plain object, event_type, run_id (indien opgegeven),
+   *  genesis-anker, prev_hash-koppeling, seq strikt +1 zodra aanwezig, en de HERBEREKENDE entry_hash
+   *  (zelfde canonical als de writer). Een ongeketende LEGACY-kop (entries zonder entry_hash voor het
+   *  eerste geketende event) blijft toegestaan; na het eerste geketende event is ongeketend = corrupt.
+   *  Weergave-consumenten houden de parse-only default — dit is de completion-poort. */
+  if (opts.verifyChain) {
+    const bad = (idx, reason) => ({ status: 'corrupt', entries, badLines: [{ line: entryLines[idx], snippet: JSON.stringify(entries[idx]).slice(0, 80), reason }] });
+    /** Codex r5 #4 (2026-08-07): een ongeketende KOP voor de eerste geketende entry was overal toegestaan
+     *  — een aanvaller kon dus hashloze "bewijs"-events VOOR de keten invoegen (de eerste echte entry
+     *  bleef correct naar genesis wijzen) en completion-consumers telden ze mee. Strikte bril: een log
+     *  die geketende entries BEVAT mag geen enkele ongeketende entry dragen (mixed = corrupt). Een
+     *  volledig ongeketend legacy-log blijft leesbaar (historische runs), en de schrijversbril
+     *  (allowUnchainedAfterChained) accepteert de BACKSEARCH-mengvorm bewust — appends aan legacy-runs
+     *  blijven mogelijk, maar zo'n run kan nooit meer een strikte completion-poort passeren. */
+    const hasChained = entries.some((e) => e && typeof e === 'object' && e.entry_hash !== undefined);
+    let prevHash = null, prevSeq = null, chained = false;
+    for (let i = 0; i < entries.length; i++) {
+      const ev = entries[i];
+      if (typeof ev !== 'object' || ev === null || Array.isArray(ev)) return bad(i, 'not a plain object');
+      if (typeof ev.event_type !== 'string' || !ev.event_type) return bad(i, 'missing/invalid event_type');
+      if (Object.keys(ev).some((k) => k === '__proto__' || k === 'constructor' || k === 'prototype')) return bad(i, 'forbidden prototype-polluting key');
+      if (ev.entry_hash === undefined) {
+        if (hasChained && !opts.allowUnchainedAfterChained) return bad(i, 'unchained entry in a chained log (unanchored injection)');
+        /** Twee striktheden (2026-08-07): completion-consumers (runcontract/finalize) weigeren een
+         *  ongeketend event NA een geketend — een aanvaller zou anders hashloze "bewijs"-events kunnen
+         *  bijschrijven. Maar de WRITER (damage-gate voor een append) moet de historisch ondersteunde
+         *  BACKSEARCH-vorm blijven accepteren: oude runs bevatten echte ongeketende events tussen
+         *  geketende (de keten springt aantoonbaar over ze heen — chainTail koppelt aan de laatste
+         *  GEKETENDE voorouder). opts.allowUnchainedAfterChained kiest de schrijversbril; de geketende
+         *  entries zelf worden in beide standen volledig geverifieerd. */
+        if (chained && !opts.allowUnchainedAfterChained) return bad(i, 'unchained entry after a chained one');
+        continue; // legacy-entry: draagt soms geen run_id/seq — schema-checks hierboven gelden wel
+      }
+      // run_id-binding geldt voor GEKETENDE entries (de writer zet run_id altijd; een geketend event van
+      // een andere run in deze log is per definitie manipulatie).
+      if (opts.runId && ev.run_id !== opts.runId) return bad(i, 'run_id mismatch (' + String(ev.run_id).slice(0, 40) + ')');
+      const expectedPrev = chained ? prevHash : (opts.runId ? 'genesis:' + opts.runId : ev.prev_hash);
+      if (ev.prev_hash !== expectedPrev) return bad(i, 'prev_hash broken (chain fork or edit)');
+      const canon = (() => { const k = Object.keys(ev).filter((x) => x !== 'entry_hash' && x !== 'prev_hash').sort(); const o = Object.create(null); for (const x of k) o[x] = ev[x]; return JSON.stringify(o); })();
+      const recomputed = crypto.createHash('sha256').update(canon + ev.prev_hash).digest('hex');
+      if (ev.entry_hash !== recomputed) return bad(i, 'entry_hash does not match recomputed content hash');
+      if (ev.seq !== undefined) {
+        const s = Number(ev.seq);
+        if (!Number.isFinite(s) || s < 1) return bad(i, 'invalid seq');
+        if (prevSeq !== null && s !== prevSeq + 1) return bad(i, 'seq not monotone (+1): ' + prevSeq + ' -> ' + s);
+        prevSeq = s;
+      } else if (prevSeq !== null) {
+        return bad(i, 'seq missing after sequenced entries');
+      }
+      prevHash = ev.entry_hash;
+      chained = true;
+    }
+  }
+  return { status: 'valid', entries, badLines };
+}
+
+function flagsTag(v) {
+  // only emit a tag when there is real flag content — otherwise accepted events printed a confusing ' []' (fix 2026-07-09)
+  const flags = v ? [v.event_type_unknown ? 'UNKNOWN-TYPE' : '', v.agent_registered === false ? 'UNREGISTERED' : '', v.proof_verified === false ? 'UNVERIFIED' : '', v.dispatch_unverified ? 'NO-DISPATCH-ID' : '', v.model_unverified ? 'MODEL-UNVERIFIED' : ''].filter(Boolean) : [];
+  return flags.length ? ' [' + flags.join(' ') + ']' : '';
+}
+
+// ---- CLI ----
+function mainCli() {
+  const args = process.argv.slice(2);
+  // BATCH-MODUS (audit G3, 2026-08-06 · all-or-nothing sinds Codex r4 #2, 2026-08-07): leest JSONL-events
+  // van stdin (een object per regel, event_type verplicht; run_id komt van het argument) en schrijft ze
+  // onder EEN lock met EEN node-boot. Elke regel doorloopt exact dezelfde validatie/STRICT-poort, maar de
+  // batch is een TRANSACTIE: een geweigerde regel weigert de HELE batch (exit 2, NIETS geschreven), zodat
+  // een retry na een fout nooit de eerder-geaccepteerde regels dupliceert. Wie partial-commit wil, splitst
+  // zijn batch zelf.
+  if (args[0] === '--batch') {
+    const runId = args[1];
+    const rd = resolveRunDir(runId);
+    if (!rd.ok) { console.error(rd.message); process.exit(1); }
+    // r5 #3: optionele caller-stabiele idempotency-key — dezelfde batch na een crash/onzekere exit
+    // opnieuw aanbieden met dezelfde --txn is een bevestigde no-op (exit 0, 'txn already applied').
+    let txnId = null;
+    const txnIdx = args.indexOf('--txn');
+    if (txnIdx !== -1) {
+      txnId = args[txnIdx + 1] || '';
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(txnId)) { console.error('batch: --txn moet [A-Za-z0-9_-]{8,128} zijn (caller-stabiel over retries)'); process.exit(1); }
+    }
+    let stdin = '';
+    try { stdin = fs.readFileSync(0, 'utf8'); } catch { stdin = ''; }
+    const lines = stdin.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!lines.length) { console.error('batch: no events on stdin (one JSON object per line)'); process.exit(1); }
+    const accepted = [];
+    let refusals = 0;
+    for (let i = 0; i < lines.length; i++) {
+      let ev;
+      try { ev = JSON.parse(lines[i]); } catch (e) { console.error('batch line ' + (i + 1) + ': invalid JSON: ' + e.message); refusals++; continue; }
+      // r6b #2: onder een txn zijn timestamp en event_id WRITER-velden. Ze vallen buiten de
+      // inhouds-digest (de writer stempelt ze per aanroep vers), dus een caller die ze zelf meegeeft
+      // zou met dezelfde key andere inhoud kunnen aanbieden die stil verdwijnt. Weiger ze expliciet —
+      // dit wordt VOOR validateForWrite gecontroleerd, want die stempelt timestamp zelf.
+      if (txnId && (Object.prototype.hasOwnProperty.call(ev, 'timestamp') || Object.prototype.hasOwnProperty.call(ev, 'event_id'))) {
+        console.error('batch line ' + (i + 1) + ': timestamp/event_id zijn onder --txn writer-velden — laat ze weg (r6b #2)');
+        refusals++; continue;
+      }
+      ev.run_id = runId;
+      if (!ev.event_type) { console.error('batch line ' + (i + 1) + ': event_type is required'); refusals++; continue; }
+      const val = validateForWrite(ev);
+      if (!val.ok) { console.error('batch line ' + (i + 1) + ': ' + val.message); refusals++; continue; }
+      accepted.push(ev);
+    }
+    if (refusals) {
+      console.error('batch REFUSED as a whole: ' + refusals + ' bad line(s), 0 written (all-or-nothing; retry after fixing is safe)');
+      process.exit(2);
+    }
+    const w = appendChainedLocked(rd.runDir, accepted, txnId ? { txnId } : undefined);
+    if (!w.ok) { console.error(w.message); process.exit(1); }
+    if (w.alreadyApplied) console.log('txn already applied (' + txnId + ') — 0 written, exact-once bevestigd -> ' + path.join('forge-runs', runId, 'events.jsonl'));
+    else console.log('logged ' + accepted.length + ' event(s) (batch' + (txnId ? ', txn ' + txnId : '') + ') -> ' + path.join('forge-runs', runId, 'events.jsonl'));
+    process.exit(0);
+  }
+
+  let ev = {};
+  if (args.length === 1) {
+    try { ev = JSON.parse(args[0]); } catch (e) { console.error('Invalid JSON:', e.message); process.exit(1); }
+  } else if (args.length >= 2) {
+    ev.run_id = args[0];
+    ev.event_type = args[1];
+    if (args[2]) { try { Object.assign(ev, JSON.parse(args[2])); } catch (e) { console.error('Invalid extra JSON:', e.message); process.exit(1); } }
+  } else {
+    console.error('Usage: node log-event.cjs <run_id> <event_type> [json] | node log-event.cjs <json> | node log-event.cjs --batch <run_id> < events.jsonl');
+    process.exit(1);
+  }
+  if (!ev.run_id) { console.error('run_id is required'); process.exit(1); }
+  if (!ev.event_type) { console.error('event_type is required'); process.exit(1); }
+  const rd = resolveRunDir(ev.run_id);
+  if (!rd.ok) { console.error(rd.message); process.exit(1); }
+  const val = validateForWrite(ev);
+  if (!val.ok) { console.error(val.message); process.exit(val.exitCode); }
+  const w = appendChainedLocked(rd.runDir, [ev]);
+  if (!w.ok) { console.error(w.message); process.exit(1); }
+  console.log('logged ' + ev.event_type + ' -> ' + path.join('forge-runs', ev.run_id, 'events.jsonl') + flagsTag(val.verify));
+}
+
+if (require.main === module) mainCli();
+
+module.exports = {
+  validateForWrite, appendChainedLocked, acquireEventsLock, releaseEventsLock, chainTail,
+  readEventsClassified, resolveRunDir, verifyEvent, canonicalAgent, KNOWN_EVENT_TYPES,
+  stillOwnsLock, walRecover,
+};

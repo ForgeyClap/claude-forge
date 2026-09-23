@@ -34,7 +34,22 @@ The Lead Agent **decides the team**. Map each required work area to a real ECC a
 
 **Before planning a genuinely new/ambiguous approach:** load `forge-brainstorm` (diverge → constraints → converge → smallest viable first) so the picked approach has a written rationale before any implementation work package is written — see Step 0b Skill Discovery above for when a skill gap needs a custom skill instead.
 
-## Step 1 — Classify the domain
+## Step 1 — Classify the domain (Quality Intelligence, REQUIRED for BUILD tasks)
+**Run the ONE executable analysis entrypoint FIRST** (F-14: one command, the whole chain — no prose function names to remember). It is the canonical multi-label source (domain-catalog.json); the table below is the human fallback:
+
+```
+node .claude/forge-bin/forge-quality.cjs analyze "<de missie>"
+```
+
+One JSON output carries the whole chain — consume ALL of it, not just the profile:
+1. `profile` + `playbook`: `primary_domain` picks the playbook; ALL `project_type` labels steer quality discovery. `classification_confidence: 'none'` means the type was NOT recognized — resolve the type explicitly (intake) before building; the fullstack fallback is an assumption, not a classification.
+2. `lenses` (10): every lens carries an explicit disposition (RELEVANT / NOT_APPLICABLE / DEFERRED / OWNER_GATED) with a reason; silently skipping a dimension is not allowed.
+3. `omissions`: forgotten-requirement cards along five axes, all pre-validated (`omissions_valid` must be true; re-validate edited cards with `validateRequirementCard`); accepted cards become PRD acceptance criteria.
+4. `knowledge_cards`: validated descriptors (slug/path/exists/sha256/relevance). Load only cards with `exists: true` via `node .claude/forge-bin/forge-quality.cjs card <slug>` — max 6, max 3 retrieval rounds; a missing card is an honest gap, never invented content.
+5. `council`: NONE is the default (computed by `councilTrigger()` inside the analysis; call it directly for standalone decision points). **Log the trigger decision as a `decision_logged` event — ALSO when the mode is NONE** (deciding NOT to convene a council is a decision with a reason, not silence): run the analysis with `--log-run <run_id>` (`node .claude/forge-bin/forge-quality.cjs analyze "<de missie>" --log-run <run_id>`) so the event is written by the real event writer, not by prose; on FULL, follow the `forge-council` skill and persist the record via `council-save`. Council consensus is never evidence.
+
+If the classifier and this table disagree, the classifier + catalog win; fix the catalog (one source), never fork the table.
+
 Pick the primary domain (if mixed, pick the primary and attach the secondary playbook):
 
 | Signals / keywords | Domain | Playbook |
@@ -48,7 +63,7 @@ Pick the primary domain (if mixed, pick the primary and attach the secondary pla
 | integration, API, Gmail/Calendar/CRM, OAuth, webhook between apps, sync | Business automation | `forge-integration` |
 | payment, checkout, Stripe/Mollie/Adyen/PayPal, iDEAL, card, PCI, subscription, refund, charge, webhook signature | Payments/billing | `forge-payments` |
 | shop, store, cart, catalog, product/SKU, inventory, order, Shopify/WooCommerce/Etsy, digital product, cashflow | E-commerce | `forge-ecommerce` |
-| electron, desktop app, .exe, installer, preload, IPC, contextIsolation, nodeIntegration, code signing, boekhouder | Electron/desktop | `forge-electron` |
+| electron, desktop app, .exe, installer, preload, IPC, contextIsolation, nodeIntegration, code signing, an accounting desktop app | Electron/desktop | `forge-electron` |
 | voice agent, voicebot, phone, call, telephony, IVR, Twilio/Vapi/Retell, barge-in, Dutch call, outbound | Voice/phone agent | `forge-voice` |
 | agent, LLM app, tool use, function calling, tool schema, prompt injection, jailbreak, eval, benchmark, guardrail, agent loop, MCP tool | Agent / LLM app + evals | `forge-agent` |
 | API, REST, endpoint, route, OpenAPI, Swagger, GraphQL, gRPC, proto, contract test, versioning, idempotency, rate limit, pagination, error envelope, backend | Contract-first API | `forge-api` |

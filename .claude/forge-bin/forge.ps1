@@ -29,7 +29,8 @@ function Start-DashboardOrFallback {
       Write-Host 'Command Center found but not built yet. Run: cd command-center/dashboard && npm install && npm run build'
     }
   } else {
-    & $node "$dash\server.cjs"
+    # AUDIT G7 (2026-08-06): auto-fallback naar de retired server.cjs verwijderd (forge-canon.json)
+    Write-Host 'Forge Command Center niet aanwezig in dit project. De oude per-project Control Center (server.cjs) is RETIRED en start NOOIT automatisch (forge-canon.json). Vraag de owner expliciet om een legacy dashboard, of gebruik het centrale Command Center op 127.0.0.1:4100.'
   }
 }
 # Pre-existing bug found+fixed while wiring `learn` (2026-07-18): when exactly ONE trailing arg exists,

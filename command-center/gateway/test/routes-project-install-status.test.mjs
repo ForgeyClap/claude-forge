@@ -1,7 +1,7 @@
 // HTTP-level integration tests for build-async-install's GET /api/projects/install-status route,
 // against a real instance of the gateway bound to an ephemeral port. Mirrors
 // ../test/routes-project-create.test.mjs's own real-server + isolated-temp-root pattern: this suite
-// NEVER writes into the real Documents\ForgeProjecten and NEVER spawns a real
+// NEVER writes into the real Documents\ForgeProjects and NEVER spawns a real
 // `forge-sync.cjs install` child process — the isolated root makes installForgeInto's own FIXED
 // FORGE_PROJECTS_ROOT containment check refuse before anything is ever spawned (same safety
 // property ../test/routes-project-create.test.mjs already documents for its own POST tests).

@@ -140,7 +140,7 @@ function foldCase(segment: string, win32: boolean): string {
 ```
 
 macOS APFS is **case-insensitive by default** (case-sensitive is an opt-in format). So
-`/Users/x/Documents/ForgeProjecten/foo` and `/Users/x/documents/forgeprojecten/foo` are the
+`/Users/x/Documents/ForgeProjects/foo` and `/Users/x/documents/ForgeProjects/foo` are the
 same directory on disk, but `assertInsideRoot` compares segments case-sensitively and would
 call the second one `OUTSIDE_TRUSTED_ROOT`. The same applies to `containedPath()` in
 `storage/atomic.ts`, which lowercases only on win32.
@@ -276,7 +276,7 @@ platform-neutral and need no change.
 | --- | --- | --- |
 | `inspectSlug()` rejects `/^[a-z]:/i` | Refuses `C:\...` and the drive-*relative* `C:project` as display names | Still correct on macOS; a name starting `c:` is not a name anywhere. |
 | `attachments/policy.ts` rejects archive entries matching `/^[A-Za-z]:/` | Zip-slip defence | Still correct. |
-| `paths.test-vectors.ts` uses `C:\root` / `C:\Users\test\Documents\ForgeProjecten` | Test corpus, tagged `platform: 'win32'` | The corpus already carries a `VectorPlatform` tag with `'win32' \| 'posix' \| 'any'`, so the posix vectors run on macOS unchanged. No drive letters leak into production paths. |
+| `paths.test-vectors.ts` uses `C:\root` / `C:\Users\test\Documents\ForgeProjects` | Test corpus, tagged `platform: 'win32'` | The corpus already carries a `VectorPlatform` tag with `'win32' \| 'posix' \| 'any'`, so the posix vectors run on macOS unchanged. No drive letters leak into production paths. |
 | `store.ts` `WINDOWS_RESERVED` regex on ids | Rejects `con`, `nul`, `com1`… as record ids on every platform | Conservative, harmless, keep it — it means a workspace stays portable in both directions. |
 | `adapter.ts` `MAX_PROMPT_CHARS = 28_000` | Sized against Windows' 32767-character `CreateProcess` limit | macOS `ARG_MAX` is far larger. The limit is conservative, not wrong. Leave it — a shared ceiling keeps behaviour identical on both hosts. |
 | `paths.ts` `exceedsWindowsMaxPath()` | Advisory 260-char warning | Meaningless on macOS. Gate the UI warning on platform rather than deleting it, so a workspace moved *back* to Windows still gets it. |
@@ -328,7 +328,7 @@ data lives inside a checkout that someone will eventually `git clean`. Apple's c
 | Workspace data (events, records, audit, lock) | `~/Library/Application Support/ForgeWorkspace` | `FORGE_WORKSPACE_DIR` — **already supported** |
 | Logs (bridge stdout/stderr) | `~/Library/Logs/ForgeWorkspace/` | launchd `StandardOutPath` / `StandardErrorPath` |
 | launchd job definition | `~/Library/LaunchAgents/com.forge.workspace.bridge.plist` | see §3 |
-| Projects | `~/Documents/ForgeProjecten` (unchanged) | **no override exists yet** — see §1.4 |
+| Projects | `~/Documents/ForgeProjects` (unchanged) | **no override exists yet** — see §1.4 |
 | Caches (nothing today) | `~/Library/Caches/ForgeWorkspace` | n/a |
 
 Do **not** put the workspace in `~/Library/Containers/…` — the bridge is not sandboxed and
@@ -520,7 +520,7 @@ network verb.
 
 | Item | Move it? | Why |
 | --- | --- | --- |
-| Project folders under `Documents\ForgeProjecten\` | **Yes** | Each carries `.forge/project.json` — the marker that makes a move survivable. See §5.2. |
+| Project folders under `Documents\ForgeProjects\` | **Yes** | Each carries `.forge/project.json` — the marker that makes a move survivable. See §5.2. |
 | `.forge-workspace/events/*.jsonl` | Yes | Append-only, UTF-8, platform-neutral content. |
 | `.forge-workspace/records/**/*.json` | **Yes, but rewrite paths** | `ProjectRecord.canonicalPath` and `relativePath` hold Windows absolute paths. See §5.2. |
 | `.forge-workspace/audit/ledger.jsonl` | Yes | Ids and counts only; no paths. |
@@ -550,7 +550,7 @@ network verb.
   and a display name. A hand-edited marker cannot smuggle in an arbitrary id.
 
 **Therefore the migration procedure is: copy the project folders under the new
-`ForgeProjecten`, copy the workspace records, start the bridge, and let discovery re-home
+`ForgeProjects`, copy the workspace records, start the bridge, and let discovery re-home
 them.** Do not rewrite `canonicalPath` by hand. If discovery is not yet wired
 (see [`architecture.md`](./architecture.md) §7 — `listProjects` and friends have no handler in
 this build), then **do not migrate records at all yet**: migrate only the project folders, and
@@ -562,7 +562,7 @@ Use `ditto`, not `cp -r`. `ditto` preserves extended attributes, ACLs and resour
 it handles the Windows-to-Mac direction predictably when the source has been staged locally:
 
 ```bash
-ditto --noqtn /Volumes/Transfer/ForgeProjecten ~/Documents/ForgeProjecten
+ditto --noqtn /Volumes/Transfer/ForgeProjects ~/Documents/ForgeProjects
 ```
 
 If the transfer is over the network from the Windows machine, `rsync -av --no-perms` into a
@@ -577,7 +577,7 @@ Things to check after copying:
 - **Case collisions.** Two files differing only in case cannot coexist on a default APFS
   volume. NTFS is also case-insensitive, so this only bites for repos that were cloned from a
   case-sensitive Linux host. `git ls-files | sort -f | uniq -Di` finds them before the copy.
-- **Quarantine.** `xattr -r -d com.apple.quarantine ~/Documents/ForgeProjecten` if Gatekeeper
+- **Quarantine.** `xattr -r -d com.apple.quarantine ~/Documents/ForgeProjects` if Gatekeeper
   starts objecting, and only after you are satisfied where the files came from.
 - **Symlinks.** Any Windows junction in a project tree becomes a broken link. The path guard
   will refuse anything that resolves outside the root, which is correct, but the error will be
@@ -602,7 +602,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forge.workspace.brid
 
 # 2. Projects, which are ordinary git repositories plus their markers.
 tar --disable-copyfile -czf ~/Backups/forge-projects-$(date +%Y%m%d-%H%M%S).tar.gz \
-    -C ~/Documents ForgeProjecten
+    -C ~/Documents ForgeProjects
 
 shasum -a 256 ~/Backups/forge-*.tar.gz > ~/Backups/manifest-$(date +%Y%m%d).txt
 ```
@@ -681,7 +681,7 @@ executed.
 ### Phase 4 — move the data
 
 - [ ] Stop the bridge. Delete any copied `bridge.lock`.
-- [ ] Stage the transfer, then `ditto` into `~/Documents/ForgeProjecten` (§5.3).
+- [ ] Stage the transfer, then `ditto` into `~/Documents/ForgeProjects` (§5.3).
 - [ ] Fix line endings and case collisions per §5.3.
 - [ ] Confirm each project still has `.forge/project.json` and that the id inside it matches
       the record it belongs to.
@@ -730,5 +730,5 @@ executed.
 - **Multi-user hosting.** One user, one home directory, one trusted root. Everything from the
   path guard's containment model to the workspace lock assumes it.
 - **Time Machine.** Excluding or including `~/Library/Application Support/ForgeWorkspace` and
-  `~/Documents/ForgeProjecten` is a decision, and a live event log in a Time Machine snapshot
+  `~/Documents/ForgeProjects` is a decision, and a live event log in a Time Machine snapshot
   has the same torn-write caveat as §5.4.

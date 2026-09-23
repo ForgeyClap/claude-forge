@@ -65,7 +65,7 @@ const cleanups: Array<() => void> = [];
 function freshWorkspace(): Workspace {
   const scratch = mkdtempSync(join(tmpdir(), 'forge-idem-'));
   const dataDir = join(scratch, 'workspace');
-  const projectsRoot = join(scratch, 'ForgeProjecten');
+  const projectsRoot = join(scratch, 'ForgeProjects');
   mkdirSync(projectsRoot, { recursive: true });
   const store = openStore({ dataDir });
   cleanups.push(() => {
@@ -571,12 +571,12 @@ describe('idempotency — createProject requestId (router cache)', () => {
 
     // resolveProjectsRootInfo (used inside the createProject operation) reads
     // os.homedir(), which is USERPROFILE on Windows / HOME on POSIX. Point it at
-    // a temp home with a Documents folder so the flow builds its ForgeProjecten
+    // a temp home with a Documents folder so the flow builds its ForgeProjects
     // root there instead of in the developer's real Documents.
     const home = join(scratch, 'home');
     const documents = join(home, 'Documents');
     mkdirSync(documents, { recursive: true });
-    const projectsRoot = join(documents, 'ForgeProjecten');
+    const projectsRoot = join(documents, 'ForgeProjects');
 
     const savedUserProfile = process.env.USERPROFILE;
     const savedHome = process.env.HOME;

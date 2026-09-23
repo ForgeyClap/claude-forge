@@ -69,7 +69,7 @@ function installFetchMock(): { fetchMock: ReturnType<typeof vi.fn>; bodies: unkn
       return {
         ok: true,
         status: 201,
-        json: async () => ({ ok: true, project: { name: 'Demo Project', path: 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\Demo Project' } }),
+        json: async () => ({ ok: true, project: { name: 'Demo Project', path: 'C:\\Users\\YOU\\Documents\\ForgeProjects\\Demo Project' } }),
       } as Response;
     }
     if (url.includes('/api/projects/install-status')) return installStatusResponse('installed');
@@ -158,7 +158,7 @@ describe('Sidebar — "New project"', () => {
           return {
             ok: true,
             status: 201,
-            json: async () => ({ ok: true, project: { name: 'Demo Project', path: 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\Demo Project' } }),
+            json: async () => ({ ok: true, project: { name: 'Demo Project', path: 'C:\\Users\\YOU\\Documents\\ForgeProjects\\Demo Project' } }),
           } as Response;
         }
         if (url.includes('/api/projects/install-status')) {

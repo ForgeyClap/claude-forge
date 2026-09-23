@@ -13,8 +13,8 @@ Completed 2026-07-24. Every line below is a recorded fact, not an intention.
 | Usage telemetry available | **EXACT** — input/output/cache tokens, `contextWindow: 200000`, `costUSD`, per-model breakdown | same call |
 | Node | v24.18.0 portable, `%LOCALAPPDATA%\Programs\nodejs` | `node --version` |
 | Git | **2.55.0.windows.3**, MinGit portable, `%LOCALAPPDATA%\Programs\MinGit` | `git --version` |
-| Documents root | `C:\Users\faitz\Documents` | `[Environment]::GetFolderPath('MyDocuments')` **and** `HKCU\...\User Shell Folders\Personal` — both agree |
-| `ForgeProjecten` | does not exist yet | `Test-Path` |
+| Documents root | `C:\Users\YOU\Documents` | `[Environment]::GetFolderPath('MyDocuments')` **and** `HKCU\...\User Shell Folders\Personal` — both agree |
+| `ForgeProjects` | does not exist yet | `Test-Path` |
 
 ### CLI flags confirmed present in 2.1.217
 
@@ -35,7 +35,7 @@ flag that does not exist.
 
 | Item | Location |
 | --- | --- |
-| Full archive | `C:\Users\faitz\Documents\ForgeWorkspace-backup-20260724-031827.zip` (3.84 MB) |
+| Full archive | `C:\Users\YOU\Documents\ForgeWorkspace-backup.zip` (3.84 MB) |
 | Archive SHA256 | `2E86A66A4104B62C204364DA53CFAF86856D4DA8C8A84823D93BA0FE48A5F238` |
 | File hash manifest | `artifacts/baseline-manifest.json` — 347 files, per-file SHA256 |
 

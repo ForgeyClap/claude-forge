@@ -63,7 +63,48 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const actiongate = require('./forge-actiongate.cjs');
+
+/** verifyOwnerGrant(token, opts) -> {ok, reason, source} — AUDIT FIX 2026-08-03.
+ *  A tier-3 (write-primitive) grant used to be ANY truthy value supplied by the same caller that
+ *  wanted the write. It is now matched against a secret only the owner can write: the env var
+ *  FORGE_MCP_OWNER_GRANT, or .claude/config/forge-mcp-owner-grant.txt under the project root. Forge
+ *  never generates this secret — a secret the system could mint would authorise the system to itself.
+ *  No secret configured => refused (a missing lock is not an open door). Mirrors forge-genesis.cjs's
+ *  ownerApprovalSecret()/tokenMatches() deliberately, so there is ONE approval convention to learn. */
+const MCP_GRANT_SECRET_REL = path.join('.claude', 'config', 'forge-mcp-owner-grant.txt');
+function ownerGrantSecret(opts) {
+  opts = opts || {};
+  const env = opts.env || process.env;
+  const root = opts.projectRoot ? path.resolve(opts.projectRoot) : path.resolve(__dirname, '..', '..');
+  const p = path.join(root, MCP_GRANT_SECRET_REL);
+  // ENV IS NOT AN OWNER CHANNEL (broad Codex audit #8, fixed 2026-08-05): the process requesting a
+  // tier-3 write can set FORGE_MCP_OWNER_GRANT itself, which turned this verification into a mirror.
+  // File only; `allowEnv` is a deliberate test seam, off in every production caller.
+  const fromEnv = opts.allowEnv === true && typeof env.FORGE_MCP_OWNER_GRANT === 'string' ? env.FORGE_MCP_OWNER_GRANT.trim() : '';
+  if (fromEnv) return { value: fromEnv, path: p, source: 'env' };
+  try {
+    const fromFile = fs.readFileSync(p, 'utf8').trim();
+    if (fromFile) return { value: fromFile, path: p, source: 'file' };
+  } catch { /* absent — reported below */ }
+  return { value: null, path: p, source: 'none' };
+}
+function verifyOwnerGrant(token, opts) {
+  const secret = ownerGrantSecret(opts);
+  if (!secret.value) {
+    return { ok: false, reason: 'no owner grant secret is configured — write one to ' + secret.path + ' so a grant can be VERIFIED instead of assumed (an environment variable does not count: the process requesting the write can set it)' };
+  }
+  if (typeof token !== 'string' || !token.trim()) {
+    return { ok: false, reason: 'owner grant must be an explicit, non-empty token' };
+  }
+  const a = crypto.createHash('sha256').update(String(token)).digest();
+  const b = crypto.createHash('sha256').update(String(secret.value)).digest();
+  if (!crypto.timingSafeEqual(a, b)) {
+    return { ok: false, reason: 'the supplied owner grant token does not match the owner grant secret' };
+  }
+  return { ok: true, reason: 'owner grant verified (' + secret.source + ')', source: secret.source };
+}
 
 const REGISTRY_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'mcp-registry.json');
 const GRANTS_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'mcp-grants.json');
@@ -159,7 +200,19 @@ function validateGrant(params, opts) {
   const serverEntry = registry.servers.find((s) => s.id === serverId);
   if (!serverEntry) return { allowed: false, tier: typeof params.tier === 'number' ? params.tier : null, reason: 'unknown mcp server "' + serverId + '"' };
 
-  const tier = typeof params.tier === 'number' ? params.tier : serverEntry.tier;
+  // TIER COMES FROM THE REGISTRY (fix 2026-08-05, broad Codex audit finding #7). This used to prefer a
+  // CALLER-SUPPLIED tier, so the party asking for permission decided which rules applied to it: calling
+  // validateGrant({server:'github-write', tier:0}) on a registry tier-3 server skipped the entire tier-3
+  // owner-verification branch below. A caller may still RAISE the tier (that is how an escalation probe
+  // asks "would tier 2 be allowed for this?"), but it can never LOWER it — the effective tier is the max
+  // of what the registry says and what the caller claims, and a non-integer registry tier is refused
+  // outright rather than silently treated as 0.
+  const registryTier = serverEntry.tier;
+  if (!Number.isInteger(registryTier) || registryTier < 0 || registryTier > 3) {
+    return { allowed: false, tier: null, reason: 'server "' + serverId + '" has an invalid registry tier (' + JSON.stringify(registryTier) + ') — refusing rather than guessing' };
+  }
+  const claimed = typeof params.tier === 'number' && Number.isInteger(params.tier) ? params.tier : registryTier;
+  const tier = Math.max(registryTier, claimed);
 
   const bossGrant = grants.bosses[bossSlug];
   if (!bossGrant) return { allowed: false, tier, reason: 'unknown boss "' + params.boss + '"' };
@@ -175,15 +228,28 @@ function validateGrant(params, opts) {
     if (!opts.ownerGrant) {
       return { allowed: false, tier, reason: 'write-primitive: requires per-use owner grant via hard-gate' };
     }
+    // AUDIT FIX (2026-08-03): BOTH halves of this gate used to come from the party asking for
+    // permission — `ownerGrant` was any truthy value, and the text handed to the classifier was
+    // free-form caller input. `{ ownerGrant: 'x', text: 'deploy to production' }` therefore produced
+    // ALLOWED for whatever the caller actually meant to do. The grant is now verified against a secret
+    // only the OWNER writes, and the caller's text can only ADD to the canonical action description.
+    const grantCheck = verifyOwnerGrant(opts.ownerGrant, opts);
+    if (!grantCheck.ok) {
+      return { allowed: false, tier, reason: 'write-primitive: ' + grantCheck.reason };
+    }
     const gateOpts = {};
     if (opts.gatesPath) gateOpts.configPath = opts.gatesPath;
     if (opts.projectRoot) gateOpts.projectRoot = opts.projectRoot;
-    const text = typeof opts.text === 'string' && opts.text ? opts.text : defaultActionText(serverId, params.tool, bossSlug);
+    // The canonical description (server/tool/boss) is ALWAYS classified; caller text is appended as
+    // extra context, never a replacement — a benign-sounding string can no longer hide the real action.
+    const canonical = defaultActionText(serverId, params.tool, bossSlug);
+    const extra = typeof opts.text === 'string' && opts.text.trim() ? ' — ' + opts.text.trim() : '';
+    const text = canonical + extra;
     const classified = actiongate.classify(text, gateOpts);
     if (classified.gate) {
-      return { allowed: true, tier, reason: 'owner-granted write-primitive confirmed via hard gate "' + classified.id + '" (' + classified.reason + ')', gate: classified };
+      return { allowed: true, tier, reason: 'owner-granted write-primitive confirmed via hard gate "' + classified.id + '" (' + classified.reason + ')', gate: classified, classifiedText: text };
     }
-    return { allowed: false, tier, reason: 'owner grant present but forge-actiongate found no matching hard gate for this action — describe the real action via opts.text so it can be verified; it stays blocked otherwise', gate: classified };
+    return { allowed: false, tier, reason: 'owner grant verified but forge-actiongate found no matching hard gate for this action — describe the real action via opts.text so it can be verified; it stays blocked otherwise', gate: classified, classifiedText: text };
   }
 
   // Tiers 0-2 — standard least-privilege standing-grant check: BOTH must hold independently.
@@ -260,8 +326,109 @@ function status(opts) {
   }));
 }
 
+/** discoverConfiguredServers(opts) -> [{id, source}] — every MCP server this machine is ACTUALLY
+ *  configured to connect, read from the places Claude Code really reads:
+ *    1. <project>/.mcp.json                          → mcpServers keys
+ *    2. <project>/.claude/settings.json | .local.json → mcpServers keys + enabledMcpjsonServers names
+ *    3. ~/.claude.json                                → global mcpServers + this project's entry
+ *    4. ~/.claude/settings.json                       → mcpServers + enabledMcpjsonServers
+ *  Read-only, never throws: an unreadable/absent source is simply not a source.
+ *
+ *  WHY THIS EXISTS (audit sweep 2026-08-03, acted on 2026-08-04): mcp-registry.json calls itself "the
+ *  authoritative server catalog", and every one of its 8 entries is `not-installed`. Meanwhile this
+ *  machine really had claude-flow (≈400 tools incl. terminal_execute/http_fetch), n8n, and claude.ai
+ *  connectors connected — none of them in the registry. The tier-3 write gate therefore governed only
+ *  servers that do not exist here, while the ones that do exist fell outside the doctrine entirely.
+ *  A catalog that cannot notice reality drifting away from it is a document, not a control. */
+function discoverConfiguredServers(opts) {
+  opts = opts || {};
+  const out = [];
+  const seen = new Set();
+  const add = (id, source) => {
+    const key = String(id);
+    if (!key || seen.has(key + '|' + source)) return;
+    seen.add(key + '|' + source);
+    out.push({ id: key, source });
+  };
+  // UNREADABLE IS NOT EMPTY (broad Codex audit #28, fixed 2026-08-05). Every source was read with a
+  // catch-all that turned a malformed or permission-denied config into `null`, i.e. into "this machine
+  // configures no servers" — so the drift check reported CLEAN precisely when it could not see. A file
+  // that exists but cannot be parsed is now recorded as an unreadable source and surfaces in the result.
+  const unreadable = [];
+  const readJson = (p, label) => {
+    if (!fs.existsSync(p)) return null; // genuinely absent: nothing to read, nothing to report
+    try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
+    catch (e) { unreadable.push({ source: label, path: p, error: e.message }); return null; }
+  };
+  const harvest = (obj, source) => {
+    if (!obj || typeof obj !== 'object') return;
+    if (obj.mcpServers && typeof obj.mcpServers === 'object') Object.keys(obj.mcpServers).forEach((k) => add(k, source));
+    if (Array.isArray(obj.enabledMcpjsonServers)) obj.enabledMcpjsonServers.forEach((k) => add(k, source));
+  };
+  const projectRoot = opts.projectRoot ? path.resolve(opts.projectRoot) : path.resolve(__dirname, '..', '..');
+  const home = opts.homeDir ? path.resolve(opts.homeDir) : require('os').homedir();
+
+  harvest(readJson(path.join(projectRoot, '.mcp.json'), '.mcp.json'), '.mcp.json');
+  harvest(readJson(path.join(projectRoot, '.claude', 'settings.json'), '.claude/settings.json'), '.claude/settings.json');
+  harvest(readJson(path.join(projectRoot, '.claude', 'settings.local.json'), '.claude/settings.local.json'), '.claude/settings.local.json');
+  harvest(readJson(path.join(home, '.claude', 'settings.json'), '~/.claude/settings.json'), '~/.claude/settings.json');
+
+  const globalCfg = readJson(path.join(home, '.claude.json'), '~/.claude.json');
+  if (globalCfg) {
+    harvest(globalCfg, '~/.claude.json');
+    const projects = globalCfg.projects && typeof globalCfg.projects === 'object' ? globalCfg.projects : {};
+    for (const key of Object.keys(projects)) {
+      if (path.resolve(key) === projectRoot) harvest(projects[key], '~/.claude.json (this project)');
+    }
+  }
+  out.unreadableSources = unreadable; // carried on the array so callers can see what could NOT be read
+  return out;
+}
+
+/** unregisteredServers(opts) -> {ok, unregistered:[{id, sources}], configured, known} — the drift check.
+ *  ok:false means at least one server this machine is configured to connect is absent from the registry,
+ *  i.e. it is governed by NO tier and NO per-Boss grant. Reported, never auto-added: silently inventing a
+ *  tier for someone else's server would be exactly the fabricated-authority problem this guards against. */
+function unregisteredServers(opts) {
+  opts = opts || {};
+  const known = new Set(loadRegistry(opts).servers.map((s) => s.id));
+  const configured = discoverConfiguredServers(opts);
+  const byId = new Map();
+  for (const c of configured) {
+    if (known.has(c.id)) continue;
+    if (!byId.has(c.id)) byId.set(c.id, { id: c.id, sources: [] });
+    byId.get(c.id).sources.push(c.source);
+  }
+  const unregistered = Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+  // An UNREADABLE source is not a clean bill of health (audit #28): if a config exists but cannot be
+  // parsed, this check simply could not see what it is meant to see, so it is not ok.
+  const unreadable = Array.isArray(configured.unreadableSources) ? configured.unreadableSources : [];
+  if (unreadable.length) {
+    return {
+      ok: false, unregistered, unreadable,
+      configured: configured.map((c) => c.id).filter((v, i, a) => a.indexOf(v) === i).sort(),
+      known: Array.from(known).sort(),
+      reason: unreadable.length + ' MCP config source(s) exist but could NOT be read, so this check is blind rather than clean: '
+        + unreadable.map((u) => u.source + ' (' + u.error + ')').join('; ')
+        + (unregistered.length ? ' · plus ' + unregistered.length + ' unregistered server(s)' : ''),
+    };
+  }
+  return {
+    ok: unregistered.length === 0,
+    unreadable,
+    unregistered,
+    configured: configured.map((c) => c.id).filter((v, i, a) => a.indexOf(v) === i).sort(),
+    known: Array.from(known).sort(),
+    reason: unregistered.length
+      ? unregistered.length + ' configured MCP server(s) are absent from the registry, so no tier and no per-Boss grant governs them: '
+        + unregistered.map((u) => u.id + ' (' + u.sources.join(', ') + ')').join('; ')
+      : 'every configured MCP server is present in the registry',
+  };
+}
+
 module.exports = {
   loadRegistry, loadGrants, loadOptIn, validateGrant, planLoad, status, normBoss,
+  discoverConfiguredServers, unregisteredServers,
   EVENT_TYPES, REGISTRY_PATH, GRANTS_PATH, OPTIN_PATH,
 };
 

@@ -1,0 +1,453 @@
+{
+  "_doc": "DE ENE canonieke domeincatalogus (Quality Intelligence Layer, 2026-08-11). Vier seams droegen vier verschillende domeinlijsten (router-playbooks 23, required-evidence 26, intake-packs 11 waaronder 'dashboard' dat geen routerdomein is, domain-presets 7) en niets zag die drift. Deze catalogus is de VERWACHTING; forge-quality.cjs::catalogDrift() legt de werkelijkheid van elke seam ernaast en rapporteert elk verschil. Een nieuw domein wordt HIER toegevoegd, waarna drift-detectie aanwijst welke seams nog moeten volgen — niet andersom.",
+  "version": 1,
+  "domains": {
+    "website": {
+      "playbook": "forge-website",
+      "intake_pack": "website",
+      "preset": true,
+      "keywords": [
+        "website",
+        "landing",
+        "landingspagina",
+        "webpagina",
+        "site",
+        "homepage",
+        "seo",
+        "leadgeneratie",
+        "lead generation",
+        "webshop-site",
+        "portfolio-site"
+      ]
+    },
+    "fullstack": {
+      "playbook": "forge-fullstack",
+      "intake_pack": "fullstack",
+      "preset": true,
+      "keywords": [
+        "fullstack",
+        "full-stack",
+        "saas",
+        "webapp",
+        "web-app",
+        "crud",
+        "dashboardapp",
+        "auth",
+        "login",
+        "database-app"
+      ]
+    },
+    "n8n": {
+      "playbook": "forge-n8n",
+      "intake_pack": "n8n",
+      "preset": true,
+      "keywords": [
+        "n8n",
+        "workflow*",
+        "automation-flow",
+        "webhook-flow",
+        "zapier",
+        "make.com"
+      ]
+    },
+    "scraping": {
+      "playbook": "forge-scraping",
+      "intake_pack": "scraping",
+      "preset": true,
+      "keywords": [
+        "scrape",
+        "scraping",
+        "crawler",
+        "spider",
+        "harvest",
+        "data-extractie",
+        "leadlijst"
+      ]
+    },
+    "rag": {
+      "playbook": "forge-rag",
+      "intake_pack": "rag",
+      "preset": true,
+      "keywords": [
+        "rag",
+        "chatbot",
+        "retrieval",
+        "embedding*",
+        "vector",
+        "kennisbank",
+        "knowledge base",
+        "docs doorzoek*",
+        "assistent"
+      ]
+    },
+    "prediction": {
+      "playbook": "forge-prediction",
+      "intake_pack": "prediction",
+      "preset": true,
+      "keywords": [
+        "prediction",
+        "voorspel*",
+        "forecast",
+        "odds",
+        "backtest",
+        "sports-data",
+        "wedden",
+        "tips"
+      ]
+    },
+    "integration": {
+      "playbook": "forge-integration",
+      "intake_pack": "integration",
+      "preset": true,
+      "keywords": [
+        "integratie",
+        "integration",
+        "koppeling*",
+        "sync",
+        "gmail",
+        "calendar",
+        "crm",
+        "slack-koppeling",
+        "boekhouding",
+        "synchronisatie"
+      ]
+    },
+    "agent": {
+      "playbook": "forge-agent",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "agent*",
+        "llm-app",
+        "tool-calling",
+        "function calling",
+        "mcp",
+        "eval",
+        "guardrail",
+        "multi-agent"
+      ]
+    },
+    "api": {
+      "playbook": "forge-api",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "api",
+        "rest",
+        "graphql",
+        "grpc",
+        "endpoint",
+        "openapi",
+        "backend-api",
+        "koers-api",
+        "portfolio-api"
+      ]
+    },
+    "bots": {
+      "playbook": "forge-bots",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "bot",
+        "discord",
+        "telegram",
+        "slack-bot",
+        "slash command",
+        "chat-bot-platform",
+        "bots"
+      ]
+    },
+    "cli": {
+      "playbook": "forge-cli",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "cli",
+        "command line",
+        "terminal-tool",
+        "dev-tool",
+        "exitcode",
+        "dry-run",
+        "commandline"
+      ]
+    },
+    "cms": {
+      "playbook": "forge-cms",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "cms",
+        "wordpress",
+        "contentful",
+        "sanity",
+        "strapi",
+        "payload",
+        "headless",
+        "content model"
+      ]
+    },
+    "data": {
+      "playbook": "forge-data",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "data-pipeline",
+        "etl",
+        "elt",
+        "warehouse",
+        "dbt",
+        "snowflake",
+        "bigquery",
+        "koersdata",
+        "live data",
+        "dataset"
+      ]
+    },
+    "ecommerce": {
+      "playbook": "forge-ecommerce",
+      "intake_pack": "ecommerce",
+      "preset": false,
+      "keywords": [
+        "webshop",
+        "shop",
+        "winkel",
+        "cart",
+        "checkout",
+        "producten",
+        "productpagina",
+        "shopify",
+        "woocommerce",
+        "etsy",
+        "bestelling",
+        "e-commerce",
+        "ecommerce"
+      ]
+    },
+    "electron": {
+      "playbook": "forge-electron",
+      "intake_pack": "electron",
+      "preset": false,
+      "keywords": [
+        "electron",
+        "desktop-app",
+        "installer",
+        ".exe",
+        "desktopprogramma",
+        "accounting-app"
+      ]
+    },
+    "extension": {
+      "playbook": "forge-extension",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "extension",
+        "chrome-extensie",
+        "browserextensie",
+        "manifest v3",
+        "content script"
+      ]
+    },
+    "figma": {
+      "playbook": "forge-figma",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "figma",
+        "design-to-code",
+        "mockup",
+        "design tokens",
+        "pixel-perfect",
+        "handoff"
+      ]
+    },
+    "game": {
+      "playbook": "forge-game",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "game",
+        "spel",
+        "canvas",
+        "webgl",
+        "phaser",
+        "godot",
+        "gameplay",
+        "playable",
+        "game*"
+      ]
+    },
+    "migration": {
+      "playbook": "forge-migration",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "migratie",
+        "migration",
+        "legacy",
+        "port",
+        "upgrade",
+        "strangler",
+        "cutover"
+      ]
+    },
+    "mlops": {
+      "playbook": "forge-mlops",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "mlops",
+        "model registry",
+        "mlflow",
+        "drift monitoring",
+        "training",
+        "serving",
+        "ml-pipeline"
+      ]
+    },
+    "mobile": {
+      "playbook": "forge-mobile",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "mobiel*",
+        "mobile",
+        "ios",
+        "android",
+        "expo",
+        "react native",
+        "flutter",
+        "apk",
+        "app store",
+        "mobiele app"
+      ]
+    },
+    "payments": {
+      "playbook": "forge-payments",
+      "intake_pack": null,
+      "preset": false,
+      "keywords": [
+        "betaling",
+        "payment",
+        "stripe",
+        "mollie",
+        "adyen",
+        "paypal",
+        "checkout-betaling",
+        "refund",
+        "subscription",
+        "facturatie",
+        "betalingen",
+        "betaal*"
+      ]
+    },
+    "voice": {
+      "playbook": "forge-voice",
+      "intake_pack": "voice",
+      "preset": false,
+      "keywords": [
+        "voice",
+        "spraak",
+        "telefoon-agent",
+        "ivr",
+        "twilio",
+        "vapi",
+        "elevenlabs",
+        "tts",
+        "stt",
+        "belagent"
+      ]
+    }
+  },
+  "cross_labels": {
+    "_doc": "Cross-cutting labels die GEEN routerdomein zijn maar wel de kwaliteitsdiscovery sturen (masterprompt: 'mobiele trading-app: mobile + api + finance + data'). Ze kiezen kwaliteitslenzen en knowledge cards mee, nooit een playbook.",
+    "finance": [
+      "trading",
+      "trade",
+      "koers*",
+      "beurs",
+      "portfolio",
+      "invest*",
+      "belegg*",
+      "financ*",
+      "geld",
+      "banksaldo"
+    ],
+    "analytics": [
+      "analytics",
+      "ga4",
+      "tracking",
+      "metrics",
+      "statistieken",
+      "conversie",
+      "funnel"
+    ],
+    "privacy": [
+      "privacy",
+      "avg",
+      "gdpr",
+      "persoonsgegevens",
+      "consent",
+      "cookie*"
+    ],
+    "realtime": [
+      "live",
+      "realtime",
+      "real-time",
+      "websocket*",
+      "streaming"
+    ],
+    "security": [
+      "auth",
+      "beveilig*",
+      "security",
+      "secrets",
+      "credential",
+      "jwt",
+      "encryptie",
+      "authenticatie",
+      "autorisatie"
+    ]
+  },
+  "known_gaps": {
+    "_doc": "Bekende, BEWUST zichtbare scheefgroei — gerapporteerd door catalogDrift() als tracked gap, nooit stil. Oplossen is een aparte, expliciete beslissing.",
+    "intake_pack_without_domain": {
+      "dashboard": "question-bank.json byType kent 'dashboard' maar de router heeft geen dashboard-playbook. Dashboards zijn een echt projecttype (nebula, forgeagency-os, Command Center) — een eigen playbook + catalogusdomein is een aparte beslissing; tot die tijd is dit een ZICHTBARE gap, geen stille."
+    },
+    "evidence_domain_without_playbook": {
+      "tooling": "required-evidence.json kent 'tooling' (het meta-domein van Forge zelf); er is bewust geen forge-tooling playbook — Forge-werk volgt CLAUDE.md + forge-canon.",
+      "meta": "idem — meta-runs (audits, reviews) hebben evidence-eisen maar geen bouw-playbook.",
+      "dev-tooling": "idem — alias van tooling in oudere runs."
+    }
+  },
+  "non_domain_skills": [
+    "forge-agent-report",
+    "forge-brainstorm",
+    "forge-code-review",
+    "forge-council",
+    "forge-debug",
+    "forge-deeplearn",
+    "forge-docdrift",
+    "forge-doctor",
+    "forge-graded-verify",
+    "forge-guardian",
+    "forge-heartbeat",
+    "forge-intake",
+    "forge-mcp-clients",
+    "forge-mindmap",
+    "forge-nightshift",
+    "forge-prd",
+    "forge-projectbrain",
+    "forge-quality",
+    "forge-registry",
+    "forge-report",
+    "forge-router",
+    "forge-scout",
+    "forge-skill-testing",
+    "forge-snapshot",
+    "forge-verify",
+    "forge-worktrees"
+  ],
+  "_doc_non_domain": "forge-*-skills die BEWUST geen domein-playbook zijn (proces/tooling/meta). Elke NIEUWE forge-*-skill die hier noch in domains staat, is drift — dat dwingt bij elke toevoeging een expliciete catalogusbeslissing af (F-05).",
+  "_doc_keywords": "F-15 (Codex herreview): trefwoorden zijn EXPLICIET word/phrase (hele-woordgrens aan beide alfanumerieke uiteinden) of stam (suffix *, linkergrens + open rechts: beveilig* vangt beveiliging). Substringmatching bestaat niet — producten vangt softwareproducten dus niet meer. De matcher is forge-quality.cjs::raakt()."
+}

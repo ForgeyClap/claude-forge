@@ -391,7 +391,7 @@ anything. They do not. An unauthenticated `GET /api/health` currently returns, a
 things:
 
 - the absolute projects root and Documents paths, inside `EvidenceRef`s on the derived
-  declarations — e.g. `"ref": "C:\\Users\\faitz\\Documents\\ForgeProjecten"`, which leaks the
+  declarations — e.g. `"ref": "C:\\Users\\YOU\\Documents\\ForgeProjects"`, which leaks the
   **username**;
 - the Claude Code executable path, version and full supported-flag list once the probe
   completes;

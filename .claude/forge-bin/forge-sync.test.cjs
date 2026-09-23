@@ -23,7 +23,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 process.env.FORGE_SYNC_TEST_HOOKS = '1'; // M11: __throwAfter is gated behind this env var in production code
 const sync = require('./forge-sync.cjs');
 
@@ -2179,7 +2179,7 @@ console.log('\n63) WP4 FIX: dedicated canary seeds one real run before validatio
 // project environment (CLAUDE.md present, .gitignore rules for forge-runs/forge-index) which only
 // Phase 16 — an AGENT step that can never run before forge-sync finishes — would create. Result: every
 // fresh-project install failed validation and rolled back 357 files (reproduced live on the
-// "Kalshi trading" target, 2×, and again in a sandbox). The installer must seed the environment
+// "a trading project" target, 2×, and again in a sandbox). The installer must seed the environment
 // invariants its own validation checks: append-only .gitignore seeding + create-only CLAUDE.md stub,
 // both from the template home (the dir ABOVE the template's .claude content dir).
 // =====================================================================================
@@ -2260,6 +2260,446 @@ console.log('\n64) install seeds project scaffold (.gitignore snippet + CLAUDE.m
   const pE = makeProject(freshDir('t64-root5'), 'projE', 0);
   const rE = sync.safeSyncProject(tplBare, pE, { batchId: 'b64e', nowIso: '2026-01-01T00:00:00.000Z' });
   t('64e missing scaffold assets degrade honestly to template-missing', rE.ok === true && !!rE.scaffold && rE.scaffold.gitignore === 'template-missing' && rE.scaffold.claude_md === 'template-missing');
+}
+
+// =====================================================================================
+// 65) THE INSTALL'S COMMIT RECORD IS ATOMIC, AND THE VERSION STAMP IS THE COMMIT MARKER
+//     (broad Codex audit #22, 2026-08-05)
+// -------------------------------------------------------------------------------------
+// The version file and the receipt were two separate NON-atomic in-place writes after validation,
+// outside any rollback protection, with the VERSION written FIRST. Two real failure modes:
+//   (1) a reader that opens either file while it is being rewritten sees a truncated/torn file;
+//   (2) a crash between them stamps "synced to X" while the receipt — which carries the knownHashes
+//       drift baseline AND the backupRef needed to undo this very sync — is missing. The project then
+//       looks current while its audit trail and its undo pointer are gone.
+// Both are now closed: writeAtomic (temp + rename) for every write, and the receipt is committed
+// BEFORE the version stamp so a crash in between leaves a re-syncable project, not a false "current".
+// =====================================================================================
+console.log('\n65) commit record is atomic + version stamp written last (audit #22)');
+{
+  // (a) a concurrent reader NEVER sees a torn receipt — real overlapping writer process, both directions.
+  //     The control arm proves this filesystem CAN produce a torn read, so arm (a) is real evidence and
+  //     not a test that would stay green with the atomic rename reverted.
+  const atomicDir = freshDir('t65-atomic');
+  const syncPath = path.join(__dirname, 'forge-sync.cjs').replace(/\\/g, '/');
+  const payload = 'x'.repeat(400000); // big enough that an in-place write has a visible window
+  const runArm = (mode) => {
+    const proj = path.join(atomicDir, mode);
+    fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
+    const f = sync.receiptPath(proj);
+    fs.writeFileSync(f, JSON.stringify({ seed: true }));
+    const writer = path.join(atomicDir, 'writer-' + mode + '.cjs');
+    fs.writeFileSync(writer, [
+      "const fs=require('fs');",
+      "const S=require('" + syncPath + "');",
+      "const proj=" + JSON.stringify(proj) + ", f=" + JSON.stringify(f) + ", big=" + JSON.stringify(payload) + ";",
+      "const end=Date.now()+1500;",
+      "while(Date.now()<end){",
+      mode === 'atomic'
+        ? "  S.writeReceipt(proj,{templateVersionTo:'2.0.0',filler:big});S.writeReceipt(proj,{templateVersionTo:'2.0.0'});"
+        : "  fs.writeFileSync(f, JSON.stringify({templateVersionTo:'2.0.0',filler:big}));fs.writeFileSync(f, JSON.stringify({templateVersionTo:'2.0.0'}));",
+      "}",
+    ].join('\n'), 'utf8');
+    const child = spawn(process.execPath, [writer], { stdio: 'ignore' });
+    let reads = 0, torn = 0;
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      try { JSON.parse(fs.readFileSync(f, 'utf8')); reads++; } catch { torn++; }
+    }
+    try { child.kill(); } catch { /* already gone */ }
+    return { reads, torn };
+  };
+  const atomicArm = runArm('atomic');
+  t('65a the reader actually raced the writer (>50 successful reads, otherwise this proves nothing)', atomicArm.reads > 50);
+  t('65a a concurrent reader NEVER sees a torn receipt (' + atomicArm.torn + ' torn of ' + (atomicArm.reads + atomicArm.torn) + ')', atomicArm.torn === 0);
+  const naiveArm = runArm('naive');
+  if (naiveArm.torn === 0) {
+    console.log('  SKIP 65a control arm — this filesystem produced no torn read even with a plain in-place write, so arm (a) is not conclusive HERE; reported, not glossed over');
+  } else {
+    t('65a control arm: the same race WITHOUT the atomic rename IS caught mid-write (' + naiveArm.torn + ' torn) — arm (a) is real evidence', naiveArm.torn > 0);
+  }
+
+  // (b) THE ORDERING PROOF. Block the receipt path with a directory so committing the receipt cannot
+  //     succeed, then sync. With the receipt written LAST (the old order) the project would already carry
+  //     the NEW version stamp — "synced" with no receipt. With the receipt written FIRST, the stamp is
+  //     never reached and the project still reads its OLD version, so the next /forge simply re-syncs it.
+  const tplB = freshDir('t65-tpl');
+  fs.mkdirSync(path.join(tplB, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplB, 'forge-bin', 'tool.cjs'), 'console.log("v65");\n');
+  const pB = makeProject(freshDir('t65-root'), 'projB', 0);
+  fs.writeFileSync(sync.versionFilePath(pB), JSON.stringify({ forge_version: 'OLD-0.0.0' }, null, 2) + '\n', 'utf8');
+  fs.mkdirSync(sync.receiptPath(pB), { recursive: true }); // a directory here: rename-onto-dir always fails
+  let threw = null;
+  try { sync.safeSyncProject(tplB, pB, { batchId: 'b65b', nowIso: '2026-01-01T00:00:00.000Z' }); }
+  catch (e) { threw = e; }
+  t('65b a receipt that cannot be committed surfaces as a real error, never a silent success', threw !== null);
+  const stamped = JSON.parse(fs.readFileSync(sync.versionFilePath(pB), 'utf8'));
+  t('65b the project is NOT stamped with the new version when the receipt could not be written (the version stamp is the commit marker, written LAST)', stamped.forge_version === 'OLD-0.0.0');
+
+  // (c) a failed atomic write leaves no stray temp file behind in the project's .claude/
+  const leftovers = fs.readdirSync(path.join(pB, '.claude')).filter((n) => n.endsWith('.tmp'));
+  t('65c a failed atomic write cleans up its own temp file (no .tmp left in .claude/)', leftovers.length === 0);
+
+  // (d) the happy path still writes BOTH, and they agree — so "fixing" (b) by dropping a write is caught
+  const pD = makeProject(freshDir('t65-root2'), 'projD', 0);
+  const rD = sync.safeSyncProject(tplB, pD, { batchId: 'b65d', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('65d the sync succeeded', rD.ok === true);
+  const verD = JSON.parse(fs.readFileSync(sync.versionFilePath(pD), 'utf8'));
+  const recD = sync.readReceipt(pD);
+  t('65d both the version stamp and the receipt exist after a successful sync', !!verD.forge_version && !!recD);
+  t('65d the stamped version and the receipt agree on what was installed', recD.templateVersionTo === verD.forge_version);
+  t('65d no temp file survives a successful sync either', fs.readdirSync(path.join(pD, '.claude')).filter((n) => n.endsWith('.tmp')).length === 0);
+}
+
+// =====================================================================================
+// 66) THE INSTALL MAY NOT BE APPROVED BY A GATE THE PROJECT ITSELF AUTHORED
+//     (broad Codex audit #2, 2026-08-05)
+// -------------------------------------------------------------------------------------
+// Validation ran `<project>/.claude/forge-bin/forge-doctor.cjs` — a file this same sync had just
+// written. Fine while that really is the TEMPLATE's doctor, but system files can legally be SKIPPED
+// (a forge-overrides.json entry, unresolved unknown_drift, a conflict), and a skipped doctor is the
+// project's own. A project holding a stub doctor that prints plausible JSON and exits 0 would approve
+// every future sync into itself and the receipt would read "validated". Two changes close it:
+//   - the doctor about to run is hashed against the template's; only a byte-identical one is trusted,
+//     and a project-local doctor's pass is DEGRADED with the reason said out loud;
+//   - the installer runs its own syntax gate over every .cjs it wrote, in its own process, ALWAYS —
+//     the one piece of evidence no doctor can fake, and no doctor verdict can override it.
+// =====================================================================================
+console.log('\n66) the gate may not be authored by the thing it gates (audit #2)');
+{
+  const mkTpl = (name) => {
+    const tpl = freshDir(name);
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v66");\n');
+    return tpl;
+  };
+  // The template's canonical doctor. writeDoctorStub writes into <dir>/.claude/forge-bin, so give it a
+  // home whose .claude IS the template dir.
+  const tplHome = freshDir('t66-tplhome');
+  const tplA = path.join(tplHome, '.claude');
+  fs.mkdirSync(path.join(tplA, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplA, 'forge-bin', 'tool.cjs'), 'console.log("v66");\n');
+  writeDoctorStub(tplHome, 0);
+
+  // (a) byte-identical to the template = the trusted gate
+  const pA = makeProject(freshDir('t66-root1'), 'projA', null);
+  fs.mkdirSync(path.join(pA, '.claude', 'forge-bin'), { recursive: true });
+  fs.copyFileSync(path.join(tplA, 'forge-bin', 'forge-doctor.cjs'), path.join(pA, '.claude', 'forge-bin', 'forge-doctor.cjs'));
+  const provA = sync.doctorProvenance(pA, tplA);
+  t('66a a doctor byte-identical to the template is recognised as the canonical gate', provA.kind === 'template');
+  const vA = sync.runValidation(pA, { toChange: [] }, { templateDir: tplA });
+  t('66a a template doctor validates WITHOUT being degraded', vA.ok === true && !vA.degraded && vA.doctorProvenance === 'template');
+
+  // (b) the project kept its OWN doctor: the pass is degraded and says why
+  const pB = makeProject(freshDir('t66-root2'), 'projB', 0);
+  writeDoctorStub(pB, 0, 'var projectLocalMarker = 1;'); // the project's OWN doctor: same verdict, different bytes
+  const provB = sync.doctorProvenance(pB, tplA);
+  t('66b a doctor that differs from the template is flagged project-local', provB.kind === 'project-local');
+  const vB = sync.runValidation(pB, { toChange: [] }, { templateDir: tplA });
+  t('66b a project-authored doctor still reports ok but is DEGRADED, never a clean pass', vB.ok === true && vB.degraded === true);
+  t('66b the reason names the real problem instead of hiding it', /not the template doctor/.test(vB.reason || ''));
+
+  // (c) the installer's own syntax gate cannot be overridden by a doctor that says everything is fine
+  const pC = makeProject(freshDir('t66-root3'), 'projC', 0);
+  fs.mkdirSync(path.join(pC, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(pC, '.claude', 'forge-bin', 'broken.cjs'), 'function ( { syntax error <<<\n', 'utf8');
+  const vC = sync.runValidation(pC, { toChange: [{ rel: 'forge-bin/broken.cjs' }] }, { templateDir: tplA });
+  t('66c a just-synced .cjs that does not parse FAILS validation even though the doctor exits 0', vC.ok === false);
+  t('66c the failure is attributed to the installer, not to the doctor', vC.tool === 'installer-syntax-gate' && /installer checked this itself/.test(vC.reason || ''));
+  t('66c the offending file is named', (vC.syntaxGate.failures || []).includes('forge-bin/broken.cjs'));
+
+  // (d) every validation result carries the installer-owned evidence, so a receipt can never imply a
+  //     check that did not happen
+  const pD = makeProject(freshDir('t66-root4'), 'projD', 0);
+  fs.mkdirSync(path.join(pD, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(pD, '.claude', 'forge-bin', 'ok.cjs'), 'module.exports = 1;\n', 'utf8');
+  const vD = sync.runValidation(pD, { toChange: [{ rel: 'forge-bin/ok.cjs' }] }, { templateDir: tplA });
+  t('66d the syntax gate result is recorded on the validation (count + zero failures)', !!vD.syntaxGate && vD.syntaxGate.checked === 1 && vD.syntaxGate.failures.length === 0);
+  t('66d the doctor provenance is recorded on the validation', typeof vD.doctorProvenance === 'string' && vD.doctorProvenance.length > 0);
+
+  // (e) end-to-end: a project whose doctor is an EXPECTED OVERRIDE (so the sync must not replace it)
+  //     cannot silently self-approve its own install
+  const tplE = mkTpl('t66-tpl-e');
+  fs.mkdirSync(path.join(tplE, 'forge-bin'), { recursive: true });
+  fs.copyFileSync(path.join(tplA, 'forge-bin', 'forge-doctor.cjs'), path.join(tplE, 'forge-bin', 'forge-doctor.cjs'));
+  const pE = makeProject(freshDir('t66-root5'), 'projE', 0);
+  writeDoctorStub(pE, 0, 'var projectLocalMarker = 1;'); // a genuinely DIFFERENT doctor than the template's
+  fs.mkdirSync(path.join(pE, '.claude', 'config'), { recursive: true });
+  fs.writeFileSync(path.join(pE, '.claude', 'config', 'forge-overrides.json'),
+    JSON.stringify({ expected_overrides: ['forge-bin/forge-doctor.cjs'] }, null, 2) + '\n', 'utf8');
+  const rE = sync.safeSyncProject(tplE, pE, { batchId: 'b66e', nowIso: '2026-01-01T00:00:00.000Z' });
+  const doctorStillProjects = sync.doctorProvenance(pE, tplE).kind;
+  if (doctorStillProjects === 'project-local') {
+    t('66e a protected project-local doctor makes its own install DEGRADED, not a clean pass',
+      !!rE.validation && rE.validation.degraded === true && /not the template doctor/.test(rE.validation.reason || ''));
+  } else {
+    console.log('  SKIP 66e — this fixture\'s override allowlist did not protect the doctor (provenance "' + doctorStillProjects
+      + '"), so the end-to-end case is not set up here; the unit-level proof is 66b');
+  }
+}
+
+// =====================================================================================
+// 67) SYNC-TRANSACTIONALITEIT — resume verliest geen rollback-bereik, de scaffold-append
+//     is omkeerbaar, en containment geldt op het SCHRIJFMOMENT (audits #19/#21/#24, 2026-08-05)
+// =====================================================================================
+console.log('\n67) resume-manifest-unie + omkeerbare scaffold-append + containment bij schrijven');
+{
+  const crypto67 = require('crypto');
+  const sha = (s) => crypto67.createHash('sha256').update(s).digest('hex');
+
+  // (a) AUDIT #19 — het echte verlies-scenario: na een crash-mid-apply hercalculeert een resume het plan
+  //     tegen de GEMIXTE schijf; het al geschreven bestand valt uit het plan en viel daarmee uit het
+  //     manifest — rollback herstelde het nooit meer. Het manifest is nu een UNIE met de vorige poging.
+  const tplA = freshDir('t67a-tpl');
+  fs.mkdirSync(path.join(tplA, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplA, 'forge-bin', 'a.cjs'), 'A-NEW');
+  fs.writeFileSync(path.join(tplA, 'forge-bin', 'b.cjs'), 'B-NEW');
+  const pA = makeProject(freshDir('t67a-root'), 'projA', null);
+  fs.mkdirSync(path.join(pA, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(pA, '.claude', 'forge-bin', 'a.cjs'), 'A-OLD');
+  fs.writeFileSync(path.join(pA, '.claude', 'forge-bin', 'b.cjs'), 'B-OLD');
+  const planFull = { toChange: [
+    { rel: 'forge-bin/a.cjs', oldHash: sha('A-OLD'), newHash: sha('A-NEW'), isNew: false, overrideClass: null },
+    { rel: 'forge-bin/b.cjs', oldHash: sha('B-OLD'), newHash: sha('B-NEW'), isNew: false, overrideClass: null },
+  ] };
+  const b1 = sync.takeBackup(pA, 'b67a', planFull, 'v1', '2026-01-01T00:00:00.000Z', {});
+  t('67a eerste poging backupt beide bestanden', b1.ok === true && b1.manifest.files.length === 2);
+  // crash mid-apply: a.cjs is al geschreven, b.cjs nooit bereikt
+  fs.writeFileSync(path.join(pA, '.claude', 'forge-bin', 'a.cjs'), 'A-NEW');
+  // resume herberekent het plan tegen de gemixte schijf — a.cjs hasht nu gelijk aan de template
+  const planResumed = { toChange: [
+    { rel: 'forge-bin/b.cjs', oldHash: sha('B-OLD'), newHash: sha('B-NEW'), isNew: false, overrideClass: null },
+  ] };
+  const b2 = sync.takeBackup(pA, 'b67a', planResumed, 'v1', '2026-01-02T00:00:00.000Z', {});
+  const aEntry = b2.manifest.files.find((f) => f.rel === 'forge-bin/a.cjs');
+  t('67a UNIE: het al-toegepaste bestand blijft in het manifest van de hervatte poging, met zijn ECHTE oldHash',
+    !!aEntry && aEntry.oldHash === sha('A-OLD'));
+  t('67a de pristine backup-bytes van de eerste poging zijn er nog', fs.readFileSync(path.join(b2.backupDir, 'forge-bin', 'a.cjs'), 'utf8') === 'A-OLD');
+  const rbA = sync.restoreFromManifest(pA, b2.backupDir, b2.manifest, {});
+  t('67a rollback van de hervatte batch herstelt OOK het bestand dat uit het nieuwe plan viel',
+    rbA.ok === true && fs.readFileSync(path.join(pA, '.claude', 'forge-bin', 'a.cjs'), 'utf8') === 'A-OLD');
+  t('67a b.cjs is ook hersteld', fs.readFileSync(path.join(pA, '.claude', 'forge-bin', 'b.cjs'), 'utf8') === 'B-OLD');
+
+  // (b) AUDIT #21 — de .gitignore-append is omkeerbaar: een gefaalde install laat het Forge-blok niet
+  //     achter in de .gitignore van de owner. Template-doctor faalt post-sync (pre was groen) -> rollback.
+  const homeB = freshDir('t67b-home');
+  const tplB = path.join(homeB, '.claude');
+  fs.mkdirSync(path.join(tplB, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplB, 'forge-bin', 'tool.cjs'), 'console.log("v67");\n');
+  fs.writeFileSync(path.join(homeB, 'gitignore.snippet'), '.claude/forge-runs/*/*\n!.claude/forge-runs/*/run.json\n');
+  const pB = makeProject(freshDir('t67b-root'), 'projB', 0); // pre-sync doctor: groen
+  fs.writeFileSync(path.join(pB, '.gitignore'), 'node_modules\n', 'utf8');
+  // de TEMPLATE doctor is rood: post-sync validatie faalt gegarandeerd (echte regressie, geen already-red)
+  fs.mkdirSync(path.join(tplB, 'forge-bin'), { recursive: true });
+  writeDoctorStub(path.join(freshDir('t67b-stubhome'), 'x'), 1); // niet gebruikt; echte stub hieronder
+  fs.writeFileSync(path.join(tplB, 'forge-bin', 'forge-doctor.cjs'), [
+    '#!/usr/bin/env node',
+    'var args=process.argv.slice(2);',
+    'if(args.indexOf("--json")!==-1){console.log(JSON.stringify({ok:false,checks:{node_check:{ok:true,total:50,failed:0},tests:{ok:false,suites:5,passed:19,failed:1}}}));}',
+    'process.exit(1);',
+  ].join('\n'), 'utf8');
+  const rB = sync.safeSyncProject(tplB, pB, { batchId: 'b67b', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('67b de install faalt en rolt terug (validatie-regressie)', rB.ok === false && rB.rolledBack === true);
+  t('67b de .gitignore is BYTE-GELIJK aan voor de install — het Forge-blok is teruggedraaid',
+    fs.readFileSync(path.join(pB, '.gitignore'), 'utf8') === 'node_modules\n');
+
+  // (b2) een owner-edit NA de append wordt nooit geclobberd door de revert
+  const pB2 = makeProject(freshDir('t67b2-root'), 'projB2', 0);
+  fs.writeFileSync(path.join(pB2, '.gitignore'), 'dist\n', 'utf8');
+  const scaffolded = sync.seedProjectScaffold(tplB, pB2);
+  t('67b2 de seed rapporteert de append + draagt de undo-informatie', /^appended:/.test(scaffolded.gitignore)
+    && typeof scaffolded.gitignorePrior === 'string' && typeof scaffolded.gitignoreAppended === 'string');
+  fs.appendFileSync(path.join(pB2, '.gitignore'), 'owner-edit-after-seed\n', 'utf8');
+  sync.undoScaffold(scaffolded, pB2);
+  const gi2 = fs.readFileSync(path.join(pB2, '.gitignore'), 'utf8');
+  t('67b2 een bestand dat de owner intussen bewerkte blijft ONaangeraakt (nooit een edit clobberen om de onze terug te draaien)',
+    gi2.includes('owner-edit-after-seed') && gi2.includes('.claude/forge-runs/*/*'));
+
+  // (b3) de crash-case: een LATERE handmatige rollback (alleen het manifest) draait de scaffold ook terug
+  const pB3 = makeProject(freshDir('t67b3-root'), 'projB3', 0);
+  fs.writeFileSync(path.join(pB3, '.gitignore'), 'coverage\n', 'utf8');
+  const tplC = path.join(freshDir('t67b3-home'), '.claude');
+  fs.mkdirSync(path.join(tplC, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplC, 'forge-bin', 'tool.cjs'), 'console.log("v67c");\n');
+  fs.writeFileSync(path.join(path.dirname(tplC), 'gitignore.snippet'), '.claude/forge-backups/\n');
+  fs.writeFileSync(path.join(path.dirname(tplC), 'CLAUDE.md'), '# stub\n');
+  const rB3 = sync.safeSyncProject(tplC, pB3, { batchId: 'b67b3', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('67b3 de sync slaagde (doctor groen)', rB3.ok === true);
+  t('67b3 het manifest draagt de scaffold-undo-informatie', !!rB3.backup && (() => {
+    const m = JSON.parse(fs.readFileSync(path.join(rB3.backup.backupDir, 'manifest.json'), 'utf8'));
+    return m.scaffold && typeof m.scaffold.gitignorePrior === 'string' && Array.isArray(m.scaffold.created);
+  })());
+  const rbB3 = sync.rollbackProject(pB3, 'b67b3', {});
+  t('67b3 een latere rollback (crash-pad: alleen het manifest beschikbaar) draait de append terug',
+    rbB3.ok === true && fs.readFileSync(path.join(pB3, '.gitignore'), 'utf8') === 'coverage\n');
+  t('67b3 en verwijdert het gecreeerde CLAUDE.md-stub weer', !fs.existsSync(path.join(pB3, 'CLAUDE.md')));
+
+  // (c) AUDIT #24 — containment geldt op het SCHRIJFMOMENT: een map die na plan-tijd een junction naar
+  //     buiten het project wordt, stopt de apply; er lekt geen byte naar buiten.
+  const tplD = freshDir('t67c-tpl');
+  fs.mkdirSync(path.join(tplD, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplD, 'forge-bin', 'tool.cjs'), 'PAYLOAD-67');
+  const pD = makeProject(freshDir('t67c-root'), 'projD', null);
+  const outside = freshDir('t67c-outside');
+  const plan = { toChange: [{ rel: 'forge-bin/tool.cjs', oldHash: null, newHash: sha('PAYLOAD-67'), isNew: true, overrideClass: null }] };
+  // NA plan-tijd: .claude/forge-bin wordt een junction naar buiten (junctions vergen geen admin op Windows)
+  let junctionOk = true;
+  try { fs.symlinkSync(outside, path.join(pD, '.claude', 'forge-bin'), 'junction'); }
+  catch { junctionOk = false; }
+  if (junctionOk) {
+    const apply = sync.applyPlanSafely(tplD, pD, plan);
+    t('67c de apply WEIGERT wanneer het pad op schrijfmoment door een junction naar buiten wijst',
+      apply.ok === false && /containment guard tripped at write time/.test(apply.error || ''));
+    t('67c er is GEEN byte buiten het project geschreven', !fs.existsSync(path.join(outside, 'tool.cjs')));
+  } else {
+    console.log('  SKIP 67c — junction aanmaken lukte niet op deze machine; de guard-code is dezelfde als de geteste refusal-tak');
+  }
+}
+
+// =====================================================================================
+// 68) CODEX RONDE-3B — corrupt transactielog weigeren · containment op RESTORE-moment ·
+//     scaffold-undo eerlijk gerapporteerd (bevindingen #5/#7/#8 van de verse review, 2026-08-06)
+// =====================================================================================
+console.log('\n68) ronde-3b: corrupt manifest · restore-guards · eerlijke scaffold-undo');
+{
+  const crypto68 = require('crypto');
+  const sha68 = (s) => crypto68.createHash('sha256').update(s).digest('hex');
+
+  // (a) #5 — een BESTAAND maar onparseerbaar manifest is een beschadigd transactielog, geen eerste poging
+  const tplA = freshDir('t68a-tpl');
+  fs.mkdirSync(path.join(tplA, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tplA, 'forge-bin', 'a.cjs'), 'A68');
+  const pA = makeProject(freshDir('t68a-root'), 'projA', null);
+  const bdirA = path.join(pA, '.claude', 'forge-backups', 'b68a');
+  fs.mkdirSync(bdirA, { recursive: true });
+  fs.writeFileSync(path.join(bdirA, 'manifest.json'), '{ "batchId": "b68a", "files": [ TRUNCA', 'utf8'); // half geschreven
+  const planA = { toChange: [{ rel: 'forge-bin/a.cjs', oldHash: null, newHash: sha68('A68'), isNew: true, overrideClass: null }] };
+  const rA = sync.takeBackup(pA, 'b68a', planA, 'v1', '2026-01-01T00:00:00.000Z', {});
+  t('68a een corrupt bestaand manifest wordt GEWEIGERD (ok:false), nooit stil als eerste poging behandeld',
+    rA.ok === false && /corrupt|unreadable/.test(rA.error || ''));
+
+  // (b) #8 — containment geldt ook op het RESTORE-moment
+  const pB = makeProject(freshDir('t68b-root'), 'projB', null);
+  fs.mkdirSync(path.join(pB, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(pB, '.claude', 'forge-bin', 'x.cjs'), 'X-OLD');
+  const bdirB = path.join(pB, '.claude', 'forge-backups', 'b68b');
+  fs.mkdirSync(path.join(bdirB, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(bdirB, 'forge-bin', 'x.cjs'), 'X-OLD');
+  const manifestB = { batchId: 'b68b', files: [{ rel: 'forge-bin/x.cjs', oldHash: sha68('X-OLD'), newHash: sha68('X-NEW'), existed: true }] };
+  // NA het plan: forge-bin wordt een junction naar buiten
+  const outside = freshDir('t68b-outside');
+  fs.rmSync(path.join(pB, '.claude', 'forge-bin'), { recursive: true, force: true });
+  let junctionOk = true;
+  try { fs.symlinkSync(outside, path.join(pB, '.claude', 'forge-bin'), 'junction'); } catch { junctionOk = false; }
+  if (junctionOk) {
+    const rB = sync.restoreFromManifest(pB, bdirB, manifestB, {});
+    t('68b restore door een junction naar buiten wordt GEWEIGERD als failed entry', rB.ok === false && rB.partial === true
+      && rB.failed.length === 1 && /containment guard tripped at restore time/.test(rB.failed[0].reason));
+    t('68b er is GEEN byte buiten het project hersteld', !fs.existsSync(path.join(outside, 'x.cjs')));
+  } else {
+    console.log('  SKIP 68b — junction aanmaken lukte niet op deze machine');
+  }
+
+  // (c) #7 — de late scaffold-undo verwijdert alleen ONZE bytes en rapporteert eerlijk
+  const pC = makeProject(freshDir('t68c-root'), 'projC', null);
+  fs.writeFileSync(path.join(pC, 'CLAUDE.md'), 'OWNER HEEFT DIT HERSCHREVEN\n', 'utf8');
+  const undone = sync.undoScaffold({
+    created: ['CLAUDE.md'],
+    createdHashes: { 'CLAUDE.md': sha68('# stub van forge\n') }, // wat WIJ ooit schreven — niet wat er nu staat
+    errors: [],
+  }, pC);
+  t('68c een created bestand dat de owner herschreef wordt BEWAARD en als owner-werk gerapporteerd',
+    fs.existsSync(path.join(pC, 'CLAUDE.md')) && undone.removedCreated.length === 0
+    && undone.keptForeign.length === 1 && /owner work/.test(undone.keptForeign[0]));
+  const pD = makeProject(freshDir('t68d-root'), 'projD', null);
+  fs.writeFileSync(path.join(pD, 'CLAUDE.md'), '# stub van forge\n', 'utf8');
+  const undone2 = sync.undoScaffold({
+    created: ['CLAUDE.md'],
+    createdHashes: { 'CLAUDE.md': sha68('# stub van forge\n') },
+    errors: [],
+  }, pD);
+  t('68c exact ONZE bytes worden wel verwijderd, en dat staat in het resultaat',
+    !fs.existsSync(path.join(pD, 'CLAUDE.md')) && undone2.removedCreated.includes('CLAUDE.md'));
+}
+
+
+// =====================================================================================
+// 69) copyNoFollow — DE LEAF-TOCTOU IS DICHT (uitgesteld punt 3, gesloten 2026-08-06)
+// -------------------------------------------------------------------------------------
+// fs.copyFileSync volgt symlinks/junctions; tussen de lstat-guard en de copy zat een venster waarin
+// een link op het DOEL kon verschijnen — de "gecheckte" write landde dan buiten het project. copyNoFollow
+// schrijft eerst naar een verse 'wx'-tempnaam (kan per constructie nooit een bestaande link zijn) en
+// vervangt daarna de eindcomponent via rename — de link wordt VERVANGEN, nooit gevolgd.
+// =====================================================================================
+console.log('\n69) copyNoFollow: leaf-TOCTOU dicht');
+{
+  const os69 = require('os');
+  // (a) DE RACE, gesimuleerd op het echte apply-pad: een copyFileImpl die NA de lstat-guard eerst een
+  //     link op het doel plant en dan de ECHTE default-implementatie aanroept.
+  const tpl = freshDir('t69-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'x.cjs'), 'PAYLOAD-69');
+  const p69 = makeProject(freshDir('t69-root'), 'proj69', null);
+  fs.mkdirSync(path.join(p69, '.claude', 'forge-bin'), { recursive: true });
+  const outside = freshDir('t69-outside');
+  const victim = path.join(outside, 'victim.cjs');
+  fs.writeFileSync(victim, 'ORIGINEEL-BUITEN');
+  const dst69 = path.join(p69, '.claude');
+  let linkOk = true;
+  const racingImpl = (src, out) => {
+    // simulatie van de race: de link verschijnt NA de guard, VOOR de copy
+    try { fs.symlinkSync(victim, out, 'file'); } catch { linkOk = false; }
+    return sync.copyNoFollow(src, out, dst69);
+  };
+  const plan69 = { toChange: [{ rel: 'forge-bin/x.cjs', oldHash: null, newHash: 'n', isNew: true, overrideClass: null }] };
+  if (linkOk !== false) {
+    const apply = sync.applyPlanSafely(tpl, p69, plan69, racingImpl);
+    if (!linkOk) {
+      console.log('  SKIP 69a — file-symlink aanmaken vergt op deze machine privileges; junction-variant volgt in (b)');
+    } else {
+      t('69a de race-write laat het bestand BUITEN het project ongemoeid', fs.readFileSync(victim, 'utf8') === 'ORIGINEEL-BUITEN');
+      const finalContent = (() => { try { return fs.readFileSync(path.join(p69, '.claude', 'forge-bin', 'x.cjs'), 'utf8'); } catch { return null; } })();
+      t('69a het doel is OF vervangen door de echte bytes OF de apply is eerlijk gefaald — nooit door de link heen geschreven',
+        apply.ok === false || finalContent === 'PAYLOAD-69');
+    }
+  }
+
+  // (b) junction op een TUSSENdirectory op het RESTORE-pad: de parent-realpath-hercheck vangt hem
+  const pB = makeProject(freshDir('t69b-root'), 'projB', null);
+  const dstB = path.join(pB, '.claude');
+  const bdir = freshDir('t69b-backup');
+  fs.mkdirSync(path.join(bdir, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'forge-bin', 'y.cjs'), 'Y-OLD');
+  const outsideB = freshDir('t69b-outside');
+  let junctionOk = true;
+  try { fs.symlinkSync(outsideB, path.join(dstB, 'forge-bin'), 'junction'); } catch { junctionOk = false; }
+  if (junctionOk) {
+    let threw = null;
+    try { sync.copyNoFollow(path.join(bdir, 'forge-bin', 'y.cjs'), path.join(dstB, 'forge-bin', 'y.cjs'), dstB); }
+    catch (e) { threw = e; }
+    t('69b een junction op de tussendirectory wordt gevangen (containment)', threw !== null && /containment/.test(threw.message));
+    // r4 #18: de check komt nu VOOR het stagen — de weigering moet het pre-check-pad zijn en er mag
+    // NIETS buiten staan: geen doelbestand én geen tempbestand (de oude versie vulde eerst de temp
+    // buiten het project en ruimde hem pas daarna op — een crash liet de bytes daar staan).
+    t('69b de weigering valt VOOR het stagen (no bytes written)', threw !== null && /BEFORE staging|no bytes written/.test(threw.message), threw && threw.message);
+    t('69b er landt geen byte buiten het project', !fs.existsSync(path.join(outsideB, 'y.cjs')));
+    t('69b er landt ook geen TEMPBESTAND buiten het project', fs.readdirSync(outsideB).filter((f) => f.includes('.tmp')).length === 0, fs.readdirSync(outsideB).join(','));
+  } else {
+    console.log('  SKIP 69b — junction aanmaken lukte niet op deze machine');
+  }
+
+  // (c) happy path: byte-identiek + geen tempnaam-restanten
+  const pC = makeProject(freshDir('t69c-root'), 'projC', null);
+  const dstC = path.join(pC, '.claude');
+  fs.mkdirSync(path.join(dstC, 'forge-bin'), { recursive: true });
+  const srcC = path.join(freshDir('t69c-src'), 's.cjs');
+  fs.writeFileSync(srcC, 'BYTES-69-éü');
+  sync.copyNoFollow(srcC, path.join(dstC, 'forge-bin', 's.cjs'), dstC);
+  t('69c happy path kopieert byte-identiek', fs.readFileSync(path.join(dstC, 'forge-bin', 's.cjs'), 'utf8') === 'BYTES-69-éü');
+  t('69c geen .tmp-restanten', fs.readdirSync(path.join(dstC, 'forge-bin')).filter((f) => f.includes('.tmp')).length === 0);
+  // en het overschrijven van een BESTAAND doel werkt (rename-replace)
+  sync.copyNoFollow(srcC, path.join(dstC, 'forge-bin', 's.cjs'), dstC);
+  t('69c een tweede kopie over een bestaand doel slaagt (rename vervangt)', fs.readFileSync(path.join(dstC, 'forge-bin', 's.cjs'), 'utf8') === 'BYTES-69-éü');
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

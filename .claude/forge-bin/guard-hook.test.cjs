@@ -86,7 +86,7 @@ t('13 mode ok -> Bash allowed (no deny)', !r.denied);
 //
 // PROJECT-SCOPED SINCE 2026-07-30 (owner-reported leak, and this test caught the change honestly):
 // FORGE_RESUME_STATE.json is a single GLOBAL file, so the reminder used to inject whatever mission
-// was last checkpointed into ANY session — a fresh dashboard-spawned chat in ForgeProjecten\test
+// was last checkpointed into ANY session — a fresh dashboard-spawned chat in ForgeProjects\test
 // really did receive the "100 iOS App Opportunity Factory" mission as its resume hint. The hook now
 // only speaks when the checkpoint's own `project_path` actually contains the session's cwd.
 // This case therefore now needs BOTH: a real project_path AND a matching cwd. The two cases below

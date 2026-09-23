@@ -16,6 +16,14 @@ let pass = 0, fail = 0;
 const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } else { fail++; console.error('  FAIL ' + name); } };
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runcontract-test-'));
+/** R6-06 (zesde herreview): check() koos de regelset vroeger via het `__dirname`-gebonden RULES_PATH,
+ *  ongeacht `opts.root` — dus een run uit root B werd beoordeeld tegen de regels van installatie A. Deze
+ *  fixture leunde precies op dat gedrag: een tijdelijke root zonder eigen regelbestand. Nu brengt hij zijn
+ *  regels mee, zoals een echt project dat ook doet; de test toetst daarmee het bedoelde contract in plaats
+ *  van een toevallige fallback. */
+fs.mkdirSync(path.join(TMP, '.claude', 'config', 'orchestration'), { recursive: true });
+fs.copyFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_HARD_RULES.json'),
+  path.join(TMP, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'));
 console.log('forge-runcontract offline tests (hermetic root=' + TMP + ')');
 
 function writeRun(runId, lines, extraFiles) {
@@ -363,7 +371,10 @@ t('ruleApplies: "web" trigger does not apply to an unrelated domain', RC.ruleApp
 t('ruleApplies: "domain:finance" trigger applies only to that exact domain', RC.ruleApplies({ trigger: 'domain:finance' }, 'finance') === true && RC.ruleApplies({ trigger: 'domain:finance' }, 'data') === false);
 t('hasEvent: case-insensitive event_type match', RC.hasEvent([{ event_type: 'Research_Done' }], 'research_done') === true);
 t('hasArtifact: case-insensitive substring match (legacy string[] input, treated as already-known-non-empty)', RC.hasArtifact(['FINAL-REPORT.MD'], 'final-report') === true);
-t('listRules: production FORGE_HARD_RULES.json has exactly 11 seeded rules', RC.listRules({}).length === 11);
+// 12 sinds 2026-08-09: `independent-verification` erbij (research-lane A — zelf-goedkeuring was
+// mogelijk op de un-overridable honesty-core; RED-baseline in red-baseline-imp001.txt).
+t('listRules: production FORGE_HARD_RULES.json has exactly 12 seeded rules', RC.listRules({}).length === 12, String(RC.listRules({}).length));
+t('listRules: de honesty-core bevat de independent-verification-regel', RC.listRules({}).some((r) => r.id === 'independent-verification' && r.check.type === 'independent-verification'));
 
 // ---- unit-level helpers: V9-fix DEFECT 1/2/3 pure-function proof ----
 t('DEFECT 1: hasArtifact rejects an object-shaped artifact with nonEmpty:false, accepts nonEmpty:true', RC.hasArtifact([{ name: 'FINAL-REPORT.MD', nonEmpty: false }], 'final-report') === false && RC.hasArtifact([{ name: 'FINAL-REPORT.MD', nonEmpty: true }], 'final-report') === true);
@@ -585,7 +596,12 @@ t('5i: the cheap alternative still satisfies the FLOOR rule plan-or-prd-present 
 const heavyWithPrd = completeEvents.concat(dispatches(9));
 writeRun('run-heavy-with-prd', heavyWithPrd, { 'final-report.md': '# Report\n' });
 const heavyWithPrdRes = RC.check({ run_id: 'run-heavy-with-prd' }, { root: TMP });
-t('5j (counterweight): a heavy run WITH a real prd_generated is ok:true', heavyWithPrdRes.ok === true && heavyWithPrdRes.satisfied.includes('prd-required-for-heavy-work'));
+// 2026-08-09: sinds independent-verification (un-overridable, >=L2) is een ZWARE run per definitie ook aan
+// die regel gebonden, en deze fixture schrijft een SYNTHETISCHE, ongeketende log — daarop is subjectbinding
+// onbewijsbaar, dus die regel hoort hier te ontbreken. De assertie wordt daarom PRECIEZER, niet zwakker:
+// de bedoelde regel is echt satisfied, en het enige wat nog mist is exact independent-verification.
+t('5j (counterweight): a heavy run WITH a real prd_generated satisfies the sharpened rule', heavyWithPrdRes.satisfied.includes('prd-required-for-heavy-work'));
+t('5j (counterweight): and NOTHING else blocks it — the only remaining gap is the independent review', JSON.stringify(heavyWithPrdRes.missing) === JSON.stringify(['independent-verification']), JSON.stringify(heavyWithPrdRes.missing));
 
 // ---- (5k) COUNTERWEIGHT (green before AND after): a LIGHT run keeps the cheap alternative — this
 // change must not make every small run owe a PRD ----
@@ -604,7 +620,10 @@ t('5k (counterweight): prd-required-for-heavy-work lands in NO bucket on a light
 const heavyOverridden = heavyNoPrd.concat([ownerOverride('prd-required-for-heavy-work', 'owner reviewed: this L3 run is 9 mechanical file moves against an already-approved plan, a PRD adds nothing')]);
 writeRun('run-heavy-overridden', heavyOverridden, { 'final-report.md': '# Report\n' });
 const heavyOverriddenRes = RC.check({ run_id: 'run-heavy-overridden' }, { root: TMP, ownerProfilePath: NO_OWNER_PROFILE });
-t('5l: a valid owner_override clears prd-required-for-heavy-work -> ok:true', heavyOverriddenRes.ok === true);
+t('5l: a valid owner_override clears prd-required-for-heavy-work', heavyOverriddenRes.overridden.some((o) => o.id === 'prd-required-for-heavy-work') && !heavyOverriddenRes.missing.includes('prd-required-for-heavy-work'));
+// en tegelijk het bewijs dat de escape hatch NIET universeel is: independent-verification draagt
+// cannot_override:true en blijft dus staan waar prd-required-for-heavy-work verdwijnt.
+t('5l: but the same hatch does NOT clear the un-overridable honesty-core rule', heavyOverriddenRes.missing.includes('independent-verification') && !heavyOverriddenRes.overridden.some((o) => o.id === 'independent-verification'));
 t('5l: the override is reported with the real reason/by, never silently dropped', heavyOverriddenRes.overridden.some((o) => o.id === 'prd-required-for-heavy-work' && o.by === 'owner' && /mechanical file moves/.test(o.reason)));
 t('5l: prd-required-for-heavy-work is NOT flagged cannot_override (the escape hatch must exist)', RC.listRules({}).some((r) => r.id === 'prd-required-for-heavy-work' && r.cannot_override !== true));
 
@@ -705,6 +724,11 @@ t('5q: CLI on a stale rules file exits 0 and PRINTS the unevaluated-rule warning
   // (6c) a root WITHOUT a writer reports {logged.ok:false} honestly — it must never silently fall
   // back to another install's writer (that fallback IS the pollution bug)
   const bareRoot = fs.mkdtempSync(path.join(TMP, 'bare-root-'));
+  // "bare" slaat op de ontbrekende WRITER, niet op de regelset: sinds R6-06 hoort elke root zijn eigen
+  // regels te dragen, anders zou deze test stilletijgend de regels van de uitvoerende installatie lenen.
+  fs.mkdirSync(path.join(bareRoot, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_HARD_RULES.json'),
+    path.join(bareRoot, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'));
   const bareDir = path.join(bareRoot, '.claude', 'forge-runs', 'r1');
   fs.mkdirSync(bareDir, { recursive: true });
   fs.writeFileSync(path.join(bareDir, 'events.jsonl'), completeEvents.join('\n') + '\n', 'utf8');

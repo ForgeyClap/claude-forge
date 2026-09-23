@@ -9,5 +9,5 @@ correction. Never invent an entry — an unsupported "lesson" is worse than no l
   been drifting silently and never reaching the 11 synced projects. Fixed by adding forge-router to
   `forge-sync.cjs`'s system-skill list (same treatment as forge-verify/forge-prd). Evidence:
   FORGE_MEMORY.md "Status update 2026-07-13c" — sync 12/12 at version fd0a0c513ea9, verified present in
-  the Moneymaker project. Lesson: a new/edited system skill is not actually distributed until it is
+  the an e-commerce project project. Lesson: a new/edited system skill is not actually distributed until it is
   confirmed present in forge-sync's manifest, not just present on disk here.

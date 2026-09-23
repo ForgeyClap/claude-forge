@@ -116,9 +116,15 @@ console.log('6) real spawned CLI: exit codes, --json output, human-readable plan
   t('CLI --json reports unfinished.length === 3', rj.unfinished.length === 3);
   t('CLI --json reports done.length === 1', rj.done.length === 1);
 
-  const humanRes = runCLI(['--run', 'run-cli'], env);
-  t('CLI human-readable output prints RESUMABLE', /RESUMABLE/.test(humanRes.stdout));
-  t('CLI human-readable output lists an unfinished wp id with its narrowed_prompt', /wp2.*build the signup form/.test(humanRes.stdout));
+  // r4 #5: de eerste (claimende) aanroep hierboven heeft de 3 WP's geleased — een TWEEDE claimende
+  // aanroep mag ze dus NIET meer krijgen (dat was precies het dubbel-dispatch-defect). Kijken doe je
+  // met --plan (read-only, geen claims).
+  const humanRes = runCLI(['--run', 'run-cli', '--plan'], env);
+  t('CLI --plan (read-only) print RESUMABLE met de volledige unfinished-lijst', /RESUMABLE/.test(humanRes.stdout) && /PLAN-ONLY/.test(humanRes.stdout));
+  t('CLI --plan toont een unfinished wp met zijn narrowed_prompt', /wp2.*build the signup form/.test(humanRes.stdout));
+  const second = runCLI(['--run', 'run-cli', '--json'], env);
+  const sj = JSON.parse(second.stdout);
+  t('een TWEEDE claimende aanroep krijgt de al-geleasede WP\'s NIET (leased_elsewhere)', sj.unfinished.length === 0 && sj.leased_elsewhere.length === 3, JSON.stringify(sj.leased_elsewhere || []).slice(0, 120));
 
   const missingRunRes = runCLI(['--run', 'never-armed-cli'], env);
   t('CLI on a never-armed run exits 2', missingRunRes.status === 2);
@@ -137,6 +143,92 @@ console.log('6) real spawned CLI: exit codes, --json output, human-readable plan
   const completeRes = runCLI(['--run', 'run-cli'], env);
   t('CLI exits 0 once every WP is done (COMPLETE)', completeRes.status === 0);
   t('CLI prints COMPLETE and "nothing to resume"', /COMPLETE/.test(completeRes.stdout) && /nothing to resume/.test(completeRes.stdout));
+}
+
+// ============================================================================================
+// G5 — ATOMISCHE WP-LEASES + FAULT-INJECTION (verplichte verificatie #4, 2026-08-06):
+// exact EEN side effect per idempotency-key (wp_id), ook bij gelijktijdige resumes en crash-herstart.
+// ============================================================================================
+console.log('\nG5) wp-leases: exact een side effect per wp');
+{
+  const os5 = require('os');
+  const { spawn } = require('child_process');
+  const sleep5 = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { } };
+  const MOD = path.join(__dirname, 'forge-swarm-resume.cjs').replace(/\\/g, '/');
+
+  // (a) 2 ECHT gelijktijdige claimers op dezelfde wp -> precies 1 winnaar
+  {
+    const root = fs.mkdtempSync(path.join(os5.tmpdir(), 'lease-race-'));
+    const gate = path.join(root, 'GO');
+    const runner = path.join(root, 'runner.cjs');
+    fs.writeFileSync(runner, [
+      "const fs=require('fs');const p=require('path');",
+      "const M=require(" + JSON.stringify(MOD) + ");",
+      "const me=process.argv[2];",
+      "fs.writeFileSync(p.join(" + JSON.stringify(root) + ",'ready-'+me),'1');",
+      "const sab=new Int32Array(new SharedArrayBuffer(4));",
+      "while(!fs.existsSync(" + JSON.stringify(gate) + ")){Atomics.wait(sab,0,0,2);}",
+      "const r=M.claimWp({run_id:'lease-run',wp_id:'wp1',holder:'h'+me},{root:" + JSON.stringify(root) + "});",
+      "if(r.ok && !r.alreadyMine){fs.appendFileSync(p.join(" + JSON.stringify(root) + ",'SIDE-EFFECT.log'),'dispatch wp1 door h'+me+'\\n');}",
+      "fs.writeFileSync(p.join(" + JSON.stringify(root) + ",'res-'+me+'.json'),JSON.stringify(r));",
+    ].join('\n'));
+    const kids = [];
+    for (let i = 1; i <= 2; i++) kids.push(spawn(process.execPath, [runner, String(i)], { stdio: 'ignore' }));
+    const count = (pfx) => fs.readdirSync(root).filter((f) => f.startsWith(pfx)).length;
+    const rb = Date.now() + 15000; while (count('ready-') < 2 && Date.now() < rb) sleep5(5);
+    fs.writeFileSync(gate, 'go');
+    const dl = Date.now() + 15000; while (count('res-') < 2 && Date.now() < dl) sleep5(5);
+    for (const k of kids) { try { k.kill(); } catch { } }
+    const results = fs.readdirSync(root).filter((f) => f.startsWith('res-')).map((f) => JSON.parse(fs.readFileSync(path.join(root, f), 'utf8')));
+    const winners = results.filter((r) => r.ok).length;
+    t('G5a twee gelijktijdige claims op dezelfde wp: precies EEN winnaar', winners === 1, JSON.stringify(results));
+    const effects = fs.readFileSync(path.join(root, 'SIDE-EFFECT.log'), 'utf8').trim().split('\n').filter(Boolean);
+    t('G5a exact EEN side effect voor wp1 (de idempotency-key hield)', effects.length === 1, effects.join(' | '));
+  }
+
+  // (b) crash-herstart: houder crasht NA de claim maar VOOR het side effect — binnen de TTL blijft de
+  //     lease geweigerd (geen dubbel risico), na de TTL neemt een herstart hem over: nog steeds 1 effect.
+  {
+    const M = require(MOD);
+    const root = fs.mkdtempSync(path.join(os5.tmpdir(), 'lease-crash-'));
+    const c1 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-1' }, { root, ttlMs: 400 });
+    t('G5b attempt-1 claimt', c1.ok === true);
+    // crash: GEEN release, GEEN side effect. Een verse herstart binnen de TTL:
+    const c2 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: 400 });
+    t('G5b binnen de TTL wordt de wees-lease geweigerd (nooit gokken dat de houder dood is)', c2.ok === false && /geleased/.test(c2.reason || ''));
+    sleep5(600); // TTL voorbij
+    const c3 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: 400 });
+    t('G5b na de TTL neemt de herstart de lease over (tookOverStale)', c3.ok === true && c3.tookOverStale === true, JSON.stringify(c3));
+    // r4 #5: een herclaim door dezelfde houder is NIET meer stil ok (dat maakte de eigen WP opnieuw
+    // dispatchbaar) — hij weigert met alreadyMine; alleen het expliciete reclaim-protocol geeft een
+    // verse lease (recovery na een eigen crash).
+    const c4 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: 400 });
+    t('G5b een stille herclaim door dezelfde houder WEIGERT met alreadyMine (geen dubbele dispatch)', c4.ok === false && c4.alreadyMine === true, JSON.stringify(c4));
+    // r5 #14: reclaim op een LEVENDE eigen lease weigert ook — pas na de expiry is het recovery
+    const c5live = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', reclaim: true }, { root, ttlMs: 400 });
+    t('G5b reclaim op een LEVENDE eigen lease WEIGERT (twee processen met dezelfde holder dispatchen nooit dubbel)', c5live.ok === false && /LEEFT/.test(c5live.reason || ''), JSON.stringify(c5live).slice(0, 140));
+    sleep5(600); // expiry van de c3-lease (ttl 400)
+    const c5 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', reclaim: true }, { root, ttlMs: 400 });
+    t('G5b reclaim:true op een VERLOPEN eigen lease geeft hem opnieuw uit (recoveryprotocol)', c5.ok === true && typeof c5.token === 'string', JSON.stringify(c5).slice(0, 120));
+    // release: vreemde houder geweigerd; houder zonder token geweigerd (CAS); houder mét token slaagt
+    t('G5b release door een vreemde houder wordt geweigerd', M.releaseWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'niet-ik', token: c5.token }, { root }).released === false);
+    t('G5b release zonder token wordt geweigerd op een token-dragende lease', M.releaseWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root }).released === false);
+    t('G5b release door de houder met het exacte token slaagt', M.releaseWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', token: c5.token }, { root }).released === true);
+    // r4 #6: injectieve leasekeys — wp-id's die na sanitizing botsten delen GEEN bestand meer
+    const k1 = M.claimWp({ run_id: 'crash-run', wp_id: 'foo/bar', holder: 'h1' }, { root });
+    const k2 = M.claimWp({ run_id: 'crash-run', wp_id: 'foo?bar', holder: 'h2' }, { root });
+    t('G5c injectieve keys: foo/bar en foo?bar krijgen ELK hun eigen lease', k1.ok === true && k2.ok === true);
+    t('G5c release van de een raakt de ander niet', M.releaseWp({ run_id: 'crash-run', wp_id: 'foo/bar', holder: 'h1', token: k1.token }, { root }).released === true && M.claimWp({ run_id: 'crash-run', wp_id: 'foo?bar', holder: 'h3' }, { root }).ok === false);
+    // r4 #6: een contender met een MINI-ttl kan een levende default-lease niet stelen (expiry uit het record)
+    const live = M.claimWp({ run_id: 'crash-run', wp_id: 'wpLive', holder: 'levend' }, { root }); // default 30min
+    const thief = M.claimWp({ run_id: 'crash-run', wp_id: 'wpLive', holder: 'dief' }, { root, ttlMs: 1 });
+    t('G5c ttlMs:1-contender steelt een levende default-lease NIET (expiry komt uit het record van de houder)', live.ok === true && thief.ok === false && /geleased/.test(thief.reason || ''), JSON.stringify(thief).slice(0, 120));
+    // r4 #6: refreshWp verlengt token-geverifieerd; fout token = LOST
+    const rf = M.refreshWp({ run_id: 'crash-run', wp_id: 'wpLive', token: live.token }, { root });
+    t('G5c refreshWp met het exacte token verlengt de lease', rf.ok === true);
+    const rfBad = M.refreshWp({ run_id: 'crash-run', wp_id: 'wpLive', token: 'fout' }, { root });
+    t('G5c refreshWp met een fout token meldt verlies (houder hoort te stoppen)', rfBad.ok === false && /token/.test(rfBad.reason || ''));
+  }
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

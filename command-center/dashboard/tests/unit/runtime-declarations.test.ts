@@ -384,7 +384,7 @@ const SUPPORTED: DeclarationInputs = {
     note: 'a real -p call returned exit 0 with a result envelope and session id',
   },
   projectsRoot: {
-    projectsRoot: 'C:\\home\\Documents\\ForgeProjecten',
+    projectsRoot: 'C:\\home\\Documents\\ForgeProjects',
     documentsDir: 'C:\\home\\Documents',
     documentsDirExists: true,
     source: 'home-documents',
@@ -393,7 +393,7 @@ const SUPPORTED: DeclarationInputs = {
   registry: {
     loaded: true,
     detail: 'the registry answered a list request with 1 record(s)',
-    projectsRoot: 'C:\\home\\Documents\\ForgeProjecten',
+    projectsRoot: 'C:\\home\\Documents\\ForgeProjects',
     recordCount: 1,
     unreadableCount: 0,
     pathsPresent: 1,
@@ -416,7 +416,7 @@ const SUPPORTED: DeclarationInputs = {
   usage: [{ scope: 'run', scopeId: 'r1', exactFields: ['inputTokens', 'outputTokens'], fieldsExamined: 20 }],
   attachments: {
     pipelineRegistered: true,
-    stagingRoot: 'C:\\home\\Documents\\ForgeProjecten\\p\\.forge\\attachments',
+    stagingRoot: 'C:\\home\\Documents\\ForgeProjects\\p\\.forge\\attachments',
     writable: true,
     detail: 'a probe file was written and read back unchanged',
   },

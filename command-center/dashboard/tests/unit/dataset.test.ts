@@ -143,9 +143,9 @@ describe('the dataset is rich enough to be convincing', () => {
       'Autonomous Commerce Factory',
       'Football Edge Intelligence',
       'AI Chatbot',
-      'O.A. Celikkaya Website',
+      'Acme Bakery Website',
       'Forge Research Lab',
-      'NovaDesk AI',
+      'Helpdesk Assistant',
       'n8n Automation Suite',
     ]) {
       expect(names).toContain(expected);

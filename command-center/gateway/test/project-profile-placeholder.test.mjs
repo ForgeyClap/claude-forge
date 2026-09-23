@@ -1,7 +1,7 @@
 // fix-placeholder (forge-2026-07-29-cc-finish, P1) — proves buildProjectProfile() never returns
 // unfilled scaffold text (e.g. "<one or two lines>") as if it were a real project field. Uses a
 // real temp `.claude/FORGE_PROJECT_PROFILE.md` on disk (same pattern as project-profile.test.mjs),
-// never the actual "100 apps"/"CASHFLOWWW"/"Moneymaker" project folders — those are a different
+// never the actual "100 apps"/"a cashflow project"/"an e-commerce project" project folders — those are a different
 // project and stay untouched per this run's isolation rule.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ function makeProjectWithProfile(profileMarkdown) {
   return root;
 }
 
-test('a fully-unfilled scaffold (the real "100 apps"/"CASHFLOWWW"/"Moneymaker" shape) is reported as absent, never as template text', () => {
+test('a fully-unfilled scaffold (the real "100 apps"/"a cashflow project"/"an e-commerce project" shape) is reported as absent, never as template text', () => {
   const root = makeProjectWithProfile(
     [
       '- **Project name:** <name>',

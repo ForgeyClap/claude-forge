@@ -191,10 +191,22 @@ uncommittable. **No new `event_type` is introduced**, so the 3-place registratio
 `forge-toolhook.test.cjs` G1 enforces that statically and `forge-doctor.cjs::unregisteredEvent()` reports
 `unregistered: []`.
 
-**Proposed entry — NOT installed. Wiring it is a separate, deliberate owner decision:**
+> **CORRECTION (2026-08-03, found by the full-`.claude` audit sweep): this hook IS wired and HAS been
+> firing.** The text below said "NOT installed" while `.claude/settings.json` carried a real `PostToolUse`
+> entry for `forge-toolhook.cjs` — and **without a `matcher`**, so it fires on *every* tool call of *every*
+> agent, one step broader than the proposal below (`"matcher": "*"`). Proof: `.claude/forge-runs/_toollog/`
+> holds ~532 KB of real entries, e.g. `{"ts":"2026-08-03T19:09:48.891Z","tool":"Bash","target":"tail",...}`.
+> Practical cost: ~95-110 ms per tool call and a permanent record of every path touched and binary invoked.
+> That retention/privacy trade-off was explicitly reserved for the owner, so this note records reality and
+> leaves the choice open rather than silently keeping (or silently removing) the hook.
+> **To turn it OFF:** delete the `forge-toolhook.cjs` entry from `.claude/settings.json`'s `PostToolUse`.
+> **To keep it:** narrow it with a `matcher` and decide a retention rule for `.claude/forge-runs/_toollog/`.
+> The count in this file's header ("3 real, live hooks") is therefore also wrong — it is **4**.
+
+**Originally documented as a proposal (see the correction above — it is now actually wired):**
 
 ```jsonc
-// .claude/settings.json  — PROPOSAL ONLY, not currently present
+// .claude/settings.json  — documented proposal; the LIVE entry has no matcher (see correction above)
 {
   "hooks": {
     "PostToolUse": [

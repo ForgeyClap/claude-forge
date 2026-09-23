@@ -38,7 +38,7 @@ Secure local bridge (TypeScript, run directly by Node 24 — no build step)
   └─ usage           EXACT/DERIVED/ESTIMATED/UNAVAILABLE labelling, per-scope isolation
   ▼
 Local Claude Code CLI 2.1.217 (authenticated, no API key)  +  projects under
-~/Documents/ForgeProjecten
+~/Documents/ForgeProjects
 ```
 
 Full picture in `docs/architecture.md`. The trust boundary is the operation allowlist: the browser
@@ -66,7 +66,7 @@ recorded), hash manifest `artifacts/baseline-manifest.json` (347 files). `script
 
 ## 6. Projects root
 
-Resolved at runtime to `C:\Users\faitz\Documents\ForgeProjecten` — never hardcoded. Verified two
+Resolved at runtime to `C:\Users\YOU\Documents\ForgeProjects` — never hardcoded. Verified two
 independent ways (`GetFolderPath('MyDocuments')` and the registry `User Shell Folders\Personal`) and
 against sandboxed homes with `Documenten` and OneDrive-redirected Documents. `ensureProjectsRoot`
 refuses to create it if it would land outside the user profile or where a conflicting file exists.

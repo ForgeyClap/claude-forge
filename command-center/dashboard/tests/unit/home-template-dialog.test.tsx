@@ -59,7 +59,7 @@ function installFetchMock(): { bodies: unknown[] } {
       return {
         ok: true,
         status: 201,
-        json: async () => ({ ok: true, project: { name: 'Website', path: 'C:\\Users\\YOU\\Documents\\ForgeProjecten\\Website' } }),
+        json: async () => ({ ok: true, project: { name: 'Website', path: 'C:\\Users\\YOU\\Documents\\ForgeProjects\\Website' } }),
       } as Response;
     }
     return { ok: true, status: 200, json: async () => ({}) } as Response;

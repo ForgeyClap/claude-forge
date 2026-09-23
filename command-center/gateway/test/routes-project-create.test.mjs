@@ -1,7 +1,7 @@
 // HTTP-level integration tests for build-newproject's POST /api/projects route, against a real
 // instance of the gateway bound to an ephemeral port. `_setProjectsRootForTests` points every
 // creation at an isolated temp dir — this suite NEVER writes into the real
-// Documents\ForgeProjecten.
+// Documents\ForgeProjects.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

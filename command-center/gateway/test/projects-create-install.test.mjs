@@ -2,7 +2,7 @@
 // (as a child process) right after scaffolding a new project directory. Every scenario here stubs
 // the child-process call via `_setInstallRunnerForTests` (same pattern as `_setProjectsRootForTests`,
 // already used by ../test/routes-project-create.test.mjs) — this suite NEVER spawns a real
-// `forge-sync.cjs install` and NEVER writes into the real Documents\ForgeProjecten.
+// `forge-sync.cjs install` and NEVER writes into the real Documents\ForgeProjects.
 //
 // installForgeInto()'s containment check is against the REAL, non-overridable FORGE_PROJECTS_ROOT
 // (see its own header comment) — a stub-only unit test can therefore reference that real constant as

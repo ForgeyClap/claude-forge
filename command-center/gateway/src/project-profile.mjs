@@ -29,7 +29,7 @@ function extractBulletValue(lines, label) {
 
 // fix-placeholder (forge-2026-07-29-cc-finish): a live-fleet inventory across every
 // currently-registered project (`GET /api/projects` -> `GET /api/projects/:name/profile`,
-// 2026-07-29) found several projects ("100 apps", "CASHFLOWWW", "Moneymaker") whose
+// 2026-07-29) found several projects ("app-bundle", "cashflow", "shop") whose
 // FORGE_PROJECT_PROFILE.md was never filled in past the scaffold: the bullet exists, but its
 // value is still the literal fill-in-the-blank token from the template, e.g.
 // "- **Project goal:** <one or two lines>". Returning that string verbatim (as this module did
@@ -40,7 +40,7 @@ function extractBulletValue(lines, label) {
 // ENTIRE trimmed value is a single `<...>` token (anchored `^<[^<>]*>$` — start-to-end, no other
 // characters outside the brackets). This was verified against the real value of this field across
 // every registered project before being written: real free-text goals (this project's own,
-// AutoWeb's, "boekhouder progamma"'s, etc.) never start with `<`, so the anchor can never
+// AutoWeb's, "an accounting desktop app progamma"'s, etc.) never start with `<`, so the anchor can never
 // truncate legitimate prose that merely happens to contain a `<` character mid-sentence. A
 // candidate substring/contains rule was deliberately rejected for the same reason: it would have
 // wrongly nulled "demo-sandbox-automation"'s honest `project_goal` ("`unknown` — PROJECT.md

@@ -138,7 +138,7 @@ export type PathVector =
  * and any guard that reaches for `startsWith` fails this one row.
  */
 export const TRAP_ROOT_WIN32 = 'C:\\root';
-export const REAL_ROOT_WIN32 = 'C:\\Users\\test\\Documents\\ForgeProjecten';
+export const REAL_ROOT_WIN32 = 'C:\\Users\\test\\Documents\\ForgeProjects';
 export const TRAP_ROOT_POSIX = '/home/test/root';
 
 /* ========================================================================== */
@@ -922,7 +922,7 @@ export const CONTAINMENT_VECTORS: readonly ContainmentVector[] = [
     id: 'contain/prefix/real-root-sibling',
     kind: 'containment',
     root: REAL_ROOT_WIN32,
-    input: 'C:\\Users\\test\\Documents\\ForgeProjectenBACKUP\\p\\file.ts',
+    input: 'C:\\Users\\test\\Documents\\ForgeProjectsBACKUP\\p\\file.ts',
     expect: 'reject',
     why: 'The trap with the real root name — the shape this bug would actually take in production.',
     platform: 'win32',

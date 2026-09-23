@@ -103,12 +103,69 @@ t('orderRunRows: ordering is by real recency, not by directory name', () => {
 });
 
 // One assertion against the REAL project — the defect was found there and must stay fixed there.
+// FRESH-INSTALL FIX (2026-08-06, a card-game project): a just-installed project has NO runs yet — `ids.length > 0`
+// made every fresh install fail its own doctor on history it cannot possibly have (the same class as the
+// canary precondition seedCanaryRun exists for). Zero runs is now a vacuous, honestly-reported pass: the
+// property under test ("the newest listed run is not a synthetic demo") is about what IS listed, and an
+// empty listing lists no demo. The moment the project has any real run, the full assertion bites again.
 t('live project: the newest run reported to /forge status is NOT a synthetic demo', () => {
   const ids = S.listRunIds();
-  assert.ok(ids.length > 0, 'the real project must list at least one run');
+  if (ids.length === 0) {
+    // CODEX ronde-3 #12 (2026-08-06): een lege lijst is alleen een eerlijke vacuous pass als de
+    // forge-runs-map OOK ECHT leeg is — anders zou een listRunIds()-regressie die altijd [] retourneert
+    // deze test permanent groen maken op een project vol echte runs. Onafhankelijk van de selector
+    // gecontroleerd, rechtstreeks op het bestandssysteem.
+    const runsDir = path.join(__dirname, '..', 'forge-runs');
+    let runShaped = [];
+    try {
+      runShaped = fs.readdirSync(runsDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== '_toollog')
+        .filter((e) => fs.existsSync(path.join(runsDir, e.name, 'events.jsonl')));
+    } catch { /* geen forge-runs-map: echt vers */ }
+    assert.strictEqual(runShaped.length, 0,
+      'listRunIds() returned [] but ' + runShaped.length + ' run-shaped dir(s) exist on disk (e.g. ' + (runShaped[0] && runShaped[0].name) + ') — the selector regressed, this is not a fresh install');
+    console.log('    (fresh install: no runs yet — nothing listed, so no demo can be listed; assertion arms itself on the first real run)');
+    return;
+  }
   const first = S.classifyRunDir(path.join(__dirname, '..', 'forge-runs', ids[0]), ids[0]);
   assert.strictEqual(first.synthetic, false, 'ids[0] is a synthetic run: ' + ids[0]);
   assert.ok(!ids.includes('_toollog') && !ids.includes('.hotspot-locks'), 'operational dirs still listed as runs');
+});
+
+// ============================================================================================
+// ONE SELECTOR, ONE TRUTH (Codex adversarial review #18/#19/#20, 2026-08-03).
+// latestRunId() used to re-select independently by run.json.started, ignoring the synthetic flag — so a
+// demo carrying a later `started` than any real run silently won "latest" again, undoing the listing fix
+// for every consumer that asks for "the current run" (health, state, dashboard header). Recency also took
+// the MAX of events/run.json/dir mtime, so writing any new child file into an old run (say a report)
+// bumped it above a genuinely newer run. And a truncated run.json failed open as an ordinary real run.
+// ============================================================================================
+t('classifyRunDir: PRESENT-but-unparseable run.json is flagged malformed (absent is NOT malformed)', () => {
+  const brokenDir = mkRun(RUNS, 'broken-json-2', { events: '{"event_type":"run_started"}\n' });
+  fs.writeFileSync(path.join(brokenDir, 'run.json'), '{ "_demo": true', 'utf8'); // truncated demo marker
+  const c = S.classifyRunDir(brokenDir, 'broken-json-2');
+  assert.strictEqual(c.isRun, true);
+  assert.strictEqual(c.malformed, true, 'a truncated run.json must not read as trustworthy metadata');
+  const noMeta = S.classifyRunDir(path.join(RUNS, 'forge-2026-07-01-real-older'), 'x');
+  assert.strictEqual(!!noMeta.malformed, false, 'a run WITHOUT run.json is ordinary, not malformed');
+});
+
+t('recency prefers the newest EVENT over a directory mtime bumped by an unrelated child write', () => {
+  const old = mkRun(RUNS, 'recency-old', { events: '{"event_type":"run_started"}\n', mtimeMs: Date.now() - 5 * 86400000 });
+  const before = S.classifyRunDir(old, 'recency-old').recency;
+  // dropping a new file into the old run bumps the DIRECTORY mtime to now
+  fs.writeFileSync(path.join(old, 'final-report.md'), '# late report\n', 'utf8');
+  const after = S.classifyRunDir(old, 'recency-old').recency;
+  assert.strictEqual(after, before, 'an unrelated child write must not make an old run look newest');
+});
+
+t('live project: latestRunId() and the listing agree — one selector, never a second opinion', () => {
+  const id = S.latestRunId();
+  if (id === null) { assert.ok(true, 'no eligible real run — honest null rather than presenting a demo'); return; }
+  const c = S.classifyRunDir(path.join(__dirname, '..', 'forge-runs', id), id);
+  assert.strictEqual(c.synthetic, false, 'latestRunId returned a synthetic run: ' + id);
+  assert.strictEqual(!!c.malformed, false, 'latestRunId returned a run with unreadable metadata: ' + id);
+  assert.strictEqual(id, S.listRunIds()[0], 'latestRunId disagrees with the listing it is supposed to share');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
