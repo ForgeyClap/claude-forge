@@ -78,6 +78,16 @@ directory with an empty HOME on Ubuntu and Windows and requires the doctor to pr
   the CI line "6128 passed / 0 failed · 1 SUITE(S) FAILED" named nothing, and a runner has no per-suite output at hand.
 - `fresh-install.yml` (Windows) assigned to `$home`, a read-only PowerShell automatic variable; `validate.yml` passed a
   bare relative path to `require()` (a module name). Both found by the first 2.4.0 runs, both fixed.
+- **`forge-sync.cjs` containment guard on 8.3 short paths** (found by the Windows CI runner, whose TEMP is
+  `C:\Users\RUNNER~1\…`): for a project directory that does not exist yet (the dedicated canary on a dry run) the
+  base fell back to the short form while the target's ancestor was realpath'd to the long form, so every file
+  "escaped" and the canary plan was empty. Both sides now resolve through the same existing ancestor; regression
+  test 58c drives a real 8.3 alias.
+- `log-event-concurrency.test.cjs` unlinked a lock whose handle it still held and immediately recreated the name —
+  on Windows that name is delete-pending and the create throws EPERM (crash before the tally on the runner). The
+  takeover is now simulated with a rename; the stress runners carry a timeout so no grandchild outlives the suite.
+- The fresh-install job re-runs any red suite the doctor names and prints its failures, so a runner-only failure can
+  be read from the log instead of guessed at.
 
 ### Changed — beginner-first (Part IV of the audit)
 

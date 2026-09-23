@@ -51,7 +51,7 @@ console.log('\n1) 120 gelijktijdige appends');
     "const i=process.argv[2];",
     "const sab=new Int32Array(new SharedArrayBuffer(4));",
     "while(!fs.existsSync(" + JSON.stringify(gate) + ")){Atomics.wait(sab,0,0,2);}",
-    "const r=spawnSync(process.execPath,[" + JSON.stringify(LOGEVT) + ",'" + RUN + "','agent_progress',JSON.stringify({agent:'orchestrator',note:'stress-'+i,status:'completed'})],{encoding:'utf8'});",
+    "const r=spawnSync(process.execPath,[" + JSON.stringify(LOGEVT) + ",'" + RUN + "','agent_progress',JSON.stringify({agent:'orchestrator',note:'stress-'+i,status:'completed'})],{encoding:'utf8',timeout:90000});", // timeout: een kleinkind mag de suite nooit overleven (CI meldde een weesproces)
     "fs.writeFileSync(" + JSON.stringify(path.join(SB, 'res-')) + "+i+'.json',JSON.stringify({status:r.status,err:(r.stderr||'').slice(0,200)}));",
   ].join('\n'), 'utf8');
   const kids = [];
@@ -229,13 +229,19 @@ console.log('\n5) fencing + conjunctieve staleness');
   const acq = L.acquireEventsLock(runDir, { timeoutMs: 2000 });
   t('acquire levert een fencing-identiteit (ino + birthtime)', acq.ok === true && acq.ino != null);
   t('de eigen lock wordt herkend', L.stillOwnsLock(acq) === true);
-  fs.unlinkSync(lockPath); // simuleer een onterechte takeover-unlink...
+  // Simuleer een onterechte takeover: de NAAM gaat naar een andere inode terwijl onze fd open blijft. Niet via
+  // unlink: op Windows blijft een naam waarvan de handle nog open is "delete-pending", en het opnieuw aanmaken
+  // ervan gooit EPERM — gemeten op de GitHub windows-runner (Node 18/22): deze suite crashte precies hier, terwijl
+  // het op de ontwikkelmachine toevallig slaagde. Hernoemen heeft hetzelfde effect zonder delete-pending-venster.
+  const heldAside = lockPath + '.held-aside';
+  fs.renameSync(lockPath, heldAside);
   fs.writeFileSync(lockPath, JSON.stringify({ pid: 424242, ts: new Date().toISOString() })); // ...en een verse dief
   t('na vervanging van de locknaam detecteert stillOwnsLock het verlies (ino-mismatch)', L.stillOwnsLock(acq) === false);
   // release mag de lock van de dief NIET verwijderen (fencing in releaseEventsLock)
   L.releaseEventsLock(acq);
   t('release laat de lock van de opvolger staan (geen unlink na verlies)', fs.existsSync(lockPath));
   fs.unlinkSync(lockPath);
+  try { fs.unlinkSync(heldAside); } catch { /* fd is gesloten door release; op Windows kan de unlink iets later vrijkomen */ }
 }
 
 // ============================================================================================

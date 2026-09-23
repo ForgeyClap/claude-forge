@@ -1876,6 +1876,39 @@ console.log('\n58) M-B3: fileStatus() catch branches -> kind:"unreadable" (never
 }
 
 // =====================================================================================
+// 58c) containmentSafe with a base that does NOT exist yet, reached through an 8.3 short-name alias.
+// MEASURED on the GitHub windows runner (2026-09-24): TEMP there is `C:\Users\RUNNER~1\…`. The dry-run
+// dedicated-canary plan came back EMPTY because the target's existing ancestor was realpath'd (long form) while
+// the not-yet-existing base fell back to path.resolve (short form) — every file "escaped" its own base.
+// =====================================================================================
+console.log('\n58c) containmentSafe: not-yet-existing base behind a short-name (8.3) alias');
+{
+  const longDir = freshDir('t58c-containment-shortname-probe');
+  let shortDir = null;
+  if (process.platform === 'win32') {
+    // Scripting.FileSystemObject.ShortPath is the documented way to obtain the 8.3 alias (cmd's %~sI needs quoting
+    // gymnastics that cmd /s mangles); a volume with 8.3 generation disabled returns the long path unchanged.
+    const r = spawnSync('powershell', ['-NoProfile', '-Command', "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('" + longDir.replace(/'/g, "''") + "').ShortPath"], { encoding: 'utf8', timeout: 30000 });
+    const s = (r.stdout || '').trim().split(/\r?\n/).pop();
+    if (r.status === 0 && s && s.toLowerCase() !== longDir.toLowerCase() && /~/.test(s)) shortDir = s;
+  }
+  if (!shortDir) console.log('     (58c: no 8.3 short-name alias on this host — ' + (process.platform === 'win32' ? '8.3 names disabled for this volume' : process.platform) + '; the long-path assertions still run, the alias ones are reported as skipped)');
+  const baseVia = (root) => path.join(root, 'proj', '.claude'); // does NOT exist
+  const targetVia = (root) => path.join(root, 'proj', '.claude', 'forge-bin', 'tool.cjs');
+  t('58c long path: a not-yet-existing base contains its own not-yet-existing target', sync.containmentSafe(baseVia(longDir), targetVia(longDir)) === true);
+  t('58c long path: a target outside the base is still rejected', sync.containmentSafe(baseVia(longDir), path.join(longDir, 'elsewhere', 'x.cjs')) === false);
+  if (shortDir) {
+    t('58c SHORT-NAME alias (8.3): containment holds — both sides resolve through the same existing ancestor', sync.containmentSafe(baseVia(shortDir), targetVia(shortDir)) === true, shortDir);
+    t('58c SHORT-NAME alias: an outside target is still rejected', sync.containmentSafe(baseVia(shortDir), path.join(shortDir, 'elsewhere', 'x.cjs')) === false);
+    const tpl = freshDir('t58c-tpl'); fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true }); fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'v1');
+    const plan = sync.buildPlan(tpl, path.join(shortDir, 'canary-not-yet-created'), {});
+    t('58c SHORT-NAME alias: a dry-run plan for a not-yet-existing project lists the file as NEW, never skipped as an escape (the CI canary regression)', plan.toChange.length === 1 && plan.skipped.length === 0, JSON.stringify({ toChange: plan.toChange.length, skipped: plan.skipped }));
+  } else {
+    t('58c SHORT-NAME alias assertions skipped honestly (no 8.3 alias on this host)', true);
+  }
+}
+
+// =====================================================================================
 // ADDENDUM G proof ("no global sync"): every fixture directory this suite EVER created (tracked live by
 // freshDir(), not asserted after the fact) is actually rooted under os.tmpdir() — real, not just claimed.
 // =====================================================================================

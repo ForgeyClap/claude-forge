@@ -535,20 +535,28 @@ function isSymlinkPath(p) { try { return fs.lstatSync(p).isSymbolicLink(); } cat
  *  (e.g. .claude/forge-bin itself replaced with a junction pointing outside .claude). Resolves the REAL path
  *  of the longest existing ancestor (a not-yet-existing leaf can't itself be a reparse point) and confirms
  *  the resolved path still lives under the resolved base. */
-function containmentSafe(baseDir, targetPath) {
-  let realBase;
-  try { realBase = fs.realpathSync.native(baseDir); } catch { realBase = path.resolve(baseDir); }
-  let existingAncestor = targetPath;
+/** realpathViaExistingAncestor — the REAL path of `p` even when `p` does not exist yet: resolve the longest
+ *  existing ancestor and re-append the missing tail. Both sides of a containment comparison MUST go through this
+ *  same function. Measured on the GitHub windows runner (2026-09-24): its TEMP is an 8.3 short path
+ *  (`C:\Users\RUNNER~1\…`). The old code realpath'd the target's ancestor (long form, `…\runneradmin\…`) but fell
+ *  back to `path.resolve()` (short form) for a base that did not exist yet — the dedicated canary's `.claude/` on a
+ *  dry run — so every file "escaped" its own base and the canary plan was empty. */
+function realpathViaExistingAncestor(p) {
+  let existing = path.resolve(p);
   const tail = [];
-  while (!fs.existsSync(existingAncestor)) {
-    const parent = path.dirname(existingAncestor);
-    if (parent === existingAncestor) break;
-    tail.unshift(path.basename(existingAncestor));
-    existingAncestor = parent;
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    tail.unshift(path.basename(existing));
+    existing = parent;
   }
-  let realExisting;
-  try { realExisting = fs.realpathSync.native(existingAncestor); } catch { realExisting = path.resolve(existingAncestor); }
-  const realTarget = tail.length ? path.join(realExisting, ...tail) : realExisting;
+  let real;
+  try { real = fs.realpathSync.native(existing); } catch { real = existing; }
+  return tail.length ? path.join(real, ...tail) : real;
+}
+function containmentSafe(baseDir, targetPath) {
+  const realBase = realpathViaExistingAncestor(baseDir);
+  const realTarget = realpathViaExistingAncestor(targetPath);
   return realTarget === realBase || realTarget.startsWith(realBase + path.sep);
 }
 
