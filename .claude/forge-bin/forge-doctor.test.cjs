@@ -1810,16 +1810,28 @@ devTreeOnly('skillHygiene: the real project carries exactly the KNOWN findings �
   t('skillHygiene: the real project carries exactly the KNOWN findings — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok))));
 // (c) the empty findings list above must be earned by RECLASSIFICATION, not by a check that stopped
 // looking: forge-snapshot still has to surface its marker reference, now under generated_refs.
+// 2026-09-24 — found by the independent verify-boss re-execution of run forge-2026-09-23-audit-repair: this assertion
+// demanded "listed under generated_refs", which the classifier only does while the marker is ABSENT. The session's
+// own precompact hook had just written `.claude/.forge-snapshot-due.json`, the reference resolved to a real file,
+// dropped out of generated_refs, and the dev-tree doctor went red without any code change. Both states are correct
+// — a generated marker that currently exists is simply a resolving reference — so the assertion now accepts either
+// and only ever fails when the reference is FLAGGED AS DANGLING (the reclassification actually switched off).
+function generatedRefReported(entry, basename, markerPath) {
+  const listed = Array.isArray(entry.generated_refs) && entry.generated_refs.some((r) => r.includes(basename));
+  const onDisk = fs.existsSync(markerPath);
+  const flaggedDangling = JSON.stringify(entry.issues || []).includes(basename);
+  return !flaggedDangling && (listed || onDisk);
+}
 devTreeOnly('skillHygiene: forge-snapshot still REPORTS its runtime marker, now as a generated ref', () =>
-  t('skillHygiene: forge-snapshot still REPORTS its runtime marker, now as a generated ref',
-    (realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot') || {}).generated_refs?.some((r) => r.includes('.forge-snapshot-due.json')) === true,
+  t('skillHygiene: forge-snapshot still REPORTS its runtime marker, now as a generated ref (or the marker currently exists) — never as dangling',
+    generatedRefReported(realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot') || {}, '.forge-snapshot-due.json', path.join(REAL_ROOT, '.claude', '.forge-snapshot-due.json')),
     JSON.stringify(realSkillHygiene.skills.find((s) => s.skill === 'forge-snapshot'))));
 // (d) 2026-09-23: forge-router and forge-intake now read `.claude/.forge-setup.json` (what /setup-forge saved,
 // so the silent intake never re-asks it). forge-setup.cjs writes that file through a path VARIABLE; the
 // reference must surface as a generated ref, not as the dangling link the real doctor reported before the fix.
 devTreeOnly('skillHygiene: forge-router REPORTS the /setup-forge marker as a generated ref (variable-written path resolved)', () =>
-  t('skillHygiene: forge-router REPORTS the /setup-forge marker as a generated ref (variable-written path resolved)',
-    (realSkillHygiene.skills.find((s) => s.skill === 'forge-router') || {}).generated_refs?.some((r) => r.includes('.forge-setup.json')) === true,
+  t('skillHygiene: forge-router REPORTS the /setup-forge marker as a generated ref (or /setup-forge already wrote it) — never as dangling',
+    generatedRefReported(realSkillHygiene.skills.find((s) => s.skill === 'forge-router') || {}, '.forge-setup.json', path.join(REAL_ROOT, '.claude', '.forge-setup.json')),
     JSON.stringify(realSkillHygiene.skills.find((s) => s.skill === 'forge-router'))));
 // The three assertions below all describe the VENDORED skills specifically, which is exactly the surface
 // the distribution strips. Note that two of them are `every(...)` over a filtered array: in a tree with no

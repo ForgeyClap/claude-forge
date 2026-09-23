@@ -88,6 +88,10 @@ directory with an empty HOME on Ubuntu and Windows and requires the doctor to pr
   takeover is now simulated with a rename; the stress runners carry a timeout so no grandchild outlives the suite.
 - The fresh-install job re-runs any red suite the doctor names and prints its failures, so a runner-only failure can
   be read from the log instead of guessed at.
+- `forge-doctor.test.cjs` asserted that its own runtime markers (`.forge-snapshot-due.json`, `.forge-setup.json`) are
+  listed as generated refs — true only while they are absent. The independent re-execution of this release found the
+  dev-tree doctor red minutes after a precompact hook had written the snapshot marker. The assertions now accept a
+  marker that exists and fail only when a reference is flagged as dangling.
 
 ### Changed — beginner-first (Part IV of the audit)
 
