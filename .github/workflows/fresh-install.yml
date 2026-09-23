@@ -124,6 +124,26 @@ jobs:
           node .claude/forge-bin/forge-doctor.cjs --root . | tee doctor.txt
           grep -q "⇒ ALL GREEN" doctor.txt || { echo "::error::the fresh-install doctor is not ALL GREEN — see the ✗ lines above"; exit 1; }
 
+      # Diagnostics only: the doctor names the red suites; this re-runs exactly those and prints their FAIL lines,
+      # so a runner-only failure (Windows/Linux, Node 18/22) can be read from the log instead of guessed at.
+      - name: Re-run the red suites and print their failures (diagnostics)
+        if: failure()
+        shell: bash
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          cd "$FORGE_TEST_PROJECT" || exit 0
+          [ -f doctor.txt ] || { echo "no doctor.txt — the failure happened before the doctor ran"; exit 0; }
+          names=$(grep -oE "[A-Za-z0-9_-]+\.test\.cjs \([^)]*\)" doctor.txt | sed -E 's/ \(.*//' | sort -u)
+          [ -n "$names" ] || { echo "the doctor named no red suite"; exit 0; }
+          for s in $names; do
+            echo "===== $s (node $(node --version), $(uname -s)) ====="
+            node ".claude/forge-bin/$s" > "suite-$s.log" 2>&1; echo "exit=$?"
+            grep -nE "FAIL|Error|error:|passed, [0-9]+ failed|SKIP|timed out|ETIMEDOUT|EPERM|EBUSY|EACCES" "suite-$s.log" | head -60
+            echo "----- last 25 lines -----"; tail -25 "suite-$s.log"
+          done
+
       # /setup-forge's engine and the sync status must both work on a machine that has only what the
       # installer put there.
       - name: Setup engine and sync status work from the fresh install
