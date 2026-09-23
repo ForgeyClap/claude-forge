@@ -1587,6 +1587,7 @@ function generatedPathBasenames(root) {
         FILENAME_LITERAL_RE.lastIndex = 0;
         let m;
         while ((m = FILENAME_LITERAL_RE.exec(window)) !== null) out.add(m[1]);
+        harvestPathHelpers(window, lines, out); // `appendFileSync(ledgerPath(root), …)` — the path comes from a helper
         // 2026-09-23 (measured on forge-setup.cjs, restored this release): the path is often built ONCE into a
         // variable — `const projMarkerPath = path.join(projectDir, '.claude', '.forge-setup.json')` — and the
         // write, fifteen lines later, only names that variable: `fs.writeFileSync(projMarkerPath, …)`. Neither
@@ -1604,15 +1605,41 @@ function generatedPathBasenames(root) {
         const declRe = new RegExp('\\b(?:const|let|var)\\s+' + written.replace(/\$/g, '\\$') + '\\s*=');
         for (let j = 0; j < lines.length; j++) {
           if (!declRe.test(lines[j])) continue;
-          const declWindow = lines[j] + '\n' + (lines[j + 1] || '');
+          const declWindow = /[;}]\s*$/.test(lines[j]) ? lines[j] : lines[j] + '\n' + (lines[j + 1] || ''); // same spill rule as the helper hop
           FILENAME_LITERAL_RE.lastIndex = 0;
           let d;
           while ((d = FILENAME_LITERAL_RE.exec(declWindow)) !== null) out.add(d[1]);
+          harvestPathHelpers(declWindow, lines, out);
         }
       }
     }
   }
   return out;
+}
+/** One more hop, still bounded: a written path is often produced by a small helper — `appendFileSync(ledgerPath(root), …)`
+ *  or `const statePath = opts.statePath || defaultStatePath(root)` with `function defaultStatePath(root) { return
+ *  path.join(root, '.claude', 'forge-research', 'docdrift-state.json'); }`. Measured on every fresh install's doctor
+ *  (2026-09-24, CI): forge-docdrift and forge-router were flagged for exactly such helper-built paths. Only identifiers
+ *  that are CALLED in the write/declaration window are looked up, and only their own `function NAME(` line (+1). */
+function harvestPathHelpers(window, lines, out) {
+  const CALL_RE = /\b([A-Za-z_$][\w$]*)\s*\(/g;
+  const SKIP = new Set(['require', 'writeFileSync', 'appendFileSync', 'writeAtomic', 'createWriteStream', 'copyFileSync', 'join', 'resolve', 'stringify', 'parse', 'push', 'toString', 'String', 'Number', 'if', 'for', 'while', 'catch', 'function', 'Error', 'JSON']);
+  let c;
+  while ((c = CALL_RE.exec(window)) !== null) {
+    const name = c[1];
+    if (SKIP.has(name)) continue;
+    const fnRe = new RegExp('\\bfunction\\s+' + name.replace(/\$/g, '\\$') + '\\s*\\(');
+    for (let k = 0; k < lines.length; k++) {
+      if (!fnRe.test(lines[k])) continue;
+      // Only spill onto the next line when this one is genuinely unfinished (a wrapped `return path.join(…,`); a
+      // one-line helper ending in `}` must not harvest the NEXT helper's literal (measured: a never-called decoy
+      // helper on the following line was classified as generated).
+      const fnWindow = /[;}]\s*$/.test(lines[k]) ? lines[k] : lines[k] + '\n' + (lines[k + 1] || '');
+      FILENAME_LITERAL_RE.lastIndex = 0;
+      let d;
+      while ((d = FILENAME_LITERAL_RE.exec(fnWindow)) !== null) out.add(d[1]);
+    }
+  }
 }
 
 /** skillHygiene(root) -> {ok, checked, vendored_exempt, skills:[{skill, ok, issues:[], vendored?, vendored_style?, generated_refs?}]}

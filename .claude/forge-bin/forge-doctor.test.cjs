@@ -1582,6 +1582,33 @@ t('skillHygiene: a path built into a variable and written later is resolved to i
 t('skillHygiene: a path variable that is NEVER handed to a write API stays a dangling reference (the resolution did not widen into "every literal in the file")',
   (shVarSkill.issues || []).some((i) => i.includes('.claude/.never-written.json')), JSON.stringify(shVarSkill));
 
+// (4d) the written path comes from a HELPER FUNCTION (2026-09-24). MEASURED on every fresh install's doctor in CI:
+// forge-docdrift (`const statePath = opts.statePath || defaultStatePath(root)`) and forge-audit-loop
+// (`fs.appendFileSync(ledgerPath(root), …)`) were flagged for paths their own helpers build. One more bounded hop:
+// a function CALLED in the write/declaration window has its `function NAME(` line harvested. A helper that is
+// never called from a write path contributes nothing.
+const SH_FN_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-generated-fn-');
+fs.writeFileSync(path.join(SH_FN_ROOT, '.claude', 'forge-bin', 'marker-fn.cjs'),
+  "'use strict';\nconst fs = require('fs');\nconst path = require('path');\n"
+  + "function ledgerPath(root) { return path.join(root, '.claude', 'forge-audit', '.fn-ledger.jsonl'); }\n"
+  + "function defaultStatePath(root) { return path.join(root, '.claude', 'forge-research', '.fn-state.json'); }\n"
+  + "function decoyPath(root) { return path.join(root, '.claude', '.fn-decoy-never-written.json'); }\n"
+  + "function save(root, opts) {\n  const statePath = opts.statePath || defaultStatePath(root);\n  fs.writeFileSync(statePath, '{}', 'utf8');\n"
+  + "  fs.appendFileSync(ledgerPath(root), '{}\\n', 'utf8');\n}\n"
+  + "module.exports = { save, decoyPath };\n");
+fs.mkdirSync(path.join(SH_FN_ROOT, '.claude', 'skills', 'gen-fn'), { recursive: true });
+fs.writeFileSync(path.join(SH_FN_ROOT, '.claude', 'skills', 'gen-fn', 'SKILL.md'),
+  '---\nname: gen-fn\ndescription: A short, valid description.\n---\n\n# gen-fn\n\n'
+  + 'Appends to `.claude/forge-audit/.fn-ledger.jsonl`, persists `.claude/forge-research/.fn-state.json` and mentions `.claude/.fn-decoy-never-written.json`.\n');
+const shFnRep = D.runDoctor(SH_FN_ROOT);
+const shFnSkill = shFnRep.advisory.completeness.skill_hygiene.skills.find((s) => s.skill === 'gen-fn') || {};
+t('skillHygiene: a path built by a helper called directly in the write (appendFileSync(ledgerPath(root))) is a generated ref',
+  Array.isArray(shFnSkill.generated_refs) && shFnSkill.generated_refs.includes('.claude/forge-audit/.fn-ledger.jsonl') && !JSON.stringify(shFnSkill.issues || []).includes('.fn-ledger.jsonl'), JSON.stringify(shFnSkill));
+t('skillHygiene: a path built by a helper reached through a declaration (const p = opts.p || defaultStatePath(root)) is a generated ref',
+  Array.isArray(shFnSkill.generated_refs) && shFnSkill.generated_refs.includes('.claude/forge-research/.fn-state.json') && !JSON.stringify(shFnSkill.issues || []).includes('.fn-state.json'), JSON.stringify(shFnSkill));
+t('skillHygiene: a helper that is NEVER called from a write path still yields a dangling reference (the hop is bounded to called helpers)',
+  (shFnSkill.issues || []).some((i) => i.includes('.claude/.fn-decoy-never-written.json')), JSON.stringify(shFnSkill));
+
 // (5) prose-with-slash NOT flagged: an alternation phrase ("manifest.json/events.jsonl", meaning "either
 // file", not a nested directory) and an UNANCHORED path-shaped example (a generic downstream-project
 // illustration with neither a .claude/ nor a references//scripts//assets/ prefix) must both be silently

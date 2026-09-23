@@ -133,6 +133,7 @@ jobs:
           HOME: ${{ env.FORGE_TEST_HOME }}
           USERPROFILE: ${{ env.FORGE_TEST_HOME }}
         run: |
+          set +e   # the default shell runs with -e: a red suite (exit 1) must not abort the diagnostics that explain it
           cd "$FORGE_TEST_PROJECT" || exit 0
           [ -f doctor.txt ] || { echo "no doctor.txt — the failure happened before the doctor ran"; exit 0; }
           names=$(grep -oE "[A-Za-z0-9_-]+\.test\.cjs \([^)]*\)" doctor.txt | sed -E 's/ \(.*//' | sort -u)
