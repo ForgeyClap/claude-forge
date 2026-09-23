@@ -580,7 +580,12 @@ console.log('\n15) F2: locked/unwritable file (real EPERM) -> partial rollback, 
   const probe = freshDir('t15-probe');
   const probeFile = path.join(probe, 'x.txt');
   fs.writeFileSync(probeFile, 'orig'); fs.chmodSync(probeFile, 0o444);
-  try { fs.writeFileSync(probeFile, 'new'); } catch { realLockWorks = true; }
+  // Probe the SAME mechanism the sync uses (stage a temp file, then rename it over the target — see copyNoFollow /
+  // writeAtomic). A plain writeFileSync on a 0o444 file fails on every OS, but rename-over-target ignores the
+  // target's mode on Linux (only the directory's permissions matter), so the old probe said "real lock" while the
+  // real sync sailed through — 8 red assertions on the first Linux CI run (2026-09-24). On Windows the read-only
+  // attribute makes the rename throw EPERM, so that branch is unchanged.
+  try { const probeTmp = probeFile + '.probe.tmp'; fs.writeFileSync(probeTmp, 'new'); fs.renameSync(probeTmp, probeFile); } catch { realLockWorks = true; }
   fs.chmodSync(probeFile, 0o666); fs.rmSync(probe, { recursive: true, force: true });
 
   let r;
@@ -948,7 +953,12 @@ console.log('\n30) H1: rollback never claims a file was "restored" without a rea
   const probe = freshDir('t30-probe');
   const probeFile = path.join(probe, 'x.txt');
   fs.writeFileSync(probeFile, 'orig'); fs.chmodSync(probeFile, 0o444);
-  try { fs.writeFileSync(probeFile, 'new'); } catch { realLockWorks = true; }
+  // Probe the SAME mechanism the sync uses (stage a temp file, then rename it over the target — see copyNoFollow /
+  // writeAtomic). A plain writeFileSync on a 0o444 file fails on every OS, but rename-over-target ignores the
+  // target's mode on Linux (only the directory's permissions matter), so the old probe said "real lock" while the
+  // real sync sailed through — 8 red assertions on the first Linux CI run (2026-09-24). On Windows the read-only
+  // attribute makes the rename throw EPERM, so that branch is unchanged.
+  try { const probeTmp = probeFile + '.probe.tmp'; fs.writeFileSync(probeTmp, 'new'); fs.renameSync(probeTmp, probeFile); } catch { realLockWorks = true; }
   fs.chmodSync(probeFile, 0o666); fs.rmSync(probe, { recursive: true, force: true });
 
   if (realLockWorks) {
