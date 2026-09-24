@@ -338,7 +338,7 @@ These are the non-negotiables baked into every skill, agent, and dashboard view.
 
 **Security posture — light, non-blocking, with one deliberate exception:** no mandatory security gates slow a normal build. Basic hygiene (secrets in env, `.env.example` placeholders) is guidance, not an enforced hook. The exception, new in 2.7.0 and switchable with one command, is the [gate hook](#the-safety-stop-gate-hook--secret-deny-rules): it blocks only mass deletes, killing processes by name and git commands that discard uncommitted work, plus the `.env` read-deny rules. `security-boss` and `codex-reviewer` remain **available on request** for sensitive code — optional, never a blocker.
 
-**Beginner promise:** Forge runs every command, script, install and build itself and never asks you to run a file or code; it does not ask "shall I continue?" between phases. It always stops for the hard gates and a real usage-limit pause.
+**Beginner promise:** Forge runs every command, script, install and build itself and never asks you to run a file or code; it does not ask "shall I continue?" between phases. It stops for the hard gates and for a real usage-limit pause — four of those gates (destructive deletes, killing processes by name, git commands that throw work away, commands that hide what they run) are enforced by a real hook that is a classifier, not a proof; the others are rules checked by a text classifier, not a technical stop. Full wording and limits: the README's beginner promise and [SETTINGS.md](SETTINGS.md#what-the-gate-hook-stops-and-what-it-cannot-see).
 
 ---
 
