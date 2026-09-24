@@ -2,8 +2,10 @@
 
 **Status (updated 2026-09-24, v2.7.0 WP16):** `.claude/settings.json` now carries **5 live hook entries
 running 4 hook scripts** — the 3 snapshot entries (section 4), the tool ledger (section 5) and, new, the
-**gate hook** (section 6: a PreToolUse hook that really BLOCKS the three destructive command gates) — plus a
-**`permissions.deny` block** that keeps `.env` files and `secrets/` out of Claude's Read tool (section 6b).
+**gate hook** (section 6: a PreToolUse hook that really BLOCKS the four command gates — destructive-delete,
+kill-by-name, git-destructive and, since the 2026-09-24 codex-recheck, opaque-exec; a classifier, not a proof) —
+plus a **`permissions.deny` block** (28 rules) that keeps `.env` files at any depth, `secrets/`, private keys and
+the user's own credential files out of Claude's Read tool (section 6b).
 The gate hook is the first hook here that enforces instead of advising; it is ON by default because the
 owner decided so (config key `gate-hook`), and it is switched off with one command. The history below is kept
 as it was written.
@@ -340,8 +342,10 @@ clean -d` (a config override that makes an unforced clean destructive). These st
   allowed with a visible notice (`FORGE GATE: one-off approval used for this command (<gates>)`, exit 1); every
   subsequent command — even an identical one — sees `{ok:false, reason:'consumed'}` and is BLOCKED. If
   `consumeOnce` is absent from the config module, or it throws, the hook fails CLOSED (blocks) rather than
-  guessing. A self-disable attempt arriving during a once-window is never approvable through it either — it
-  always gets the off-notice below, and never calls `consumeOnce` at all.
+  guessing. A self-disable attempt arriving during a once-window is BLOCKED outright (exit 2 with the
+  self-disable notice — codex-recheck V03, wave 2): it is never approvable through the grant, never calls
+  `consumeOnce`, and `forge-config.cjs` itself refuses to persist a plain off/unset while a once-entry is pending,
+  so a one-off can never turn into a permanent OFF.
 - **While the gate is off it is never silent about what it would have stopped — on either off-path, including
   a self-disable attempt (codex-recheck S07).** Every affected call exits 1 with one visible line:
   - `FORGE GATE is OFF (set_at <ts>, set_by <who>) — this would have been blocked (<gates>)` for a PERSISTENT
@@ -637,10 +641,12 @@ the owner's `/forge config set gate-hook off`: the entry stays wired and, while 
 - The project `CLAUDE.md` states the security posture explicitly: no mandatory gates, no `secrets-guard`/`prod-deploy-guard` hooks, normal builds not slowed by blocking. A default-on ENFORCEMENT hook (lock/doctor/secret-scrub-as-a-gate) would contradict that, so sections 1-3 stay documented-only.
 - Section 4 is different in kind: it is purely **advisory continuity tooling** (it writes a markdown file and re-injects a short summary; it never blocks, never gates, never enforces anything), and the owner explicitly asked for it to be live, "dit geldt ook voor globaal" — so it was turned on for real, with a backup + a proven-safe merge first.
 - Section 6 (gate hook) IS an enforcement hook, and it departs on purpose from the first bullet — for the
-  three destructive command gates only. The owner decided it (v2.7.0: the `gate-hook` setting, default ON,
-  in `FORGE_CONFIG_SCHEMA.json`) after the beginner research showed prose rules do not stop a destructive
-  command. It is scoped to Bash/PowerShell calls that trip `destructive-delete`, `kill-by-name` or
-  `git-destructive`; everything else stays advisory. It is switched off with one command. OPEN: the project
-  `CLAUDE.md` line "No mandatory security gates" and `precedence.md` ("Advisory, not a hook") do not yet
-  mention this exception. That reconciliation was outside WP16's file scope and is handed to the Lead / Docs Boss.
+  four command gates only. The owner decided it (v2.7.0: the `gate-hook` setting, default ON, in
+  `FORGE_CONFIG_SCHEMA.json`) after the beginner research showed prose rules do not stop a destructive
+  command. It is scoped to Bash/PowerShell calls that trip `destructive-delete`, `kill-by-name`,
+  `git-destructive` or (since the 2026-09-24 codex-recheck) `opaque-exec`; everything else stays advisory. It
+  is a classifier, not a proof — what it does not recognise it does not stop (`hard-gates.json` →
+  `_not_caught`). The owner switches it off with one command; an agent's own attempt is blocked. CLOSED
+  2026-09-24: the project `CLAUDE.md` security-posture paragraph and `precedence.md` now name this exception
+  with the same four gates and the same caveat.
 - The global governance (`~/.claude` policies) requires **per-item owner approval** before any hook is enabled — pinned purpose, reviewed command, documented disable procedure. This file is that documentation for every hook, live or not.

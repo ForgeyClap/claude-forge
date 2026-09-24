@@ -339,8 +339,10 @@ The usage guard is the only setting that is on by default and reads a credential
   checks that mark before every new phase and stops there (best effort: it measures every 2 minutes, so a
   step can still cross the limit between two samples); it continues after the reset. On any error the guard does nothing (fail-safe), and it never logs or prints your token.
 - When the guard is switched off it makes no call at all, with exactly two exceptions you have to ask for: an
-  explicit `--force` on a read-only measurement (`check`, `status`, `credits` — one measurement, never a resume,
-  never a setting change) and a verified owner grant for `override-on`, the only action that resumes paused agents.
+  explicit `--force` on a one-shot read-only measurement (`check`, `status`, `credits` — one measurement, never a
+  resume, never a setting change) and a verified owner grant for the consequential paths — `override-on` (resumes
+  paused agents) and continuous forced watching (`start --force` / `watch --force`), which is refused without that
+  grant.
 
 More about limits and cost: [TOKEN-USAGE.md](TOKEN-USAGE.md).
 

@@ -189,6 +189,17 @@ function rulesetHashOf(root) {
  *  its contract re-evaluation, so a run that was ALSO currently contract-red could read as merely
  *  "HISTORICAL" (sounds like "just old") instead of the real failure it was.
  *
+ *  V22 REGRESSION (2026-09-24 THIRD Codex recheck, out-p8.md) — the rebuild above dropped the ONE check that
+ *  actually binds the evidence to the receipt's OWN commit claim: `nuSet.commit !== receipt.code_commit`.
+ *  Everything above still matches on the evidence DIGEST (a hash over per-gate name/exit_code/output_sha256/
+ *  commit — see canonicalEvidenceDigest's doc) and separately compares LIVE HEAD to `receipt.code_commit`,
+ *  but `receipt.code_commit` is a PLAIN field, not itself covered by that digest — a receipt file can be
+ *  hand-edited to claim a DIFFERENT `code_commit` (e.g. the current HEAD) while `gate-evidence.json` (and
+ *  therefore the matching digest) still genuinely names an OLDER commit. REPRODUCED: a green L1 fixture whose
+ *  evidence names commit A, with `receipt.code_commit` overwritten to equal current HEAD, passed digest/
+ *  allGreen/ruleset/contract/HEAD-vs-receipt every time — nothing ever compared the evidence's OWN commit to
+ *  what the receipt claims that evidence ran on. Restored here, unconditionally, for every caller.
+ *
  *  Returns exactly one of:
  *   {status:'fail', reason}      — evidence changed, the live evidence set is not (or no longer) all-green,
  *                                  the ruleset changed, or the contract does not re-evaluate to ok:true
@@ -207,6 +218,16 @@ function evaluateAcceptance(root, runId, receipt) {
   const nu = nuSet ? nuSet.digest : null;
   if (nu !== receipt.evidence_digest) {
     return { status: 'fail', reason: 'de bewijsset is sinds de finalisatie veranderd (gate-evidence ' + String(receipt.evidence_digest).slice(0, 12) + '… -> ' + (nu ? nu.slice(0, 12) + '…' : 'ontbreekt/ongeldig') + ') — het oordeel sloeg op ander bewijs' };
+  }
+  /** V22 REGRESSION FIX (2026-09-24 THIRD Codex recheck, out-p8.md) — the evidence digest matching is not
+   *  enough: `receipt.code_commit` is a plain field the digest does not cover, so a receipt whose evidence is
+   *  byte-for-byte unchanged can still claim a DIFFERENT commit than the one that evidence actually ran on
+   *  (e.g. hand-edited to equal current HEAD after the fact). `nuSet.commit` is the commit the CURRENT,
+   *  digest-matching evidence itself recorded (canonicalEvidenceDigest requires every gate to carry one,
+   *  well-formed and identical across gates — see its own doc) — it must equal what the receipt claims that
+   *  evidence ran on, independent of the separate live-HEAD-drift check further below. */
+  if (!nuSet || nuSet.commit !== receipt.code_commit) {
+    return { status: 'fail', reason: 'de bewijsset draait op commit ' + String(nuSet && nuSet.commit).slice(0, 12) + '… maar de receipt claimt code_commit ' + String(receipt.code_commit).slice(0, 12) + '… — het bewijs en de receipt wijzen naar verschillende commits' };
   }
   if (!nuSet || nuSet.allGreen !== true) {
     return { status: 'fail', reason: 'de huidige bewijsset bevat gefaalde poort(en) (' + ((nuSet && nuSet.failed) || []).join(', ') + ') — een receipt met bijpassende hash maar rode uitvoer wordt niet geaccepteerd' };

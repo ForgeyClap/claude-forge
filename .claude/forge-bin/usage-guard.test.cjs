@@ -840,6 +840,35 @@ test('#13 zonder switch pauzeert de tick gewoon, en geeft hij de GEVALIDEERDE id
   assert.ok(h.calls.doPause[0].crossed.every((t) => typeof t.id === 'string' && t.id.includes('|')), 'elke trigger draagt de stabiele venster-id (#15)');
 });
 
+test('N01 (second Codex recheck, 2026-09-24): a first low-usage tick stamps account A into state; enabling an override for A then switching to account B at 100% must clear the foreign override and pause — account reconciliation now happens INSIDE the locked "normal ok write" transaction, not only in the pre-lock decision snapshot', async () => {
+  const identA = { fp: 'n01-account-a', source: 'account-uuid' };
+  const h = tickHarness({
+    initialState: { mode: 'ok' }, // genuinely fresh state — mirrors a brand-new install, never yet stamped
+    deps: {
+      readIdentity: () => ({ ...identA }),
+      fetchUsage: async () => usageWith(20), // low usage — takes the "normal ok write" branch, never pause
+    },
+  });
+  await G.tick(h.deps);
+  assert.strictEqual(h.state.value.account && h.state.value.account.fp, 'n01-account-a',
+    'the FIRST successful (low-usage, non-switch, non-pause) tick must stamp the account — leaving it unstamped is exactly what let the NEXT tick misread a real switch as "first-stamp (adoption)": ' + JSON.stringify(h.state.value));
+
+  // Mirrors the shape override-on's own N01 stamping fix produces for account A (exercised end-to-end
+  // separately at the CLI level below) — an active override sitting in state while account is stamped A.
+  h.state.value.ownerOverride = { active: true, at: new Date().toISOString(), reason: 'test override for A' };
+
+  // Switch identity to a DIFFERENT account and measure 100% usage.
+  const identB = { fp: 'n01-account-b', source: 'account-uuid' };
+  h.deps.readIdentity = () => ({ ...identB });
+  h.deps.fetchUsage = async () => usageWith(100);
+  await G.tick(h.deps);
+
+  assert.strictEqual(h.state.value.ownerOverride, undefined, 'account B\'s tick must NEVER inherit account A\'s override — the switch write is a full, clean reset: ' + JSON.stringify(h.state.value));
+  assert.strictEqual(h.state.value.account && h.state.value.account.fp, 'n01-account-b', 'the switch write must stamp the NEW account');
+  assert.strictEqual(h.calls.doPause.length, 1, 'account B at 100% must actually reach doPause once the foreign override is correctly cleared (the regression made zero pauses happen)');
+  assert.strictEqual(h.calls.doPause[0].ident && h.calls.doPause[0].ident.fp, 'n01-account-b');
+});
+
 test('#13 accountStamp maakt de expliciete stempel; zonder identiteit blijft de write ongewijzigd', () => {
   const withId = G.accountStamp({ fp: 'cccc55556666', source: 'account-uuid' });
   assert.strictEqual(withId.account.fp, 'cccc55556666');
@@ -1505,10 +1534,17 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     assert.ok(!/CHECK FAILED|REAL usage/.test(logText), 'no usage check after the switch went off: ' + logText);
     assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'the pid file was released');
   });
-  t5('L2: start --force with the switch OFF forwards --force — the watcher is not undone by its own first check', () => {
+  t5('L2: start --force with the switch OFF forwards --force — the watcher is not undone by its own first check (V18, second recheck: now requires a verified owner-authorisation grant)', () => {
     const sb = sandbox5({ 'usage-guard': val(false) });
     fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
-    const r = runGuard(['start', '--force', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000' }));
+    // V18 (second Codex recheck, 2026-09-24): continuous forced watching now requires the SAME verified
+    // owner-authorisation grant as override-on — write a real sandboxed secret file (never the real
+    // project's own .claude/config/forge-owner-grant.txt) and point OWNERGRANT_PROJECT_ROOT at it.
+    const grantRoot = sb.dir;
+    fs.mkdirSync(path.join(grantRoot, '.claude', 'config'), { recursive: true });
+    fs.writeFileSync(path.join(grantRoot, '.claude', 'config', 'forge-owner-grant.txt'), 'H5-TEST-OWNER-TOKEN\n');
+    const forcedEnv = Object.assign({}, sb.env, { FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000', FORGE_USAGE_GUARD_OWNERGRANT_ROOT: grantRoot });
+    const r = runGuard(['start', '--force', '--interval', '60', '--owner-approval', 'H5-TEST-OWNER-TOKEN'], forcedEnv);
     let pid = null;
     try { pid = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid; } catch { pid = null; }
     try {
@@ -1530,6 +1566,99 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
         for (let i = 0; i < 50 && G5.pidAlive(pid); i++) nap(100);
       }
     }
+  });
+  // ---- V18, second Codex recheck (2026-09-24): continuous forced watching (`start --force` / `watch
+  // --force`, never --once) is now REFUSED outright without a verified owner-authorisation grant — the
+  // exact reproduction Codex used (three off-state ticks, zero grant check) must now be impossible.
+  t5('V18: start --force WITHOUT --owner-approval is REFUSED (exit 3) — no watcher spawned, no pid file written', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
+    // deliberately no forge-owner-grant.txt anywhere OWNERGRANT_PROJECT_ROOT could resolve to
+    const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v18-noroot-'));
+    try {
+      const r = runGuard(['start', '--force', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_OWNERGRANT_ROOT: grantRoot }));
+      // REGRESSION SAFETY (mirrors the existing "CLI start with usage-guard OFF" test's own pattern): if a
+      // broken build DID spawn a detached watcher despite the missing grant, kill exactly the pid its own
+      // sandbox pid file names before asserting — never leave a real orphaned watcher process behind.
+      try {
+        const leaked = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid;
+        if (leaked && G5.pidAlive(leaked)) process.kill(leaked);
+      } catch { /* no pid file = nothing was spawned, which is the expected outcome */ }
+      assert.strictEqual(r.status, 3, 'a refusal must exit 3: ' + (r.stdout || '') + (r.stderr || ''));
+      assert.ok(/start --force REFUSED/.test(r.stdout || ''), r.stdout);
+      assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'no watcher may be spawned without a verified grant');
+    } finally { fs.rmSync(grantRoot, { recursive: true, force: true }); }
+  });
+  t5('V18: start --force with a WRONG --owner-approval token is REFUSED (exit 3) — a guessed token never authorises', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
+    const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v18-wrong-'));
+    try {
+      fs.mkdirSync(path.join(grantRoot, '.claude', 'config'), { recursive: true });
+      fs.writeFileSync(path.join(grantRoot, '.claude', 'config', 'forge-owner-grant.txt'), 'REAL-SECRET\n');
+      const r = runGuard(['start', '--force', '--interval', '60', '--owner-approval', 'guessed-wrong'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_OWNERGRANT_ROOT: grantRoot }));
+      // REGRESSION SAFETY: same defensive kill as above.
+      try {
+        const leaked = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid;
+        if (leaked && G5.pidAlive(leaked)) process.kill(leaked);
+      } catch { /* nothing was spawned, which is the expected outcome */ }
+      assert.strictEqual(r.status, 3, (r.stdout || '') + (r.stderr || ''));
+      assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'no watcher may be spawned on a wrong token');
+    } finally { fs.rmSync(grantRoot, { recursive: true, force: true }); }
+  });
+  t5('V18: `watch --force` invoked DIRECTLY (not via start) is ALSO refused without a grant — the same exception applies to both entry points', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
+    const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v18-watch-'));
+    try {
+      const r = runGuard(['watch', '--force', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_OWNERGRANT_ROOT: grantRoot }));
+      assert.strictEqual(r.status, 3, (r.stdout || '') + (r.stderr || ''));
+      assert.ok(/watch --force REFUSED/.test(r.stderr || ''), (r.stdout || '') + (r.stderr || ''));
+      assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'no slot may be claimed without a verified grant');
+    } finally { fs.rmSync(grantRoot, { recursive: true, force: true }); }
+  });
+  t5('V18: a plain one-shot --force on check/status/credits is COMPLETELY UNCHANGED — it still needs no owner-approval at all (exception 1 vs exception 3 stay distinct)', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
+    const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v18-oneshot-'));
+    try {
+      // no grant file anywhere, no --owner-approval — a one-shot --force must still proceed straight to
+      // "no OAuth token" (it got PAST the off-switch gate, which is all this test is proving)
+      const r = runGuard(['status', '--force'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_OWNERGRANT_ROOT: grantRoot }));
+      assert.ok(!/REFUSED|owner authorisation/.test((r.stdout || '') + (r.stderr || '')), 'plain --force on status must never require a grant: ' + (r.stdout || '') + (r.stderr || ''));
+    } finally { fs.rmSync(grantRoot, { recursive: true, force: true }); }
+  });
+  t5('V18 FINAL EXCEPTION TABLE drift-canary: the source documents exactly 3 exceptions and start/watch both call the SAME shared grant check', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'usage-guard.cjs'), 'utf8');
+    assert.ok(/V18 FINAL EXCEPTION TABLE/.test(src), 'the 3-exception table must be documented in the source');
+    assert.ok(/\(1\) ONE-SHOT, READ-ONLY/.test(src) && /\(2\) VERIFIED-GRANT, CONSEQUENTIAL/.test(src) && /\(3\) VERIFIED-GRANT, SUSTAINED/.test(src), 'all three exceptions must be individually named');
+    assert.strictEqual((src.match(/verifyForcedWatchGrant\(/g) || []).length >= 3, true, 'both the start and watch CLI handlers (plus the function definition) must reference the ONE shared grant check, not a re-implemented copy');
+  });
+  t5('N01: `override-on` stamps the account it is granted FOR (a real end-to-end CLI run) — the override CLI path must stamp too, not only tick()', () => {
+    const sb = sandbox5({ 'usage-guard': val(true) });
+    fs.writeFileSync(sb.env.FORGE_USAGE_GUARD_IDENTITY, JSON.stringify({ oauthAccount: { accountUuid: 'n01-cli-uuid-0000', organizationUuid: 'org-n01' } }));
+    const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n01-onlgrant-'));
+    try {
+      fs.mkdirSync(path.join(grantRoot, '.claude', 'config'), { recursive: true });
+      fs.writeFileSync(path.join(grantRoot, '.claude', 'config', 'forge-owner-grant.txt'), 'N01-TEST-TOKEN\n');
+      const env = Object.assign({}, sb.env, { FORGE_USAGE_GUARD_OWNERGRANT_ROOT: grantRoot });
+      const r = runGuard(['override-on', '--owner-approval', 'N01-TEST-TOKEN', '--reason', 'test'], env);
+      assert.strictEqual(r.status, 0, (r.stdout || '') + (r.stderr || ''));
+      const st = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_STATE, 'utf8'));
+      assert.ok(st.account && typeof st.account.fp === 'string' && st.account.fp.length > 0, 'override-on must stamp an account onto state: ' + JSON.stringify(st));
+      // independently re-derive the SAME identity via a fresh module instance pointed at the SAME
+      // identity/account-map files the CLI subprocess used, to confirm the stamp is the REAL, correctly
+      // derived identity label — not a placeholder.
+      const savedEnv = { FORGE_USAGE_GUARD_IDENTITY: process.env.FORGE_USAGE_GUARD_IDENTITY, FORGE_USAGE_GUARD_ACCOUNT_MAP: process.env.FORGE_USAGE_GUARD_ACCOUNT_MAP, FORGE_USAGE_GUARD_HOME: process.env.FORGE_USAGE_GUARD_HOME };
+      process.env.FORGE_USAGE_GUARD_IDENTITY = sb.env.FORGE_USAGE_GUARD_IDENTITY;
+      process.env.FORGE_USAGE_GUARD_HOME = sb.home;
+      delete require.cache[require.resolve('./usage-guard.cjs')];
+      const GFresh = require('./usage-guard.cjs');
+      const realIdent = GFresh.readAccountIdentity();
+      delete require.cache[require.resolve('./usage-guard.cjs')];
+      for (const k of Object.keys(savedEnv)) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
+      assert.strictEqual(st.account.fp, realIdent.fp, 'the stamped fp must be the REAL identity label for the account override-on ran under: ' + JSON.stringify([st.account, realIdent]));
+    } finally { fs.rmSync(grantRoot, { recursive: true, force: true }); }
   });
   // ---- GUARD-OFF-BYPASS (Codex recheck wp-f4, 2026-09-24): with usage-guard OFF, no command path may
   // read the login token or contact the network/Paperclip — enforced at the SAME two choke points
@@ -1958,6 +2087,74 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     assert.strictEqual(out.preAbortedStatus, 0, 'an already-aborted signal must refuse pc() immediately: ' + JSON.stringify(out));
     assert.strictEqual(out.preAbortedRan, 0, 'an already-aborted signal must never reach fetch(): ' + JSON.stringify(out));
     assert.strictEqual(out.pauseCalls, 1, 'exactly ONE pause request may happen (agent a1) — a2\'s must never fire once shutdown began mid-round: ' + JSON.stringify(out));
+  });
+
+  // ---- V29, second Codex recheck (2026-09-24): an interrupted pause round (a1 paused, a2 never attempted
+  // because shutdown began) must persist the UNFINISHED work and retry it on the very next 100%-usage tick
+  // — never take the "still high, wait" branch while a2 remains genuinely unpaused. Codex's exact schedule:
+  // interrupt after pausing A of two agents, restart with a fresh signal, the next tick must pause B.
+  t5('V29: an interrupted pause round retries the unfinished agent on the NEXT tick instead of reporting the round complete', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v29b-'));
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'const agentStatus = { a1: "running", a2: "running" };',
+      'const pauseCallCount = { a1: 0, a2: 0 };',
+      'const ac = new AbortController();',
+      'global.fetch = async (url, init) => {',
+      '  const u = String(url);',
+      '  if (/\\/api\\/companies$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "c1", name: "Co" }] };',
+      '  if (/\\/api\\/companies\\/c1\\/agents$/.test(u)) return { ok: true, status: 200, json: async () => Object.keys(agentStatus).map((id) => ({ id, name: id, company: "Co", status: agentStatus[id] })) };',
+      '  const m = u.match(/\\/api\\/agents\\/(a\\d)\\/pause$/);',
+      '  if (m) {',
+      '    const id = m[1];',
+      '    pauseCallCount[id]++;',
+      '    agentStatus[id] = "paused";',
+      '    if (id === "a1") ac.abort(); // shutdown begins the instant a1 is genuinely paused — a2 must never be attempted THIS round',
+      '    return { ok: true, status: 200, json: async () => ({}) };',
+      '  }',
+      '  return { ok: true, status: 200, json: async () => ({}) };',
+      '};',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      '(async () => {',
+      '  const ident = { fp: "v29b-account", source: "account-uuid" };',
+      '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+      '  const crossed = [{ id: "session|session|session", name: "session", metric: "session", pct: 100, resetsAt: null }];',
+      '  await G.doPause(u, crossed, ident, { signal: ac.signal }); // ROUND 1: interrupted after a1',
+      '  const afterRound1 = JSON.parse(require("fs").readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+      '  const pauseCallCountAfterRound1 = { a1: pauseCallCount.a1, a2: pauseCallCount.a2 };',
+      '  // ROUND 2: "restart with a fresh signal" — a brand-new AbortController, never aborted.',
+      '  const fresh = new AbortController();',
+      '  let doPauseCalls = 0;',
+      '  const realDoPause = G.doPause;',
+      '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null, doPause: async (...a) => { doPauseCalls++; return realDoPause(...a); } }, { signal: fresh.signal });',
+      '  const afterRound2 = JSON.parse(require("fs").readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+      '  process.stdout.write(JSON.stringify({ pauseCallCountAfterRound1, pauseCallCount, doPauseCalls, afterRound1, afterRound2 }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const stateFile = path.join(dir, 'state.json');
+    const env = Object.assign({}, process.env, {
+      FORGE_USAGE_GUARD_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v29b-home-')),
+      FORGE_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v29b-cfghome-')),
+      FORGE_PROJECT_ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v29b-proj-')),
+      FORGE_USAGE_GUARD_STATE: stateFile,
+      NVIDIA_SKIP_ENV_FILES: '1',
+    });
+    delete env.FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS; // TEST-ISOLATION (see the V29 SIGTERM test's own comment)
+    const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    const lastLine = (r.stdout || '').trim().split('\n').pop();
+    let out; try { out = JSON.parse(lastLine); } catch { out = { parseError: (r.stdout || '') + (r.stderr || '') }; }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    assert.strictEqual(out.pauseCallCountAfterRound1 && out.pauseCallCountAfterRound1.a1, 1, 'a1 must be paused exactly once, in round 1: ' + JSON.stringify(out));
+    assert.strictEqual(out.pauseCallCountAfterRound1 && out.pauseCallCountAfterRound1.a2, 0, 'a2 must NEVER be attempted in round 1 (shutdown began right after a1): ' + JSON.stringify(out));
+    assert.strictEqual(out.pauseCallCount && out.pauseCallCount.a2, 1, 'a2 must be paused exactly once overall, in round 2\'s retry: ' + JSON.stringify(out));
+    assert.ok(Array.isArray(out.afterRound1 && out.afterRound1.pausePending) && out.afterRound1.pausePending.length === 1 && out.afterRound1.pausePending[0].id === 'a2',
+      'round 1 must persist a2 as unfinished pause work, never report the round complete: ' + JSON.stringify(out.afterRound1));
+    assert.strictEqual(out.doPauseCalls, 1, 'the retry must go through doPause again on the very next tick — never the "still high, wait" branch: ' + JSON.stringify(out));
+    assert.strictEqual(out.afterRound2 && out.afterRound2.pausePending, undefined, 'once a2 is genuinely paused too, pausePending must be cleared — the round is NOW complete: ' + JSON.stringify(out.afterRound2));
+    assert.strictEqual(out.afterRound2 && out.afterRound2.mode, 'paused');
+    const ids = ((out.afterRound2 && out.afterRound2.pausedAgents) || []).map((a) => a.id).sort();
+    assert.deepStrictEqual(ids, ['a1', 'a2'], 'the final pausedAgents list must include BOTH agents (round 1\'s a1 merged with round 2\'s a2): ' + JSON.stringify(out.afterRound2));
   });
 
   // ---- GUARD-STOP (Codex recheck wp-f4, 2026-09-24): retained timer handles, a shutdown check BEFORE

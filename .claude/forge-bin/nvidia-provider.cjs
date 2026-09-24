@@ -375,8 +375,19 @@ async function health(opts) {
   // NVIDIA-RETRY-OFF's own per-attempt off-check inside call()'s retry loop (force ALWAYS short-circuits
   // that check to "authorized"), so switching NVIDIA off during a 503 backoff no longer stopped the next
   // retry attempt — a normal (non-forced) health probe kept transmitting the key after the owner switch.
-  const r = await listModels({ force: opts && opts.force === true });
-  if (r.error) return maskDeep({ ok: false, mode: r.refused ? 'refused' : 'live', reason: r.error });
+  // N03 (second Codex recheck, 2026-09-24): forward the caller's OWN configModule too (previously dropped
+  // — only `force` was forwarded), so an injected test config is honored consistently across BOTH the
+  // gate check just above and this delegated call, exactly like opts.force already is (V17 precedent).
+  const r = await listModels({ force: opts && opts.force === true, configModule: opts && opts.configModule });
+  // N03 (second Codex recheck, 2026-09-24): listModels() can ALSO come back unsuccessful/off on its OWN
+  // internal offResult() check (the config switch flipped OFF between health()'s check above and this
+  // call) — that shape is `{ok:false, mode:'off', reason, models:[]}` with NO `.error` field, so the old
+  // `if (r.error)` check never caught it: health() fell through into a FABRICATED `{ok:true, mode:'live',
+  // models:0}` with zero real network requests. Any `r.ok === false` (off/unsuccessful) OR `r.error`
+  // (refused/fetch failure) must be propagated honestly BEFORE a success response is ever built.
+  if (r.ok === false || r.error) {
+    return maskDeep({ ok: false, mode: r.mode || (r.refused ? 'refused' : 'live'), reason: r.reason || r.error });
+  }
   return maskDeep({ ok: true, mode: 'live', models: r.models.length, ms: Date.now() - t0, baseUrl: CONFIG.baseUrl });
 }
 // role → capability the assigned model MUST have (generic validation; Codex F2)

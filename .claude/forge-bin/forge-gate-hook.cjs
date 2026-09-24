@@ -48,6 +48,12 @@ let DATA = null;
 try { DATA = require('./forge-gate-data.cjs'); } catch { DATA = null; } // absent -> nothing is stripped (stricter)
 let SCRATCH = null;
 try { SCRATCH = require('./forge-gate-scratch.cjs'); } catch { SCRATCH = null; } // absent -> no pass-through (stricter)
+// V02 (codex-recheck 2026-09-24, wave 2): the self-disable parser DELEGATES its option parsing to the real
+// forge-config-cli.cjs::parseArgv() instead of hand-duplicating its BOOL_OPTS/VALUE_OPTS table — the two
+// tables cannot drift apart because there is only ever one. Absent/broken -> every config-shaped segment is
+// treated as unparseable (falls through to the loose ambiguous-mutation fallback below, never to permission).
+let CONFIG_CLI = null;
+try { CONFIG_CLI = require('./forge-config-cli.cjs'); } catch { CONFIG_CLI = null; }
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 // V01 (codex-recheck 2026-09-24): only a hook_event_name Claude Code ACTUALLY sends for something other than a
@@ -175,24 +181,43 @@ function splitForSelfDisable(text) {
   return String(text).split(CONFIG_SPLIT_RE).map((s) => s.trim()).filter(Boolean);
 }
 
-// V02 (codex-recheck 2026-09-24): the real, equivalent ways this project's own docs and scripts invoke
-// forge-config.cjs — a node CLI flag before the script path, a full interpreter path, `env` re-resolving it
-// from PATH, and sudo/time/nohup wrappers — must all still reach the SAME parsed verdict as the bare `node
-// forge-config.cjs` form, not fall through to "not a config call" = permission.
+// V02 (codex-recheck 2026-09-24, wave 1 + wave 2): the real, equivalent ways this project's own docs and
+// scripts invoke forge-config.cjs — a node CLI flag before the script path, a full interpreter path, `env`
+// re-resolving it from PATH, sudo/time/nohup wrappers, AND every value-taking CLI option the real
+// forge-config-cli.cjs itself recognises (`--lang`, `--run`, `--flag`, `--once`, plus the boolean `--json`/
+// `--global`/`--yes`/`--ascii`/`--all`/`--mark-seen`/`--help`) in any order, before or between or after the
+// positional key/value — must all still reach the SAME parsed verdict as the bare `node forge-config.cjs set
+// gate-hook off` form, never fall through to "not a config call" = permission (wave-2 finding V02: a segment
+// like `set --lang en gate-hook off` used to mis-derive key="en" instead of "gate-hook" because the old
+// hand-rolled flag stripper only ever handled flags that take NO value).
 const CONFIG_WRAPPER_RE = /^(?:sudo|time|nohup)$/i;
 const CONFIG_BASENAME_RE = /^forge-config(?:-cli)?\.cjs$/i;
+// The only two forge-config.cjs subcommands that can ever mutate a setting (see forge-config-cli.cjs's own
+// runCommand() switch) — anything else (list/get/explain/diff/parse/help, or a garbled non-command like the
+// literal string "--json" landing in argv[0] when a flag precedes the subcommand) is never trusted enough to
+// derive verb/key/value from; it falls through to the loose ambiguous-mutation fallback instead (see below).
+const CONFIG_MUTATING_CMDS = new Set(['set', 'unset']);
 function isNodeToken(tok) {
   if (!tok || tok.quoted) return false;
   return /^node(?:\.exe)?$/i.test(String(tok.v).split(/[\\/]/).pop());
 }
 
-/** parseConfigCall(segment) -> a best-effort ARGV read of a single segment invoking forge-config.cjs or
+/** parseConfigCall(segment) -> a best-effort read of a single segment invoking forge-config.cjs or
  *  forge-config-cli.cjs (any path form: relative, absolute, quoted, bare basename, a full interpreter path,
  *  `env`-resolved, sudo/time/nohup-wrapped, with or without node CLI flags before the script), or null when
- *  this segment is not one. Not a full shell parser: `tokenize()` refuses a glued quote (a shell
- *  concatenation trick such as `s"et"`), which correctly makes THIS function refuse too — the caller
- *  (selfDisable) treats that refusal as "cannot read, not as "permitted"" (V02), unlike a segment that is
- *  cleanly parsed and genuinely is not a config call. */
+ *  this segment is not one OR when it cannot be read with FULL confidence (see below) — the caller
+ *  (selfDisable) treats every null as "cannot read", never as "permitted" (V02).
+ *
+ *  Once the interpreter/script prefix is recognised, the REAL forge-config-cli.cjs::parseArgv() parses the
+ *  remaining argv — the exact function the real CLI dispatches through, required directly so the two can
+ *  never drift onto two different option tables (a drift-canary test pins that this module keeps exporting
+ *  it). Two signals mean "do not trust this derivation, treat as unparseable": `a.bad` (the real CLI itself
+ *  would exit on an option it does not recognise, so nothing would actually mutate) and `a.cmd` not being one
+ *  of the two mutating subcommands (a flag landing in the subcommand slot — e.g. `--json set gate-hook off`
+ *  parses to cmd:"--json", pos:["set","gate-hook","off"] — is exactly a "non-null but not a real schema
+ *  mutation" parse; falling through to the ambiguous-mutation fallback rather than silently deriving a
+ *  garbage key/value from it is the fix, not a special case). `tokenize()` refusing a glued-quote trick
+ *  (`s"et"`) already returns null upstream of this, for the same reason. */
 function parseConfigCall(segment) {
   const tokens = tokenize(segment);
   if (!tokens || !tokens.length) return null;
@@ -205,18 +230,22 @@ function parseConfigCall(segment) {
   if (!tokens[i]) return null;
   const base = String(tokens[i].v).split(/[\\/]/).pop();
   if (!CONFIG_BASENAME_RE.test(base)) return null;
-  const rest = tokens.slice(i + 1);
-  const isFlag = (t) => !t.quoted && /^-{1,2}[A-Za-z]/.test(t.v);
-  const flags = rest.filter(isFlag).map((t) => t.v.toLowerCase());
-  const positional = rest.filter((t) => !isFlag(t));
-  const norm = (t) => (t ? String(t.v).toLowerCase() : '');
+  if (!CONFIG_CLI || typeof CONFIG_CLI.parseArgv !== 'function') return null; // cannot confidently parse -> ambiguous fallback
+  const rest = tokens.slice(i + 1).map((t) => String(t.v));
+  let a;
+  try { a = CONFIG_CLI.parseArgv(rest); } catch { return null; }
+  if (!a || !a.cmd || a.bad || !CONFIG_MUTATING_CMDS.has(String(a.cmd).toLowerCase())) return null;
+  const norm = (s) => (typeof s === 'string' ? s.toLowerCase() : '');
   return {
-    verb: norm(positional[0]),
-    key: norm(positional[1]),
-    value: norm(positional[2]),
-    quoteRaw: positional[3] ? positional[3].v : null,
-    extraPositional: positional.length > 4, // set, gate-hook, off, the quote — a 5th positional is extra
-    flags,
+    verb: norm(a.cmd),
+    key: norm(a.pos[0]),
+    value: norm(a.pos[1]), // the FIRST word after the key only — matching OFF_WORDS' exact-word membership test;
+    // extraPositional below still disqualifies the once-exemption when a third positional (garbage/an
+    // unmatched trailing argument) is present, exactly as the real CLI's own `pos.slice(1).join(' ')` value
+    // would then fail forge-config.cjs's own boolean parseValue() and never actually apply.
+    once: typeof a.once === 'string' ? a.once : null,
+    extraFlags: !!(a.json || a.all || a.global || a.yes || a.markSeen || a.help || a.ascii || a.lang != null || a.run != null || (a.flags && a.flags.length > 0)),
+    extraPositional: a.pos.length > 2,
   };
 }
 
@@ -228,8 +257,8 @@ function isSelfDisableCall(p) {
 }
 function isOnceExempt(p) {
   return !!p && p.verb === 'set' && p.key === 'gate-hook' && p.value === 'off'
-    && p.flags.length === 1 && p.flags[0] === '--once'
-    && !!p.quoteRaw && p.quoteRaw.trim().length > 0 && !p.extraPositional;
+    && !p.extraFlags && !p.extraPositional
+    && typeof p.once === 'string' && p.once.trim().length > 0;
 }
 
 /** looksLikeAmbiguousConfigMutation(segment) -> boolean — V02 fail-closed fallback for a segment the STRICT

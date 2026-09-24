@@ -159,64 +159,13 @@ function testTextGate(gate, text) {
  *  `$(` and a backtick are included because command substitution starts a genuinely separate command. */
 const SHELL_SPLIT_RE = /&&|\|\||;;|;|\||&|\r\n|\n|\r|\$\(|`/g;
 
-/** AMPUTATING_SEPARATORS — the two separators that do NOT end a command: they OPEN a nested one inside the
- *  current command's argument list. Splitting on them is necessary for detection (the nested command must be
- *  tested too) but it always cuts the OUTER command mid-argument, so no segment on either side of one can be
- *  trusted as a complete, provable target. Note the whitespace rule below cannot save these: even the
- *  well-spaced `rm -rf ./_scratch/x $(cat list)` hides a SECOND target the classifier will never see. */
-const AMPUTATING_SEPARATORS = new Set(['$(', '`']);
-
-/** COMMAND_OPENER_STEPS / stripCommandOpeners (codex-recheck 2026-09-24, V06 — a regression `ccadad7`
- *  reintroduced) — a leading grouping or control-flow token that is not itself part of the command it
- *  introduces: `{`/`(` grouping, `!` negation, a bare bash keyword (then/do/else/elif/while/until/for/if), a
- *  header with its own `(...)` condition (if/while/elseif/foreach/for/switch/try/catch/finally), a bare
- *  PowerShell `try`, or a `case … )` arm label. `{ eval "$x"; }` splits (on `;`) into the segment
- *  `{ eval "$x"`, whose leading `{` defeated the command-position anchor entirely; `if true; then eval "$x";
- *  fi` splits into `then eval "$x"`, whose leading `then` did the same. Applied iteratively (capped) because
- *  a nested opener needs more than one strip (`then { eval …` needs "then " AND "{ " removed). This function
- *  is used ONLY to build extra candidates a command-kind PATTERN is tested against below — it never touches
- *  entry.segment itself, which stays the exact split() text isExcusedSegment() and every other caller pins. */
-// ORDER MATTERS: the header-with-its-own-`(...)` step MUST run before the bare-keyword step, or a bare
-// "if"/"while"/"for" strip fires first and leaves the header's own condition parens as orphaned, unmatched
-// text (`if ($true) {...}` would otherwise strip only "if " and get stuck on the leftover "($true) {...}").
-const COMMAND_OPENER_STEPS = [
-  /^[{(]\s*/,
-  /^!\s*/,
-  /^(?:if|while|elseif|foreach|for|switch|catch|finally|try)\b\s*\([\s\S]*?\)\s*/i,
-  /^(?:then|do|else|elif|while|until|for|if)\b\s*/i,
-  /^try\b\s*/i,
-  /^case\b[\s\S]*?\)\s*/i,
-];
-function stripCommandOpeners(segment) {
-  let s = String(segment);
-  for (let i = 0; i < 6; i++) {
-    let changed = false;
-    for (const re of COMMAND_OPENER_STEPS) {
-      const m = re.exec(s);
-      if (m && m[0].length) { s = s.slice(m[0].length); changed = true; }
-    }
-    if (!changed) break;
-  }
-  return s;
-}
-
-/** commandPositionCandidates(entry) -> the string(s) a command-kind gate's `pattern` is tested against for
- *  ONE split segment: the segment itself; the same text with its own amputating separator's marker
- *  (`$(`/backtick) RE-ATTACHED (V06 — the classifier's own split silently ate that exact character before a
- *  `[^\n]*\$` / backtick lookahead ever ran, e.g. `bash -c "$(cat payload.txt)"` split into the segment
- *  `bash -c "` with no `$` left in it at all); and that text with leading grouping/control-flow openers
- *  stripped. Every candidate is a SUPERSET of the plain segment text (never a rewrite of it), so a pattern
- *  with no start/end anchor (every pattern except opaque-exec's own iex/eval alternative) can only ever gain
- *  a match on inert trailing/leading noise, never lose one — the three other command gates are unaffected in
- *  practice (measured: the shipped corpus is unchanged) and entry.segment itself is never modified. */
-function ampSuffix(entry) {
-  return entry.sepAfter && AMPUTATING_SEPARATORS.has(entry.sepAfter) ? entry.sepAfter : '';
-}
-function commandPositionCandidates(entry) {
-  const withSuffix = entry.segment + ampSuffix(entry);
-  const stripped = stripCommandOpeners(withSuffix);
-  return stripped === withSuffix ? [entry.segment, withSuffix] : [entry.segment, withSuffix, stripped];
-}
+// AMPUTATING_SEPARATORS / stripCommandOpeners / commandPositionCandidates / laterBranchStarts live in the
+// sibling forge-actiongate-position.cjs (split out 2026-09-24, codex-recheck wave 2, to keep this file under
+// 500 lines) — see that file's own header for the full "why". Re-exported below unchanged so every existing
+// caller/test (`gate.AMPUTATING_SEPARATORS`, `gate.stripCommandOpeners`, `gate.commandPositionCandidates`)
+// keeps working with no call-site change.
+const POSITION = require('./forge-actiongate-position.cjs');
+const { AMPUTATING_SEPARATORS, stripCommandOpeners, commandPositionCandidates, laterBranchStarts, COMMAND_OPENER_STEPS } = POSITION;
 
 /** isIntactSegment(entry) -> boolean — can this segment's LAST TOKEN be trusted to be whole?
  *  NO when: the segment sits inside a command substitution (`sepBefore` is `$(`/backtick); or a separator
@@ -444,8 +393,9 @@ module.exports = {
   excusedSegments, isExcusedSegment,
   // the segment-boundary layer the valve leans on (a segment must be whole before equality means anything)
   splitCommandsDetailed, isIntactSegment, AMPUTATING_SEPARATORS,
-  // V06 command-position widening (codex-recheck 2026-09-24) — exported for direct unit testing
-  stripCommandOpeners, commandPositionCandidates,
+  // V06 command-position widening (codex-recheck 2026-09-24, wave 1+2; lives in forge-actiongate-position.cjs)
+  // — exported for direct unit testing
+  stripCommandOpeners, commandPositionCandidates, laterBranchStarts, COMMAND_OPENER_STEPS,
   KNOWN_GATES, CONFIG_PATH, EXCEPT_KINDS,
 };
 

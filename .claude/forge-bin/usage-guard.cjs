@@ -749,24 +749,32 @@ function noCredentialsLine(tail) {
  *  fetchUsage() and pc() consult before ever touching the network or reading the login token. With the
  *  owner's `usage-guard` switch off (or its settings unreadable) NO command path may read the OAuth
  *  token or contact Paperclip — not `check`, not `status`, not `credits`, not `watch --once`, not the
- *  exported `tick`/`doPause`/`doResume`, and not the Paperclip call inside `override-on`. There are
- *  exactly two documented exceptions, both explicit and narrow:
- *   (1) opts.force === true — the CLI's own `--force` flag on `check`/`status`/`credits` (mirrors
- *       nvidia-provider.cjs's identical `--force` convention); the normal watcher loop never sets this.
- *   (2) `override-on`'s own Paperclip resume calls, gated on a VERIFIED owner-authorisation grant
- *       (forge-ownergrant.cjs) rather than a bare flag — a stronger, authenticated form of consent,
- *       passed down as `{ force: true }` only AFTER verifyOwnerGrant() succeeds (see the CLI handler).
- *  There is no other bypass anywhere in this file. Never throws.
+ *  exported `tick`/`doPause`/`doResume`, and not the Paperclip call inside `override-on`.
  *
- *  V18 DECISION (Codex recheck wp-f4, 2026-09-24): exception (1), plain --force, is DELIBERATELY NOT
- *  gated by forge-ownergrant.cjs, and this is not an oversight — it is the chosen, permanent contract for
- *  this flag. --force on check/status/credits is a plain, undisguised, per-invocation CLI escape hatch for
- *  a READ-ONLY diagnostic (mirroring nvidia-provider.cjs's own identical --force convention): it never
- *  resumes a paused agent, never changes any owner setting, and never suppresses the guard's protection —
- *  it only measures once. Only override-on is consequential (it resumes paused agents AND suppresses the
- *  guard for the rest of the window), which is exactly why ONLY override-on requires the verified grant. A
- *  claim describing "a sole verified-grant exception" is wrong about THIS file and must name both
- *  documented exceptions above, not just one — see the drift-canary test pinning this in usage-guard.test.cjs. */
+ *  V18 DECISION / V18 FINAL EXCEPTION TABLE (Codex recheck wp-f4 2026-09-24; RE-PINNED on the second
+ *  recheck, 2026-09-24 after V18 was found PARTLY CLOSED — a real third exception existed in code but was
+ *  undocumented). There are now exactly THREE documented exceptions, and no other bypass anywhere in this
+ *  file:
+ *   (1) ONE-SHOT, READ-ONLY — opts.force === true on `check`/`status`/`credits` (mirrors
+ *       nvidia-provider.cjs's identical --force convention). Never resumes a paused agent, never changes
+ *       any owner setting, never suppresses the guard beyond the single measurement it makes. NOT gated by
+ *       forge-ownergrant.cjs — this is the chosen, permanent contract for this flag, not an oversight (the
+ *       V18 DECISION: plain --force stays a bare CLI escape hatch, never wired to verifyOwnerGrant()).
+ *   (2) VERIFIED-GRANT, CONSEQUENTIAL — `override-on`'s own Paperclip resume calls, gated on a VERIFIED
+ *       owner-authorisation grant (forge-ownergrant.cjs), passed down as `{ force: true }` only AFTER
+ *       verifyOwnerGrant() succeeds. Resumes paused agents AND suppresses the guard for the rest of the
+ *       window — consequential, so it requires more than a bare flag.
+ *   (3) VERIFIED-GRANT, SUSTAINED — a CONTINUOUS forced watcher (`start --force` / `watch --force`,
+ *       WITHOUT --once) that keeps measuring on a real interval while the owner's switch is off, until it
+ *       has seen the switch on at least once. The second recheck proved this was a REAL, repeatedly-
+ *       exercised bypass (three off-state ticks, no grant check at all) masquerading as exception (1)'s
+ *       "one-shot diagnostic" characterization — it is neither one-shot NOR read-only-in-effect (it is a
+ *       standing background process). The fix: `start --force` and `watch --force` (continuous) now REQUIRE
+ *       the SAME verified owner-authorisation grant as (2) (see verifyForcedWatchGrant() below and the CLI
+ *       handlers) — refused with a plain NL/EN reason (exit 3) without one. A plain one-shot `--force`
+ *       remains UNCHANGED: it is exception (1) only on `check`/`status`/`credits`/`watch --once`, never on
+ *       continuous `start`/`watch`.
+ *  Never throws. See the drift-canary test pinning this exact table in usage-guard.test.cjs. */
 function guardNetworkAllowed(opts) {
   const o = opts || {};
   if (o.force === true) return { ok: true, reason: null };
@@ -778,6 +786,18 @@ function guardNetworkAllowed(opts) {
       ? 'instellingen onleesbaar — geen netwerkverkeer (veilige standaard: uit) / settings unreadable — no network traffic (safe default: off)'
       : 'usage-guard staat uit — geen aanroep naar het meetpunt of Paperclip (aanzetten: /forge config set usage-guard aan; eenmalig toch meten: --force) / usage guard is switched off — no request to the usage endpoint or Paperclip (turn it back on: /forge config set usage-guard aan; measure once anyway: --force)',
   };
+}
+// FORGE_USAGE_GUARD_OWNERGRANT_ROOT (V18, second Codex recheck, 2026-09-24): a test/isolation seam ONLY —
+// mirrors this project's FORGE_USAGE_GUARD_STATE/_IDENTITY convention. Unset, this resolves to the exact
+// same real project root override-on already used before this fix (unchanged production behaviour).
+const OWNERGRANT_PROJECT_ROOT = process.env.FORGE_USAGE_GUARD_OWNERGRANT_ROOT || path.resolve(__dirname, '..', '..');
+/** verifyForcedWatchGrant(token) -> { ok, reason } — V18 exception (3): the SAME verified owner-
+ *  authorisation check override-on uses (forge-ownergrant.cjs), reused here so continuous forced watching
+ *  (`start --force` / `watch --force`, never `--once`) is gated identically to any other CONSEQUENTIAL,
+ *  SUSTAINED bypass of the owner's off switch. Never throws. */
+function verifyForcedWatchGrant(token) {
+  const og = require('./forge-ownergrant.cjs');
+  return og.verifyOwnerGrant({ token, projectRoot: OWNERGRANT_PROJECT_ROOT });
 }
 function readToken() {
   let raw;
@@ -968,30 +988,47 @@ function accountStamp(ident) {
  *  {ok:true, value:<fn()'s return>} on success, or {ok:false, reason} — fn() is NEVER invoked on a refusal;
  *  every caller MUST check `.ok` instead of assuming the write landed. */
 function stateLockPath() { return STATE_FILE + '.lock'; }
+// STATE_LOCK_STALE_MS (V15, second Codex recheck, 2026-09-24): a SEPARATE knob from STALE_LOCK_MS above
+// (that one guards the unrelated pid-file watcher-slot takeover). Env-overridable ONLY for deterministic,
+// fast tests — mirrors this project's own FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS convention; unset, the
+// default (60000ms) is unchanged from before this fix.
+const STATE_LOCK_STALE_MS = Number(process.env.FORGE_USAGE_GUARD_STATE_LOCK_STALE_MS) > 0
+  ? Number(process.env.FORGE_USAGE_GUARD_STATE_LOCK_STALE_MS) : 60 * 1000;
 async function withStateLock(fn) {
-  return guardState.withStateLock(stateLockPath(), fn, { staleMs: STALE_LOCK_MS, log });
+  return guardState.withStateLock(stateLockPath(), fn, { staleMs: STATE_LOCK_STALE_MS, log });
 }
 /** withLockedState(D, transform, label) -> the usage-guard-specific read-modify-write helper built on top
- *  of withStateLock (V15, 2026-09-24). Re-reads state FRESH from inside the lock, calls
- *  `transform(fresh)`: if it returns a value, THAT becomes the object written (a full replacement, for a
- *  transform like stateForAccount() that intentionally starts clean); if it returns undefined, the
- *  (possibly in-place-mutated) `fresh` object itself is written. On a lock refusal the write is skipped
- *  entirely — never unlocked — and logged once via D.log so the gap is visible, never silent; the next
- *  read-modify-write opportunity (the next tick, or a retried CLI command) tries again from a fresh read.
- *  Returns the same {ok, value, reason} shape as withStateLock. */
+ *  of withStateLock (V15, 2026-09-24; FENCED on the second Codex recheck, 2026-09-24). Re-reads state
+ *  FRESH from inside the lock, calls `transform(fresh)`: if it returns a value, THAT becomes the object
+ *  written (a full replacement, for a transform like stateForAccount() that intentionally starts clean);
+ *  if it returns undefined, the (possibly in-place-mutated) `fresh` object itself is written. On a lock
+ *  refusal the write is skipped entirely — never unlocked — and logged once via D.log. V15 FENCING: right
+ *  before the actual disk write, this now calls the lock's own `fence()` (see usage-guard-state.cjs) — if
+ *  our token is no longer the one on disk (a waiter reclaimed this lock as stale WHILE `transform` was
+ *  computing, e.g. a slow synchronous transform racing a heartbeat hiccup), the write is skipped and
+ *  reported as a refusal (`reason:'fenced'`) exactly like a lock-timeout, never silently applied after
+ *  losing ownership. Returns the same {ok, value, reason} shape as withStateLock. */
 async function withLockedState(D, transform, label) {
-  const r = await withStateLock(() => {
+  const r = await withStateLock((fence) => {
     const fresh = D.readState();
     const result = transform(fresh);
     const next = result !== undefined ? result : fresh;
+    if (fence && !fence()) return { __fenced: true };
     D.writeState(next);
-    return next;
+    return { __fenced: false, next };
   });
+  if (r.ok && r.value && r.value.__fenced) {
+    D.log('state-lock: ' + label + ' — de lock werd tijdens deze transactie door een andere schrijver overgenomen (fenced); '
+      + 'schrijf overgeslagen, volgende gelegenheid probeert opnieuw / this lock was reclaimed by another writer '
+      + 'mid-transaction (fenced); write skipped, the next opportunity retries');
+    return { ok: false, reason: 'fenced' };
+  }
   if (!r.ok) {
     D.log('state-lock: ' + label + ' — ' + r.reason + ' (geen schrijf deze ronde, volgende gelegenheid probeert '
       + 'opnieuw / no write this round, the next opportunity retries)');
+    return r;
   }
-  return r;
+  return { ok: true, value: r.value.next };
 }
 async function doPause(u, crossed, ident, opts) {
   const o = opts || {};
@@ -1004,21 +1041,29 @@ async function doPause(u, crossed, ident, opts) {
   // r4 #15: een pauzeronde heeft een eigen pauseId en het journal is WRITE-AHEAD — de intent staat er
   // VOOR de API-call, zodat een crash direct na een geslaagde pause de compensatie nooit meer verliest.
   const pauseId = crypto.randomUUID();
-  for (const a of toPause) {
-    // V29 (Codex recheck wp-f4, 2026-09-24): once shutdown has begun, no SUBSEQUENT pause request may be
-    // issued — the in-flight one is already aborted by pc()'s own combined signal; this stops the LOOP
-    // from starting yet another one for the remaining agents.
-    if (signal && signal.aborted) { log('PAUSE aborted mid-round (shutdown) — ' + (toPause.length - paused.length) + ' agent(s) left unpaused for the next tick'); break; }
+  // V29 (second Codex recheck, 2026-09-24): `stopIndex` marks where the loop below stopped — every agent
+  // AT OR AFTER that index in `toPause` was never even attempted this round (an abort, not an API failure)
+  // and is genuine UNFINISHED pause work, not a resolved miss. `pending` (built below) is what the caller
+  // must persist so the NEXT tick retries exactly these agents instead of believing the round is complete.
+  let stopIndex = toPause.length;
+  for (let idx = 0; idx < toPause.length; idx++) {
+    const a = toPause[idx];
+    // V29: once shutdown has begun, no SUBSEQUENT pause request may be issued — the in-flight one is
+    // already aborted by pc()'s own combined signal; this stops the LOOP from starting yet another one for
+    // the remaining agents.
+    if (signal && signal.aborted) { stopIndex = idx; log('PAUSE aborted mid-round (shutdown) — ' + (toPause.length - idx) + ' agent(s) left unpaused for the next tick'); break; }
     journalAppend({ agentId: a.id, name: a.name, company: a.company, action: 'pause-intent', pauseId, accountFp: (ident && ident.fp) || null, resolved: false });
     const r = await pc('POST', '/api/agents/' + a.id + '/pause', { reason }, { signal });
     if (r.status >= 200 && r.status < 300) {
       paused.push({ id: a.id, name: a.name, company: a.company });
       journalAppend({ agentId: a.id, name: a.name, company: a.company, action: 'paused', pauseId, accountFp: (ident && ident.fp) || null, resolved: false });
     } else {
-      // de pause-API faalde: de intent afsluiten — er is niets te compenseren voor deze agent
+      // de pause-API faalde: de intent afsluiten — er is niets te compenseren voor deze agent (a resolved
+      // MISS, not unfinished work — a retry loop on a genuinely failing agent would spin forever).
       journalAppend({ agentId: a.id, action: 'pause-failed', pauseId, resolved: true });
     }
   }
+  const pending = toPause.slice(stopIndex).map((a) => ({ id: a.id, name: a.name, company: a.company }));
   compactJournalIfNeeded();
   // RESET-RHYTHM: resumeAtEpoch = soonest crossed metric's resets_at + GRACE_MIN. NaN-safe — if every
   // crossed metric's resets_at is unparseable, resumeAtEpoch is OMITTED (not stored as null/NaN) so
@@ -1037,8 +1082,18 @@ async function doPause(u, crossed, ident, opts) {
   // early (the pre-fix shape) meant a concurrent `override-off` clearing ownerOverride DURING those
   // awaits could be silently reverted the moment this pause finally wrote back the stale value it read
   // before the clear.
-  const pauseLock = await withStateLock(() => {
+  const pauseLock = await withStateLock((fence) => {
     const cur = readState(); // preserve owner intent across a pause (fix 2026-07-09 checkup) — FRESH, under the lock
+    // V29 (second recheck): merge with whatever this account's pausedAgents ALREADY held (e.g. a prior,
+    // earlier-interrupted round that paused some agents already) so a RETRY round's write never makes the
+    // display list forget agents a previous round already, genuinely, paused via the API.
+    const mergedPaused = (() => {
+      const map = new Map();
+      for (const p of (cur.pausedAgents || [])) map.set(String(p.id), p);
+      for (const p of paused) map.set(String(p.id), p);
+      return Array.from(map.values());
+    })();
+    if (fence && !fence()) return { fenced: true };
     writeState({
       mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, resumeAt: RESUME_AT,
       ...accountStamp(ident),
@@ -1047,21 +1102,31 @@ async function doPause(u, crossed, ident, opts) {
       ...(cur.ownerOverride ? { ownerOverride: cur.ownerOverride } : {}),
       ...(cur.credits ? { credits: cur.credits } : {}),
       percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
-      pausedAgents: paused, lastPauseAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(),
+      pausedAgents: mergedPaused, lastPauseAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(),
       graceMin: GRACE_MIN,
       ...(Number.isFinite(resumeAtEpoch) ? { resumeAtEpoch } : {}),
+      // V29 (second Codex recheck, 2026-09-24): an interrupted round (pending.length > 0) must NOT be
+      // silently reported as a complete pause — pausePending names exactly which agents still need pausing
+      // so the "paused" branch of the NEXT tick retries them BEFORE treating the round as done, instead of
+      // taking the "still high, wait" branch while real unfinished work remains (Codex's exact schedule:
+      // interrupt after pausing A of two, restart, the next 100% tick must still pause B).
+      ...(pending.length
+        ? { pausePending: pending, lastError: 'pauze onderbroken (shutdown): ' + pending.length + ' agent(s) nog niet gepauzeerd — volgende tick probeert opnieuw / pause interrupted (shutdown): ' + pending.length + ' agent(s) not yet paused — the next tick retries' }
+        : { pausePending: undefined }),
       notice: '⛔ USAGE GUARD — PAUZEER. Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + PAUSE_AT + '%). '
         + 'Geen nieuwe subagents/workflows starten. Rond lopend werk minimaal af en meld de pauze. '
         + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
         + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
         + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).'),
     });
+    return { fenced: false };
   });
   // V15: a lock refusal never wrote unlocked — say so plainly. The agents ABOVE were already paused via
   // the real Paperclip API regardless (that already happened); only the STATE FILE bookkeeping is missing
   // this round, and the next tick re-evaluates from a fresh read.
   if (!pauseLock.ok) log('state-lock: PAUSE state write skipped (' + pauseLock.reason + ') — ' + paused.length + ' agent(s) WERE paused via the API but the state file could not record it this round');
-  log('PAUSED — ' + reason + ' · paperclip agents paused: ' + paused.length + (agents === null ? ' (runtime unreachable)' : '') + (Number.isFinite(resumeAtEpoch) ? ' · rhythm-resume at ' + new Date(resumeAtEpoch).toISOString() : ' · rhythm-resume: n/a (unparseable resets_at)'));
+  else if (pauseLock.value && pauseLock.value.fenced) log('state-lock: PAUSE state write skipped (fenced — the lock was reclaimed mid-transaction) — ' + paused.length + ' agent(s) WERE paused via the API but the state file could not record it this round');
+  log('PAUSED — ' + reason + ' · paperclip agents paused: ' + paused.length + (agents === null ? ' (runtime unreachable)' : '') + (Number.isFinite(resumeAtEpoch) ? ' · rhythm-resume at ' + new Date(resumeAtEpoch).toISOString() : ' · rhythm-resume: n/a (unparseable resets_at)') + (pending.length ? (' · pausePending: ' + pending.length) : ''));
 }
 async function doResume(u, st, ident, opts) {
   const o = opts || {};
@@ -1101,7 +1166,7 @@ async function doResume(u, st, ident, opts) {
   if (failed.length) {
     // r4 #15: een GEDEELTELIJKE resume schrijft geen mode:'ok' meer — de staat blijft paused met
     // resumePending, zodat de paused-tak van de volgende tick de rest opnieuw probeert.
-    const partialLock = await withStateLock(() => {
+    const partialLock = await withStateLock((fence) => {
       const fresh = readState();
       const next = Object.assign({}, st, {
         mode: 'paused', pausedAgents: failed, resumePending: true,
@@ -1110,14 +1175,18 @@ async function doResume(u, st, ident, opts) {
         lastError: 'resume gedeeltelijk: ' + ok + '/' + byId.size + ' agents hervat — ' + failed.length + ' faalden; volgende tick probeert opnieuw',
       });
       if (fresh.ownerOverride) next.ownerOverride = fresh.ownerOverride; else delete next.ownerOverride;
+      if (fence && !fence()) return { fenced: true };
       writeState(next);
+      return { fenced: false };
     });
     if (!partialLock.ok) log('state-lock: RESUME PARTIAL state write skipped (' + partialLock.reason + ') — the next tick still retries the unresolved agents via the journal');
+    else if (partialLock.value && partialLock.value.fenced) log('state-lock: RESUME PARTIAL state write skipped (fenced — the lock was reclaimed mid-transaction) — the next tick still retries the unresolved agents via the journal');
     log('RESUME PARTIAL — ' + ok + '/' + byId.size + ' hervat; ' + failed.length + ' gefaald (' + failed.map((f) => f.id).join(',') + ') — staat blijft paused/resumePending');
     return;
   }
-  const resumeLock = await withStateLock(() => {
+  const resumeLock = await withStateLock((fence) => {
     const fresh = readState();
+    if (fence && !fence()) return { fenced: true };
     writeState({
       mode: 'ok', percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
       ...accountStamp(ident),
@@ -1128,8 +1197,10 @@ async function doResume(u, st, ident, opts) {
         + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
         + ok + '/' + byId.size + ' Paperclip agents hervat.',
     });
+    return { fenced: false };
   });
   if (!resumeLock.ok) log('state-lock: RESUME state write skipped (' + resumeLock.reason + ') — agents WERE resumed via the API but the state file could not record it this round');
+  else if (resumeLock.value && resumeLock.value.fenced) log('state-lock: RESUME state write skipped (fenced — the lock was reclaimed mid-transaction) — agents WERE resumed via the API but the state file could not record it this round');
   log('RESUMED — session ' + u.session.pct + '% week ' + u.week.pct + '% · agents resumed: ' + ok + '/' + byId.size);
 }
 
@@ -1250,9 +1321,20 @@ async function tick(deps, opts) {
     // with a different --pause-at than the last actual pause event leaves a stale threshold in the
     // state file, even though the real in-process trigger (PAUSE_AT, checked above) is already correct.
     await withLockedState(D, (fresh) => {
-      fresh.mode = 'ok'; fresh.pauseAt = PAUSE_AT; fresh.resumeAt = RESUME_AT; fresh.nvidiaShiftAt = NVIDIA_SHIFT_AT;
-      fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.lastCheckAt = new Date().toISOString();
-      delete fresh.lastError; delete fresh.corruptAt; delete fresh.corruptReason;
+      // N01 (second Codex recheck, 2026-09-24): reconcile the account stamp INSIDE the locked transaction,
+      // against the FRESHEST read, before any other field is touched. Previously this write never called
+      // stateForAccount() at all — a state file that had genuinely never yet been stamped (e.g. this is the
+      // very first successful tick) stayed UNSTAMPED forever, so the NEXT tick under a DIFFERENT account
+      // read `from: null` from detectAccountSwitch() and treated a REAL account switch as "first-stamp
+      // (adoption)" instead of a switch — which meant a foreign account's ownerOverride (and pausedAgents,
+      // credits, trigger) was never cleared, and a 100%-usage tick for the new account made zero pauses.
+      // stateForAccount() returns the SAME object (mutated fresh) when nothing changed, or a genuinely NEW
+      // reset object on a real switch — either way it is the correct base for the ok-mode fields below.
+      const reconciled = stateForAccount(fresh, ident);
+      reconciled.mode = 'ok'; reconciled.pauseAt = PAUSE_AT; reconciled.resumeAt = RESUME_AT; reconciled.nvidiaShiftAt = NVIDIA_SHIFT_AT;
+      reconciled.percents = { session: u.session.pct, week: u.week.pct }; reconciled.lastCheckAt = new Date().toISOString();
+      delete reconciled.lastError; delete reconciled.corruptAt; delete reconciled.corruptReason;
+      return reconciled;
     }, 'normal ok write');
     // RECONCILIATIE (r4 #15): staat de guard op ok maar kent het journal nog onopgeloste guard-pauzes
     // (crash na de pause-API, of een switch waarvan de orphan-resume deels faalde), hervat ze dan nu —
@@ -1270,6 +1352,19 @@ async function tick(deps, opts) {
     // is invisible in the log as well as in the decision (fix 2026-08-03).
     D.log('ok — ' + (u.windows || []).map((w) => w.label + ' ' + w.pct + '%').join(' · ') + ' (pause-at ' + PAUSE_AT + '%)');
   } else {
+    // V29 (second Codex recheck, 2026-09-24): a PREVIOUS pause round that was interrupted mid-flight
+    // (shutdown) leaves specific agents still genuinely unpaused even though mode already says 'paused' —
+    // retry them BEFORE evaluating stillHigh/rhythm below, or a persistently-high trigger takes the
+    // "still high, wait, do nothing" branch forever while those agents keep consuming quota. This check is
+    // independent of stillHigh/rhythmDue on purpose: unfinished pause work is not "waiting for a reset",
+    // it is an incomplete round that must never be reported as complete. doPause() re-derives `toPause`
+    // from LIVE Paperclip status, so re-calling it here naturally skips whatever a prior round already
+    // paused and only (re-)attempts what is still not paused.
+    if (Array.isArray(st.pausePending) && st.pausePending.length) {
+      D.log('PAUSE RETRY — een eerdere pauzeronde werd onderbroken (' + st.pausePending.length + ' agent(s) nog niet gepauzeerd); dit telt nog niet als compleet, opnieuw proberen / a previous pause round was interrupted (' + st.pausePending.length + ' agent(s) not yet paused); not yet complete, retrying');
+      await D.doPause(u, st.trigger || [], ident, { signal: tickOpts.signal });
+      return;
+    }
     // AUDIT #15 (2026-08-05): the old lookup was `find(x.kind === t.metric)` — the FIRST window with the
     // same bare kind decided the resume, so with two weekly_scoped windows the guard could resume off the
     // wrong model's percentage (flapping) or stay paused on a window that never crossed. The decision now
@@ -1670,7 +1765,7 @@ if (require.main === module) {
     // in a FILE the owner writes. An env var is deliberately not accepted — the process asking for
     // permission can set its own environment.
     const og = require('./forge-ownergrant.cjs');
-    const grant = og.verifyOwnerGrant({ token: argv('owner-approval', null), projectRoot: path.resolve(__dirname, '..', '..') });
+    const grant = og.verifyOwnerGrant({ token: argv('owner-approval', null), projectRoot: OWNERGRANT_PROJECT_ROOT });
     if (!grant.ok) {
       console.error('usage-guard override-on REFUSED — ' + grant.reason);
       console.error('  run: node .claude/forge-bin/usage-guard.cjs override-on --owner-approval <token> --reason "<why>"');
@@ -1680,7 +1775,7 @@ if (require.main === module) {
     // it can never interleave with a concurrent tick()'s doPause()/doResume() (or a concurrent
     // override-off) reading/writing the same file mid-sequence. V15: a lock refusal is REPORTED honestly
     // (never a silent unlocked write) — this is a direct CLI command the owner is waiting on.
-    const onLock = await withStateLock(async () => {
+    const onLock = await withStateLock(async (fence) => {
       const st = readState();
       let resumed = 0;
       // best-effort resume any agents THIS guard paused — override-on used to strand them forever (fix 2026-07-09 checkup)
@@ -1693,14 +1788,26 @@ if (require.main === module) {
       st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
       let until = argv('until', null) || null;
       if (until && !Number.isFinite(Date.parse(until))) { console.error('ignoring invalid --until "' + until + '" (not a parseable date) — override will have no time expiry'); until = null; }
+      // N01 (second Codex recheck, 2026-09-24): stamp the account this override is being granted FOR,
+      // exactly like a real tick would — without this, a state file with no prior successful tick (or one
+      // whose earlier "normal ok write" predates the N01 fix) never records WHICH account the override
+      // belongs to, so a later switch to a DIFFERENT account reads detectAccountSwitch()'s `from: null` as
+      // "first-stamp (adoption)" rather than a real switch, and the foreign override survives instead of
+      // being cleared. Only ever narrows/confirms identity — never overrides a fresher stamp with a stale one.
+      Object.assign(st, accountStamp(readAccountIdentity()));
       st.ownerOverride = { active: true, at: new Date().toISOString(),
         reason: argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn'),
         reArmWhenCreditsExhausted: true, until };
+      if (fence && !fence()) return { fenced: true };
       writeState(st);
-      return { resumed, wasPaused, until };
+      return { fenced: false, resumed, wasPaused, until };
     });
     if (!onLock.ok) {
       console.error('usage-guard override-on FAILED — could not acquire the state lock (' + onLock.reason + ') — no change made; try again');
+      process.exit(1);
+    }
+    if (onLock.value.fenced) {
+      console.error('usage-guard override-on FAILED — the state lock was reclaimed mid-transaction (fenced) — no change made; try again');
       process.exit(1);
     }
     const { resumed, wasPaused, until: untilOut } = onLock.value;
@@ -1710,14 +1817,20 @@ if (require.main === module) {
   if (cmd === 'override-off') {
     // GUARD-STATE-RACE: serialized against a concurrent doPause()/doResume()/override-on write. V15: a
     // lock refusal is REPORTED honestly rather than silently doing nothing.
-    const offLockResult = await withStateLock(() => {
-      const st = readState(); const had = !!st.ownerOverride; delete st.ownerOverride; writeState(st); return had;
+    const offLockResult = await withStateLock((fence) => {
+      const st = readState(); const had = !!st.ownerOverride; delete st.ownerOverride;
+      if (fence && !fence()) return { fenced: true };
+      writeState(st); return { fenced: false, had };
     });
     if (!offLockResult.ok) {
       console.error('usage-guard override-off FAILED — could not acquire the state lock (' + offLockResult.reason + ') — no change made; try again');
       process.exit(1);
     }
-    console.log('usage-guard OVERRIDE ' + (offLockResult.value ? 'CLEARED' : 'was not set') + ' — normal plan-limit guard re-armed');
+    if (offLockResult.value.fenced) {
+      console.error('usage-guard override-off FAILED — the state lock was reclaimed mid-transaction (fenced) — no change made; try again');
+      process.exit(1);
+    }
+    console.log('usage-guard OVERRIDE ' + (offLockResult.value.had ? 'CLEARED' : 'was not set') + ' — normal plan-limit guard re-armed');
     process.exit(0);
   }
   if (cmd === 'watch') {
@@ -1737,6 +1850,19 @@ if (require.main === module) {
       for (const line of disclosureLines(GUARD_CFG.disclosure)) log(line);
       await tick(); return;
     }
+    // V18 exception (3), second Codex recheck (2026-09-24): CONTINUOUS forced watching (this branch —
+    // never --once, already handled above) requires the SAME verified owner-authorisation grant as
+    // override-on, or is REFUSED outright. The second recheck proved the old code let `--force` keep a
+    // watcher measuring on a real interval while the owner's switch was off, with NO grant check at all —
+    // a sustained, repeated bypass, not the one-shot read-only diagnostic exception (1) is defined to be.
+    if (has('force')) {
+      const grant = verifyForcedWatchGrant(argv('owner-approval', null));
+      if (!grant.ok) {
+        console.error('usage-guard watch --force REFUSED — ' + grant.reason);
+        console.error('  continuous forced watching requires owner authorisation: node .claude/forge-bin/usage-guard.cjs watch --force --owner-approval <token>');
+        process.exit(3);
+      }
+    }
     // Refuse a 2nd concurrent watcher — two would race the same state file (fix 2026-07-09 checkup).
     // CODEX finding #15: this parsed the pid file as a BARE NUMBER after the writer switched to JSON —
     // Number('{"pid":123,…}') is NaN, so the guard silently stopped guarding. CODEX audit #17 (2026-08-05):
@@ -1755,6 +1881,10 @@ if (require.main === module) {
     // parent (`start`, below) still prints the same lines to ITS OWN stdout for immediate interactive
     // feedback — this log call is the one that is guaranteed to precede this process's own first fetch.
     for (const line of disclosureLines(GUARD_CFG.disclosure)) log(line);
+    // V18 exception (3): name the sustained-forced-watching exception explicitly in the disclosure log,
+    // not just internally — the owner-facing text must reflect the SAME exception table guardNetworkAllowed()
+    // documents, per the second Codex recheck's finding that this exception existed undocumented.
+    if (has('force')) log('FORCED CONTINUOUS WATCHING while usage-guard is OFF is active (V18 exception 3, owner-authorised via --owner-approval) — measures on the normal interval until the switch is turned on');
     for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) log('note: ' + n);
     // SILENT-DEATH GUARD (2026-08-03): on this machine the loop stopped at 16:55 without a single error
     // line while the process stayed alive — only fetchUsage() was inside a try/catch, so a throw anywhere
@@ -1853,6 +1983,18 @@ if (require.main === module) {
       console.log(noCredentialsLine('not started'));
       process.exit(3);
     }
+    // V18 exception (3), second Codex recheck (2026-09-24): `start --force` spawns a watcher that keeps
+    // measuring on a real interval while the owner's switch is off — the SAME sustained, consequential
+    // bypass class as override-on, and now requires the SAME verified owner-authorisation grant, refused
+    // outright (before opening a log or spawning anything) without one.
+    if (GUARD.force) {
+      const startGrant = verifyForcedWatchGrant(argv('owner-approval', null));
+      if (!startGrant.ok) {
+        console.log('usage-guard start --force REFUSED — ' + startGrant.reason);
+        console.log('  continuous forced watching requires owner authorisation: node .claude/forge-bin/usage-guard.cjs start --force --owner-approval <token>');
+        process.exit(3);
+      }
+    }
     for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) console.log('note: ' + n);
     // A recycled PID must not make `start` believe a watcher exists — that would leave the account
     // permanently unguarded while the CLI cheerfully reports "already running" (audit, 2026-08-03).
@@ -1867,7 +2009,10 @@ if (require.main === module) {
     extra.push('--grace-min', String(GRACE_MIN));
     if (DRY) extra.push('--dry-run');
     // L2: the child re-reads the switch before every check; a forced start must not be undone by its first tick.
-    if (GUARD.force) extra.push('--force');
+    // V18: the SAME owner-approval token this parent just verified above is forwarded so the child's OWN
+    // `watch --force` grant check (independent, defense-in-depth) also succeeds — the parent never assumes
+    // its own verification carries over to a separate process without re-proving it there too.
+    if (GUARD.force) { extra.push('--force'); const fwdToken = argv('owner-approval', null); if (fwdToken) extra.push('--owner-approval', fwdToken); }
     // stdout → ignore (log() already appendFileSync's to LOG_FILE; redirecting stdout too double-logged every line);
     // keep stderr → LOG_FILE so a crash is still captured (fix 2026-07-09 checkup).
     const startNonce = crypto.randomUUID();

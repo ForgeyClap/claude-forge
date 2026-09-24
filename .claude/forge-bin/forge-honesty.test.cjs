@@ -337,6 +337,13 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   `);
   t('DISPLAY-BYPASSES-CONTRACT: a claimed-complete run with NO run_finalized event does not repaint a running node as done', r.nodeStatus !== 'done');
 }
+// V26 SECOND fix (2026-09-24 THIRD Codex recheck, out-p8.md) — the block below used to be the
+// DISPLAY-BYPASSES-CONTRACT "counterweight" proving a bare run_finalized event alone WAS enough to repaint a
+// running node done. Codex (out-p8.md V26): "a trailing run_finalized event can still produce COMPLETE
+// WITHOUT RECEIPT ACCEPTANCE" — that was exactly this test's own claim, restated as the defect. A bare event
+// is honest evidence of a CLAIM, never of verified completion, on its own: it now requires POSITIVE
+// acceptance (a live, matching, ok:true forge-runcontract.cjs check — see isFinalizeClaimAccepted's doc in
+// app.js), so the SAME fixture with no such check loaded now correctly stays running, not done.
 {
   const { run } = loadDashboard();
   const events = [
@@ -345,12 +352,12 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   ];
   const r = run(`
     STATE.events = ${JSON.stringify(events)};
-    STATE.run = { status: 'completed' };
+    STATE.run = { status: 'completed', run_id: 'run-claim-only' };
     STATE._nodes = buildNodes();
     const n = STATE._nodes.find((x) => x.key === 'Build Boss');
     ({ nodeStatus: n.status });
   `);
-  t('DISPLAY-BYPASSES-CONTRACT counterweight: a genuinely receipt-finalized run DOES repaint a running node as done', r.nodeStatus === 'done');
+  t('V26 SECOND fix: a bare run_finalized event with NO loaded receipt acceptance does NOT repaint a running node as done', r.nodeStatus !== 'done');
 }
 {
   const { run, sandbox } = loadDashboard();
@@ -366,6 +373,10 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   t('DISPLAY-BYPASSES-CONTRACT: the completed badge stays hidden for an unverified claim', sandbox.document.getElementById('badge-complete').hidden === true);
 }
 {
+  // V26 SECOND fix: the SAME "genuinely receipt-finalized" fixture that used to prove verified COMPLETE off
+  // the bare event alone now renders as an UNVERIFIED claim — no receipt acceptance has been loaded for this
+  // run. The full closure (a real server-side /api/finalize route reading forge-finalize.cjs's own check())
+  // remains documented as deferred (see isFinalizeClaimAccepted's doc comment in app.js).
   const { run, sandbox } = loadDashboard();
   const events = [
     { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
@@ -374,13 +385,36 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   ];
   run(`
     STATE.events = ${JSON.stringify(events)};
-    STATE.run = { status: 'completed', run_id: 'run-verified' };
+    STATE.run = { status: 'completed', run_id: 'run-claimed-no-acceptance' };
     STATE._nodes = buildNodes();
     renderTop();
   `);
   const stateText = sandbox.document.getElementById('state-text').textContent;
-  t('DISPLAY-BYPASSES-CONTRACT counterweight: a genuinely receipt-finalized run still shows verified COMPLETE', stateText === 'COMPLETE');
-  t('DISPLAY-BYPASSES-CONTRACT counterweight: the completed badge is visible for a verified run', sandbox.document.getElementById('badge-complete').hidden === false);
+  t('V26 SECOND fix: a genuinely receipt-finalized event with NO loaded receipt acceptance renders UNVERIFIED, never COMPLETE (deferred: no /api/finalize route yet)', stateText !== 'COMPLETE' && /UNVERIFIED/.test(stateText));
+  t('V26 SECOND fix: the completed badge stays hidden without positive acceptance', sandbox.document.getElementById('badge-complete').hidden === true);
+}
+{
+  // counterweight: the mechanism itself still works — a live, MATCHING, POSITIVE (ok:true) runcontract check
+  // for this exact run_id genuinely confirms the claim, and only then does the badge/status/task-repaint go
+  // to full verified COMPLETE/done. Proves isFinalizeClaimAccepted is not merely "always false now".
+  const { run, sandbox } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-accepted' };
+    STATE.runcontract = { run_id: 'run-accepted', ok: true };
+    STATE._nodes = buildNodes();
+    renderTop();
+    const n = STATE._nodes.find((x) => x.key === 'Build Boss');
+    ({ nodeStatus: n.status });
+  `);
+  const stateText = sandbox.document.getElementById('state-text').textContent;
+  t('V26 SECOND fix counterweight: a live, matching, ok:true runcontract check genuinely ACCEPTS the claim -> verified COMPLETE', stateText === 'COMPLETE');
+  t('V26 SECOND fix counterweight: the completed badge is visible once genuinely accepted', sandbox.document.getElementById('badge-complete').hidden === false);
+  t('V26 SECOND fix counterweight: a genuinely accepted claim DOES repaint a running node as done', r.nodeStatus === 'done');
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -427,7 +461,11 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   t('V26: a contradicted finalize claim keeps a genuinely running task in its real state, not repainted done', r.nodeStatus !== 'done');
 }
 {
-  // counterweight: a runcontract check loaded for a DIFFERENT run must never contradict THIS run's claim
+  // V26 SECOND fix (out-p8.md): a runcontract check loaded for a DIFFERENT run neither contradicts NOR
+  // accepts THIS run's claim — it simply is not evidence about this run at all. Under the corrected,
+  // acceptance-based contract that means THIS run still has no positive confirmation of its own, so it
+  // renders as the same honest UNVERIFIED claim as "nothing loaded at all" (never a downgrade that reads as
+  // an explicit contradiction, and never an upgrade to COMPLETE off irrelevant data either way).
   const { run, sandbox } = loadDashboard();
   const events = [
     { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
@@ -442,7 +480,50 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
     renderTop();
   `);
   const stateText = sandbox.document.getElementById('state-text').textContent;
-  t('V26 counterweight: a runcontract check for a DIFFERENT run never contradicts this run\'s genuine COMPLETE', stateText === 'COMPLETE');
+  t('V26 SECOND fix: a runcontract check for a DIFFERENT run is not evidence for THIS run either way -> stays the same honest UNVERIFIED claim, not COMPLETE', stateText !== 'COMPLETE' && /UNVERIFIED/.test(stateText));
+}
+{
+  // counterweight to the counterweight: that SAME irrelevant-run data must not be able to falsely ACCEPT this
+  // run either, even if it happened to say ok:true for the wrong run_id — matching run_id is required both ways.
+  const { run, sandbox } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Build Boss', event_type: 'agent_completed', timestamp: '2026-09-24T00:00:01Z' },
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:02Z' },
+  ];
+  run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-verified-3' };
+    STATE.runcontract = { run_id: 'some-other-run', ok: true };
+    STATE._nodes = buildNodes();
+    renderTop();
+  `);
+  const stateText = sandbox.document.getElementById('state-text').textContent;
+  t('V26 SECOND fix: an ok:true runcontract check for a DIFFERENT run does NOT falsely accept THIS run\'s claim', stateText !== 'COMPLETE' && /UNVERIFIED/.test(stateText));
+}
+
+// ---------------------------------------------------------------------------------------------------
+// V24 REGRESSION (2026-09-24 THIRD Codex recheck, out-p8.md) — app.js's own hand-mirrored reviewOutcome()
+// tested against the EXACT SAME fixture table as forge-verify.cjs's reviewOutcome() (V24_REVIEW_OUTCOME_
+// FIXTURES in forge-bin/forge-verify.test.cjs) and forge-proof-gate.cjs's canonical reviewOutcome(), so the
+// three consumers cannot silently drift apart the way forge-verify.cjs and app.js just did.
+// ---------------------------------------------------------------------------------------------------
+{
+  const { run } = loadDashboard();
+  const fixtures = [
+    { name: 'ok:true alone (no textual verdict) -> done', event: { event_type: 'review_completed', ok: true }, expect: 'done' },
+    { name: 'ok:false alone -> failed', event: { event_type: 'review_completed', ok: false }, expect: 'failed' },
+    { name: 'positive textual verdict alone -> done', event: { event_type: 'review_completed', review_verdict: 'approved' }, expect: 'done' },
+    { name: 'positive textual verdict + ok:true (agreeing) -> done', event: { event_type: 'review_completed', review_verdict: 'pass', ok: true }, expect: 'done' },
+    { name: 'positive textual verdict CONTRADICTED by ok:false -> failed', event: { event_type: 'review_completed', review_verdict: 'pass', ok: false }, expect: 'failed' },
+    { name: 'negative textual verdict ("needs fixes") -> failed', event: { event_type: 'review_completed', status: 'needs fixes' }, expect: 'failed' },
+    { name: 'disproven claim (_forge_verify.proof_verified:false) + ok:true -> failed', event: { event_type: 'review_completed', ok: true, _forge_verify: { proof_verified: false } }, expect: 'failed' },
+    { name: 'no outcome signal at all -> null (caller uses its own default)', event: { event_type: 'review_completed' }, expect: null },
+  ];
+  for (const fx of fixtures) {
+    const got = run(`window.Forge.reviewOutcome(${JSON.stringify(fx.event)})`);
+    t('V24 fixture-table (app.js reviewOutcome): ' + fx.name, got === fx.expect);
+  }
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

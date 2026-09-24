@@ -132,7 +132,27 @@ evidence or deferred with a reason before this release went out. The code fixes:
   corroborates against the loaded contract check but cannot read the receipt file itself (needs a gateway
   endpoint); the whole install is not yet refused when `.claude` is a junction (only the settings destination is);
   `usage-guard.cjs`, `forge-setup.cjs`, `forge-verify.cjs` and `forge-runcontract.cjs` remain far over the
-  file-size guidance. Deferred with reason: a bare
+  file-size guidance.
+- **Third pass (Codex verified the second pass: 16 closed, 12 partly, 3 regressions, 3 new; 8 highs open — all
+  fixed, every new test first proven red against the old code).** Gate hook: the self-disable check consumes every
+  value-taking `forge-config` option exactly like the CLI (so `set --lang en gate-hook off` and the `--run`/`--flag`
+  forms are blocked), a fake heredoc nested inside a substitution or an outer quote is never stripped as data,
+  `eval`/`iex` are caught in later `case` arms and in PowerShell `else`/`elseif`/`catch`/`finally`, while hyphenated
+  command names (`eval-something`) and an escaped `\$(` stay ordinary commands (new `forge-actiongate-position.cjs`).
+  Usage guard: an unreadable account map keeps a stable identity (100 % ticks still pause), the state lock has a
+  heartbeat and a fence token (a live holder is never reclaimed, release only removes its own lock, a stuck stale
+  lock obeys the timeout), an interrupted pause round retries the unfinished agents on the next tick, the account
+  stamp is written inside the locked transaction (an override can no longer carry into another account),
+  continuous forced watching (`start --force`/`watch --force`) requires the owner grant while a one-shot `--force`
+  stays a read-only measurement, and `health()` reports off/unsuccessful instead of a fake live success (new
+  `usage-guard-state.test.cjs`). Completion honesty: receipt acceptance again requires the evidence commit to equal
+  the receipt commit, one canonical review-outcome predicate is shared by the verifier and the dashboard (an
+  `ok:true` review is done, `ok:false` failed, contradictions failed), an armed run stays red when the manifest tool
+  is missing, domain evidence is evaluated under every applicable domain, and the dashboard shows UNVERIFIED unless a
+  positive receipt acceptance is loaded. Config: once-lock ownership transitions are atomic (steal by rename, verify,
+  restore on mismatch; a failed token write fails acquisition) and gitignore negation repair asks `git check-ignore`
+  about every candidate. Docs: every copy of the beginner promise (README, AI-INSTALL handoff, FEATURES, plugin and
+  global-install command and skill copies) carries the same qualified wording — never "always". Deferred with reason: a bare
   `git checkout <path>` without `--` (a classifier cannot tell a branch from a path without repository state, and a
   blocking hook that fires on `git checkout main` would break the most common everyday git command).
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
@@ -149,8 +169,9 @@ evidence or deferred with a reason before this release went out. The code fixes:
 - **Usage guard, NVIDIA provider, gateway (`usage-guard.cjs` + new `usage-guard-redact.cjs`, `nvidia-provider.cjs`,
   `forge-ownergrant.cjs`, gateway `capabilities.mjs`/`models.mjs`):** a switched-off guard makes no network call
   (`check`/`status`/`credits`/`watch --once` refuse), with exactly two documented exceptions: a plain `--force` on the
-  read-only diagnostics (`check`/`status`/`credits` — one measurement, never a resume, never a setting change) and a
-  verified owner grant for `override-on`, the only consequential path; the token's shape is
+  one-shot read-only diagnostics (`check`/`status`/`credits` — one measurement, never a resume, never a setting
+  change) and a verified owner grant for the consequential paths — `override-on` and continuous forced watching
+  (`start --force`/`watch --force`, refused without the grant); the token's shape is
   validated before any header is built and transport errors are reported as codes, never with the raw message; the
   refresh-token identity fallback is gone (an opaque local account label instead) and a refusal names a
   project-relative label, never the absolute credential path; a corrupt state file is distinguished from a missing one

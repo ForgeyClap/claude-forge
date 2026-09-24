@@ -531,6 +531,37 @@ const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } 
     && /switched off mid-retry/.test(healthRetryOff.out.reason || ''));
   try { fs.rmSync(healthRetryCfgDir, { recursive: true, force: true }); } catch { /* best effort */ }
 
+  // 16b) N03 (second Codex recheck, 2026-09-24): health()'s OWN offResult() check can pass (ON) while
+  // listModels()'s OWN internal offResult() check — a SEPARATE read, immediately afterward — comes back OFF
+  // (e.g. a config switch that lands between the two). The old code only checked `r.error`, which the OFF
+  // shape `{ok:false, mode:'off', reason, models:[]}` never sets, so health() fell through to a FABRICATED
+  // `{ok:true, mode:'live', models:0}` with ZERO real requests. A stateful injected configModule (ON on its
+  // first read, OFF on its second) reproduces this deterministically — no real timing race needed, and a
+  // `global.fetch` that throws proves no request was ever attempted either way.
+  console.log('16b) N03: health() propagates a delegated listModels() OFF result instead of fabricating success');
+  const n03Probe = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-n03-'));
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'global.fetch = async () => { throw new Error("MUST NOT FETCH — N03 regression"); };',
+      'const P = require(' + JSON.stringify(CLI) + ');',
+      'let calls = 0;',
+      "const configModule = { get: () => { calls++; return { value: calls === 1 }; } };", // ON (health's own check), then OFF (listModels' internal check)
+      '(async () => {',
+      '  const out = await P.health({ configModule });',
+      '  process.stdout.write(JSON.stringify({ out, calls }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const env = baseEnv({ NVIDIA_API_KEY: FAKE_KEY, NVIDIA_SKIP_ENV_FILES: '1', FORGE_PROJECT_ROOT: EMPTY_PROJECT, FORGE_CONFIG_HOME: CONFIG_HOME });
+    const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  };
+  const n03Out = n03Probe();
+  t('N03: an ON->OFF flip between health()\'s own check and listModels()\'s delegated check returns {ok:false}, never a fabricated live success',
+    !!n03Out.out && n03Out.calls === 2 && n03Out.out.ok === false && n03Out.out.mode === 'off' && !!n03Out.out.reason && n03Out.out.models === undefined);
+
   // 17) V16 canary (Codex recheck wp-f4, 2026-09-24): a synthetic key-shaped string planted in EVERY
   // env/config slot Codex named (including NVIDIA_CODING_MODEL) must never appear in any return value or
   // stdout/stderr line — including the CLI `models --verify` branch, which used to print modelForRole()'s

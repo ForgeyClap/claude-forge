@@ -321,13 +321,26 @@ function findManifestSkip(events, wpId, ownerAllowlist) {
  *  never silently downgraded to "not applicable". Only a run whose events never recorded arming at all stays
  *  NOT APPLICABLE, matching every other run that used no manifest. `hasEvent()` already excludes a disproven
  *  `manifest_armed` claim (content-oracle proof_verified:false), so a fabricated arming claim does not count
- *  as "armed" here either. */
+ *  as "armed" here either.
+ *
+ *  V21 (2026-09-24 THIRD Codex recheck, out-p8.md remaining gap) — the module-unavailable branch below ran
+ *  BEFORE `armed` was even computed, so forcing `loadManifestTool()`'s require() itself to fail (a genuinely
+ *  incomplete/damaged installation, not just a missing manifest.json for this one run) collapsed straight to
+ *  the SAME "never armed" `{applicable:false, ok:true}` outcome even for a run whose OWN events already
+ *  recorded `manifest_armed`. REPRODUCED: an armed fixture with a forced module-load failure reported
+ *  `{ok:true, missing:[]}` exactly like a run that used no manifest at all. `armed` is now checked FIRST — an
+ *  armed run whose loader is unavailable is a genuine defect (`applicable:true, ok:false`), never silently
+ *  reclassified as not-applicable; only a run that never armed anything stays not-applicable, matching every
+ *  other module-load failure path in this function. */
 function manifestCompleteness(root, runId, events, ownerAllowlist) {
+  const armed = hasEvent(events, 'manifest_armed');
   const mod = loadManifestTool();
   if (!mod || typeof mod.load !== 'function' || typeof mod.projectManifest !== 'function') {
+    if (armed) {
+      return { applicable: true, ok: false, outstanding: [], reason: 'manifest_armed is logged for this run but forge-manifest.cjs (load/projectManifest) is unavailable — an armed run\'s declared obligations cannot be silently discarded because the loader module itself is missing or incomplete' };
+    }
     return { applicable: false, ok: true, outstanding: [] };
   }
-  const armed = hasEvent(events, 'manifest_armed');
   let wps;
   try { wps = mod.load(runId, { root }); }
   catch (e) {
@@ -1217,16 +1230,31 @@ function checkSatisfied(rule, ctx) {
    *   known) the domain's full required-evidence.json set" — an explicit OR, never a narrowing — so for an
    *   'always'-triggered rule the domain-aware result only ever ADDS a way to satisfy it, never revokes a
    *   real generic evidence-fact the rule already accepted on its own documented terms. */
-  if (c.domain_aware === true && ctx.domain) {
-    const verify = loadVerifyTool();
-    if (verify && typeof verify.evidenceCheck === 'function') {
-      try {
-        const res = verify.evidenceCheck(ctx.events, ctx.domain, { runDir: ctx.runDir });
-        if (res) {
-          if (rule.trigger !== 'always') satisfied = res.ok === true; // domain IS why this rule applies at all
-          else if (res.ok === true) satisfied = true; // 'always' rule: domain proof only ADDS a path, never revokes
+  /** V25 (2026-09-24 THIRD Codex recheck, out-p8.md remaining gap) — this branch used to consult only the
+   *  single ctx.domain value (the caller's resolved domain), so an unrelated/unknown override domain could
+   *  starve the domain-specific check entirely and silently fall back to the generic, revocable event-present
+   *  signal above. It now iterates ctx.domainCandidates: every domain the CALLER-INDEPENDENT rule.trigger
+   *  actually matches (precomputed by the caller; falls back to [ctx.domain] for any caller that has not been
+   *  updated to pass the new field, so this stays backward-compatible) — and applies each rule's own
+   *  documented strictness contract (see RC-DOMAIN-BYPASS doc above) across that whole set instead of one
+   *  caller-chosen value. */
+  if (c.domain_aware === true) {
+    const candidates = [...new Set((Array.isArray(ctx.domainCandidates) ? ctx.domainCandidates : (ctx.domain ? [ctx.domain] : [])).filter(Boolean))];
+    if (candidates.length) {
+      const verify = loadVerifyTool();
+      if (verify && typeof verify.evidenceCheck === 'function') {
+        const results = [];
+        for (const d of candidates) {
+          try {
+            const res = verify.evidenceCheck(ctx.events, d, { runDir: ctx.runDir });
+            if (res) results.push(res);
+          } catch { /* this ONE candidate domain's evidence check threw — treated as unavailable for it only */ }
         }
-      } catch { /* domain evidence check threw — leave the generic signal as the fallback */ }
+        if (results.length) {
+          if (rule.trigger !== 'always') satisfied = results.every((r) => r.ok === true); // domain IS why this rule applies — every domain it genuinely applies under must hold
+          else if (results.some((r) => r.ok === true)) satisfied = true; // 'always' rule: any matching domain's proof only ADDS a path, never revokes
+        }
+      }
     }
   }
   return satisfied;
@@ -1362,6 +1390,19 @@ function check(params, opts) {
     if (!domainOverridden) return ruleApplies(rule, domain, complexity);
     return ruleApplies(rule, declaredDomain, complexity) || ruleApplies(rule, paramDomain, complexity);
   }
+  // V25 (2026-09-24 THIRD Codex recheck, out-p8.md remaining gap) — ruleAppliesForRun() above only decided
+  // whether a domain_aware rule's OBLIGATION applies at all (the union). checkSatisfied()'s domain-specific
+  // evidence check still received the single caller-resolved `domain` value, so an unrelated/unknown override
+  // domain could starve that check of the ACTUAL domain that made the rule apply, silently falling back to
+  // the generic (revocable) event-present signal. REPRODUCED: a website-declared run with a claimed-but-
+  // nonexistent screenshot correctly failed under domain:"website", but passed under an unrelated
+  // domain:"unknown-audit-domain" even though nothing about the real evidence changed. Fix: precompute, per
+  // rule, every candidate domain whose OWN trigger genuinely matches (never the caller's unrelated override
+  // alone) and hand the whole set to checkSatisfied — it evaluates non-'always' rules AUTHORITATIVELY across
+  // that set (every matching domain must be satisfied) and 'always' rules ADDITIVELY (any matching domain
+  // adds a path, never revokes), preserving each rule's own documented strictness contract from RC-DOMAIN-
+  // BYPASS above, just no longer collapsed onto a single caller-chosen value.
+  const candidateDomainPool = domainOverridden ? [declaredDomain, paramDomain] : [domain];
 
   const unknownTriggerIds = new Set(meta.unknownTriggers.map((u) => u.id));
   const satisfied = [];
@@ -1406,7 +1447,10 @@ function check(params, opts) {
      *  lezingen van een bestand dat tussendoor kan wijzigen. Nu een keer lezen en dat ene resultaat
      *  gebruiken, zodat de drie velden gegarandeerd bij dezelfde bewijsset horen. */
 
-    const ruleCtx = { events, artifacts, domain, runDir: artifactsDir, commitSha: effectieveCommit || null, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
+    // V25: the candidates this SPECIFIC rule's trigger genuinely matches (never a domain the rule would not
+    // even apply under on its own) — see the doc above candidateDomainPool.
+    const domainCandidatesForRule = candidateDomainPool.filter((d) => d && ruleApplies(rule, d, cx.level));
+    const ruleCtx = { events, artifacts, domain, domainCandidates: domainCandidatesForRule, runDir: artifactsDir, commitSha: effectieveCommit || null, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
     if (checkSatisfied(rule, ruleCtx)) {
       if (ruleCtx._independentVerification) ruleDetails['independent-verification'] = sanitizeIv(ruleCtx._independentVerification);
       satisfied.push(rule.id); continue;

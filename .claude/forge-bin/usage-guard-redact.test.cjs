@@ -168,5 +168,88 @@ t('V14: two DIFFERENT fps under the SAME sustained-failure mapFile still get two
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- V14, SECOND Codex recheck (2026-09-24): a map that IS readable-in-principle but is intercepted at
+// exactly ONE fs step (read / write / rename) must still return a STABLE label across repeated calls —
+// distinguishing "unreadable" from "absent" is the fix; these patch the real `fs` module (a require('fs')
+// module-cache singleton, same technique this project already uses for forge-config-once.cjs's V09 tests)
+// so each scenario is deterministic and Windows-safe (no chmod needed).
+function withPatchedFs(patches, fn) {
+  const orig = {};
+  for (const k of Object.keys(patches)) orig[k] = fs[k];
+  Object.assign(fs, patches);
+  try { return fn(); } finally { Object.assign(fs, orig); }
+}
+
+t('V14 (second recheck): a map file that exists and parses fine, but whose READ is denied (EACCES) for a reason other than absence, still returns the SAME deterministic label across 3 calls even though a write+rename to it would succeed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-redact-v14d-'));
+  try {
+    const mapFile = path.join(dir, 'account-map.json');
+    fs.writeFileSync(mapFile, JSON.stringify({})); // a real, valid, EMPTY map — write/rename to it work fine
+    const origRead = fs.readFileSync;
+    const a = withPatchedFs({
+      readFileSync: (p, ...rest) => {
+        if (p === mapFile) { const e = new Error('EACCES: permission denied, open \'' + mapFile + '\''); e.code = 'EACCES'; throw e; }
+        return origRead.call(fs, p, ...rest);
+      },
+    }, () => R.resolveLocalAccountLabel('v14d-fp', { mapFile }));
+    const b = withPatchedFs({
+      readFileSync: (p, ...rest) => {
+        if (p === mapFile) { const e = new Error('EACCES: permission denied, open \'' + mapFile + '\''); e.code = 'EACCES'; throw e; }
+        return origRead.call(fs, p, ...rest);
+      },
+    }, () => R.resolveLocalAccountLabel('v14d-fp', { mapFile }));
+    const c = withPatchedFs({
+      readFileSync: (p, ...rest) => {
+        if (p === mapFile) { const e = new Error('EACCES: permission denied, open \'' + mapFile + '\''); e.code = 'EACCES'; throw e; }
+        return origRead.call(fs, p, ...rest);
+      },
+    }, () => R.resolveLocalAccountLabel('v14d-fp', { mapFile }));
+    assert.strictEqual(a.persisted, false);
+    assert.strictEqual(a.label, b.label, 'a read-denied map must return the SAME label every call, never a fresh random one: ' + JSON.stringify([a, b, c]));
+    assert.strictEqual(b.label, c.label);
+    assert.ok(!/^account-\d/.test(a.label), 'a never-persisted label must not look like a real persisted "account-N-hex" label: ' + a.label);
+    // the map on disk must be UNCHANGED — a read failure must never attempt (and thereby risk corrupting) a write
+    assert.strictEqual(fs.readFileSync(mapFile, 'utf8'), JSON.stringify({}));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t('V14 (second recheck): a map file that reads fine (valid, fp absent) but whose WRITE is denied still returns the SAME deterministic label across 3 calls', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-redact-v14e-'));
+  try {
+    const mapFile = path.join(dir, 'account-map.json');
+    fs.writeFileSync(mapFile, JSON.stringify({}));
+    const origWrite = fs.writeFileSync;
+    const patched = { writeFileSync: (p, ...rest) => {
+      if (typeof p === 'string' && p.startsWith(mapFile) && p !== mapFile) { const e = new Error('EACCES: permission denied, open'); e.code = 'EACCES'; throw e; }
+      return origWrite.call(fs, p, ...rest);
+    } };
+    const a = withPatchedFs(patched, () => R.resolveLocalAccountLabel('v14e-fp', { mapFile }));
+    const b = withPatchedFs(patched, () => R.resolveLocalAccountLabel('v14e-fp', { mapFile }));
+    const c = withPatchedFs(patched, () => R.resolveLocalAccountLabel('v14e-fp', { mapFile }));
+    assert.strictEqual(a.persisted, false);
+    assert.strictEqual(a.label, b.label, 'a write-denied map must return the SAME label every call: ' + JSON.stringify([a, b, c]));
+    assert.strictEqual(b.label, c.label);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t('V14 (second recheck): a map file that reads fine and whose tmp WRITE succeeds but whose publishing RENAME is denied still returns the SAME deterministic label across 3 calls', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-redact-v14f-'));
+  try {
+    const mapFile = path.join(dir, 'account-map.json');
+    fs.writeFileSync(mapFile, JSON.stringify({}));
+    const origRename = fs.renameSync;
+    const patched = { renameSync: (from, to) => {
+      if (to === mapFile) { const e = new Error('EPERM: operation not permitted, rename'); e.code = 'EPERM'; throw e; }
+      return origRename.call(fs, from, to);
+    } };
+    const a = withPatchedFs(patched, () => R.resolveLocalAccountLabel('v14f-fp', { mapFile }));
+    const b = withPatchedFs(patched, () => R.resolveLocalAccountLabel('v14f-fp', { mapFile }));
+    const c = withPatchedFs(patched, () => R.resolveLocalAccountLabel('v14f-fp', { mapFile }));
+    assert.strictEqual(a.persisted, false);
+    assert.strictEqual(a.label, b.label, 'a rename-denied map must return the SAME label every call: ' + JSON.stringify([a, b, c]));
+    assert.strictEqual(b.label, c.label);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

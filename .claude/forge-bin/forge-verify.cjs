@@ -380,13 +380,32 @@ function loadRuncontractTool() {
 // all) had `hasOutcomeField === false`, returned null here, and fell through to taskStatus()'s ordinary
 // TERMINAL_TYPES default ('done') — a paired review_completed carrying ok:false, followed by agent_completed,
 // read as a fully done run. `ok` is exactly as machine-readable an outcome signal as the other five fields.
-const REVIEW_OUTCOME_FIELDS = ['review_verdict', 'verdict', 'status', 'result', 'outcome', 'ok'];
+//
+// V24 REGRESSION (2026-09-24 THIRD Codex recheck, out-p8.md) — the fix above then delegated the actual
+// verdict to `rc.isGoedkeuring()`, a DIFFERENT, deliberately stricter protocol (forge-runcontract.cjs's
+// independent-review gate) that requires one of the 5 TEXTUAL verdict fields to be present at all; a bare
+// `{ok:true}` has none, so `isGoedkeuring()` said `{ok:false, reden:'geen machineleesbaar review_verdict'}`
+// and a previously-DONE boolean-only positive review became 'failed' here while app.js's own mirror still
+// said 'done' for the identical event. Fixed by delegating to forge-proof-gate.cjs's own `reviewOutcome()` —
+// the ONE canonical boolean-aware contract app.js now mirrors too (see forge-proof-gate.cjs's doc for the
+// full contract table) — instead of borrowing a sibling protocol never designed for this shape.
 function reviewOutcome(e) {
-  const rc = loadRuncontractTool();
-  if (!rc || typeof rc.isGoedkeuring !== 'function') return null; // sibling unavailable — fall back, never fabricate
-  const hasOutcomeField = REVIEW_OUTCOME_FIELDS.some((f) => e[f] !== undefined);
-  if (!hasOutcomeField) return null; // no outcome asserted at all — let the caller use its own default
-  return rc.isGoedkeuring(e).ok ? 'done' : 'failed';
+  const pg = loadProofGate();
+  if (pg && typeof pg.reviewOutcome === 'function') return pg.reviewOutcome(e);
+  // inline fallback — IDENTICAL behavior to forge-proof-gate.cjs::reviewOutcome, same resilience convention
+  // isDisprovenEvent() above already uses for its own sibling-unavailable case.
+  if (!e || typeof e !== 'object') return null;
+  if (isDisprovenEvent(e)) return 'failed';
+  const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
+  const fields = ['review_verdict', 'verdict', 'status', 'result', 'outcome'];
+  const positive = new Set(['pass', 'passed', 'approved', 'ok', 'akkoord', 'goedgekeurd']);
+  const present = fields.filter((f) => e[f] !== undefined).map((f) => norm(e[f]));
+  const hasOk = e.ok !== undefined;
+  if (!present.length && !hasOk) return null;
+  if (present.some((v) => v === '')) return 'failed';
+  if (present.some((v) => !positive.has(v))) return 'failed';
+  if (hasOk && e.ok !== true) return 'failed';
+  return 'done';
 }
 
 // app.js taskStatus() — same branch semantics, reordered around disjoint sets (see header comment).

@@ -67,10 +67,14 @@ function laterRisk(text) {
   return false;
 }
 
-/** skipSubstitution(text, at) -> index just past the matching `)` of a `$(` starting at `at` (balanced paren
- *  count; text.length when unbalanced). A command substitution is its own lexical context — bash evaluates it
- *  regardless of an enclosing quote, so its content (including a real heredoc inside it, the Claude Code
- *  `git commit -m "$(cat <<'EOF' ...)"` form) must never be swallowed by the OUTER quote scan. */
+/** skipSubstitution(text, at) -> { end, balanced }. `end` is the index just past the matching `)` of a `$(`
+ *  starting at `at` (naive balanced paren count over the raw characters — this classifier does not lex the
+ *  substitution's own quoting while counting, mergeNestedSubstitution() below does that separately);
+ *  `balanced` is false when depth never reached 0 before the text ran out (an unbalanced/truncated
+ *  substitution), which the caller must treat as unresolved (fail closed, same as an unterminated quote). A
+ *  command substitution is its own lexical context — bash evaluates it regardless of an enclosing quote, so
+ *  its content (including a real heredoc inside it, the Claude Code `git commit -m "$(cat <<'EOF' ...)"`
+ *  form) must never be swallowed by the OUTER quote scan. */
 function skipSubstitution(text, at) {
   let depth = 1;
   let j = at + 2;
@@ -78,7 +82,29 @@ function skipSubstitution(text, at) {
     if (text[j] === '(') depth++;
     else if (text[j] === ')') depth--;
   }
-  return j;
+  return { end: j, balanced: depth === 0 };
+}
+
+/** mergeNestedSubstitution(text, at, marks) -> { end, unterminated }. V05 wave 2 (codex-recheck 2026-09-24):
+ *  a `$(...)` command substitution is bash's own fresh lexical context, so a heredoc marker or quote sitting
+ *  INSIDE it must be judged on ITS OWN nested quote structure, not on the enclosing quote (or lack of one)
+ *  that merely contains the substitution. The wave-1 fix only ever SKIPPED a substitution's raw text wholesale
+ *  when scanning for an enclosing quote's own closing character — it never looked inside that text at all, so
+ *  a fake heredoc hidden inside a single-quoted literal nested inside a substitution nested inside a
+ *  double-quoted string (`echo "$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)"`) was never recognised as
+ *  "inside a quote" anywhere, and stripHeredocs() swallowed the real `rm -rf ./src` line as if it were inert
+ *  heredoc data. Recursing quoteMask() over the substitution's own inner text and merging its "inside"
+ *  positions (offset-adjusted) into the outer `marks` array resolves arbitrary nesting depth through ordinary
+ *  recursion — this same function is what quoteMask() itself calls, both at the top level (outside any quote)
+ *  and from inside a double-quote scan. An unbalanced substitution or an unresolved nested quote is reported
+ *  as unterminated so the caller poisons the rest of the scan (fail toward "strip nothing"). */
+function mergeNestedSubstitution(text, at, marks) {
+  const sub = skipSubstitution(text, at);
+  const innerStart = at + 2;
+  const innerEnd = sub.balanced ? Math.max(innerStart, sub.end - 1) : sub.end;
+  const inner = quoteMask(text.slice(innerStart, innerEnd));
+  for (let p = 0; p < innerEnd - innerStart; p++) if (inner.inside(p)) marks[innerStart + p] = true;
+  return { end: sub.end, unterminated: !sub.balanced || inner.unterminated };
 }
 
 /** quoteMask(text) -> { inside(pos), unterminated } — a BASH-ONLY, whole-text (never per-line) scan of `'`/`"`
@@ -103,14 +129,27 @@ function quoteMask(text) {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
-    if (ch === '$' && text[i + 1] === '(') { i = skipSubstitution(text, i); continue; }
+    if (ch === '$' && text[i + 1] === '(') {
+      // V05 wave 2: a substitution reached OUTSIDE any quote is still its own lexical context — recurse into
+      // it (mergeNestedSubstitution) rather than merely skipping its raw text, so a fake heredoc nested inside
+      // it (in a quote of its own) is still recognised as "inside" for stripHeredocs()'s purposes.
+      const sub = mergeNestedSubstitution(text, i, marks);
+      if (sub.unterminated) { for (let k = i; k <= text.length; k++) marks[k] = true; unterminated = true; break; }
+      i = sub.end;
+      continue;
+    }
     if (ch !== "'" && ch !== '"') { i++; continue; }
     marks[i] = true;
     let j = i + 1;
     let closed = false;
     while (j < text.length) {
       // V05: a single quote suppresses `$(` too — only a double quote lets a substitution run inside it.
-      if (ch === '"' && text[j] === '$' && text[j + 1] === '(') { j = skipSubstitution(text, j); continue; }
+      if (ch === '"' && text[j] === '$' && text[j + 1] === '(') {
+        const sub = mergeNestedSubstitution(text, j, marks);
+        if (sub.unterminated) { j = text.length; break; } // unresolved nested quote -> the outer quote-open-to-end poison below fires
+        j = sub.end;
+        continue;
+      }
       if (ch === '"' && text[j] === '\\') { marks[j] = true; if (j + 1 < text.length) marks[j + 1] = true; j += 2; continue; }
       if (text[j] === ch) { marks[j] = true; closed = true; j++; break; }
       marks[j] = true;

@@ -175,6 +175,82 @@ t('withLock releases on a normal return and on a thrown error alike; the lock ne
   assert.strictEqual(fs.existsSync(file + '.lock'), false, 'released even after fn threw');
 });
 
+// ---------------------------------------------------------------------------------------------------
+console.log('\n7) V09 second Codex recheck (out-p8): ownership transitions must be ATOMIC, not check-then-act');
+console.log('   "Injected interleaving made two reclaimers both return success; another made A\'s release');
+console.log('   delete B\'s replacement. Injected token-write EIO was swallowed and left an unidentifiable lock."');
+
+t('V09.2: competing reclaimers racing the SAME stale snapshot — exactly one wins, and the loser never touches the winner\'s fresh lock', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  fs.writeFileSync(lockPath, 'stale-token');
+  const st = fs.statSync(lockPath);
+  // Two reclaimers (B, C) both independently read the SAME stale (token, mtime) snapshot before either
+  // acts — the real race Codex measured. A pre-fix check-then-act sequence lets both "win" because the
+  // compare and the replace are two separate steps; the fix must make the CLAIM itself atomic (an
+  // unconditional rename of the exact source name), so only whichever call physically executes the
+  // rename first can ever proceed — the second necessarily observes a DIFFERENT (already-replaced)
+  // lock the instant it tries to act, never the stale one it originally "saw".
+  const tokenB = once.randomToken();
+  const tokenC = once.randomToken();
+  const bWon = once.tryReclaimStaleLock(lockPath, 'stale-token', st.mtimeMs, tokenB);
+  const cWon = once.tryReclaimStaleLock(lockPath, 'stale-token', st.mtimeMs, tokenC);
+  assert.strictEqual(bWon, true, 'B (first to act) must win');
+  assert.strictEqual(cWon, false, 'C (racing the identical stale snapshot) must lose, never also succeed');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), tokenB, 'B\'s lock is completely intact — C never touched it');
+  // no stray private/temp files from either attempt
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], leftovers.join(','));
+});
+
+t('V09.2: release-vs-reclaim interleaving — A\'s release must NEVER remove B\'s live replacement lock', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const lockA = once.acquireLock(file);
+  // Simulate the exact Codex interleaving: between A deciding to release and A's release actually
+  // running, a reclaimer legitimately replaced the lock with a fresh one (B). A's own `lock` object
+  // still only knows its OWN original token — it must detect the mismatch and leave B's lock untouched.
+  const tokenB = once.randomToken();
+  fs.writeFileSync(lockPath, tokenB);
+  once.releaseLock(lockA);
+  assert.strictEqual(fs.existsSync(lockPath), true, 'B\'s lock file must still exist after A\'s stale release');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), tokenB, 'B\'s token is byte-for-byte unchanged — A\'s release never touched it');
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind by the failed release: ' + leftovers.join(','));
+});
+
+t('V09.2: a token write that fails AFTER the exclusive create succeeds FAILS acquisition outright — no unidentifiable orphan lock', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const origWriteSync = fs.writeSync;
+  let sawWrite = false;
+  fs.writeSync = function (fd, data) {
+    if (data === undefined ? false : String(data).includes(process.pid + ':')) {
+      // this is the lock-token write (randomToken() always embeds "<pid>:") — simulate the exact Codex
+      // fault: the exclusive CREATE already succeeded (the file exists, e.g. empty) but the WRITE of the
+      // owner token itself fails (EIO) — this must never be silently swallowed and treated as success.
+      sawWrite = true;
+      const err = new Error('simulated EIO during lock token write');
+      err.code = 'EIO';
+      throw err;
+    }
+    return origWriteSync.apply(fs, arguments);
+  };
+  let threw = null;
+  try {
+    once.acquireLock(file);
+  } catch (e) {
+    threw = e;
+  } finally {
+    fs.writeSync = origWriteSync;
+  }
+  assert.ok(sawWrite, 'the simulated token-write failure must actually have been exercised');
+  assert.ok(threw, 'acquireLock must FAIL (throw), never return success with an unidentifiable lock');
+  assert.strictEqual(fs.existsSync(lockPath), false, 'the caller never enters the transaction with an orphan lock — the failed create is cleaned up');
+});
+
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

@@ -27,4 +27,49 @@ function isDisprovenEvent(e) {
   return !!(e && typeof e === 'object' && e._forge_verify && e._forge_verify.proof_verified === false);
 }
 
-module.exports = { isDisprovenEvent };
+/**
+ * reviewOutcome(e) -> 'done' | 'failed' | null. ONE shared boolean-aware review-outcome contract (V24
+ * REGRESSION fix, 2026-09-24 THIRD Codex recheck, out-p8.md).
+ *
+ * PROBLEM: forge-verify.cjs's own V24 fix (out-p7.md) added `ok` to its outcome-field list and then
+ * delegated the actual verdict to forge-runcontract.cjs's `isGoedkeuring()` — but `isGoedkeuring()` is a
+ * DIFFERENT, deliberately stricter protocol (the independent-review gate) that requires an explicit textual
+ * verdict field (`review_verdict`/`verdict`/`status`/`result`/`outcome`) to be PRESENT at all; a bare
+ * `{event_type:'review_completed', ok:true}` has none of those, so `isGoedkeuring()` returned
+ * `{ok:false, reden:'geen machineleesbaar review_verdict'}` and forge-verify.cjs's `taskStatus()` regressed
+ * a previously-DONE boolean-only positive review to FAILED. app.js's own hand-mirrored `reviewOutcome()` was
+ * never changed this way and still correctly returned 'done' for the same event — the two consumers
+ * disagreed about the identical event (out-p8.md V24).
+ *
+ * This is the ONE canonical boolean-aware contract both consumers use:
+ *   - a positive TEXTUAL verdict (any of the 5 fields, case-insensitively one of pass/passed/approved/ok/
+ *     akkoord/goedgekeurd) with no `ok` field, or with `ok:true` too -> 'done';
+ *   - `ok:false` alone (no textual verdict at all) -> 'failed' — the pre-wave-2 baseline this fix restores;
+ *   - a negative/empty textual verdict -> 'failed', regardless of `ok`;
+ *   - a positive textual verdict CONTRADICTED by `ok:false` -> 'failed' (the contradiction wins, never the
+ *     more optimistic of the two signals);
+ *   - a disproven claim (log-event.cjs's own content-oracle `_forge_verify.proof_verified:false` stamp) ->
+ *     'failed', checked FIRST, before any verdict/ok reading — a refuted claim is not evidence of anything,
+ *     whatever verdict string or `ok` value it also carries;
+ *   - no outcome signal asserted at all (neither a textual verdict field nor `ok`) -> null, so the caller
+ *     falls through to its own ordinary default (a legacy/minimal event is not penalised for a field it
+ *     never had).
+ *
+ * Never throws; never true/'done'/'failed' for a non-object/null input (returns null).
+ */
+const REVIEW_OUTCOME_FIELDS = ['review_verdict', 'verdict', 'status', 'result', 'outcome'];
+const POSITIVE_REVIEW_VERDICTS = new Set(['pass', 'passed', 'approved', 'ok', 'akkoord', 'goedgekeurd']);
+function reviewOutcome(e) {
+  if (!e || typeof e !== 'object') return null;
+  if (isDisprovenEvent(e)) return 'failed';
+  const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
+  const present = REVIEW_OUTCOME_FIELDS.filter((f) => e[f] !== undefined).map((f) => norm(e[f]));
+  const hasOk = e.ok !== undefined;
+  if (!present.length && !hasOk) return null; // no outcome asserted at all — caller uses its own default
+  if (present.some((v) => v === '')) return 'failed'; // present but empty is not an approval
+  if (present.some((v) => !POSITIVE_REVIEW_VERDICTS.has(v))) return 'failed';
+  if (hasOk && e.ok !== true) return 'failed'; // ok:false always wins over a positive textual verdict
+  return 'done'; // either a positive textual verdict, or ok:true alone with no textual verdict at all
+}
+
+module.exports = { isDisprovenEvent, reviewOutcome, REVIEW_OUTCOME_FIELDS, POSITIVE_REVIEW_VERDICTS };

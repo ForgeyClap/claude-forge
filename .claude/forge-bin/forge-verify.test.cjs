@@ -1113,6 +1113,41 @@ t('EVENT-RUN-BINDING-GAP: the excluded foreign event never closed the local chec
   t('V24: the CLI exits nonzero on an ok:false-only failed review followed by agent_completed', okFalseCli.status !== 0);
 }
 
+// ================================================================================================
+// V24 REGRESSION (2026-09-24 THIRD Codex recheck, out-p8.md) — the wave-2 fix above delegated to
+// forge-runcontract.cjs's isGoedkeuring(), a DIFFERENT, stricter protocol that requires a textual verdict
+// field to be present at all — so a bare {ok:true} (no textual verdict) regressed from 'done' at the
+// original baseline to 'failed'. Fixed by delegating to forge-proof-gate.cjs's own canonical reviewOutcome().
+//
+// This EXACT fixture table is duplicated verbatim in forge-dashboard/forge-honesty.test.cjs against app.js's
+// own hand-mirrored reviewOutcome() — both consumers are asserted against the SAME data so they cannot
+// silently drift apart again the way forge-verify.cjs and app.js just did.
+// ================================================================================================
+const V24_REVIEW_OUTCOME_FIXTURES = [
+  { name: 'ok:true alone (no textual verdict) -> done (the regression this fix restores)', event: { event_type: 'review_completed', ok: true }, expect: 'done' },
+  { name: 'ok:false alone -> failed', event: { event_type: 'review_completed', ok: false }, expect: 'failed' },
+  { name: 'positive textual verdict alone -> done', event: { event_type: 'review_completed', review_verdict: 'approved' }, expect: 'done' },
+  { name: 'positive textual verdict + ok:true (agreeing) -> done', event: { event_type: 'review_completed', review_verdict: 'pass', ok: true }, expect: 'done' },
+  { name: 'positive textual verdict CONTRADICTED by ok:false -> failed', event: { event_type: 'review_completed', review_verdict: 'pass', ok: false }, expect: 'failed' },
+  { name: 'negative textual verdict ("needs fixes") -> failed', event: { event_type: 'review_completed', status: 'needs fixes' }, expect: 'failed' },
+  { name: 'disproven claim (_forge_verify.proof_verified:false) + ok:true -> failed', event: { event_type: 'review_completed', ok: true, _forge_verify: { proof_verified: false } }, expect: 'failed' },
+  { name: 'no outcome signal at all -> null (caller uses its own default)', event: { event_type: 'review_completed' }, expect: null },
+];
+for (const fx of V24_REVIEW_OUTCOME_FIXTURES) {
+  const got = V.reviewOutcome(fx.event);
+  t('V24 fixture-table (forge-verify.cjs reviewOutcome): ' + fx.name, got === fx.expect, 'got=' + JSON.stringify(got));
+}
+{
+  // end-to-end counterweight: the restored boolean-only 'done' path actually closes its paired task again
+  const okTrueReviewDir = writeEvents('run-v24-ok-true-review', [
+    ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-v24b', task: 'review the change' }),
+    ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-v24b', ok: true }),
+  ]);
+  const okTrueReview = V.verifyRun(okTrueReviewDir, {});
+  const okTrueReviewAgent = okTrueReview.agents.find((a) => a.agent === 'Review Boss');
+  t('V24 REGRESSION: a boolean-only ok:true review_completed closes its paired review_started (done, not failed)', okTrueReviewAgent.tasksOpen.length === 0);
+}
+
 // ---- V27: one completion closes ONE obligation — its own natural TASK_PAIRS pair, never ALSO an unrelated
 // closes_event_id target at the same time ----
 {

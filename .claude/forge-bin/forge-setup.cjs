@@ -224,9 +224,20 @@ function globToRegExp(glob) {
   }
   return new RegExp('^' + re + '$');
 }
+// V13 second Codex recheck (out-p8): a gitignore pattern with NO interior slash is not anchored to the
+// .gitignore's own directory at all — git treats it as if `**/` were implicitly prepended, so it only has
+// to match the FINAL path segment (basename) at ANY depth. The pre-fix matcher only ever tested the pattern
+// against the WHOLE name, so `*.key` never matched `config/deploy.key` (the exact out-p8 evidence: the
+// candidate has a slash, `^[^/]*\.key$` cannot match across it) even though real `git check-ignore` applies
+// `*.key` at every directory level. A pattern WITH an interior slash (`secrets/*`, `.env.*`  has none, but
+// e.g. `config/*.key` would) stays anchored to the full relative path, matching git's own documented rule.
 function patternMatchesName(pattern, name) {
   if (pattern.endsWith('/')) return name === pattern.slice(0, -1) || name.startsWith(pattern);
-  return globToRegExp(pattern).test(name);
+  const re = globToRegExp(pattern);
+  if (re.test(name)) return true;
+  if (pattern.includes('/')) return false; // anchored pattern — only the full relative path may match
+  const base = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
+  return base !== name && re.test(base);
 }
 
 /** fallbackDefeatingNegations(lines, patterns) -> [{pattern, negation, atLine, via:'fallback'}] — the pure-JS
@@ -255,18 +266,40 @@ function fallbackDefeatingNegations(lines, patterns) {
   return out;
 }
 
+/** parseCheckIgnoreVerboseWinner(stdout) -> {pattern} | null. `git check-ignore -v` prints exactly one line
+ *  "<source>:<linenum>:<pattern>\t<pathname>" naming the ONE rule — of EITHER polarity — that decides a
+ *  path; a NEGATION winning means the path is NOT actually ignored. Unlike plain/-q, -v's own EXIT CODE
+ *  cannot be read as ignored/not-ignored (live-verified, out-p8: exit 0 for a negation that leaves the path
+ *  un-ignored) — only the printed pattern TEXT (starting with `!` or not) says which. Returns null when
+ *  stdout has no usable line (no rule of any polarity matched at all). */
+function parseCheckIgnoreVerboseWinner(stdout) {
+  const line = String(stdout || '').split(/\r?\n/).find((l) => l.length > 0);
+  if (!line) return null;
+  const tabIdx = line.lastIndexOf('\t');
+  if (tabIdx < 0) return null;
+  const left = line.slice(0, tabIdx);
+  const m = left.match(/:(\d+):/); // separates "<source>" from "<pattern>" via the line-number field
+  if (!m) return null;
+  return { pattern: left.slice(m.index + m[0].length) };
+}
+
 /** gitDefeatingNegations(projectDir, lines, patterns) -> [{...via:'git'}] | null (null = git could not answer:
- *  not a repository, or git unavailable — caller falls back). PRINCIPLE A (verify, don't assume): for every
+ *  not a repository, or git unavailable — caller falls back). PRINCIPLE A (verify, don't assume): for EVERY
  *  `!<name>` line in the CURRENT on-disk .gitignore (the caller must have already written `lines`' content to
- *  disk — git reads the real file, not this array), ask git itself whether that EXACT literal name is still
- *  ignored overall (`git check-ignore -q --no-index`). Checking the literal negated name (not a generic
- *  per-pattern sample) is what a synthetic-sample approach would miss: `!deploy.key` only un-ignores the one
- *  file `deploy.key`, never a differently-named `*.key` file, so only asking about `deploy.key` itself can
- *  ever reveal that specific, real defeat (the exact V13 evidence). A pre-filter (patternMatchesName) skips
- *  negations that plainly cannot concern one of our own patterns, so a normal .gitignore costs at most one
- *  git call per unrelated negation it happens to contain; `!.env.example` is skipped outright (the one
- *  deliberate, wanted exception). Any git failure mid-scan discards partial results and returns null — never
- *  a partial answer presented as complete. */
+ *  disk — git reads the real file, not this array), ask git itself which rule actually decides that EXACT
+ *  literal name right now (`git check-ignore -v --no-index`) — checking the literal negated name (not a
+ *  generic per-pattern sample) is what a synthetic-sample approach would miss: `!deploy.key` only un-ignores
+ *  the one file `deploy.key`, never a differently-named `*.key` file (the exact V13 evidence).
+ *
+ *  V13 SECOND Codex recheck (out-p8): the pre-fix code pre-filtered candidates through `patternMatchesName`
+ *  BEFORE ever asking git, to decide whether a negation was worth a git call at all — for
+ *  `['*.key','!config/deploy.key']` that pre-filter's own (then-buggy) full-string-only matcher decided
+ *  `config/deploy.key` could not possibly concern `*.key` and skipped the git call entirely, returning
+ *  `{list:[],via:'git'}` even though git itself considers the nested candidate genuinely defeated. EVERY
+ *  negation candidate is now asked about — no JavaScript prefilter decides in advance whether git is even
+ *  consulted; `patternMatchesName` (now basename-aware) is used only AFTER git has confirmed a real defeat,
+ *  purely to name which of our own patterns to reinforce, never to gate the git call itself. Any git failure
+ *  mid-scan discards partial results and returns null — never a partial answer presented as complete. */
 function gitDefeatingNegations(projectDir, lines, patterns) {
   const repoProbe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectDir, encoding: 'utf8' });
   if (repoProbe.error || repoProbe.status !== 0) return null;
@@ -275,11 +308,14 @@ function gitDefeatingNegations(projectDir, lines, patterns) {
     const l = lines[i];
     if (!l.startsWith('!') || l === KEEP_NEGATION_LINE || l.length < 2) continue;
     const negName = l.slice(1);
-    const pat = patterns.find((p) => patternMatchesName(p, negName));
-    if (!pat) continue;
-    const r = spawnSync('git', ['check-ignore', '-q', '--no-index', '--', negName], { cwd: projectDir, encoding: 'utf8' });
+    const r = spawnSync('git', ['check-ignore', '-v', '--no-index', '--', negName], { cwd: projectDir, encoding: 'utf8' });
     if (r.error) return null; // git failed unexpectedly mid-scan: never report a partial result — fall back for everything
-    if (r.status === 0) continue; // some OTHER still-active rule keeps this exact name ignored — not a real defeat
+    if (r.status !== 0 && r.status !== 1) return null; // an unexpected git failure (not the documented 0/1 pair) — never partial
+    if (r.status === 1) continue; // -v: no rule of ANY polarity matched this exact path at all — nothing to blame
+    const winner = parseCheckIgnoreVerboseWinner(r.stdout);
+    if (!winner || winner.pattern !== l) continue; // some OTHER rule (a later pattern, a different negation) actually decides this path now
+    const pat = patterns.find((p) => patternMatchesName(p, negName));
+    if (!pat) continue; // this negation doesn't concern any pattern WE protect — nothing of ours to reinforce
     out.push({ pattern: pat, negation: l, atLine: i, via: 'git' });
   }
   return out;
@@ -289,10 +325,12 @@ function gitDefeatingNegations(projectDir, lines, patterns) {
  *  — a `!<name>` line sitting AFTER the pattern that is supposed to protect it defeats that protection under
  *  git's last-match-wins rule; the mere PRESENCE of our own line is not proof (the exact SECRET-CHECKPOINT
  *  evidence: existing patterns followed by negations left appended:[] and the negations untouched). V13
- *  (Codex recheck 2026-09-24): prefers asking GIT ITSELF (gitDefeatingNegations) — the one authority that can
- *  never drift from git's real wildcard/nested/`**` semantics — and falls back to the wildcard-aware
- *  fallbackDefeatingNegations ONLY when git cannot answer; `via` on the returned object says honestly which
- *  path produced the answer ('git' or 'fallback'), and every item in `list` carries its own `via` too. */
+ *  (Codex recheck 2026-09-24, hardened again out-p8): prefers asking GIT ITSELF (gitDefeatingNegations) — the
+ *  one authority that can never drift from git's real wildcard/nested/`**`/basename-at-any-depth semantics —
+ *  for EVERY negation candidate, never pre-filtered by our own matcher; falls back to the (now also
+ *  basename-aware) fallbackDefeatingNegations ONLY when git cannot answer; `via` on the returned object says
+ *  honestly which path produced the answer ('git' or 'fallback'), and every item in `list` carries its own
+ *  `via` too. */
 function findDefeatingNegations(projectDir, lines, patterns) {
   const git = gitDefeatingNegations(projectDir, lines, patterns);
   if (git) return { list: git, via: 'git' };

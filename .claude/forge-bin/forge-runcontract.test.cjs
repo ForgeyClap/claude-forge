@@ -932,5 +932,69 @@ t('5q: CLI on a stale rules file with an unevaluated BLOCKING rule exits 3 and P
   t('V25 counterweight: a real fixtures_waived event clears the union obligation regardless of the override', waivedOverridden.ok === true);
 }
 
+// ================================================================================================
+// V21/V24/V25/V26 (2026-09-24 THIRD Codex recheck, out-p8.md) — narrow regression/partial-close fixes
+// ================================================================================================
+
+// ---- V25 remaining gap: a declared web domain's SCREENSHOT EVIDENCE obligation (not just applicability)
+// must survive an unrelated/unknown CALLER override domain — the union must preserve the domain-specific
+// evidence check itself, not just which rule ids are considered applicable. ----
+{
+  const runId = 'run-v25-domain-evidence-union';
+  const fabricatedEvents = completeEvents.concat([
+    ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/nonexistent-mobile.png' }),
+  ]);
+  // declared via run.json, no real artifacts/ dir written -> the claimed screenshot does not exist on disk
+  writeRun(runId, fabricatedEvents, { 'final-report.md': '# Report\n', 'run.json': JSON.stringify({ domain: 'website' }) });
+  const declaredOnly = RC.check({ run_id: runId }, { root: TMP }); // no --domain param -> declared 'website' resolves alone
+  t('V25 evidence-union setup: the declared website domain alone is genuinely red (claimed screenshot absent on disk)', declaredOnly.ok === false && declaredOnly.missing.includes('web-responsive-evidence'));
+  const overriddenUnknown = RC.check({ run_id: runId, domain: 'unknown-audit-domain' }, { root: TMP });
+  t('V25: an unrelated/unknown caller override domain does NOT let the declared web-responsive-evidence obligation pass (evidence evaluated under the domain that actually applies, not just the caller override)', overriddenUnknown.ok === false && overriddenUnknown.missing.includes('web-responsive-evidence'));
+  t('V25: the reported domain still reflects the explicit override (caller intent stays visible)', overriddenUnknown.domain === 'unknown-audit-domain' && overriddenUnknown.domain_overridden === true);
+
+  // counterweight: a genuinely satisfied declared-domain screenshot set must still pass under an unrelated
+  // caller override — the fix must never punish a rule that is already satisfied under its own domain
+  const satisfiedEvents = completeEvents.concat([
+    ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/mobile-390.png' }),
+    ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/tablet-768.png' }),
+    ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/desktop-1440.png' }),
+  ]);
+  const satisfiedDir = writeRun(runId, satisfiedEvents, { 'final-report.md': '# Report\n', 'run.json': JSON.stringify({ domain: 'website' }) });
+  fs.mkdirSync(path.join(satisfiedDir, 'artifacts'), { recursive: true });
+  for (const name of ['mobile-390.png', 'tablet-768.png', 'desktop-1440.png']) {
+    fs.writeFileSync(path.join(satisfiedDir, 'artifacts', name), 'fake-png-bytes-' + name);
+  }
+  const satisfiedOverridden = RC.check({ run_id: runId, domain: 'unknown-audit-domain' }, { root: TMP });
+  t('V25 counterweight: a genuinely satisfied declared-domain screenshot set still passes under an unrelated caller override', satisfiedOverridden.ok === true && satisfiedOverridden.satisfied.includes('web-responsive-evidence'));
+}
+
+// ---- V21 remaining gap: the module-unavailable short-circuit must not precede the arming check.
+// loadManifestTool() does `require('./forge-manifest.cjs')` RELATIVE to forge-runcontract.cjs's OWN
+// directory — copying forge-runcontract.cjs into an isolated temp dir WITHOUT a forge-manifest.cjs sibling
+// makes that require() genuinely throw (real MODULE_NOT_FOUND, not a stub), a hermetic and faithful
+// reproduction of "the loader module itself is unavailable" that never touches the real project file. ----
+{
+  const NOMOD_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runcontract-nomanifestmod-'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(NOMOD_DIR, 'forge-runcontract.cjs'));
+  // manifestCompleteness() itself never touches loadVerifyTool() — only loadManifestTool() needs to be
+  // genuinely missing for this test; no other sibling file needs copying alongside.
+  const RC_NOMOD = require(path.join(NOMOD_DIR, 'forge-runcontract.cjs'));
+
+  const runId = 'run-v21-module-unavailable-after-arm';
+  const armedLines = completeEvents.concat([ev({ event_type: 'manifest_armed', agent: 'orchestrator', note: 'manifest arm: 1 work package(s) armed [wp-v21b]' })]);
+  writeRun(runId, armedLines, { 'final-report.md': '# Report\n' }); // no real manifest.json — irrelevant here: the TOOL MODULE itself is what's missing
+  const viaMissingModule = RC_NOMOD.manifestCompleteness(TMP, runId, armedLines.map((l) => JSON.parse(l)), new Set(['owner']));
+  t('V21: an armed run whose manifest TOOL MODULE cannot be required stays applicable:true, ok:false (never silently not-applicable)', viaMissingModule.applicable === true && viaMissingModule.ok === false && /unavailable/.test(viaMissingModule.reason || ''));
+
+  // counterweight: the SAME missing module on a run that never armed anything stays not-applicable — the
+  // fix must not turn "module unavailable" into a universal red, only an armed-and-unverifiable one.
+  const neverArmedRunId = 'run-v21-never-armed-missing-module';
+  writeRun(neverArmedRunId, completeEvents, { 'final-report.md': '# Report\n' });
+  const neverArmedViaMissingModule = RC_NOMOD.manifestCompleteness(TMP, neverArmedRunId, completeEvents.map((l) => JSON.parse(l)), new Set(['owner']));
+  t('V21 counterweight: the SAME missing module on a never-armed run stays not-applicable, not red', neverArmedViaMissingModule.applicable === false && neverArmedViaMissingModule.ok === true);
+
+  try { fs.rmSync(NOMOD_DIR, { recursive: true, force: true }); } catch { }
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

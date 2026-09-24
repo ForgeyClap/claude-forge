@@ -224,6 +224,13 @@ try {
   const r5 = setup.findDefeatingNegations(v13Fallback, ['**/*.pem', '!nested/dir/safe.pem'], ['**/*.pem']);
   t('V13 (fallback): a best-effort `**` (cross-directory) pattern is understood, not just single-segment `*`',
     r5.list.some((d) => d.pattern === '**/*.pem'), JSON.stringify(r5));
+  // V13.2 (out-p8): a slashless pattern matches at ANY depth (git treats it as if `**/` were implicitly
+  // prepended) — the fallback matcher needs the SAME basename-aware fix the git-backed path needs, since it
+  // shares patternMatchesName. Without it `*.key` never matched the nested candidate `config/deploy.key` at
+  // all (only an exact full-string match was ever tried).
+  const r6 = setup.findDefeatingNegations(v13Fallback, ['*.key', '!config/deploy.key'], ['*.key']);
+  t('V13.2 (fallback, no repo): a slashless pattern (`*.key`) defeated by a NESTED negation (`!config/deploy.key`) is detected (the exact out-p8 evidence, fallback path)',
+    r6.via === 'fallback' && r6.list.some((d) => d.pattern === '*.key' && d.negation === '!config/deploy.key'), JSON.stringify(r6));
 } finally {
   try { fs.rmSync(v13Fallback, { recursive: true, force: true }); } catch { /* best effort */ }
 }
@@ -279,6 +286,42 @@ try {
       pr.ok === true && pr.negation_check_via === 'git' && pr.reinforced.some((d) => d.pattern === '*.key'), JSON.stringify(pr));
     t('  ...and git now confirms deploy.key IS ignored again after the reinforcement',
       spawnSync('git', ['check-ignore', '-q', '--', 'deploy.key'], { cwd: v13Git }).status === 0);
+
+    // ---- V13 second Codex recheck (out-p8): "findDefeatingNegations passes ALL candidate paths to git
+    // check-ignore -v --no-index — no JavaScript prefilter that drops nested candidates. Codex's fixture
+    // ['*.key','!config/deploy.key'] with candidate config/deploy.key returned {list:[], via:'git'} because
+    // the matcher discarded the nested candidate before git saw it; git's slashless *.key applies to
+    // basenames at any depth." ----
+    fs.writeFileSync(giFile, '*.key\n!config/deploy.key\n');
+    fs.mkdirSync(path.join(v13Git, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(v13Git, 'config', 'deploy.key'), 'secret');
+    fs.writeFileSync(path.join(v13Git, 'other.key'), 'x');
+    const linesNested = fs.readFileSync(giFile, 'utf8').split(/\r?\n/).map((l) => l.trim());
+    const rNested = setup.findDefeatingNegations(v13Git, linesNested, ['*.key']);
+    t('V13.2 (the EXACT out-p8 evidence): a slashless pattern (`*.key`) defeated by a NESTED negation (`!config/deploy.key`) is detected via git — no JS prefilter drops it before git is even asked (used to return {list:[],via:"git"})',
+      rNested.via === 'git' && rNested.list.some((d) => d.pattern === '*.key' && d.negation === '!config/deploy.key'), JSON.stringify(rNested));
+    t('  ...proven independently: git itself confirms config/deploy.key is NOT ignored while other.key still IS',
+      spawnSync('git', ['check-ignore', '-q', '--no-index', '--', 'config/deploy.key'], { cwd: v13Git }).status === 1
+      && spawnSync('git', ['check-ignore', '-q', '--no-index', '--', 'other.key'], { cwd: v13Git }).status === 0);
+
+    // End-to-end: repair the exact nested fixture through protectSecrets(), then re-run checkpoint-scan on
+    // the same candidate — it must now be ACCEPTED (no longer blocked), proven with a REAL temp git repo,
+    // never a code read alone.
+    fs.writeFileSync(giFile, [...setup.REQUIRED_GITIGNORE_LINES, ...setup.CHECKPOINT_SECRET_LINES, setup.KEEP_NEGATION_LINE, '!config/deploy.key'].join('\n') + '\n');
+    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: v13Git });
+    spawnSync('git', ['config', 'user.name', 'test'], { cwd: v13Git });
+    const beforeRepair = setup.scanCheckpointSecrets(v13Git);
+    t('V13.2 end-to-end (before repair): the untracked nested candidate is BLOCKED — the negation genuinely defeats it right now',
+      beforeRepair.ok === false && beforeRepair.blocked.some((b) => b.path === 'config/deploy.key'), JSON.stringify(beforeRepair));
+    const prNested = setup.protectSecrets(v13Git);
+    t('V13.2 end-to-end: protectSecrets reinforces *.key after the real nested `!config/deploy.key` negation, via:"git"',
+      prNested.ok === true && prNested.negation_check_via === 'git' && prNested.reinforced.some((d) => d.pattern === '*.key' && d.negation === '!config/deploy.key'),
+      JSON.stringify(prNested));
+    t('  ...and git now confirms config/deploy.key IS ignored again after the repair',
+      spawnSync('git', ['check-ignore', '-q', '--', 'config/deploy.key'], { cwd: v13Git }).status === 0);
+    const afterRepair = setup.scanCheckpointSecrets(v13Git);
+    t('V13.2 end-to-end (after repair): the SAME checkpoint scan now ACCEPTS the candidate — no longer blocked',
+      afterRepair.ok === true && afterRepair.blocked.every((b) => b.path !== 'config/deploy.key'), JSON.stringify(afterRepair));
   } else {
     console.log('  skip V13 git-backed probes (git not available)');
   }

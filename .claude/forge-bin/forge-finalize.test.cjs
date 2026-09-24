@@ -529,6 +529,73 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
   try { fs.rmSync(GITROOT, { recursive: true, force: true }); } catch { }
 }
 
+// ================================================================================================
+// 19) V22 REGRESSION (2026-09-24 THIRD Codex recheck, out-p8.md) — evaluateAcceptance() must compare the
+//     CURRENT evidence's OWN commit (nuSet.commit) against receipt.code_commit directly, independent of the
+//     separate live-HEAD-vs-receipt.code_commit drift check further below. A receipt whose code_commit field
+//     is hand-edited to equal the CURRENT HEAD, while the evidence set (gate-evidence.json — and therefore the
+//     still-matching digest) genuinely names an OLDER commit, must be refused by both check() and a repeat
+//     finalize() despite a green re-run contract and a HEAD that "matches" the (forged) receipt field.
+// ================================================================================================
+{
+  const GITROOT2 = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-git-v22-'));
+  fs.mkdirSync(path.join(GITROOT2, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT2, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT2, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT2, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT2, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT2, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT2, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const git2 = (...args) => spawnSync('git', args, { cwd: GITROOT2, encoding: 'utf8' });
+  git2('init', '-q');
+  git2('config', 'user.email', 'test@example.com');
+  git2('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(GITROOT2, 'seed.txt'), 'seed\n');
+  git2('add', '.');
+  git2('commit', '-q', '-m', 'seed');
+  const headA = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT2, encoding: 'utf8' }).stdout.trim();
+  const noGit2 = headA === '' || !/^[0-9a-f]{40}$/i.test(headA);
+  if (noGit2) {
+    console.log('  SKIP 19 V22-REGRESSION: no working `git` in this environment — cannot exercise a real HEAD change');
+  } else {
+    const RUN = 'fin-v22-commit-forgery';
+    const gitLog2 = (type, extra) => { const d = path.join(GITROOT2, '.claude', 'forge-runs', RUN); fs.mkdirSync(d, { recursive: true });
+      const f = path.join(d, 'gate-evidence.json');
+      if (!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify({ run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: headA, worktree_clean: true, stable: true } }] }));
+      return spawnSync(process.execPath, [path.join(GITROOT2, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    };
+    gitLog2('run_started', { note: 's' });
+    gitLog2('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_GIT2 = require(path.join(GITROOT2, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const setup = FIN_GIT2.finalize(GITROOT2, RUN);
+    t('19 setup: finalize succeeds with evidence pinned to commit A (current HEAD at the time)', setup.ok === true && setup.receipt.code_commit === headA, JSON.stringify(setup).slice(0, 200));
+
+    // advance real HEAD to B WITHOUT touching gate-evidence.json (still genuinely names commit A) or events.jsonl
+    fs.writeFileSync(path.join(GITROOT2, 'seed2.txt'), 'seed2\n');
+    git2('add', '.');
+    git2('commit', '-q', '-m', 'a real second commit');
+    const headB = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT2, encoding: 'utf8' }).stdout.trim();
+
+    // forge the RECEIPT's own code_commit field to equal the NEW current HEAD (B) — the digest/evidence set
+    // itself is untouched (still genuinely commit A), so the forged claim is purely in this plain field.
+    const receiptPath = FIN_GIT2.receiptFileOf(GITROOT2, RUN);
+    const realReceipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    t('19 setup: the real receipt is genuinely pinned to commit A before forgery', realReceipt.code_commit === headA);
+    fs.writeFileSync(receiptPath, JSON.stringify(Object.assign({}, realReceipt, { code_commit: headB }), null, 2));
+
+    const forgedCheck = FIN_GIT2.check(GITROOT2, RUN);
+    t('V22 REGRESSION: check() REFUSES a receipt whose code_commit was forged to match current HEAD while the evidence still names a different commit', forgedCheck.verdict === 'STALE', JSON.stringify(forgedCheck).slice(0, 240));
+    t('V22 REGRESSION: the refusal names the commit mismatch, not a generic reason', /commit/.test(forgedCheck.reason || ''), forgedCheck.reason);
+
+    const forgedFinalize = FIN_GIT2.finalize(GITROOT2, RUN);
+    t('V22 REGRESSION: a repeat (idempotent-shaped) finalize() ALSO refuses the commit-forged receipt', forgedFinalize.ok === false, JSON.stringify(forgedFinalize).slice(0, 240));
+  }
+  try { fs.rmSync(GITROOT2, { recursive: true, force: true }); } catch { }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }

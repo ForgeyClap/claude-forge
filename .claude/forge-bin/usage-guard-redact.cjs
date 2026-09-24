@@ -55,11 +55,27 @@ function transportErrorCode(e) {
   return 'Error';
 }
 
-function readMap(mapFile) {
+/** readMapResult(mapFile) -> { ok:true, map, absent:boolean } | { ok:false, error }. GUARD-ACCOUNT-STABILITY,
+ *  second recheck (V14, 2026-09-24): distinguishes "the map does not exist YET" (ENOENT on the read — a
+ *  genuinely fresh install, safe to treat as an empty map and mint the first entry) from "the map could
+ *  NOT be read for any other reason" (EACCES, EISDIR, a SyntaxError from malformed JSON, or valid JSON
+ *  that is not a plain object) — a real failure that must NEVER be treated as "no entry yet", because we
+ *  cannot tell whether fp already had a persisted label sitting in the unreadable content. Never throws. */
+function readMapResult(mapFile) {
+  let raw;
   try {
-    const j = JSON.parse(fs.readFileSync(mapFile, 'utf8'));
-    return j && typeof j === 'object' && !Array.isArray(j) ? j : {};
-  } catch { return {}; }
+    raw = fs.readFileSync(mapFile, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { ok: true, map: {}, absent: true };
+    return { ok: false, error: e };
+  }
+  try {
+    const j = JSON.parse(raw);
+    if (j && typeof j === 'object' && !Array.isArray(j)) return { ok: true, map: j, absent: false };
+    return { ok: false, error: new Error('account map is valid JSON but not a plain object') };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
 }
 function writeMap(mapFile, map) {
   try {
@@ -87,20 +103,34 @@ function fallbackLabel(fp, mapFile) {
 
 /** resolveLocalAccountLabel(fp, opts) -> { label, isNew, persisted } | null (fp falsy/non-string).
  *  opts.mapFile: the local mapping file path (REQUIRED for persistence across process restarts — the
- *  whole point of account-switch detection). Never throws. GUARD-ACCOUNT-STABILITY (V14, 2026-09-24): the
- *  RANDOM, incrementing "account-N-hex" label is only ever returned when it was ACTUALLY persisted this
- *  call (self-healing: a corrupt-but-writable map is repaired in place). The instant persistence fails for
- *  ANY reason — the map could not be read for a reason other than "does not exist yet", the write of the
- *  new mapping failed, or the rename that publishes it failed — every subsequent call for the SAME (fp,
- *  mapFile) returns the SAME deterministic fallbackLabel() instead of a fresh random one, so a sustained
- *  persistence failure degrades to "one stable local label", never "a new identity every call". Omitting
- *  mapFile entirely is the same contract with a fixed key, so even that path is stable within a run. */
+ *  whole point of account-switch detection). Never throws. GUARD-ACCOUNT-STABILITY (V14, first fix
+ *  2026-09-24, HARDENED on second Codex recheck 2026-09-24): the RANDOM, incrementing "account-N-hex"
+ *  label is only ever returned/attempted when the map was ACTUALLY READABLE this call — self-healing
+ *  ("mint + persist a fresh entry") only ever applies to the "map does not exist YET" case (readMapResult's
+ *  `absent:true`, a genuinely fresh install), never to "the map exists but could not be read" (EACCES,
+ *  EISDIR, malformed JSON). The second recheck's reproduction: a map that is UNREADABLE but whose
+ *  write+rename WOULD still succeed (e.g. a write-only file) used to fall into the old code's blanket
+ *  `catch { return {} }`, look identical to "absent", mint a BRAND NEW random label, persist it
+ *  (overwriting the one entry we could not prove was already there), and repeat — a NEW random identity on
+ *  every single call despite "successfully" persisting each time, exactly the mid-check "account switched"
+ *  false-positive V14 was meant to close. The fix: on a genuine READ FAILURE (not absence), go straight to
+ *  the deterministic fallback and NEVER attempt a write — we cannot tell whether fp already has a real
+ *  entry in the unreadable content, so writing a fresh single-entry replacement risks both a false identity
+ *  churn AND silently destroying every OTHER account's mapping. Write failure and rename failure (map WAS
+ *  readable) keep their existing, already-correct fallback behaviour unchanged. Omitting mapFile entirely
+ *  is the same contract with a fixed key, so even that path is stable within a run. */
 function resolveLocalAccountLabel(fp, opts) {
   if (!fp || typeof fp !== 'string') return null;
   const o = opts || {};
   const mapFile = o.mapFile;
   if (!mapFile) return { label: fallbackLabel(fp, null), isNew: true, persisted: false };
-  const map = readMap(mapFile);
+  const r = readMapResult(mapFile);
+  if (!r.ok) {
+    // V14 (second recheck): a genuine read failure — never "absent" — must never attempt a write. See the
+    // function doc comment above for the full rationale.
+    return { label: fallbackLabel(fp, mapFile), isNew: false, persisted: false };
+  }
+  const map = r.map;
   if (typeof map[fp] === 'string' && map[fp]) return { label: map[fp], isNew: false, persisted: true };
   const label = 'account-' + (Object.keys(map).length + 1) + '-' + crypto.randomBytes(3).toString('hex');
   const persisted = writeMap(mapFile, Object.assign({}, map, { [fp]: label }));

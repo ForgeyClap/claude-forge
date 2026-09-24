@@ -428,6 +428,91 @@ t('V02 counterfactual: an ambiguous/glued-quote segment that does NOT plausibly 
 });
 
 // ---------------------------------------------------------------------------
+// V02 wave 2 (codex-recheck 2026-09-24, second independent pass) — the real, SUPPORTED value-taking
+// forge-config-cli.cjs options (`--lang`, `--run`, `--flag`) used to be mis-consumed by the old hand-rolled
+// flag stripper (it only ever handled flags that take NO value), so `set --lang en gate-hook off` mis-derived
+// key="en" instead of "gate-hook" and slipped through as permission. Fixed by delegating parsing to the REAL
+// forge-config-cli.cjs::parseArgv() instead of a second, hand-duplicated option table.
+// ---------------------------------------------------------------------------
+console.log('\n2c-ter) V02 wave 2 — every real value-taking forge-config-cli.cjs option still blocks self-disable');
+
+t('V02 wave 2: --lang between the verb and the key still blocks ("set --lang en gate-hook off")', () => {
+  const r = spawnHook(bash(CFG + ' set --lang en gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02 wave 2: --run still blocks ("set --run some-run-id gate-hook off")', () => {
+  const r = spawnHook(bash(CFG + ' set --run some-run-id gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02 wave 2: --flag k=v still blocks ("set --flag foo=bar gate-hook off")', () => {
+  const r = spawnHook(bash(CFG + ' set --flag foo=bar gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02 wave 2: a value-taking option placed AFTER both positionals still blocks ("set gate-hook off --lang en")', () => {
+  const r = spawnHook(bash(CFG + ' set gate-hook off --lang en'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02 wave 2: unset with --run still blocks ("unset --run x gate-hook")', () => {
+  const r = spawnHook(bash(CFG + ' unset --run x gate-hook'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02 wave 2 counterfactual: turning gate-hook ON (a harmless, non-disabling mutation) is never blocked, with or without --lang', () => {
+  for (const cmd of [CFG + ' set gate-hook on', CFG + ' set --lang en gate-hook on', CFG + ' set gate-hook aan']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 0, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr);
+  }
+});
+
+t('V02 wave 2 counterfactual: a real, unrelated forge-config.cjs mutation (not gate-hook) is never blocked, even mixed with --lang/--flag', () => {
+  for (const cmd of [CFG + ' set language nl', CFG + ' set --lang en some-other-key 5', CFG + ' get gate-hook']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 0, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr);
+  }
+});
+
+t('V02 wave 2: a flag landing in the SUBCOMMAND slot ("--json set gate-hook off ...") is untrustworthy, not silently safe, and falls through to the ambiguous refusal', () => {
+  const r = spawnHook(bash(CFG + ' --json set gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02 wave 2: the once-exemption still passes the hook even with --lang placed BEFORE the key (still exactly the once-shape otherwise)', () => {
+  // --lang disqualifies the once-exemption (S05: the shape must be EXACT), so this must be a REAL block —
+  // proves --lang is actually consumed as a flag (extraFlags:true) rather than silently ignored either way.
+  const r = spawnHook(bash(CFG + ' set --lang en gate-hook off --once "ja, doe het"'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('DRIFT CANARY: forge-config-cli.cjs still exports parseArgv, and it still parses every option this hook depends on the way the hook assumes', () => {
+  const cli = require('./forge-config-cli.cjs');
+  assert.strictEqual(typeof cli.parseArgv, 'function', 'forge-gate-hook.cjs hard-depends on this export; if it disappears, the hook must be updated in the SAME change');
+  const a1 = cli.parseArgv(['set', '--lang', 'en', 'gate-hook', 'off']);
+  assert.deepStrictEqual(a1.pos, ['gate-hook', 'off'], 'a --lang before the positionals must not shift them');
+  assert.strictEqual(a1.lang, 'en');
+  const a2 = cli.parseArgv(['set', 'gate-hook', 'off', '--run', 'x']);
+  assert.deepStrictEqual(a2.pos, ['gate-hook', 'off'], 'a --run AFTER the positionals must not be swallowed into them');
+  const a3 = cli.parseArgv(['set', '--flag', 'k=v', 'gate-hook', 'off']);
+  assert.deepStrictEqual(a3.pos, ['gate-hook', 'off']);
+  assert.deepStrictEqual(a3.flags, ['k=v']);
+  const a4 = cli.parseArgv(['set', 'gate-hook', 'off', '--once', 'ja']);
+  assert.strictEqual(a4.once, 'ja');
+  assert.deepStrictEqual(a4.pos, ['gate-hook', 'off']);
+  const a5 = cli.parseArgv(['--json', 'set', 'gate-hook', 'off']);
+  assert.strictEqual(a5.cmd, '--json', 'a leading flag lands in argv[0] (cmd) exactly like the real CLI — the hook must not trust this shape');
+});
+
+// ---------------------------------------------------------------------------
 // 3) the gate-hook setting (forge-config.cjs soft-require; FORGE_PROJECT_ROOT seam)
 // ---------------------------------------------------------------------------
 console.log('\n3) gate-hook setting — off means silent, a missing/damaged config means the default (ON)');
@@ -464,6 +549,7 @@ t('forge-config.cjs ABSENT -> the hook still blocks (copied hook + classifier, n
   fs.mkdirSync(cfgDir, { recursive: true });
   fs.copyFileSync(HOOK, path.join(bin, 'forge-gate-hook.cjs'));
   fs.copyFileSync(path.join(__dirname, 'forge-actiongate.cjs'), path.join(bin, 'forge-actiongate.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-actiongate-position.cjs'), path.join(bin, 'forge-actiongate-position.cjs'));
   fs.copyFileSync(gate.CONFIG_PATH, path.join(cfgDir, 'hard-gates.json'));
   assert.ok(!fs.existsSync(path.join(bin, 'forge-config.cjs')), 'fixture must lack forge-config.cjs');
   const r = spawnHook(bash('git checkout .'), { hookPath: path.join(bin, 'forge-gate-hook.cjs'), projectRoot: root });
@@ -475,7 +561,7 @@ t('M2: hard-gates.json MISSING (classifier cannot load) -> destructive verbs blo
   const root = path.join(TMP, 'no-hard-gates');
   const bin = path.join(root, '.claude', 'forge-bin');
   fs.mkdirSync(bin, { recursive: true });
-  for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(bin, f));
+  for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-actiongate-position.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(bin, f));
   const hookAt = path.join(bin, 'forge-gate-hook.cjs');
   const r = spawnHook(bash('rm -rf ./x'), { hookPath: hookAt, projectRoot: root });
   assert.strictEqual(r.status, 2, 'fail-CLOSED fallback: exit ' + r.status + ' ' + r.stderr);
@@ -900,7 +986,7 @@ const TP = path.join(TP_PARENT, 'proj');
 const SIBLING = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gate-sibling-'));
 fs.mkdirSync(path.join(TP, '.claude', 'forge-bin'), { recursive: true });
 fs.mkdirSync(path.join(TP, '.claude', 'config', 'orchestration'), { recursive: true });
-for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(TP, '.claude', 'forge-bin', f));
+for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-actiongate-position.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(TP, '.claude', 'forge-bin', f));
 fs.copyFileSync(gate.CONFIG_PATH, path.join(TP, '.claude', 'config', 'orchestration', 'hard-gates.json'));
 const fwd = (p) => p.replace(/\\/g, '/');
 function spawnInTmpProject(command, claudeProjectDir) {
@@ -1037,6 +1123,54 @@ t('the data pass-through is not a scratch pass: stripping leaves the real comman
   const r = data.stripInertData("git commit -m 'never rm -rf' && rm -rf ./src", 'Bash');
   assert.strictEqual(r.regions, 1);
   assert.ok(r.text.includes('&& rm -rf ./src') && !r.text.includes('never'), r.text);
+});
+
+// ---------------------------------------------------------------------------
+// V05 wave 2 (codex-recheck 2026-09-24, second independent pass) — a fake heredoc hidden inside a
+// single-quoted literal NESTED inside a command substitution NESTED inside a double-quoted string escaped
+// wave-1's fix entirely: quoteMask() only ever SKIPPED a substitution's raw text wholesale when scanning for
+// an enclosing quote's own closing character, never looked inside it, so the nested single quote's own
+// "inside" state was never recorded anywhere. Fixed via mergeNestedSubstitution() recursing quoteMask() over
+// each substitution's own inner text.
+// ---------------------------------------------------------------------------
+console.log('\n4c-ter) V05 wave 2 — a fake heredoc nested inside a quoted OR bare command substitution');
+
+t('V05 wave 2: a fake heredoc inside a single quote inside a substitution inside a DOUBLE-quoted string is not stripped', () => {
+  const text = "echo \"$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)\"";
+  const r = data.stripInertData(text, 'Bash');
+  assert.strictEqual(r.regions, 0, 'nothing should be recognised as a real heredoc here');
+  assert.ok(r.text.includes('rm -rf ./src'), 'the destructive line must survive: ' + r.text);
+});
+
+t('V05 wave 2: the same shape with a BARE (unquoted, top-level) substitution is also not stripped', () => {
+  const text = "echo $(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)";
+  const r = data.stripInertData(text, 'Bash');
+  assert.strictEqual(r.regions, 0);
+  assert.ok(r.text.includes('rm -rf ./src'), 'the destructive line must survive: ' + r.text);
+});
+
+t('V05 wave 2: quoteMask() reports the nested single-quote span as "inside" even when it sits inside a substitution', () => {
+  const text = "echo \"$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)\"";
+  const mask = data.quoteMask(text);
+  assert.strictEqual(mask.unterminated, false);
+  const catLineIdx = text.indexOf('cat <<EOF');
+  assert.ok(mask.inside(catLineIdx + 3), 'the fake heredoc marker must be reported INSIDE the nested single quote');
+});
+
+t('V05 wave 2 counterfactual: a REAL heredoc nested inside a substitution inside double quotes still resolves (the Claude Code commit form stays intact)', () => {
+  const legit = 'git commit -m "$(cat <<\'EOF\'\nreal message body here\nEOF\n)"';
+  const r = data.stripInertData(legit, 'Bash');
+  assert.strictEqual(r.regions, 1, 'the real heredoc body must still be recognised and stripped as inert commit data');
+  assert.ok(!r.text.includes('real message body here'), r.text);
+  const mask = data.quoteMask('echo "$(cat <<\'EOF\'\nreal heredoc content\nEOF\n)"');
+  assert.strictEqual(mask.unterminated, false);
+});
+
+t('V05 wave 2: the same fixture replayed through the real spawned hook is BLOCKED (destructive-delete), not silently allowed', () => {
+  const text = "echo \"$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)\"";
+  const r = spawnHook(bash(text));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (destructive-delete'), r.stderr.split('\n')[0]);
 });
 
 // ---------------------------------------------------------------------------

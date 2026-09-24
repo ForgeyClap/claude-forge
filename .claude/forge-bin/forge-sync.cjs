@@ -423,6 +423,12 @@ const SYSTEM = [
   // disproven event through ONE gate; wp-g4 split usage-guard's state/lock layer (V15) into usage-guard-state.cjs.
   // All three are already covered by SYSTEM_GLOB below — pinned here explicitly too anyway.
   'forge-bin/forge-config-once.test.cjs', 'forge-bin/forge-proof-gate.cjs', 'forge-bin/usage-guard-state.cjs',
+  // wave 3 (same re-check, verification pass p8): wp-h2 gave the state/lock layer its own dedicated test
+  // (V15 fenced lock protocol, stale-reclaim schedules). Already covered by SYSTEM_GLOB below — pinned too.
+  'forge-bin/usage-guard-state.test.cjs',
+  // wave 3, wp-h1: the command-position helper (opener stripping, later case arms / PowerShell branches, escaped
+  // substitution context) split out of forge-actiongate.cjs to keep it under 500 lines. SYSTEM_GLOB-covered — pinned too.
+  'forge-bin/forge-actiongate-position.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by
