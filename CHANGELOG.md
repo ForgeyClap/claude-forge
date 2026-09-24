@@ -151,9 +151,13 @@ evidence or deferred with a reason before this release went out. The code fixes:
 - **Gateway tests are hermetic by default.** `models`, `routes-wp3` and `routes-wp6` no longer make a real NVIDIA
   `GET /models` when a key is present; the live variant is behind `FORGE_GATEWAY_LIVE_NVIDIA=1`.
 - **Documentation promises corrected after the Codex recheck** (six `gpt-6-astra` xhigh passes over everything since
-  2.4.0; the code findings are listed under Security below): the beginner promise now says which gates are enforced by
-  the hook (destructive deletes, kill-by-name, git commands that discard work) and which are rules checked by a text
-  classifier (deploy, push, spend, DNS, production, credentials, outbound, writes outside the project); the plugin
+  2.4.0; the code findings are listed under Security below): the beginner promise (English and Dutch, now saying the same) says which gates are enforced by
+  the hook (destructive deletes, kill-by-name, git commands that discard work, commands that hide what they run)
+  and that the hook is a classifier, not a proof — what it does not recognise it does not stop — with the measured
+  limits in a new `docs/SETTINGS.md` section "What the gate hook stops, and what it cannot see"; the other gates are
+  rules checked by a text classifier (deploy, push, spend, DNS, production, credentials, outbound, writes outside the
+  project); every remaining "three gates" sentence (project `CLAUDE.md`, `precedence.md`, `HOOKS_OPT_IN.md`, the
+  forge-core skill copies, the unsafe-advice register) was brought to four with the same caveat; the plugin
   table says the LITE install writes nothing but its agents still edit your project when you ask them to build; the
   install guide no longer claims "no service phones home" — it names the usage guard's calls to `api.anthropic.com`,
   the optional Paperclip `npx` download and the on-request `setup-pre-commit` npm use; Node 20.19+/22.12+ is stated

@@ -341,6 +341,45 @@ The usage guard is the only setting that is on by default and reads a credential
 
 More about limits and cost: [TOKEN-USAGE.md](TOKEN-USAGE.md).
 
+## What the gate hook stops, and what it cannot see
+
+The `gate-hook` setting is the only one that blocks a command before it runs, so its limits are spelled out here.
+It is a **classifier over the command text**, not a proof: what it does not recognise, it does not stop.
+
+**It stops (exit 2, with a plain reason in Dutch and English):**
+
+- recursive deletes, with or without a force flag, in Bash and PowerShell (`rm -r`, `Remove-Item -Recurse`, the
+  legacy `rd /s` / `rmdir /s`), except provable cleanups inside `_scratch`, `node_modules`, `dist` or the system
+  temp folder outside your project;
+- killing programs by name (`taskkill /IM`, `pkill`, `Stop-Process -Name`, also through `pgrep`/`xargs`);
+- git commands that throw away uncommitted work (`git reset --hard`, `git checkout .`, `git restore <path>`,
+  `git switch -f`, forced `git clean`, forced worktree removal);
+- commands that hide what they run: `eval`, `iex` / `Invoke-Expression` as the command of a statement, `sh -c` /
+  `bash -c` / `pwsh -c` on a variable or substitution, a pipe straight into a shell, an encoded PowerShell command;
+- the assistant's own attempt to switch this setting off, in the spellings the hook recognises.
+
+**It cannot see (named, tested gaps — the full list lives in `.claude/config/orchestration/hard-gates.json`
+under `_not_caught`, and each one is executed by the test suite so the list cannot go stale):**
+
+- a dangerous command **inside a file** it is asked to run: `npm run clean`, `./scripts/reset.sh`, a git hook, a
+  `Makefile` target, `pwsh ./tools/wipe.ps1` — the hook sees the innocent-looking invocation, not the file;
+- a command **built at runtime** whose dangerous word is never in the text: the target held in a variable fires
+  only on the flags, a whole command in a variable fires only through the `opaque-exec` shapes above;
+- **other interpreters**: a data stream piped into `node` or `python` as a script, a fully literal
+  `sh -c "echo hi"`, an encoded payload reaching PowerShell by any route other than the `-EncodedCommand` flag;
+- a bare `git checkout <path>` **without `--`** (it looks exactly like a branch switch), the PowerShell `kill -n`
+  alias, mirroring and overwriting tools (`robocopy /MIR`, `rsync --delete`), truncation and raw device writes
+  (`dd`, `mkfs`);
+- **anything that is not a shell command**: the Write and Edit tools, a symlink or junction created inside the
+  project that points outside it, a spawned service;
+- **who typed an approval**: a one-off `--once "<words>"` must quote you, covers exactly one command and expires
+  within 10 minutes, but the hook cannot verify that you were the one who typed the words — read the approval
+  line Claude shows before the command runs.
+
+When the hook cannot judge a call at all (unreadable input, a damaged config, a classifier error) it exits 1 and
+says so: visible, not blocking, never a silent pass. The measured coverage and every known limit are kept
+current in `HOOKS_OPT_IN.md` (section 6, "Honest limits") in the project's `.claude/config/orchestration/`.
+
 ---
 
 <sub>Source of truth: `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` (36 settings, 7 locked rules),
