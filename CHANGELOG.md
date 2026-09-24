@@ -129,6 +129,11 @@ a claim-by-claim consistency check of the docs). Everything they found was fixed
   `forge-intake` carry the build-by-default paragraph.
 - Removed from the distribution: `maand-sweep.cmd` + its prompt (an unattended `bypassPermissions` sweep over YouTube
   content), the author's dashboard screenshots, and the runtime marker `.claude/.forge-snapshot-due.json` is ignored.
+- **Windows vs macOS/Linux, side by side.** `AI-INSTALL.md §2a` and the README now carry one decision table — detect the
+  OS first, then stay in that column: installer file, clone-and-run and one-liner forms, unattended/dry-run/partial flags
+  (`-Yes`/`--yes`, `-DryRun`/`--dry-run`, …), where the global core lands (`%USERPROFILE%\.claude` vs `~/.claude`), the
+  identical verification command, the `.cmd`/`.ps1` vs `.sh` wrappers, the home-directory refusal, and what never to
+  mix (`install.sh` in PowerShell, `install.ps1` in bash).
 - `forge-doctor.test.cjs` no longer fails on the dev tree after a precompact hook writes its own marker (see above).
 
 ### Changed — beginner-first (Part IV of the audit)

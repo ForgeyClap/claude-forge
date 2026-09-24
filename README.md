@@ -62,7 +62,20 @@ curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/instal
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.ps1 | iex"
 ```
 
-**Run either one-liner from inside your project folder** (`cd my-project` first): the installer puts the project payload in the *current* folder and refuses to run in your home directory. Both prompt once for confirmation; for unattended runs set `FORGE_YES=1`. Then, inside your project, run `/setup-forge`. *(The `-ExecutionPolicy Bypass` prefix is required for `irm | iex`.)*
+**Run either one-liner from inside your project folder** (`cd my-project` first): the installer puts the project payload in the *current* folder and refuses to run in your home directory. Both prompt once for confirmation. Then, inside your project, run `/setup-forge`.
+
+**Windows or macOS/Linux — pick one column and stay in it** (the same Forge lands either way; only the shell differs):
+
+| | Windows (PowerShell) | macOS / Linux (bash) |
+|---|---|---|
+| Installer | `install.ps1` — `powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir "C:\path\to\project" -Yes` | `install.sh` — `bash install.sh --project "/path/to/project" --yes` |
+| Unattended | `-Yes` or `$env:FORGE_YES = '1'` | `--yes` or `FORGE_YES=1` |
+| Preview / partial | `-DryRun` · `-GlobalOnly` · `-ProjectOnly` | `--dry-run` · `--global-only` · `--project-only` |
+| Global core lands in | `%USERPROFILE%\.claude` | `~/.claude` |
+| Verify | `node .claude\forge-bin\forge-doctor.cjs` → `⇒ ALL GREEN` | `node .claude/forge-bin/forge-doctor.cjs` → `⇒ ALL GREEN` |
+| Terminal wrappers | `.claude\forge-bin\*.cmd` (prefer `.cmd`; `.ps1` may be blocked by execution policy) | `bash .claude/forge-bin/*.sh` |
+
+*(The `-ExecutionPolicy Bypass` prefix is required for `irm | iex` and for blocked `.ps1` files; it applies to that one command only. Never run `install.sh` in PowerShell/cmd.exe or `install.ps1` in bash. The full step-by-step table an AI assistant follows is in [AI-INSTALL.md §2a](AI-INSTALL.md).)*
 
 ### Path C — Manual copy *(no scripts — PARTIAL install)*
 

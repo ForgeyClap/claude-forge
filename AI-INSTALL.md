@@ -69,6 +69,32 @@ in the canonical template `~/.claude/forge/template/.claude/forge-bin/`, but §3
 against, so an install that skipped the project part cannot be checked by §3. Say that to the user instead of
 claiming it was verified.
 
+### 2a. Windows or macOS/Linux — decide first, then use ONLY that column
+
+Decide the operating system before you type anything, say which one you detected, and stay in that
+column. Do not mix: `install.sh` is for bash (macOS/Linux, or Git Bash), `install.ps1` is for PowerShell
+(Windows). The same Forge is installed either way — only the shell differs.
+
+| Step | **Windows — PowerShell** | **macOS / Linux — bash** |
+|---|---|---|
+| How to detect | `$env:OS` prints `Windows_NT`; the prompt is `PS C:\...>` | `uname -s` prints `Darwin` or `Linux` |
+| Prerequisite | `node --version` → v18 or newer. "node is not recognized" right after installing Node = reopen the terminal | `node --version` → v18 or newer |
+| Where the global core lands | `%USERPROFILE%\.claude` (for example `C:\Users\<you>\.claude`) | `~/.claude` |
+| Clone-and-run (recommended for an AI) | `git clone https://github.com/ForgeyClap/claude-forge.git`<br>`cd claude-forge`<br>`powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir "C:\absolute\path\to\project" -Yes` | `git clone https://github.com/ForgeyClap/claude-forge.git`<br>`cd claude-forge`<br>`bash install.sh --project "/absolute/path/to/project" --yes` |
+| One-liner (run it **inside the project folder**) | `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.ps1 \| iex"` | `curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.sh \| bash` |
+| Unattended (no confirmation prompt) | `-Yes`, or `$env:FORGE_YES = '1'` before the command | `--yes`, or `FORGE_YES=1` in front of the command |
+| Preview without writing | `-DryRun` | `--dry-run` |
+| Only the global core / only the project | `-GlobalOnly` / `-ProjectOnly` | `--global-only` / `--project-only` |
+| The `-ExecutionPolicy Bypass` prefix | Required for `irm \| iex` and for `.ps1` files when scripts are blocked; it applies to this one command only, never change the policy globally | n/a |
+| Verify (identical on both) | `node .claude\forge-bin\forge-doctor.cjs` → must end with `⇒ ALL GREEN` | `node .claude/forge-bin/forge-doctor.cjs` → must end with `⇒ ALL GREEN` |
+| Terminal wrappers after install | `.claude\forge-bin\forge-dashboard.cmd`, `forge-status.cmd`, `forge-runs.cmd` … (`.cmd` first; the `.ps1` twins may be blocked by execution policy) | `bash .claude/forge-bin/forge-dashboard.sh`, `forge-status.sh`, `forge-runs.sh` … |
+| Log an event from a terminal | `.claude\forge-bin\forge-log-event.cmd <run_id> <type> payload.json` — the `.cmd` accepts **only a `.json` file**; inline JSON goes through `.\.claude\forge-bin\forge-log-event.ps1 <run_id> <type> '<json>'` | `bash .claude/forge-bin/forge-log-event.sh <run_id> <type> '<json>'` |
+| What the installer refuses | a target that is your home directory (`C:\Users\<you>`) — `cd` into the project first | a target that is your home directory (`/home/<you>`, `/Users/<you>`) — `cd` into the project first |
+| Never do this | run `install.sh` in `cmd.exe` or PowerShell; paste bash `--flags` into PowerShell | run `install.ps1`; paste PowerShell `-Flags` into bash |
+
+Git Bash on Windows: `install.sh` works there too (that is what the Windows CI job uses for its bash steps), but
+the documented, supported Windows path is `install.ps1`. Pick one and finish with it; do not run both.
+
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
 - A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is kept untouched and Forge's version is written next to it as `settings.forge-recommended.json`.
