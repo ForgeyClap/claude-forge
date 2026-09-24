@@ -317,7 +317,7 @@ t('B9: the loop verdict is ADVISORY in the exit code — an otherwise-clean run 
 t('B10: CLEAN + converged loop — verify says 0 of everything, so --enforce writes NOTHING (no blocker)', () => {
   const plain = verifyCli('run-loop-clean-dry', '--root', TMP_B);
   assert.strictEqual(plain.status, 0, 'fixture precondition: this run must verify CLEAN, got exit ' + plain.status + '\n' + plain.stdout);
-  assert.ok(/VERIFY: 0 mismatch\(es\), 0 open ticket\(s\), 0 unproven done-ticket\(s\), 0 isolation violation\(s\), 0 acceptance gap\(s\)/.test(plain.stdout),
+  assert.ok(/VERIFY: 0 mismatch\(es\), 0 open\/unreadable ticket\(s\), 0 unproven done-ticket\(s\), 0 isolation violation\(s\), 0 acceptance gap\(s\)/.test(plain.stdout),
     'fixture precondition: verify must report a fully clean run:\n' + plain.stdout);
   // ANTI-TIEBREAK: without this, a fixture whose loop simply is not braked would pass for the wrong reason.
   assert.ok(/STOP — converged:/.test(plain.stdout), 'fixture precondition: this loop really IS braked:\n' + plain.stdout);

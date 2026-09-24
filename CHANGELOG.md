@@ -42,6 +42,96 @@ nothing enabled by default that was off before.
   prompt coach point to it.
 - **Command Center:** a NVIDIA health probe that exits in mock or no-key mode is now shown as `NOT CONFIGURED` instead
   of `DISCONNECTED` (real network failures still show `DISCONNECTED`).
+- **Independent Codex review repinned** (owner directive 2026-09-24) to `gpt-6-astra` at reasoning effort `xhigh` in
+  `config/orchestration/codex-review.json` (the single source of truth the codex-reviewer agent and the
+  forge-code-review skill read), verified live with `--strict-config` on codex-cli 0.156.1; "long thinking" is that
+  highest effort level, the CLI has no separate flag. History kept in the file (gpt-5.6-sol, 2026-08-04 → 2026-09-24).
+
+### Security — after the Codex recheck (six `gpt-6-astra` xhigh passes over everything since 2.4.0: 85 findings, 60 high)
+
+Codex (the owner re-enabled it on 2026-09-24) reviewed the whole 2.5→2.7 range read-only and returned NEEDS FIXES;
+every finding is archived with its measured evidence in the maintainer's run folder and was fixed, rejected with
+evidence or deferred with a reason before this release went out. The code fixes:
+
+- **Settings merge (`forge-settings-merge.cjs` + new `forge-settings-merge-guards.cjs`, installers, sync):** a read
+  error is never "absent" (only a verified missing regular file enters the create path — an unreadable existing file is
+  refused, never overwritten); the target is re-verified immediately before the rename (a concurrent edit refuses
+  instead of being lost); backups and recommended files are created exclusively with unique names and never through a
+  link; every write destination must lie inside the real project root (a `.claude` junction pointing elsewhere is
+  refused, in `forge-sync` too); source and target shapes are validated deeply (a hook with the right command but the
+  wrong `type` does not count as present; partial matcher entries are topped up, never duplicated); content that
+  cannot be reserialized losslessly is refused, BOM/line endings/indentation are preserved; file mode is preserved on
+  replace and backup (POSIX); a `settings.json` that is a directory is refused by both installers; `forge-sync`
+  reports a settings failure as a failed sync (`--unsafe` paths share the same step) and shows the settings preview in
+  dry-run; installers create no directory in dry-run, keep the version marker when nothing changed, resolve the home
+  directory once, and mark global paths `[OUTSIDE this project]` in the plan; the deny list grows from 23 to 28 rules
+  (`.env.forge-setup` and the nested `.env.development/.staging/.test` forms). Deferred with reason: settings.json
+  inside the `forge-sync rollback` transaction; migration between gate-hook matcher strings.
+- **Config core (`forge-config.cjs` + new `forge-config-once.cjs`, `forge-autonomy.cjs`, `forge-setup.cjs`):** an
+  existing usage-limit pause is honoured even when the settings file is damaged or the guard is switched off; persisted
+  values must have the canonical schema type (a string `"false"` or `[0]` for a boolean is damage, not a switch); a
+  rejected schema is never mined for "safe" values; a project value for a global-scope boolean can only strengthen
+  protection; `parseFlagValue()` gives consumers schema bounds; a locked error is reported as a locked error; writes are
+  serialized with a lock file and fsynced; `--once` is now single-use — `consumeOnce()` marks the entry consumed
+  atomically, a second one-off cannot be armed while one is pending, hand-edited or future-dated expiries are treated
+  as expired, and `gate-hook` ignores the global settings file (so `reset` can never expose a hidden global off);
+  the git checkpoint scans candidate paths against the secret-name policy (now including `id_ed25519*`) **before**
+  staging and repairs `.gitignore` negations that would defeat it. Disclosed residual gaps: a wall-clock rollback inside
+  the original ten-minute window; secret-shaped files that were already tracked before Forge arrived.
+- **Gate hook (`forge-gate-hook.cjs`, `forge-gate-data.cjs`, new `forge-gate-scratch.cjs`, `forge-actiongate.cjs`,
+  `hard-gates.json`):** unparseable, empty or hostile stdin now exits 1 with a visible line ("this call was NOT
+  checked") instead of a silent pass; a heredoc-lookalike inside an open quote is no longer stripped as data;
+  PowerShell curly quotes do not qualify for the quoted-data exception; a heredoc with a quoted or indented
+  destination is recognised; a `git -c alias.x='rm -rf …'` executable is no longer treated as data; kill-by-name is
+  matched per statement; the self-disable check parses the real argv (a quoted `"set"` verb, any path to
+  `forge-config.cjs`, flags in any order all count); a `--once` approval is consumed by exactly one command through
+  `consumeOnce()` (live-probed: first call consumes and allows, the second identical call is blocked); an inspection
+  failure while the gate is OFF stays visible and never swallows a self-disable; the scratch pass-through is
+  fail-closed (a path that cannot be canonicalised is not "scratch"; `mv src _scratch; rm -rf _scratch` is blocked);
+  more git spellings that discard work are covered; the UTF-16LE test fixture is now really UTF-16LE. **New fourth
+  command gate `opaque-exec`:** `eval`, `iex`/`Invoke-Expression`, `sh -c`/`bash -c`/`pwsh -c`/`powershell -c`
+  evaluating a variable or substitution, a pipe straight into a shell interpreter, and `certutil -decode … & …` are
+  stopped because no other gate can see what they would run; mirrored into `FORGE_AUTONOMY.json` `always_interrupt`.
+  The gate words fire only in command position (the first word of a statement, also after `FOO=1`, `sudo`, `&&`,
+  `|` or a new line): the live hook had blocked the maintainer's own `node probe-heredoc-eval.cjs` (the word inside
+  a file name) and a commit message that merely mentioned the word, so a file name, a commit message or prose
+  containing `eval`/`iex` is data again. `powershell -EncodedCommand …` (also `-e`, `-ec`, `-enc`) now fires on its
+  shape, closing a gap `_not_caught` had named since the gate was introduced; the payload is still never decoded.
+  Named gaps stay named: a fully literal `sh -c "echo hi"`, `| node`/`| python`, an encoded payload reaching
+  PowerShell by any route other than that flag, and a heredoc line that itself starts with `eval` inside a
+  non-writer heredoc such as `git commit -F - <<'MSG'` (a safe false block). Deferred with reason: a bare
+  `git checkout <path>` without `--` (a classifier cannot tell a branch from a path without repository state, and a
+  blocking hook that fires on `git checkout main` would break the most common everyday git command).
+- **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
+  `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
+  from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every
+  armed work package that never completed (the previous "inert" classification is reversed; the finalized 2.7.1 run
+  now honestly reads HISTORICAL because HEAD moved); an unknown block rule counts as missing, never as green; a proof
+  write failure exits 3; `closes_event_id` has a grammar and may be consumed once; a FAIL review verdict keeps the
+  review open; a dead worker (started, never completed, dispatch gone) is a gate, not a pass; a malformed or foreign-run
+  event is a gate; waivers are owner-only; `finalize` requires `all_green` and re-evaluates the contract on `check`
+  (a receipt cannot be forged by editing the JSON); `log-event.cjs` validates the `run_id` it writes into; the dashboard
+  mirrors the contract instead of bypassing it. Deferred with reason: an evidence-field schema; tolerance for a missing
+  output file.
+- **Usage guard, NVIDIA provider, gateway (`usage-guard.cjs` + new `usage-guard-redact.cjs`, `nvidia-provider.cjs`,
+  `forge-ownergrant.cjs`, gateway `capabilities.mjs`/`models.mjs`):** a switched-off guard makes no network call at all
+  (`check`/`status`/`credits`/`watch --once` refuse; the only exception is a verified owner grant); the token's shape is
+  validated before any header is built and transport errors are reported as codes, never with the raw message; the
+  refresh-token identity fallback is gone (an opaque local account label instead) and a refusal names a
+  project-relative label, never the absolute credential path; a corrupt state file is distinguished from a missing one
+  and blocks until a fresh validated measurement; pause/resume/override are serialized with a lock and re-read inside it;
+  `stop` clears its timers, aborts an in-flight request on SIGTERM and exits nonzero when it cannot confirm the death;
+  the fetch timeout also covers reading the body; the disclosure line is complete and the real watcher logs it before its
+  first tick; flag and config values are checked against the schema bounds; the NVIDIA base URL is a fixed single-entry
+  allow-list (a custom URL only from the real environment; userinfo, query and fragment always refused; `models.mjs`
+  redacts it again); a switch-off is honoured before every retry and cancels the backoff; secrets are masked before
+  truncation and on every public return value; the gateway runs its own central `forge-capabilities.cjs` against the
+  selected project instead of executing a script from inside that project (a tampered project copy never runs); the test
+  suites isolate themselves from the real credential file before their first `require`. **Honest wording, in the code
+  too:** `status`/`start` now say "sampled every Ns (best effort — a task can still cross the limit between samples;
+  this is not an instant, guaranteed block)", and the docs, the settings description and the doctor's model-choice hint
+  say the same instead of "never cut off". Named follow-ups: `forge-autonomy.cjs` does not yet treat a corrupt guard
+  state as blocking; `usage-guard.cjs` is due for a further split.
 
 ### Fixed
 
@@ -56,6 +146,17 @@ nothing enabled by default that was off before.
   pair `review_started` with `review_completed` (same agent, same `review_id`; a FAIL verdict keeps it visibly open).
 - **Gateway tests are hermetic by default.** `models`, `routes-wp3` and `routes-wp6` no longer make a real NVIDIA
   `GET /models` when a key is present; the live variant is behind `FORGE_GATEWAY_LIVE_NVIDIA=1`.
+- **Documentation promises corrected after the Codex recheck** (six `gpt-6-astra` xhigh passes over everything since
+  2.4.0; the code findings are listed under Security below): the beginner promise now says which gates are enforced by
+  the hook (destructive deletes, kill-by-name, git commands that discard work) and which are rules checked by a text
+  classifier (deploy, push, spend, DNS, production, credentials, outbound, writes outside the project); the plugin
+  table says the LITE install writes nothing but its agents still edit your project when you ask them to build; the
+  install guide no longer claims "no service phones home" — it names the usage guard's calls to `api.anthropic.com`,
+  the optional Paperclip `npx` download and the on-request `setup-pre-commit` npm use; Node 20.19+/22.12+ is stated
+  for building the dashboard yourself (Vite 7); Claude Code's account requirement includes Console/API billing; the
+  vendored-skill register says only each wrapper's own operations were inspected (`task-done` runs the command you
+  give it, `find-polluter.sh` runs `npm test`); `task-start`/`task-done` call their helpers through `bash` and ship
+  with the executable bit; the brand token version follows the release.
 
 ## [2.7.1] - 2026-09-24
 
@@ -148,8 +249,8 @@ now 18 agents / 22 skills: the plugin copies of the Forge skills and agents were
   threshold with its source. It is still never started by `/forge dashboard`, by the Paperclip runtime (which needs
   `--with-usage-guard`) or by the doctor's test run.
 - **Why 98 % and not the old 95 %:** Claude Code 2.1.234 and later already wait at a limit and continue by themselves
-  after the reset. The guard's job is now the pause *before* the limit, between phases, so a build is never cut off in
-  the middle of a step. The pause default had drifted between 93, 95 and 98 across files; 98 is now the only literal.
+  after the reset. The guard's job is now the pause *before* the limit, between phases (best effort: it samples every
+  2 minutes, so a step can still cross the limit between two samples). The pause default had drifted between 93, 95 and 98 across files; 98 is now the only literal.
 - **Everything is on by default**, with three documented exceptions: `paperclip` stays off (unattended agents only on
   an explicit request — `forge-paperclip.cjs up`/`ensure` now refuse with exit 3 while it is off, unless `--force`),
   `cleanup` stays on `report` (`auto` deletes files) and `ecc-full-test` stays off (heavy diagnostics; it is bridged into

@@ -155,6 +155,23 @@ function Copy-ForgeSettingsFile {
   $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
   $haveMergeTool = $nodeCmd -and $mergeTool -and (Test-Path -LiteralPath $mergeTool -PathType Leaf)
 
+  # UNSAFE-FIRST-COPY (wp-f2, 2026-09-24 Codex re-check): a destination that EXISTS but is not a regular file
+  # (a directory named settings.json, most concretely) bypassed every branch below and reached
+  # `Copy-Item -Destination $DestFile -Force`, which copies INTO an existing directory instead of replacing
+  # it -- nesting the payload's settings.json inside it while reporting success. Refuse cleanly instead.
+  if ((Test-Path -LiteralPath $DestFile) -and -not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+    if ($IsDryRun) {
+      Write-ForgeLog "  [dry-run] REFUSING: $DestFile exists but is not a regular file (e.g. a directory) -- settings.json would be left untouched"
+    } else {
+      Write-ForgeError "$DestFile exists but is not a regular file (e.g. a directory) -- refusing to touch it; settings.json was left untouched"
+    }
+    # Bare `return` (no value), matching every other early-exit in this function -- Copy-ForgeTree's caller
+    # does not capture Copy-ForgeSettingsFile's per-file return value, and this loop's own output becomes
+    # Copy-ForgeTree's own output (assigned straight to $projectOk/$globalOk as a single boolean); emitting a
+    # value here would corrupt that into a mixed array.
+    return
+  }
+
   if ($IsDryRun) {
     if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
       $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
@@ -305,22 +322,49 @@ function Add-ForgeProjectRootSeed {
 
 # Writes .claude\FORGE_VERSION.json -- per-install state (gitignored by the snippet), read by
 # `forge-sync status` to report the installed release next to the canonical template's hash.
+#
+# HOME-RESOLUTION-DRIFT (wp-f2, 2026-09-24 Codex re-check): this function used to recompute its OWN home
+# directory independently -- `$env:HOME` before `$env:USERPROFILE`, with NO third fallback -- while Main's
+# guard/copy logic resolves `$forgeHome` as USERPROFILE -> HOME -> the automatic `$HOME` variable. Two
+# consequences, both real: (1) with USERPROFILE and HOME set to DIFFERENT values, the marker recorded a
+# `template` path under a DIFFERENT home than the one payload files were actually copied under. (2) with
+# BOTH environment variables unset, this function's own fallback chain ended at `$env:USERPROFILE` (empty),
+# so `Join-Path $homeDir ...` received an empty base and could fail AFTER the payload write already
+# succeeded. Fixed by resolving the home ONCE in Main and passing it in explicitly -- the same discipline
+# `Copy-ForgeSettingsFile`'s own `$MergeToolPath` parameter comment already documents for this exact class of
+# PowerShell case-insensitive-ambient-variable bug.
 function Write-ForgeVersionMarker {
   param(
     [Parameter(Mandatory = $true)][string] $ProjectDir,
     [Parameter(Mandatory = $true)][string] $Version,
+    [Parameter(Mandatory = $true)][string] $ForgeHome,
     [bool] $IsDryRun = $false
   )
   $markerPath = Join-Path $ProjectDir '.claude\FORGE_VERSION.json'
+  $templatePath = Join-Path $ForgeHome '.claude\forge\template\.claude'
   if ($IsDryRun) {
-    Write-ForgeLog "  would write: $markerPath (forge_version $Version)"
+    Write-ForgeLog "  would write: $markerPath (forge_version $Version) -- only if version/template changed since the last install"
     return
   }
-  $homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+  # INSTALLER-NONIDEMPOTENCE (wp-f2): a second install of the SAME release used to rewrite this file (a fresh
+  # timestamp, every time) even though nothing about the installed content or template actually changed --
+  # contradicting this installer's own "safe to re-run... identical files are a no-op" claim. Preserve the
+  # marker (and its original synced_at) when the recorded version AND template path both already match.
+  if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+    try {
+      $prev = Get-Content -LiteralPath $markerPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+      if ($prev.forge_version -eq $Version -and $prev.template -eq $templatePath) {
+        Write-ForgeLog "  kept:  $markerPath (forge_version $Version unchanged -- marker left as-is)"
+        return
+      }
+    } catch {
+      # unreadable/malformed existing marker -- fall through and rewrite it, same as before this fix
+    }
+  }
   $marker = [ordered]@{
     forge_version = $Version
     synced_at     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    template      = (Join-Path $homeDir '.claude\forge\template\.claude')
+    template      = $templatePath
     installed_by  = 'install.ps1'
     _doc          = 'forge_version is the release this installer wrote; forge-sync status prints it as installed= and detects drift by file hash against the canonical template.'
   }
@@ -491,8 +535,13 @@ function Main {
     # -------------------------------------------------------------------------
     Write-ForgeLog ''
     Write-ForgeLog 'This will write files to:'
-    if ($doGlobal) { Write-ForgeLog "  - $HOME\.claude                  (global core: forge-core skill, /forge, /setup-forge)" }
-    if ($doGlobal) { Write-ForgeLog "  - $HOME\.claude\forge\template   (canonical template: used by forge-sync and the auto-installer)" }
+    # HOME-RESOLUTION-DRIFT (wp-f2): this preview used PowerShell's AUTOMATIC $HOME variable, while the real
+    # copy below (and the version marker) resolve $forgeHome as USERPROFILE -> HOME -> automatic $HOME -- so a
+    # session with an overridden USERPROFILE could see one path here and have files land under another.
+    # OUTSIDE-WRITES-BY-DEFAULT: both are real writes OUTSIDE this project (global, shared by every project),
+    # named as such rather than left implicit.
+    if ($doGlobal) { Write-ForgeLog "  - $forgeHome\.claude                  [OUTSIDE this project -- global, shared by every project] (global core: forge-core skill, /forge, /setup-forge)" }
+    if ($doGlobal) { Write-ForgeLog "  - $forgeHome\.claude\forge\template   [OUTSIDE this project -- global] (canonical template: used by forge-sync and the auto-installer)" }
     if ($doProject) { Write-ForgeLog "  - $projectDir\.claude           (per-project payload: skills, agents, dashboard, config)" }
     if ($doProject) { Write-ForgeLog "  - $projectDir\CLAUDE.md         (only if missing) and $projectDir\.gitignore (Forge lines appended)" }
     Write-ForgeLog ''
@@ -562,8 +611,16 @@ function Main {
     if ($doProject) {
       Write-ForgeLog ''
       Write-ForgeLog "Installing project payload -> $projectDir\.claude"
+      # COR-DRYRUN (wp-f2, 2026-09-24 Codex re-check): this directory creation ran UNCONDITIONALLY, even
+      # under -DryRun, contradicting "Show what would be written, change nothing" -- a preview into a
+      # not-yet-existing target directory silently created it. Guarded like every other write in this
+      # installer now: real writes only, a plain "[dry-run] would create" line otherwise.
       if (-not (Test-Path -LiteralPath $projectDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
+        if ($isDryRun) {
+          Write-ForgeLog "  [dry-run] would create directory: $projectDir"
+        } else {
+          New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
+        }
       }
       $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs')
       # Seed the two project-root files Forge documents but the payload copy never delivered.
@@ -572,8 +629,10 @@ function Main {
       # first forge-doctor a new user runs reports FAILURES. Merge-safe and idempotent.
       Add-ForgeProjectRootSeed -ProjectDir $projectDir -SourceDir $sourceDir -IsDryRun $isDryRun
       # Record WHICH release this project got: forge-sync status reads forge_version from this file
-      # (2.4.0: the payload no longer ships a stale copy of this per-install file).
-      Write-ForgeVersionMarker -ProjectDir $projectDir -Version $forgeVersion -IsDryRun $isDryRun
+      # (2.4.0: the payload no longer ships a stale copy of this per-install file). $forgeHome is the SAME
+      # already-resolved home Main uses everywhere else (HOME-RESOLUTION-DRIFT fix) -- passed explicitly,
+      # never recomputed inside the function.
+      Write-ForgeVersionMarker -ProjectDir $projectDir -Version $forgeVersion -ForgeHome $forgeHome -IsDryRun $isDryRun
     }
 
     # -------------------------------------------------------------------------

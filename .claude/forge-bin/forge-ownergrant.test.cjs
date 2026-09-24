@@ -82,6 +82,20 @@ t('the file beats the env when both are present (file is authoritative)', () => 
   assert.strictEqual(r.source, 'file');
 });
 
+t('OWNER-CREDENTIAL-PATH: the refusal names a project-relative label, never the absolute secret-file path', () => {
+  const projectRoot = root(undefined);
+  const r = G.verifyOwnerGrant({ token: 'x', projectRoot });
+  assert.ok(!r.reason.includes(projectRoot), 'the refusal must not leak the absolute project root: ' + r.reason);
+  assert.ok(/\.claude\/config\/forge-owner-grant\.txt/.test(r.reason), r.reason);
+});
+
+t('relativeSecretLabel: a path outside root (or a bare relative secretFile made absolute) falls back to the basename, never leaking an unrelated absolute path', () => {
+  const outside = path.join(os.tmpdir(), 'somewhere-else', 'secret.txt');
+  const label = G.relativeSecretLabel(outside, root(undefined));
+  assert.strictEqual(label, 'secret.txt');
+  assert.ok(!label.includes(os.tmpdir()));
+});
+
 t('CLI: exit 3 on refusal, 0 on a verified token, 2 on usage error', () => {
   const r1 = spawnSync(process.execPath, [CLI, 'check', '--token', 'nope', '--root', root('YES')], { encoding: 'utf8' });
   assert.strictEqual(r1.status, 3, r1.stdout + r1.stderr);

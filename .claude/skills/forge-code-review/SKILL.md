@@ -57,7 +57,7 @@ unavailable, report that honestly — the review above still stands on its own.
 **The model is pinned, and it is NOT a detail you restate from memory.** Read
 `.claude/config/orchestration/codex-review.json` — it holds the engine, model, reasoning effort,
 sandbox and the exact command, and it is the ONLY place any of those are defined. Owner directive
-2026-08-04: the independent review runs on **`gpt-5.6-sol` at `model_reasoning_effort=xhigh`**. Before
+2026-08-04: the independent review runs on **`gpt-6-astra` at `model_reasoning_effort=xhigh`** (owner directive 2026-09-24; long thinking = xhigh; history: gpt-5.6-sol 2026-08-04 → 2026-09-24). Before
 that file existed the model was pinned nowhere, so `/codex:review` silently used whatever default the
 plugin happened to carry — and reaching gpt-5.6-sol at all needed a Codex CLI ≥ 0.146.0 (0.142.3 got
 an HTTP 400 telling it to upgrade, measured 2026-08-03).

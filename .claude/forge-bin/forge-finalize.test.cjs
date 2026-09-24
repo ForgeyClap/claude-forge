@@ -393,6 +393,128 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
   t('15 bewijs dat naar een ANDERE commit verschuift maakt het verdict STALE', na.verdict === 'STALE', na.verdict + ' — ' + (na.reason || ''));
 }
 
+// ================================================================================================
+// 16) FINALIZE-FAILED-GATE (2026-09-24, out-p5.md) — a red gate in the evidence set refuses finalize on
+//     EVERY complexity, not only inside the L2+ independent-review rule.
+// ================================================================================================
+{
+  const RUN = 'fin-failed-gate';
+  const dir = path.join(ROOT, '.claude', 'forge-runs', RUN);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'gate-evidence.json'), JSON.stringify({
+    run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 1, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: 'a'.repeat(40), worktree_clean: true, stable: true } }],
+  }));
+  log(RUN, 'run_started', { note: 's' });
+  log(RUN, 'run_completed', { command: 'x', output: 'klaar' });
+  const r = F.finalize(ROOT, RUN);
+  t('16 a red gate (exit_code:1) in the evidence set refuses finalize even though the run-contract rule is otherwise green', r.ok === false, JSON.stringify(r).slice(0, 200));
+  t('16 the reason names the failed gate', /gefaalde poort/.test(r.reason || ''));
+  t('16 no receipt was written', !fs.existsSync(F.receiptFileOf(ROOT, RUN)));
+}
+
+// ================================================================================================
+// 17) RECEIPT-FORGERY (2026-09-24, out-p5.md) — acceptance (`check()`) RE-EVALUATES the contract instead
+//     of trusting the receipt's own `contract:"ok"` string. Proven with a REAL post-finalize state change
+//     (an armed-but-unfinished manifest package) that changes NOTHING the receipt's pinned hashes cover
+//     (events.jsonl bytes, gate-evidence.json, FORGE_HARD_RULES.json) — only a genuine re-run of the
+//     contract can catch it.
+// ================================================================================================
+{
+  // OWN fresh root — forge-runcontract.cjs caches its parsed rules file by PATH at module scope
+  // (_rulesCache); the shared ROOT's rules path was already read (and cached) by tests 1-16, so
+  // overwriting its bytes here would silently evaluate against the stale cached content instead.
+  const FROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-forgery-'));
+  fs.mkdirSync(path.join(FROOT, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(FROOT, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(FROOT, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(FROOT, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(FROOT, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(FROOT, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-manifest.cjs'), path.join(FROOT, '.claude', 'forge-bin', 'forge-manifest.cjs'));
+  // evidence-satisfied/verify-checked (RC-MANIFEST-STALE's gated ids) so this run's baseline can be
+  // genuinely green before proving the post-finalize manifest gate catches it.
+  fs.writeFileSync(path.join(FROOT, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [
+      { id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' },
+      { id: 'evidence-satisfied', rule: 'evidence exists', trigger: 'always', check: { type: 'event-present', key: ['check_passed'] }, severity: 'block', override: 'n/a', source: 'test' },
+      { id: 'verify-checked', rule: 'a check ran', trigger: 'always', check: { type: 'event-present', key: ['check_passed'] }, severity: 'block', override: 'n/a', source: 'test' },
+    ],
+  }, null, 2));
+  const RUN = 'fin-receipt-forgery';
+  const flog = (type, extra) => { const d = path.join(FROOT, '.claude', 'forge-runs', RUN); fs.mkdirSync(d, { recursive: true });
+    const f = path.join(d, 'gate-evidence.json');
+    if (!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify({ run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: 'a'.repeat(40), worktree_clean: true, stable: true } }] }));
+    return spawnSync(process.execPath, [path.join(FROOT, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+  };
+  flog('run_started', { note: 's' });
+  flog('check_passed', { task: 'suite', command: 'node test', output: 'ok' });
+  flog('run_completed', { command: 'x', output: 'klaar' });
+  const F_FORGERY = require(path.join(FROOT, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  const before = F_FORGERY.finalize(FROOT, RUN);
+  t('17 setup: a genuine finalize succeeds first', before.ok === true, JSON.stringify(before).slice(0, 160));
+  t('17 setup: check() confirms FINALIZED before any manifest is armed', F_FORGERY.check(FROOT, RUN).verdict === 'FINALIZED');
+  // arm a manifest WITHOUT --log-event: events.jsonl (and therefore the receipt's pinned digest) is
+  // byte-for-byte unchanged — only a real contract re-evaluation can see the new, unfinished obligation.
+  const MANIFEST = require(path.join(FROOT, '.claude', 'forge-bin', 'forge-manifest.cjs'));
+  const armed = MANIFEST.arm({ run_id: RUN, wps: [{ wp_id: 'wp-forge', agent: 'Build Boss', narrowed_prompt: 'do a thing' }] }, { root: FROOT });
+  t('17 setup: arm() wrote a manifest without touching events.jsonl', armed.ok === true);
+  const after = F_FORGERY.check(FROOT, RUN);
+  t('RECEIPT-FORGERY: acceptance re-evaluates the contract and catches the new unfinished obligation — no longer FINALIZED', after.verdict !== 'FINALIZED', JSON.stringify(after).slice(0, 220));
+  try { fs.rmSync(FROOT, { recursive: true, force: true }); } catch { }
+}
+
+// ================================================================================================
+// 18) FINALIZE-STALE-CODE (2026-09-24, out-p5.md) — a receipt's code_commit pin must be compared against
+//     the REAL current git HEAD, not just against the (unchanged) gate-evidence.json it was pinned from.
+//     Uses its OWN real git repo — ROOT above has none, so resolveHeadCommit() there is always null.
+// ================================================================================================
+{
+  const GITROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-git-'));
+  fs.mkdirSync(path.join(GITROOT, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const git = (...args) => spawnSync('git', args, { cwd: GITROOT, encoding: 'utf8' });
+  git('init', '-q');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(GITROOT, 'seed.txt'), 'seed\n');
+  git('add', '.');
+  git('commit', '-q', '-m', 'seed');
+  const head1 = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT, encoding: 'utf8' }).stdout.trim();
+  const noGit = head1 === '' || !/^[0-9a-f]{40}$/i.test(head1);
+  if (noGit) {
+    console.log('  SKIP 18 FINALIZE-STALE-CODE: no working `git` in this environment — cannot exercise a real HEAD change');
+  } else {
+    const RUN = 'fin-stale-code';
+    const gitLog = (type, extra) => { const d = path.join(GITROOT, '.claude', 'forge-runs', RUN); fs.mkdirSync(d, { recursive: true });
+      const f = path.join(d, 'gate-evidence.json');
+      if (!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify({ run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: head1, worktree_clean: true, stable: true } }] }));
+      return spawnSync(process.execPath, [path.join(GITROOT, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    };
+    gitLog('run_started', { note: 's' });
+    gitLog('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_GIT = require(path.join(GITROOT, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const r1 = FIN_GIT.finalize(GITROOT, RUN);
+    t('18 finalize succeeds on the real git HEAD', r1.ok === true && r1.receipt.code_commit === head1, JSON.stringify(r1).slice(0, 200));
+    t('18 check() reports FINALIZED while HEAD is unchanged', FIN_GIT.check(GITROOT, RUN).verdict === 'FINALIZED');
+    // move HEAD without touching gate-evidence.json (still declares the OLD commit) or events.jsonl
+    fs.writeFileSync(path.join(GITROOT, 'seed2.txt'), 'seed2\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'a real second commit');
+    const afterHeadChange = FIN_GIT.check(GITROOT, RUN);
+    t('FINALIZE-STALE-CODE: a real HEAD change after finalization downgrades the verdict to HISTORICAL, not a stale-looking FINALIZED', afterHeadChange.verdict === 'HISTORICAL', JSON.stringify(afterHeadChange).slice(0, 220));
+  }
+  try { fs.rmSync(GITROOT, { recursive: true, force: true }); } catch { }
+}
+
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

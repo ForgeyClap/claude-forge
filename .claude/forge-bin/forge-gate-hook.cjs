@@ -1,26 +1,35 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * forge-gate-hook.cjs — PreToolUse hook (matcher `Bash|PowerShell`): the three COMMAND hard gates become a real
- * stop (v2.7.0, WP16, run forge-2026-09-24-config-v250). Written rules are advice; a hook runs BEFORE the tool
- * call and exit 2 blocks it and feeds stderr back to Claude. ON by default for beginners (config key `gate-hook`,
- * FORGE_CONFIG_SCHEMA.json) after the beginner sweep (rows A4/B10). Doctrine + honest limits:
- * config/orchestration/HOOKS_OPT_IN.md section 6.
+ * forge-gate-hook.cjs — PreToolUse hook (matcher `Bash|PowerShell`): the FOUR command hard gates become a real
+ * stop (v2.7.0, WP16, run forge-2026-09-24-config-v250; opaque-exec added in the codex-recheck-2026-09-24
+ * remediation, wp-f1). Written rules are advice; a hook runs BEFORE the tool call and exit 2 blocks it and
+ * feeds stderr back to Claude. ON by default for beginners (config key `gate-hook`, FORGE_CONFIG_SCHEMA.json)
+ * after the beginner sweep (rows A4/B10). Doctrine + honest limits: config/orchestration/HOOKS_OPT_IN.md §6.
  *
  * BLOCKS the match.kind "command" gates of hard-gates.json via the single classifier forge-actiongate.cjs:
- * destructive-delete, kill-by-name, git-destructive — plus the hook's own `gate-hook-self-disable` (security
- * wp9b M3): a Bash/PowerShell forge-config call that sets gate-hook off, unsets it or resets. The ONE allowed
- * off-switch is the owner-approved one-off `node .claude/forge-bin/forge-config.cjs set gate-hook off --once
- * "<owner's words>"` (review wp9a M4; the 10-minute expiry lives in forge-config.cjs). Text gates and
+ * destructive-delete, kill-by-name, git-destructive, opaque-exec — plus the hook's own `gate-hook-self-disable`
+ * (security wp9b M3): a Bash/PowerShell forge-config call that sets gate-hook off, unsets it, with a mutating
+ * verb, read from a PARSED argv rather than a spelling match (codex-recheck S05). The ONE allowed off-switch is
+ * the owner-approved one-off `node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<owner's
+ * words>"` (review wp9a M4). A once-grant is consumed ATOMICALLY, per affected command, through
+ * forge-config.cjs::consumeOnce() (codex-recheck S06) — never a blanket window. Text gates and
  * write-outside-root are NOT enforced here (legitimate flows; no reliable target path in a command line).
  *
- * EXIT CODES (security wp9b M2): 2 = blocked · 1 = non-blocking but VISIBLE (hook internal error, oversized or
- * hanging stdin, gate-hook OFF while a gate would have fired, classifier unavailable and the fallback regex
- * silent) · 0 = allowed. When hard-gates.json / the classifier cannot load, FALLBACK_RE blocks the obviously
- * destructive verbs (fail-CLOSED). Inert data is stripped first (forge-gate-data.cjs; absent -> nothing is
- * stripped); a delete whose every segment is a provable scratch delete passes (scratchPassThrough, fail-closed).
- * Never writes stdout or disk; zero dependencies. PowerShell is matched because the tool ledger shows real
- * PowerShell tool calls (same `command` field) and kill-by-name's forbidden forms are PowerShell-native.
+ * EXIT CODES (security wp9b M2, tightened by codex-recheck C01/S07): 2 = blocked · 1 = non-blocking but
+ * VISIBLE (hook internal error, oversized/hanging/unparseable/ambiguous stdin, gate-hook OFF while a gate
+ * would have fired, classifier unavailable and the fallback regex silent) · 0 = allowed. A call this hook
+ * cannot actually judge — malformed JSON, a null/array/string payload, a shell tool with a missing or
+ * non-string command — is NEVER silently allowed: it exits 1 with a visible "NOT checked" line. Silent exit 0
+ * is reserved for a call this hook can POSITIVELY tell is unrelated (a real PostToolUse event, a recognised
+ * non-shell tool, or an empty no-op command). When hard-gates.json / the classifier cannot load, FALLBACK_RE
+ * blocks the obviously destructive verbs (fail-CLOSED). Inert data is stripped first (forge-gate-data.cjs;
+ * absent -> nothing is stripped); a delete whose every segment is a provable scratch delete passes
+ * (scratchPassThrough, fail-closed) — and this proof now runs for EVERY recursive-delete SHAPE, even one the
+ * classifier's own except-valve already excused (codex-recheck I01: that valve is supplemental detection, never
+ * enforcement, for this hook). Never writes stdout or disk; zero dependencies beyond Node core (fs/os/path/
+ * crypto). PowerShell is matched because the tool ledger shows real PowerShell tool calls (same `command`
+ * field) and kill-by-name's forbidden forms are PowerShell-native.
  *
  * MODEL: gateHookEnabled · selfDisable · scratchPassThrough · decide(payload, opts) -> {block, warn, gates,
  * reason, notice, why} · run(rawStdin, opts) -> {exitCode, stderr, why}. CLI: stdin -> run() -> stderr + exit.
@@ -28,19 +37,24 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 
 let DATA = null;
 try { DATA = require('./forge-gate-data.cjs'); } catch { DATA = null; } // absent -> nothing is stripped (stricter)
+let SCRATCH = null;
+try { SCRATCH = require('./forge-gate-scratch.cjs'); } catch { SCRATCH = null; } // absent -> no pass-through (stricter)
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 const FAILSAFE_MS = 3000;
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const MAX_NOTICE_CHARS = 300;
-const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b/i;
-const CONFIG_CMD_RE = /forge[-\s]?config/i;
-const SELF_DISABLE_RE = /\bset\s+["']?gate-hook["']?\s+["']?(?:off|uit|false|no|nee|0|disabled|disable|uitzetten|uitschakelen|deactiveren)["']?(?=\s|$)|\bunset\s+["']?gate-hook\b/i; // `reset` restores the default (ON) -> allowed (wp21 follow-up)
-const ONCE_SHAPE_RE = /^\s*node\s+(?:\.\/)?\.claude[\\/]forge-bin[\\/]forge-config\.cjs\s+set\s+gate-hook\s+off\s+--once\s+(?:"[^"$`\\\n]+"|'[^'\n]+')\s*$/;
+const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b|\biex\b|\bInvoke-Expression\b/i;
+
+/** sha256(s) -> hex digest, used only to bind a once-consumption call to the exact command being evaluated
+ *  (codex-recheck S06); never logged, never echoed back to the user. */
+function sha256(s) { return crypto.createHash('sha256').update(String(s), 'utf8').digest('hex'); }
+
 const ONCE_HINT = 'node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<the owner\'s words>"';
 
 /** Plain-language wording per gate — what the command does, and the safe variant to offer. */
@@ -63,6 +77,12 @@ const WORDS = {
     safeNl: 'commit of stash eerst (git stash push), dan is het terug te halen',
     safeEn: 'commit or stash first (git stash push), so it can be recovered',
   },
+  'opaque-exec': {
+    nl: 'Forge kan niet zien wat dit commando echt zou uitvoeren (het geeft onbekende of gedecodeerde inhoud door aan een interpreter)',
+    en: 'Forge cannot see what this would run (it hands unknown or decoded content to an interpreter)',
+    safeNl: 'schrijf het commando voluit uit (geen iex/eval/sh -c op een variabele, geen pipe naar sh/bash/pwsh), of laat het als een los, leesbaar script-bestand draaien',
+    safeEn: 'write the command out in full (no iex/eval/sh -c on a variable, no pipe into sh/bash/pwsh), or run it as a separate, readable script file instead',
+  },
   'gate-hook-self-disable': {
     nl: 'dit commando zet de Forge-poort zelf uit',
     en: 'this command switches the Forge gate itself off',
@@ -80,10 +100,14 @@ const WORDS = {
 /** gateHookEnabled(opts) -> { on, source, set_at, set_by, expires_at, quote }. opts.config injects a forge-config
  *  module (tests); null = "module absent". Never throws; an absent/unreadable config means the default ON.
  *  The one-off fields come from forge-config.cjs (wp21); the quote's field name is read defensively. */
-function gateHookEnabled(opts) {
-  opts = opts || {};
+function resolveConfigModule(opts) {
   let cfg = opts.config;
   if (cfg === undefined) { try { cfg = require('./forge-config.cjs'); } catch { cfg = null; } }
+  return cfg;
+}
+function gateHookEnabled(opts) {
+  opts = opts || {};
+  const cfg = resolveConfigModule(opts);
   if (!cfg || typeof cfg.get !== 'function') return { on: true, source: 'schema-default (forge-config.cjs absent)' };
   try {
     const e = cfg.get('gate-hook');
@@ -112,163 +136,83 @@ function blockReason(ids) {
   return lines.join('\n');
 }
 
-// ---- SCRATCH PASS-THROUGH (hook-level; classifier untouched). A destructive-delete that fired ALONE passes only
-// when EVERY segment of the command is itself a provable delete (review wp9a L2) whose targets all resolve inside
-// a scratch area; no `{ } ( )` and no cwd/layout/exec token anywhere (security wp9b L3). Any error keeps the block.
-const DELETE_VERBS = new Set(['rm', 'del', 'erase', 'rd', 'rmdir', 'remove-item', 'ri', 'rimraf']);
-const REFUSED_TOKENS = new Set(['cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl', 'push-location', 'pop-location',
-  'mv', 'move', 'move-item', 'mi', 'cp', 'copy', 'copy-item', 'cpi', 'ren', 'rename', 'rename-item', 'rni', 'ln', 'mklink',
-  'new-item', 'ni', 'robocopy', 'xcopy', 'cmd', 'builtin', 'command', 'exec', 'env', 'eval', 'source', 'xargs']);
-const PROVABLE_SEGMENT_RE = /^[A-Za-z0-9_\s.\-/\\:'"=+]*$/; // no expansion, glob, redirection or second command
-// CI fix (2026-09-24, GitHub windows-latest): a tilde INSIDE a word is a literal character — Windows 8.3 short names
-// (`C:\Users\RUNNER~1\AppData\Local\Temp`, the runner's os.tmpdir()) carry one — while bash tilde expansion only
-// applies to a tilde that STARTS a word (`~`, `~user`, `~/x`) or follows `=`/`:` in an assignment. Only the in-word
-// tilde is neutralised before the whitelist test; a leading or `=`/`:`-prefixed tilde stays unprovable.
-const provableSegment = (seg) => PROVABLE_SEGMENT_RE.test(String(seg).replace(/(?<=[A-Za-z0-9_])~(?=[A-Za-z0-9_])/g, '_'));
-const sameName = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
-
-/** tokenize(segment) -> [{v, quoted}] | null. Whole-word quotes only; a quote glued to other text is refused. */
-function tokenize(segment) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(segment)) !== null) {
-    const next = segment[re.lastIndex];
-    if (next !== undefined && !/\s/.test(next)) return null;
-    if (m[3] !== undefined) {
-      if (/["']/.test(m[3])) return null;
-      out.push({ v: m[3], quoted: false });
-    } else out.push({ v: m[1] !== undefined ? m[1] : m[2], quoted: true });
-  }
-  return out;
-}
-
-/** verbIndex(tokens) -> index of the delete verb, or -1 (allowed in front: sudo, npx [--flags], pnpm/yarn dlx). */
-function verbIndex(tokens) {
-  const low = (k) => (tokens[k] && !tokens[k].quoted ? tokens[k].v.toLowerCase() : null);
-  let i = 0;
-  if (low(i) === 'sudo') i++;
-  if (low(i) === 'npx') { i++; while (low(i) && low(i).startsWith('-')) i++; }
-  else if ((low(i) === 'pnpm' || low(i) === 'yarn') && low(i + 1) === 'dlx') i += 2;
-  return low(i) && DELETE_VERBS.has(low(i)) ? i : -1;
-}
-
-/** extractTargets(tokens, verbAt) -> targets | null. Every non-flag token is a target (a misread flag value can
- *  only add a block); `--` ends options; `-Param:value` is refused; `/s` is a PATH in Git Bash and PowerShell. */
-function extractTargets(tokens, verbAt) {
-  const targets = [];
-  let endOfOptions = false;
-  for (let k = verbAt + 1; k < tokens.length; k++) {
-    const { v, quoted } = tokens[k];
-    if (!endOfOptions && !quoted && v === '--') { endOfOptions = true; continue; }
-    if (!endOfOptions && !quoted && v.startsWith('-')) { if (v.includes(':')) return null; continue; }
-    targets.push(v);
-  }
-  return targets;
-}
-
-/** realish(p) -> realpath of the longest existing ancestor + the missing tail (a link is judged by its target). */
-function realish(p) {
-  let existing = p;
-  const tail = [];
-  while (!fs.existsSync(existing)) {
-    const parent = path.dirname(existing);
-    if (parent === existing) break;
-    tail.unshift(path.basename(existing));
-    existing = parent;
-  }
-  let real;
-  try { real = fs.realpathSync.native(existing); } catch { real = existing; }
-  return tail.length ? path.join(real, ...tail) : real;
-}
-
-function relInside(base, p) {
-  const rel = path.relative(base, p);
-  if (rel === '') return '';
-  return rel.startsWith('..') || path.isAbsolute(rel) ? null : rel;
-}
-
-/** resolveTarget(raw, ctx) -> absolute path | null (null = cannot be proven, block). */
-function resolveTarget(raw, ctx) {
-  let p = String(raw);
-  if (!p || p.length > 1024) return null;
-  if (ctx.shell === 'Bash' && p.includes('\\')) return null; // bash reads `\` as an escape, not a separator
-  if (ctx.shell === 'PowerShell') p = p.replace(/\\/g, '/');  // PowerShell accepts both separators
-  if (/^[A-Za-z]:(?![\\/])/.test(p)) return null;              // drive-relative `C:foo`
-  if (ctx.platform === 'win32' && ctx.shell === 'Bash') {      // Git Bash drive form /c/Users/... -> C:/Users/...
-    const m = /^\/([A-Za-z])(\/|$)/.exec(p);
-    if (m) p = m[1].toUpperCase() + ':/' + p.slice(3);
-  }
-  if (p.split(/[\\/]+/).includes('..')) return null;            // never reason about `..` (links make it physical)
-  return path.resolve(ctx.cwd, p);
-}
-
-/** areaOf(abs, ctx) -> { area, display } | null — the scratch area that contains abs, judged on real paths. */
-// eindtest fix (2026-09-24): a project that itself lives under the OS temp dir must NOT be swallowed by the
-// temp rule. ctx.protectedRoots = this file's project root + CLAUDE_PROJECT_DIR (else the payload cwd). A target
-// that equals or CONTAINS a protected root never passes; a target INSIDE one passes only via a named scratch
-// sub-area of ctx.root; the temp rule applies only to targets outside every protected root.
-function areaOf(abs, ctx) {
-  const real = realish(abs);
-  const protectedRoots = (ctx.protectedRoots || [ctx.root]).filter(Boolean).map((r) => realish(path.resolve(r)));
-  if (protectedRoots.some((r) => relInside(real, r) !== null)) return null; // the root itself or an ancestor of it
-  const insideProject = protectedRoots.some((r) => relInside(r, real) !== null);
-  const tmpRel = insideProject ? null : relInside(realish(ctx.tmp), real);
-  const rootRel = relInside(realish(ctx.root), real);
-  if (rootRel) {
-    const s = rootRel.split(/[\\/]+/);
-    const show = s.join('/');
-    const is = (i, name) => s[i] !== undefined && sameName(s[i], name);
-    if (is(0, '_scratch')) return { area: '_scratch', display: show };
-    if (s.some((x) => sameName(x, 'node_modules'))) return { area: 'node_modules', display: show };
-    if (s.some((x) => sameName(x, 'dist'))) return { area: 'dist', display: show };
-    if (is(0, '.claude') && is(1, 'forge-backups') && s.length >= 3) return { area: 'forge-backups', display: show };
-    if (is(0, '.claude') && is(1, 'forge-runs') && s.slice(2).some((x) => sameName(x, 'gate-output'))) return { area: 'gate-output', display: show };
-    if (is(0, 'command-center') && is(1, '.data') && is(2, 'tmp')) return { area: 'command-center/.data/tmp', display: show };
-  }
-  if (tmpRel) return { area: 'tmpdir', display: '<tmp>/' + tmpRel.split(/[\\/]+/).join('/') }; // strictly inside, outside the project
-  return null;
-}
-
-/** scratchPassThrough(command, ctx) -> { ok:true, targets } | { ok:false, why }. Never throws. */
+// ---- SCRATCH PASS-THROUGH — delegated to forge-gate-scratch.cjs (split out 2026-09-24 to keep this file under
+// 500 lines). A destructive-delete SHAPE passes only when EVERY segment is itself a provable delete whose
+// targets all resolve inside a scratch area; reached for every such shape, including one the classifier's own
+// except-valve already excused (codex-recheck I01). An absent scratch module fails closed: no pass-through. The
+// tokenize/verbIndex/extractTargets/resolveTarget/areaOf re-exports below exist only for direct unit testing.
 function scratchPassThrough(command, ctx) {
-  try {
-    const g = ctx.gate.loadGates().gates.find((x) => x.id === 'destructive-delete');
-    if (!g || !g.match || !g.match.pattern) return { ok: false, why: 'no-gate-config' };
-    if (g.match.pattern_line && new RegExp(g.match.pattern_line, g.match.flags || 'i').test(command)) return { ok: false, why: 'pipeline-delete' };
-    if (/[{}()]/.test(command)) return { ok: false, why: 'grouping-or-subshell' };
-    const words = command.split(/[\s;&|]+/).map((t) => t.replace(/^["']+|["']+$/g, '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, ''));
-    if (words.some((t) => REFUSED_TOKENS.has(t))) return { ok: false, why: 'cwd-layout-or-exec-token' };
-    const shown = [];
-    for (const e of ctx.gate.splitCommandsDetailed(command)) {
-      if (!e.intact) return { ok: false, why: 'amputated-segment' };
-      if (!provableSegment(e.segment)) return { ok: false, why: 'unprovable-characters' };
-      const tokens = tokenize(e.segment);
-      if (!tokens) return { ok: false, why: 'unreadable-quoting' };
-      const verbAt = verbIndex(tokens);
-      if (verbAt < 0) return { ok: false, why: 'segment-is-not-a-plain-delete' };
-      const targets = extractTargets(tokens, verbAt);
-      if (!targets || !targets.length) return { ok: false, why: 'no-provable-targets' };
-      for (const t of targets) {
-        const abs = resolveTarget(t, ctx);
-        const area = abs && areaOf(abs, ctx);
-        if (!area) return { ok: false, why: 'target-outside-scratch' };
-        shown.push(area.display);
-      }
-    }
-    return shown.length ? { ok: true, targets: shown } : { ok: false, why: 'nothing-to-prove' };
-  } catch (e) {
-    return { ok: false, why: 'internal-error (' + String(e && e.message || e).split('\n')[0] + ')' };
-  }
+  if (!SCRATCH) return { ok: false, why: 'scratch-module-unavailable' };
+  return SCRATCH.scratchPassThrough(command, ctx);
 }
+const tokenize = (...a) => (SCRATCH ? SCRATCH.tokenize(...a) : null);
+const verbIndex = (...a) => (SCRATCH ? SCRATCH.verbIndex(...a) : -1);
+const extractTargets = (...a) => (SCRATCH ? SCRATCH.extractTargets(...a) : null);
+const resolveTarget = (...a) => (SCRATCH ? SCRATCH.resolveTarget(...a) : null);
+const areaOf = (...a) => (SCRATCH ? SCRATCH.areaOf(...a) : null);
 
 const cap = (s) => (s.length > MAX_NOTICE_CHARS ? s.slice(0, MAX_NOTICE_CHARS - 1) + '…' : s);
 const passNotice = (targets) => cap('FORGE GATE: destructive delete allowed — all targets inside a project scratch area or in the OS temp dir outside the project (' + targets.join(', ') + ')');
 
-/** selfDisable(seen, raw) -> true when a forge-config call would switch the gate off (M3), except the one
- *  owner-approved `--once "<quote>"` shape run on its own (M4). `seen` is the data-stripped text. */
-function selfDisable(seen, raw) {
-  return CONFIG_CMD_RE.test(seen) && SELF_DISABLE_RE.test(seen) && !ONCE_SHAPE_RE.test(raw);
+// ---- SELF-DISABLE (security wp9b M3), read from PARSED ARGV rather than a spelling match (codex-recheck S05):
+// any Bash/PowerShell forge-config.cjs invocation — any path form, a quoted verb, flags in any order/position,
+// `--json`/`--global` — whose target key is `gate-hook` with `set <off-word>` or `unset` is blocked, except the
+// exact one-off shape `set gate-hook off --once "<quote>"` on its own, with no other flag or trailing argument.
+const OFF_WORDS = new Set(['off', 'uit', 'false', 'no', 'nee', '0', 'disabled', 'disable', 'uitzetten', 'uitschakelen', 'deactiveren']);
+const CONFIG_SPLIT_RE = /&&|\|\||;;|;|\||&|\r\n|\n|\r|\$\(|`/g; // mirrors forge-actiongate's own SHELL_SPLIT_RE,
+// duplicated on purpose: self-disable detection must keep working even if forge-actiongate.cjs is missing/broken.
+function splitForSelfDisable(text) {
+  return String(text).split(CONFIG_SPLIT_RE).map((s) => s.trim()).filter(Boolean);
+}
+
+/** parseConfigCall(segment) -> a best-effort ARGV read of a single segment invoking forge-config.cjs (any path
+ *  form: relative, absolute, quoted, with or without a leading `node`), or null when this segment is not one.
+ *  Not a full shell parser: `tokenize()` refuses a glued quote, which correctly makes this parser refuse rather
+ *  than misread rather than guess. */
+function parseConfigCall(segment) {
+  const tokens = tokenize(segment);
+  if (!tokens || !tokens.length) return null;
+  let i = 0;
+  if (!tokens[i].quoted && /^node(?:\.exe)?$/i.test(tokens[i].v)) i++;
+  if (!tokens[i]) return null;
+  const base = String(tokens[i].v).split(/[\\/]/).pop();
+  if (!/^forge-config\.cjs$/i.test(base)) return null;
+  const rest = tokens.slice(i + 1);
+  const isFlag = (t) => !t.quoted && /^-{1,2}[A-Za-z]/.test(t.v);
+  const flags = rest.filter(isFlag).map((t) => t.v.toLowerCase());
+  const positional = rest.filter((t) => !isFlag(t));
+  const norm = (t) => (t ? String(t.v).toLowerCase() : '');
+  return {
+    verb: norm(positional[0]),
+    key: norm(positional[1]),
+    value: norm(positional[2]),
+    quoteRaw: positional[3] ? positional[3].v : null,
+    extraPositional: positional.length > 4, // set, gate-hook, off, the quote — a 5th positional is extra
+    flags,
+  };
+}
+
+function isSelfDisableCall(p) {
+  if (!p || p.key !== 'gate-hook') return false;
+  if (p.verb === 'unset') return true;
+  if (p.verb === 'set') return OFF_WORDS.has(p.value);
+  return false;
+}
+function isOnceExempt(p) {
+  return !!p && p.verb === 'set' && p.key === 'gate-hook' && p.value === 'off'
+    && p.flags.length === 1 && p.flags[0] === '--once'
+    && !!p.quoteRaw && p.quoteRaw.trim().length > 0 && !p.extraPositional;
+}
+
+/** selfDisable(seen) -> true when ANY segment of `seen` (the data-stripped text — a self-disable string quoted
+ *  inside inert heredoc/echo/commit-message data must not itself trigger this) is a self-disabling forge-config
+ *  call that is not the one exempt once-shape. */
+function selfDisable(seen) {
+  for (const segment of splitForSelfDisable(seen)) {
+    const parsed = parseConfigCall(segment);
+    if (isSelfDisableCall(parsed) && !isOnceExempt(parsed)) return true;
+  }
+  return false;
 }
 
 function offNotice(en, gates) {
@@ -282,7 +226,7 @@ function evaluate(payload, command, opts) {
   const data = DATA ? DATA.stripInertData(command, payload.tool_name) : { text: command, regions: 0 };
   const seen = data.text;
   const note = data.regions ? ' (after stripping ' + data.regions + ' inert data region(s))' : '';
-  if (selfDisable(seen, command)) {
+  if (selfDisable(seen)) {
     const ids = ['gate-hook-self-disable'];
     return { block: true, gates: ids, reason: blockReason(ids), why: 'gate-hook-self-disable' };
   }
@@ -301,10 +245,22 @@ function evaluate(payload, command, opts) {
     }
     return { block: false, warn: true, gates: [], notice: cap('forge-gate-hook: classifier unavailable (' + msg + ') — this call was NOT checked'), why: 'classifier-unavailable' };
   }
-  const fired = (result.matched || []).filter((id) => commandIds.has(id));
-  if (!fired.length) return { block: false, gates: [], why: (result.gate ? 'no-command-gate (' + result.matched.join(', ') + ')' : 'no-gate') + note };
+  let fired = (result.matched || []).filter((id) => commandIds.has(id));
+  // I01 / ISO-SCRATCH-SHORTCIRCUIT: the classifier's exact-segment `except` valve is supplemental detection for
+  // its own advisory verdict, never an enforcement shortcut for this hook. A destructive-delete SHAPE reaches
+  // scratchPassThrough regardless of whether the valve already excused it.
+  let ddGate = null;
+  try {
+    if (commandIds.has('destructive-delete') && typeof gateModule.loadGates === 'function') {
+      ddGate = gateModule.loadGates().gates.find((g) => g.id === 'destructive-delete');
+    }
+  } catch { ddGate = null; } // cannot determine the raw shape either -> fall back to the classifier's own verdict
+  const ddExcused = !!ddGate && !fired.includes('destructive-delete')
+    && typeof gateModule.testCommandGateRaw === 'function' && gateModule.testCommandGateRaw(ddGate, seen);
+  if (!fired.length && !ddExcused) return { block: false, gates: [], why: (result.gate ? 'no-command-gate (' + result.matched.join(', ') + ')' : 'no-gate') + note };
   let why = 'command-gate';
-  if (fired.length === 1 && fired[0] === 'destructive-delete') {
+  const onlyDD = fired.length === 1 && fired[0] === 'destructive-delete';
+  if (onlyDD || (fired.length === 0 && ddExcused)) {
     const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
     const env = opts.env || process.env;
     const pass = scratchPassThrough(seen, {
@@ -316,7 +272,11 @@ function evaluate(payload, command, opts) {
       tmp: opts.tmpdir || os.tmpdir(),
       platform: opts.platform || process.platform,
     });
-    if (pass.ok) return { block: false, gates: fired, notice: passNotice(pass.targets), why: 'scratch-pass-through' };
+    if (pass.ok) {
+      if (!fired.length) return { block: false, gates: [], notice: passNotice(pass.targets), why: 'scratch-pass-through (except-valve overridden by proof)' };
+      return { block: false, gates: fired, notice: passNotice(pass.targets), why: 'scratch-pass-through' };
+    }
+    if (!fired.length) fired = ['destructive-delete'];
     why = 'command-gate (no pass-through: ' + pass.why + ')';
   }
   return { block: true, gates: fired, reason: blockReason(fired), why };
@@ -324,29 +284,59 @@ function evaluate(payload, command, opts) {
 
 /** decide(payload, opts) -> { block, warn, gates, reason, notice, why }. Seams: opts.gate (classifier), opts.config,
  *  opts.projectRoot (scratch-area root), opts.tmpdir, opts.platform. When gate-hook is OFF the verdict is still
- *  computed: a call that WOULD have been blocked becomes a visible exit-1 notice (security M3 / review M4). */
+ *  computed: a call that WOULD have been blocked is never silently allowed (S07) — an inspection failure stays
+ *  visible regardless of on/off, a self-disable attempt still gets the off-notice, and (S06) a call that WOULD
+ *  have been blocked while a ONCE-style grant is active must be individually consumed through
+ *  forge-config.cjs::consumeOnce(); absent/throwing/refused means BLOCK, fail-closed. */
 function decide(payload, opts) {
   opts = opts || {};
   const none = (why) => ({ block: false, gates: [], reason: null, why });
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return none('no-payload');
-  if (payload.hook_event_name && payload.hook_event_name !== 'PreToolUse') return none('not-pretooluse');
+  const unchecked = (why) => ({ block: false, warn: true, gates: [], notice: cap('forge-gate-hook: ' + why + ' — this call was NOT checked'), why });
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return unchecked('invalid-payload');
+  if (payload.hook_event_name !== undefined && payload.hook_event_name !== null) {
+    if (typeof payload.hook_event_name !== 'string') return unchecked('invalid-hook-event');
+    if (payload.hook_event_name !== 'PreToolUse') return none('not-pretooluse');
+  }
+  if (typeof payload.tool_name !== 'string' || !payload.tool_name) return unchecked('missing-tool-name');
   if (!SHELL_TOOLS.has(payload.tool_name)) return none('not-a-shell-tool');
   const input = payload.tool_input;
-  const command = input && typeof input === 'object' ? input.command : null;
-  if (typeof command !== 'string' || !command.trim()) return none('no-command');
+  const command = input && typeof input === 'object' && !Array.isArray(input) ? input.command : null;
+  if (typeof command !== 'string') return unchecked('missing-or-non-string-command');
+  if (!command.trim()) return none('no-command'); // an empty command runs nothing; nothing to classify
   const en = gateHookEnabled(opts);
   const verdict = evaluate(payload, command, opts);
+  if (verdict.warn && !verdict.block) return verdict; // S07: an inspection failure is always visible, on or off
   if (en.on) return verdict;
-  if (verdict.block && verdict.gates[0] !== 'gate-hook-self-disable') {
-    return { block: false, warn: true, gates: verdict.gates, notice: offNotice(en, verdict.gates), why: 'gate-hook-off, would have blocked' };
+  if (!verdict.block) return none('gate-hook-off (' + en.source + ')');
+  if (en.expires_at) {
+    // a ONCE-style grant: never a blanket window (S06) — self-disable is never approvable through it either.
+    if (verdict.gates[0] === 'gate-hook-self-disable') {
+      return { block: false, warn: true, gates: verdict.gates, notice: offNotice(en, verdict.gates), why: 'gate-hook-off, self-disable-would-have-blocked' };
+    }
+    const cfg = resolveConfigModule(opts);
+    let outcome;
+    try {
+      outcome = (cfg && typeof cfg.consumeOnce === 'function')
+        ? cfg.consumeOnce('gate-hook', { commandSha256: sha256(command) })
+        : { ok: false, reason: 'consumeOnce-unavailable' };
+    } catch (e) {
+      outcome = { ok: false, reason: 'consumeOnce-threw (' + String(e && e.message || e).split('\n')[0] + ')' };
+    }
+    if (outcome && outcome.ok === true) {
+      return { block: false, warn: true, gates: verdict.gates, notice: cap('FORGE GATE: one-off approval used for this command (' + verdict.gates.join(', ') + ')'), why: 'gate-hook-once-consumed' };
+    }
+    return { block: true, gates: verdict.gates, reason: verdict.reason, why: 'gate-hook-once-not-consumed (' + (outcome && outcome.reason || 'unknown') + ')' };
   }
-  return none('gate-hook-off (' + en.source + ')');
+  // a PERSISTENT off (no expiry) is an out-of-band owner action outside this hook's own matcher (e.g. the
+  // dashboard); stays visible-but-allowed, unchanged from the pre-codex-recheck behaviour.
+  return { block: false, warn: true, gates: verdict.gates, notice: offNotice(en, verdict.gates), why: 'gate-hook-off, would have blocked' };
 }
 
 /** run(rawStdin, opts) -> { exitCode, stderr, why }. Never throws. */
 function run(rawStdin, opts) {
   let payload;
-  try { payload = JSON.parse(String(rawStdin || '')); } catch { return { exitCode: 0, stderr: '', why: 'unparseable-stdin' }; }
+  try { payload = JSON.parse(String(rawStdin || '')); }
+  catch { return { exitCode: 1, stderr: 'forge-gate-hook: unparseable stdin, this call was NOT checked', why: 'unparseable-stdin' }; }
   try {
     const d = decide(payload, opts);
     if (d.block) return { exitCode: 2, stderr: d.reason, why: d.why };
@@ -358,7 +348,8 @@ function run(rawStdin, opts) {
 
 module.exports = {
   run, decide, evaluate, gateHookEnabled, commandGateIds, blockReason, selfDisable, scratchPassThrough, tokenize, verbIndex,
-  extractTargets, resolveTarget, areaOf, SHELL_TOOLS, WORDS, FAILSAFE_MS, MAX_STDIN_BYTES, PROJECT_ROOT, FALLBACK_RE, ONCE_SHAPE_RE,
+  extractTargets, resolveTarget, areaOf, parseConfigCall, isSelfDisableCall, isOnceExempt, sha256,
+  SHELL_TOOLS, WORDS, FAILSAFE_MS, MAX_STDIN_BYTES, PROJECT_ROOT, FALLBACK_RE,
 };
 
 // ---- CLI (PreToolUse hook target). Async stdin collection (proven safe on Windows by forge-toolhook.cjs); every

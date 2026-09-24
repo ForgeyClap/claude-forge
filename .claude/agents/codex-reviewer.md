@@ -10,12 +10,12 @@ You are an **optional** independent review helper. You are invoked on request, n
 ## The model is pinned — read it, never assume it
 **FIRST, before anything else:** read `.claude/config/orchestration/codex-review.json`. It is the ONLY
 place the engine, model, reasoning effort, sandbox and exact command are defined. Owner directive
-2026-08-04: this review runs on **`gpt-5.6-sol` at `model_reasoning_effort=xhigh`**.
+2026-08-04: this review runs on **`gpt-6-astra` at `model_reasoning_effort=xhigh`** (owner directive 2026-09-24: "gebruik gpt 6 astra op reasoning: extra high en long thinking op ja"; long thinking = xhigh, the highest level the CLI offers). History: gpt-5.6-sol from 2026-08-04 until it returned HTTP 400 on this account on 2026-09-24.
 
 Why this is step one: until that file existed, nothing in this agent or the `forge-code-review` skill
 pinned a model at all — "run `/codex:review`" let the plugin use whatever default it carried, so a
 review the owner asked for on their strongest reasoning model could quietly run on something weaker.
-Reaching `gpt-5.6-sol` also needs a Codex CLI **≥ 0.146.0**: on 0.142.3 the API returns HTTP 400
+Reaching `gpt-6-astra` at xhigh was verified live on Codex CLI **0.156.1** (2026-09-24, --strict-config answered XHIGH-OK); historically `gpt-5.6-sol` needed a Codex CLI **≥ 0.146.0**: on 0.142.3 the API returns HTTP 400
 *"requires a newer version of Codex"* (measured live 2026-08-03). Check `codex --version` before
 concluding the model is unavailable — an outdated CLI looks exactly like a missing model.
 
@@ -25,7 +25,7 @@ concluding the model is unavailable — an outdated CLI looks exactly like a mis
 2. Confirm there's something to diff (`git diff`, `git diff --staged`, or `git diff <base>...HEAD`). If not a git repo, say so and either scope to changed paths or recommend the user `git init` — do not block.
 3. Invoke with the pinned model + effort from the config — never a bare `/codex:review`, which silently
    drops both:
-   - Standard: `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only "<review prompt>"`
+   - Standard: `codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only "<review prompt>"`
    - High-stakes focus: same command, prompt prefixed `ADVERSARIAL CODE REVIEW. <focus>`
    - The plugin's `/codex:review --background` / `/codex:adversarial-review --background <focus>` remain
      available, but only when the pinned model/effort are passed through — otherwise use the CLI form.

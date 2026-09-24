@@ -163,6 +163,21 @@ t('configOn ignores a wrong-typed value and honours a real enum value', () => {
   assert.strictEqual(R.configOn('cleanup', 'report', { configModule: { get: () => ({ value: true }) } }), 'report');
   assert.strictEqual(R.configOn('cleanup', 'report', { configModule: { get: () => ({ value: 'auto' }) } }), 'auto');
 });
+t('CFG-03 (Codex recheck 2026-09-24): a REJECTED schema can never authorize apply through the "safe" fallback', () => {
+  // The exact finding reproduction: a schema whose cleanup setting is itself invalid (missing desc.en) must
+  // never let safeGet() salvage that setting's OWN (also unvalidated) default="auto" — cleanupGate('apply')
+  // must stay refused (report), never allowed:true.
+  const cfg = require('./forge-config.cjs');
+  const badSchema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), 'utf8'));
+  badSchema.settings.cleanup = { type: 'enum', allowed: ['auto'], default: 'auto', scope: 'project', group: 'when-needed', flags: ['D'], consumers: ['x'], desc: { nl: 'x' } };
+  const schemaPath = path.join(TMP, 'cfg03-bad-schema.json');
+  fs.writeFileSync(schemaPath, JSON.stringify(badSchema));
+  const shim = { safeGet: (key, o) => cfg.safeGet(key, Object.assign({ schemaPath }, o)) };
+  const root = fixtureRoot({ cleanup: { value: 'auto' } }); // even an explicit owner "auto" cannot survive a rejected schema
+  const g = R.cleanupGate('apply', { projectRoot: root, configModule: shim });
+  assert.strictEqual(g.allowed, false, 'a rejected schema must never authorize apply');
+  assert.strictEqual(R.configOn('cleanup', 'report', { projectRoot: root, configModule: shim }), 'report', 'never "auto" salvaged from the rejected schema');
+});
 t('the GLOBAL settings file (FORGE_CONFIG_HOME) cleanup=auto is honoured when the project sets nothing', () => {
   const home = fs.mkdtempSync(path.join(TMP, 'home-'));
   fs.writeFileSync(path.join(home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { cleanup: { value: 'auto' } } }));

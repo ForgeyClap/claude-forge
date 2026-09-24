@@ -59,7 +59,11 @@ function runCommand(a, base, T) {
         const e = cfg.get(a.pos[0], withFlags);
         return { code: 0, json: e, text: text.renderGet(e, e.lang) };
       } catch (err) {
-        if (err.code === 'locked') return { code: 0, json: { key: a.pos[0], locked: true, message: err.message }, text: err.message };
+        // CFG-06 (Codex recheck 2026-09-24): only turn a 'locked' error into a success when the REQUESTED
+        // key itself is the locked one. cfg.get() also throws 'locked' when a --flag names a DIFFERENT
+        // locked id (resolve() validates every flag) — that must still propagate as a real exit-3 error,
+        // matching the core's behavior, not a misleading exit-0 "explanation" of the key that was asked for.
+        if (err.code === 'locked' && err.key === a.pos[0]) return { code: 0, json: { key: a.pos[0], locked: true, message: err.message }, text: err.message };
         throw err;
       }
     }

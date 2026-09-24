@@ -659,8 +659,8 @@ t('parse maps a plain sentence to the exact set command and never writes', () =>
 
 // ---------------------------------------------------------------------------------------------------
 console.log('\n7) no credential reads');
-t('static: none of the three source files mentions the login file, token fields, fetch( or https.request', () => {
-  for (const f of ['forge-config.cjs', 'forge-config-text.cjs', 'forge-config-cli.cjs']) {
+t('static: none of the four source files mentions the login file, token fields, fetch( or https.request', () => {
+  for (const f of ['forge-config.cjs', 'forge-config-text.cjs', 'forge-config-cli.cjs', 'forge-config-once.cjs']) {
     const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
     for (const bad of ['.credentials.json', 'accessToken', 'fetch(', 'https.request', "require('https')", "require('http')", "require('net')"]) assert.ok(!src.includes(bad), f + ' contains ' + bad);
   }
@@ -1021,7 +1021,7 @@ t('--once writes value false + set_at + set_by + once_quote + expires_at = now +
   const fx = fixture();
   const R = cfg.set('gate-hook', 'off', withOpts(fx, { once: '  ja,  verwijder\tdie map ', now: at(0), lang: 'en' }));
   const e = readJson(fx.projectFile).settings['gate-hook'];
-  assert.deepStrictEqual(e, { value: false, set_at: at(0), set_by: 'owner one-off approval: ja, verwijder die map', once_quote: 'ja, verwijder die map', expires_at: at(10 * 60000) });
+  assert.deepStrictEqual(e, { value: false, set_at: at(0), set_by: 'owner one-off approval: ja, verwijder die map', once_quote: 'ja, verwijder die map', expires_at: at(10 * 60000), consumed_at: null, consumed_command_sha256: null });
   assert.strictEqual(fs.existsSync(fx.globalFile), false, 'never the global file');
   assert.deepStrictEqual([R.to, R.once.minutes, R.once.quote], [false, 10, 'ja, verwijder die map']);
   const G = cfg.get('gate-hook', withOpts(fx, { now: at(3 * 60000), lang: 'en' }));
@@ -1096,6 +1096,180 @@ t('CLI: set gate-hook off --once "<quote>" exits 0; --once elsewhere or on anoth
   assert.strictEqual(readJson(fx.projectFile).settings['gate-hook'].once_quote, 'ja, verwijder de build-map', 'refused calls wrote nothing');
   const g = cli(fx, ['get', 'gate-hook', '--lang', 'en']);
   assert.ok(/^gate-hook = off \[project\]/.test(g.out) && /one-off approval/.test(g.out), g.out);
+});
+
+// ---------------------------------------------------------------------------------------------------
+console.log('\n14) Codex recheck 2026-09-24 (CFG-02 .. CFG-10)');
+
+t('CFG-02: a persisted file must hold the CANONICAL type — "false"/0/"off"/[0]/["false"] for a bool are DAMAGE, not a value', () => {
+  const fx = fixture();
+  for (const bad of ['false', 0, 'off', [0], ['false']]) {
+    const f = fixture();
+    writeJson(f.projectFile, { version: 1, settings: { nvidia: { value: bad } } });
+    const before = bytes(f.projectFile);
+    throwsCode(() => cfg.resolve(f.o), 'malformed', 2);
+    throwsCode(() => cfg.set('council', 'off', f.o), 'malformed', 2);
+    assert.strictEqual(bytes(f.projectFile), before, JSON.stringify(bad));
+    assert.strictEqual(cfg.safeGet('nvidia', f.o).value, false, 'safeGet still degrades safely: ' + JSON.stringify(bad));
+  }
+  // A genuine canonical bool/enum stored value still reads straight through (no coercion needed there).
+  writeJson(fx.projectFile, { version: 1, settings: { nvidia: { value: false }, council: { value: 'off' } } });
+  const r = cfg.resolve(fx.o);
+  assert.deepStrictEqual([r.settings.nvidia.value, r.settings.council.value], [false, 'off']);
+  // CLI `set ... off` still coerces the STRING "off" at the input boundary and stores a real boolean.
+  const before2 = fixture();
+  cfg.set('nvidia', 'off', before2.o);
+  assert.strictEqual(readJson(before2.projectFile).settings.nvidia.value, false);
+});
+
+t('CFG-03: a schema that fails validation is REJECTED IN FULL — safeGet never salvages a value from it, and honours the caller\'s own fallback', () => {
+  const RAW2 = JSON.parse(JSON.stringify(RAW));
+  RAW2.settings.cleanup = { type: 'enum', allowed: ['auto'], default: 'auto', scope: 'project', group: 'when-needed', flags: ['D'], consumers: ['x'], desc: { nl: 'x' } }; // missing desc.en -> invalid
+  const fx = fixture();
+  const sp = path.join(fx.root, 'bad-schema.json');
+  writeJson(sp, RAW2);
+  assert.ok(cfg.validateSchema(RAW2, GATES).length > 0, 'the fixture schema must actually be invalid');
+  const g = cfg.safeGet('cleanup', withOpts(fx, { schemaPath: sp, fallback: 'report' }));
+  assert.deepStrictEqual([g.value, g.degraded, g.source], ['report', true, 'safe-fallback'], 'never "auto" from the rejected schema');
+  // An unflagged key with no FAILSAFE_FLAGGED entry falls back to the CALLER's own protective fallback, never
+  // anything derived from the rejected schema's (also unvalidated) definition for that key.
+  const n = cfg.safeGet('team-max', withOpts(fx, { schemaPath: sp, fallback: 1 }));
+  assert.deepStrictEqual([n.value, n.degraded], [1, true]);
+});
+
+t('CFG-04: a global-scope BOOL project value may only STRENGTHEN a global protective default, never weaken it', () => {
+  const fx = fixture();
+  // global OFF, project ON (matches the schema default true) -> the project value WINS: strengthened.
+  writeJson(fx.globalFile, { version: 1, settings: { 'usage-guard': { value: false } } });
+  writeJson(fx.projectFile, { version: 1, settings: { 'usage-guard': { value: true } } });
+  const r1 = cfg.resolve(withOpts(fx, { lang: 'en' }));
+  assert.deepStrictEqual([r1.settings['usage-guard'].value, r1.settings['usage-guard'].source], [true, 'project']);
+  assert.deepStrictEqual(r1.strengthened_project_values, ['usage-guard']);
+  assert.deepStrictEqual(r1.ignored_project_values, []);
+  assert.ok(r1.notes.some((n) => /can only STRENGTHEN/.test(n)), JSON.stringify(r1.notes));
+  // global ON, project OFF (away from the default) -> still ignored, exactly as before.
+  const fx2 = fixture();
+  writeJson(fx2.globalFile, { version: 1, settings: { 'usage-guard': { value: true } } });
+  writeJson(fx2.projectFile, { version: 1, settings: { 'usage-guard': { value: false } } });
+  const r2 = cfg.resolve(withOpts(fx2, { lang: 'en' }));
+  assert.deepStrictEqual([r2.settings['usage-guard'].value, r2.settings['usage-guard'].source], [true, 'global']);
+  assert.deepStrictEqual(r2.ignored_project_values, ['usage-guard']);
+  assert.deepStrictEqual(r2.strengthened_project_values, []);
+});
+
+t('CFG-08: gate-hook (ignore_global) is never read from the global file — a reset can never expose a hidden global OFF', () => {
+  const fx = fixture();
+  writeJson(fx.globalFile, { version: 1, settings: { 'gate-hook': { value: false } } });
+  writeJson(fx.projectFile, { version: 1, settings: { 'gate-hook': { value: true } } });
+  const r = cfg.resolve(withOpts(fx, { lang: 'en' }));
+  assert.deepStrictEqual([r.settings['gate-hook'].value, r.settings['gate-hook'].source], [true, 'project']);
+  assert.ok(r.notes.some((n) => /never read from there/.test(n)), JSON.stringify(r.notes));
+  // Remove the project override (the normal reset path) -> falls back to the schema default (true), the
+  // global "false" sitting underneath is NEVER exposed.
+  cfg.reset(withOpts(fx, { yes: true }));
+  assert.strictEqual(cfg.get('gate-hook', fx.o).value, true);
+  // A --global write is refused outright: it would silently do nothing.
+  throwsCode(() => cfg.set('gate-hook', 'off', withOpts(fx, { global: true })), 'usage', 2);
+  assert.strictEqual(readJson(fx.globalFile).settings['gate-hook'].value, false, 'the refused call wrote nothing new');
+});
+
+t('CFG-05: parseFlagValue(key, raw) validates through the SAME schema parser, including bounds', () => {
+  assert.strictEqual(cfg.parseFlagValue('usage-guard.pause-at', '95'), 95);
+  for (const bad of ['1000', '49.5', 'abc', -1]) throwsCode(() => cfg.parseFlagValue('usage-guard.pause-at', bad), 'invalid_value', 2);
+});
+
+t('CFG-06: CLI get exits 3 (not 0) when a --flag names a DIFFERENT locked id than the requested key', () => {
+  const fx = fixture();
+  const r = cli(fx, ['get', 'gate-hook', '--flag', 'git-destructive=off', '--json']);
+  assert.strictEqual(r.status, 3, r.all);
+  assert.strictEqual(JSON.parse(r.out).error.code, 'locked');
+  // The requested key itself being locked is still an informational exit 0.
+  assert.strictEqual(cli(fx, ['get', 'hard-gates']).status, 0);
+});
+
+t('CFG-07/S06: setOnce stores consumed_at:null; consumeOnce() is a real single-use gate', () => {
+  const fx = fixture();
+  const at0 = '2026-09-24T12:00:00.000Z';
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja, doe het', now: at0 }));
+  const stored = readJson(fx.projectFile).settings['gate-hook'];
+  assert.deepStrictEqual([stored.consumed_at, stored.consumed_command_sha256], [null, null]);
+  const now1 = withOpts(fx, { now: '2026-09-24T12:01:00.000Z', commandSha256: 'abc123' });
+  const first = cfg.consumeOnce('gate-hook', now1);
+  assert.deepStrictEqual(first, { ok: true });
+  const after = readJson(fx.projectFile).settings['gate-hook'];
+  assert.strictEqual(after.consumed_command_sha256, 'abc123');
+  assert.ok(Date.parse(after.consumed_at) > 0);
+  // Consumed: get()/resolve() are back to normal IMMEDIATELY, not after the timer.
+  assert.strictEqual(cfg.get('gate-hook', now1).value, true);
+  // A second consume (still well inside the 10-minute window) is refused — the exact "parallel requests
+  // sharing one approval" evidence from the finding.
+  const second = cfg.consumeOnce('gate-hook', now1);
+  assert.deepStrictEqual(second, { ok: false, reason: 'consumed' });
+  // No entry at all.
+  assert.deepStrictEqual(cfg.consumeOnce('gate-hook', fixture().o), { ok: false, reason: 'absent' });
+  // Expired (never consumed).
+  const fx2 = fixture();
+  cfg.set('gate-hook', 'off', withOpts(fx2, { once: 'ja', now: at0 }));
+  assert.deepStrictEqual(cfg.consumeOnce('gate-hook', withOpts(fx2, { now: '2026-09-24T12:20:00.000Z' })), { ok: false, reason: 'expired' });
+  // A set_at in the future relative to `now` is a clock problem, never an approval.
+  const fx3 = fixture();
+  writeJson(fx3.projectFile, { version: 1, settings: { 'gate-hook': { value: false, set_at: '2026-09-24T13:00:00.000Z', expires_at: '2026-09-24T13:10:00.000Z', once_quote: 'ja', consumed_at: null } } });
+  assert.deepStrictEqual(cfg.consumeOnce('gate-hook', withOpts(fx3, { now: at0 })), { ok: false, reason: 'clock' });
+});
+
+t('CFG-07: re-issuing --once while an unconsumed one is still armed is refused (never silently extends the window)', () => {
+  const fx = fixture();
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: '2026-09-24T12:00:00.000Z' }));
+  throwsCode(() => cfg.set('gate-hook', 'off', withOpts(fx, { once: 'nogmaals', now: '2026-09-24T12:09:00.000Z' })), 'usage', 2);
+  const e = readJson(fx.projectFile).settings['gate-hook'];
+  assert.deepStrictEqual([e.expires_at, e.once_quote], ['2026-09-24T12:10:00.000Z', 'ja'], 'the original entry is unchanged (no silent extension)');
+  // Once consumed, a fresh --once may be armed again.
+  cfg.consumeOnce('gate-hook', withOpts(fx, { now: '2026-09-24T12:01:00.000Z' }));
+  const R = cfg.set('gate-hook', 'off', withOpts(fx, { once: 'opnieuw', now: '2026-09-24T12:02:00.000Z' }));
+  assert.strictEqual(R.once.quote, 'opnieuw');
+});
+
+t('CFG-07: a hand-edited expires_at later than set_at + 10 min, or a set_at in the future, is treated as expired on read', () => {
+  const fx = fixture();
+  writeJson(fx.projectFile, { version: 1, settings: { 'gate-hook': { value: false, set_at: '2026-09-24T12:00:00.000Z', expires_at: '2026-09-24T23:00:00.000Z', once_quote: 'ja' } } });
+  assert.strictEqual(cfg.get('gate-hook', withOpts(fx, { now: '2026-09-24T12:05:00.000Z' })).value, true, 'a tampered-forward expiry can never extend the window');
+  const fx2 = fixture();
+  writeJson(fx2.projectFile, { version: 1, settings: { 'gate-hook': { value: false, set_at: '2026-09-24T12:10:00.000Z', expires_at: '2026-09-24T12:20:00.000Z', once_quote: 'ja' } } });
+  assert.strictEqual(cfg.get('gate-hook', withOpts(fx2, { now: '2026-09-24T12:05:00.000Z' })).value, true, 'a set_at in the future (clock rollback) is never trusted');
+});
+
+t('CFG-09: a stale/held lock on the target file is serialized, not clobbered — the delayed writer re-reads the fresh bytes', () => {
+  const fx = fixture();
+  cfg.set('council', 'off', fx.o); // an existing value the "other writer" will change while we hold the lock
+  const lockPath = fx.projectFile + '.lock';
+  fs.writeFileSync(lockPath, '999999'); // simulate another process mid-write
+  // With a short timeout, a blocked writer must fail LOUD (never silently skip the lock and clobber).
+  assert.throws(() => cfg.set('nvidia', 'off', withOpts(fx, { lockTimeoutMs: 50, lockPollMs: 5 })), /another process|lock/i);
+  assert.strictEqual(readJson(fx.projectFile).settings.council.value, 'off', 'the blocked attempt wrote nothing');
+  // The "other writer" finishes and releases the lock, having changed council in the meantime.
+  writeJson(fx.projectFile, { version: 1, settings: { council: { value: 'auto' } } });
+  fs.unlinkSync(lockPath);
+  // Now the delayed writer succeeds AND re-reads the fresh bytes rather than a stale pre-lock snapshot.
+  cfg.set('nvidia', 'off', withOpts(fx, { lockTimeoutMs: 2000 }));
+  const d = readJson(fx.projectFile);
+  assert.deepStrictEqual([d.settings.council.value, d.settings.nvidia.value], ['auto', false], 'both updates survive — nothing was lost');
+});
+
+t('CFG-09: a lock older than lockStaleMs is reclaimed instead of wedging forever', () => {
+  const fx = fixture();
+  const lockPath = fx.projectFile + '.lock';
+  fs.writeFileSync(lockPath, '999999');
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(lockPath, old, old);
+  cfg.set('council', 'off', withOpts(fx, { lockStaleMs: 1000, lockTimeoutMs: 2000, lockPollMs: 5 }));
+  assert.strictEqual(readJson(fx.projectFile).settings.council.value, 'off');
+});
+
+t('CFG-10: atomicWriteJson leaves no temp file and the written bytes read back byte-identical after fsync', () => {
+  const fx = fixture();
+  cfg.set('council', 'off', fx.o);
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(fx.projectFile)).filter((f) => f.endsWith('.tmp') || f.endsWith('.lock')), []);
+  assert.strictEqual(readJson(fx.projectFile).settings.council.value, 'off');
 });
 
 // ---------------------------------------------------------------------------------------------------

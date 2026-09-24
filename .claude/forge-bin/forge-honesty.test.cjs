@@ -317,5 +317,71 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   t('RULE 3: a FAIL verdict resolves the paired task as failed, not done (blockers stay visible)', r.review && r.review.status === 'failed');
 }
 
+// ---------------------------------------------------------------------------------------------------
+// DISPLAY-BYPASSES-CONTRACT (2026-09-24, out-p5.md) — a run shows COMPLETE only when a genuine
+// run_finalized receipt event is the last thing logged; run.status==='completed' alone must render as a
+// claimed-but-unverified state, and a still-running task must never be silently repainted 'done' without it.
+// ---------------------------------------------------------------------------------------------------
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    // no completion/failure for Build Boss — this node stays genuinely 'running'
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed' }; // metadata CLAIM only — no run_finalized event anywhere
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Build Boss');
+    ({ nodeStatus: n.status });
+  `);
+  t('DISPLAY-BYPASSES-CONTRACT: a claimed-complete run with NO run_finalized event does not repaint a running node as done', r.nodeStatus !== 'done');
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed' };
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Build Boss');
+    ({ nodeStatus: n.status });
+  `);
+  t('DISPLAY-BYPASSES-CONTRACT counterweight: a genuinely receipt-finalized run DOES repaint a running node as done', r.nodeStatus === 'done');
+}
+{
+  const { run, sandbox } = loadDashboard();
+  const events = [{ agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' }];
+  run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-claimed' };
+    STATE._nodes = buildNodes();
+    renderTop();
+  `);
+  const stateText = sandbox.document.getElementById('state-text').textContent;
+  t('DISPLAY-BYPASSES-CONTRACT: renderTop() shows a claimed-complete run as unverified, not the verified COMPLETE badge', stateText !== 'COMPLETE' && /UNVERIFIED/.test(stateText));
+  t('DISPLAY-BYPASSES-CONTRACT: the completed badge stays hidden for an unverified claim', sandbox.document.getElementById('badge-complete').hidden === true);
+}
+{
+  const { run, sandbox } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Build Boss', event_type: 'agent_completed', timestamp: '2026-09-24T00:00:01Z' },
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:02Z' },
+  ];
+  run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-verified' };
+    STATE._nodes = buildNodes();
+    renderTop();
+  `);
+  const stateText = sandbox.document.getElementById('state-text').textContent;
+  t('DISPLAY-BYPASSES-CONTRACT counterweight: a genuinely receipt-finalized run still shows verified COMPLETE', stateText === 'COMPLETE');
+  t('DISPLAY-BYPASSES-CONTRACT counterweight: the completed badge is visible for a verified run', sandbox.document.getElementById('badge-complete').hidden === false);
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

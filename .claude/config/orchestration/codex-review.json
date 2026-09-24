@@ -1,18 +1,19 @@
 {
-  "_doc": "SINGLE SOURCE OF TRUTH for the independent code review (owner directive 2026-08-04: 'dat moet codex op gpt 5.6 sol effort:max doen'; BIJGESTELD 2026-08-09 door de owner naar effort xhigh — 'kan je effort naar extra high doen in plaats van max?'. xhigh is live gevalideerd op gpt-5.6-sol met --strict-config, dus de waarde wordt echt geaccepteerd en niet stilzwijgend genegeerd.). Before this file existed the model was pinned NOWHERE: the codex-reviewer agent and the forge-code-review skill both said 'run /codex:review' and let the plugin pick whatever default it had, so a review could silently run on a weaker model than the owner asked for — measured 2026-08-03, when reaching gpt-5.6-sol at all first required upgrading the Codex CLI from 0.142.3 to 0.146.0. Every caller (agent prose, skill, plan step, report) must read the model/effort/command FROM HERE rather than restating them, so there is exactly one place to change.",
+  "_doc": "SINGLE SOURCE OF TRUTH for the independent code review (owner directive 2026-09-24: \"codex is enabled en gebruikelijk is gefixt. gebruik gpt 6 astra op reasoning: extra high en long thinking op ja\" -> model gpt-6-astra, effort xhigh; \"long thinking\" maps to xhigh, the CLI's highest reasoning effort — codex-cli 0.156.1 has no separate thinking flag (--help verified 2026-09-24). Earlier history: gpt-5.6-sol, pinned 2026-08-04, effort xhigh since 2026-08-09; on 2026-09-24 that model returned HTTP 400 on this ChatGPT account.) (owner directive 2026-08-04: 'dat moet codex op gpt 5.6 sol effort:max doen'; BIJGESTELD 2026-08-09 door de owner naar effort xhigh — 'kan je effort naar extra high doen in plaats van max?'. xhigh is live gevalideerd op gpt-5.6-sol met --strict-config, dus de waarde wordt echt geaccepteerd en niet stilzwijgend genegeerd.). Before this file existed the model was pinned NOWHERE: the codex-reviewer agent and the forge-code-review skill both said 'run /codex:review' and let the plugin pick whatever default it had, so a review could silently run on a weaker model than the owner asked for — measured 2026-08-03, when reaching gpt-5.6-sol at all first required upgrading the Codex CLI from 0.142.3 to 0.146.0. Every caller (agent prose, skill, plan step, report) must read the model/effort/command FROM HERE rather than restating them, so there is exactly one place to change.",
   "version": 1,
   "review": {
     "engine": "codex",
-    "model": "gpt-5.6-sol",
+    "model": "gpt-6-astra",
     "reasoning_effort": "xhigh",
     "sandbox": "read-only",
-    "min_cli_version": "0.146.0",
-    "_min_cli_doc": "gpt-5.6-sol EXISTS on older CLIs but the API refuses it with HTTP 400 'requires a newer version of Codex'. Verified live 2026-08-03: 0.142.3 refused, 0.146.0 accepted.",
-    "command": "codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only \"<review prompt>\"",
-    "adversarial_command": "codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only \"ADVERSARIAL CODE REVIEW. <focus>\""
+    "min_cli_version": "0.156.1",
+    "_min_cli_doc": "gpt-6-astra at xhigh verified live 2026-09-24 on codex-cli 0.156.1 (ChatGPT login): codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only --strict-config answered XHIGH-OK, exit 0 (20,517 tokens). Older note kept for history: gpt-5.6-sol needed >= 0.146.0 and was refused with HTTP 400 on this account on 2026-09-24.",
+    "command": "codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only \"<review prompt>\"",
+    "adversarial_command": "codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only \"ADVERSARIAL CODE REVIEW. <focus>\"",
+    "long_thinking": "yes — expressed as model_reasoning_effort=xhigh (the highest level the CLI accepts; no separate flag exists in codex-cli 0.156.1)"
   },
   "naming": {
-    "step_label": "Codex code-review (gpt-5.6-sol, effort xhigh)",
+    "step_label": "Codex code-review (gpt-6-astra, effort xhigh)",
     "_naming_doc": "Plans used to name this work package 'ECC code-review', which described the FALLBACK as if it were the plan. The planned step is the Codex pass; ECC review is only what you fall back to, and it is labelled as such."
   },
   "fallback": {
@@ -26,12 +27,12 @@
   },
   "honesty": {
     "never_claim_model_that_did_not_run": true,
-    "_doc": "If the configured model is unavailable (400 / CLI too old / not authed), report the ACTUAL model used or that the review was blocked. A review attributed to gpt-5.6-sol that ran on something else is a fabricated provenance."
+    "_doc": "If the configured model is unavailable (400 / CLI too old / not authed), report the ACTUAL model used or that the review was blocked. A review attributed to gpt-6-astra that ran on something else is a fabricated provenance."
   },
   "operational_notes": {
     "effort_is_slow": "A review at a high reasoning effort (max, and to a lesser degree xhigh) regularly runs LONGER THAN 10 MINUTES. Measured 2026-08-04: a 3-file review was still running at the 10-minute mark and had to be relaunched in the background. Always run it detached (background) and wait for completion — killing it mid-flight wastes the whole run.",
     "exec_host_handshake_can_fail": "Measured 2026-08-04: one effort=max run returned MODEL-USED plus \"the read-only execution host repeatedly failed during handshake, even on a no-op\" — i.e. Codex could not read any file and produced NO review. A follow-up run on the same flags at effort=low read the config fine and echoed back the pinned values, so this is intermittent, not a broken configuration. If a run reports a handshake failure, it produced no review: rerun it, and never present it as a completed review.",
-    "model_cannot_self_identify": "Asked which model it is, Codex answers \"GPT-5 (Codex; exact deployment ID is not exposed)\". That is normal — a model cannot reliably self-report its deployment. The trustworthy evidence that the pin took effect is the CLI header line (model: gpt-5.6-sol) plus the fact that the flags were passed; do not treat the model's self-description as a contradiction.",
-    "verified": "End-to-end proof 2026-08-04 (effort max): codex exec -m gpt-5.6-sol ... read this file and echoed back review.model=gpt-5.6-sol and review.reasoning_effort=max. Effort-wissel 2026-08-09: `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only --strict-config` draaide live en antwoordde XHIGH-OK — --strict-config bewijst dat de waarde herkend wordt en niet stil wordt genegeerd."
+    "model_cannot_self_identify": "Asked which model it is, Codex answers \"GPT-5 (Codex; exact deployment ID is not exposed)\". That is normal — a model cannot reliably self-report its deployment. The trustworthy evidence that the pin took effect is the CLI header line (model: gpt-6-astra) plus the fact that the flags were passed; do not treat the model's self-description as a contradiction.",
+    "verified": "2026-09-24: codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only --strict-config --skip-git-repo-check \"Reply with exactly the text XHIGH-OK\" -> XHIGH-OK, exit 0, codex-cli 0.156.1, ChatGPT login (owner re-enabled Codex). History: End-to-end proof 2026-08-04 (effort max): codex exec -m gpt-5.6-sol ... read this file and echoed back review.model=gpt-5.6-sol and review.reasoning_effort=max. Effort-wissel 2026-08-09: `codex exec -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s read-only --strict-config` draaide live en antwoordde XHIGH-OK — --strict-config bewijst dat de waarde herkend wordt en niet stil wordt genegeerd."
   }
 }

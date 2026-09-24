@@ -247,7 +247,9 @@ t('a copy with NO sibling forge-config.cjs (the global ~/.claude/forge-bin deplo
   const proj = freshRoot('mark-globalcopy-proj');
   const pbin = path.join(proj, '.claude', 'forge-bin');
   fs.mkdirSync(pbin, { recursive: true });
-  for (const f of ['forge-config.cjs', 'forge-config-text.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(pbin, f));
+  // forge-config-once.cjs (Codex recheck 2026-09-24) is a required sibling of forge-config.cjs — any copy of
+  // the latter needs it too, exactly like forge-config-text.cjs already did.
+  for (const f of ['forge-config.cjs', 'forge-config-text.cjs', 'forge-config-once.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(pbin, f));
   const orch = path.join(proj, '.claude', 'config', 'orchestration');
   fs.mkdirSync(orch, { recursive: true });
   fs.copyFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), path.join(orch, 'FORGE_CONFIG_SCHEMA.json'));

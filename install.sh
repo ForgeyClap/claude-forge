@@ -107,15 +107,31 @@ forge_seed_project_root() {
 
 # Writes .claude/FORGE_VERSION.json — per-install state (gitignored by the snippet above), read by
 # `forge-sync status` to report the installed release next to the canonical template's hash.
+#
+# INSTALLER-NONIDEMPOTENCE (wp-f2, 2026-09-24 Codex re-check): this used to overwrite the marker with a
+# fresh timestamp on EVERY real run, even when the installed release/template had not changed at all —
+# contradicting this installer's own "safe to re-run... identical files are a no-op" claim. Now preserves
+# the marker (and its original synced_at) when forge_version AND template already match what would be
+# written; unreadable/malformed markers fall through and are rewritten, same as before this fix.
 forge_write_version_marker() {
   vm_project="$1"
   vm_file="$vm_project/.claude/FORGE_VERSION.json"
+  vm_template="$HOME/.claude/forge/template/.claude"
   if [ "$DRY_RUN" = "1" ]; then
-    forge_log "  would write: $vm_file (forge_version $FORGE_VERSION)"
+    forge_log "  would write: $vm_file (forge_version $FORGE_VERSION) — only if version/template changed since the last install"
     return 0
   fi
+  if [ -f "$vm_file" ]; then
+    vm_prev_version=""
+    vm_prev_template=""
+    if vm_prev_version=$(grep -o '"forge_version"[[:space:]]*:[[:space:]]*"[^"]*"' "$vm_file" 2>/dev/null | sed -n 's/.*"\([^"]*\)"$/\1/p'); then :; fi
+    if vm_prev_template=$(grep -o '"template"[[:space:]]*:[[:space:]]*"[^"]*"' "$vm_file" 2>/dev/null | sed -n 's/.*"\([^"]*\)"$/\1/p'); then :; fi
+    if [ "$vm_prev_version" = "$FORGE_VERSION" ] && [ "$vm_prev_template" = "$vm_template" ]; then
+      forge_log "  kept:  $vm_file (forge_version $FORGE_VERSION unchanged — marker left as-is)"
+      return 0
+    fi
+  fi
   vm_now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
-  vm_template="$HOME/.claude/forge/template/.claude"
   printf '{\n  "forge_version": "%s",\n  "synced_at": "%s",\n  "template": "%s",\n  "installed_by": "install.sh",\n  "_doc": "forge_version is the release this installer wrote; `forge-sync status` prints it as installed= and detects drift by file hash against the canonical template."\n}\n' \
     "$FORGE_VERSION" "$vm_now" "$vm_template" > "$vm_file" || {
     forge_err "could not write $vm_file (forge-sync status will report installed=none)"
@@ -214,6 +230,20 @@ forge_copy_settings_file() {
   dst_dir=$(dirname -- "$dst_file")
   rec_file="$dst_dir/settings.forge-recommended.json"
   merge_tool="$SOURCE_DIR/.claude/forge-bin/forge-settings-merge.cjs"
+
+  # UNSAFE-FIRST-COPY (wp-f2, 2026-09-24 Codex re-check): a destination that EXISTS but is not a regular file
+  # (a directory named settings.json, most concretely) fell through every branch below straight to the final
+  # `cp -- "$src_file" "$dst_file"` — and `cp` INTO an existing directory nests the payload's settings.json
+  # inside it (`.claude/settings.json/settings.json`) rather than replacing anything, silently reporting
+  # "wrote" while never actually installing a usable settings.json. Refuse cleanly instead, before any write.
+  if [ -e "$dst_file" ] && [ ! -f "$dst_file" ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      forge_log "  [dry-run] REFUSING: $dst_file exists but is not a regular file (e.g. a directory) — settings.json would be left untouched"
+    else
+      forge_err "$dst_file exists but is not a regular file (e.g. a directory) — refusing to touch it; settings.json was left untouched"
+    fi
+    return 1
+  fi
 
   if [ "$DRY_RUN" = "1" ]; then
     if [ -f "$dst_file" ]; then
@@ -489,8 +519,11 @@ main() {
   # -------------------------------------------------------------------------
   forge_log ""
   forge_log "This will write files to:"
-  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude                  (global core: forge-core skill, /forge, /setup-forge)"
-  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude/forge/template   (canonical template: used by forge-sync and the auto-installer)"
+  # OUTSIDE-WRITES-BY-DEFAULT (wp-f2, 2026-09-24 Codex re-check): both of these are real writes OUTSIDE this
+  # project (global, shared by every project on this machine) and on by default — named as such rather than
+  # left implicit.
+  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude                  [OUTSIDE this project -- global, shared by every project] (global core: forge-core skill, /forge, /setup-forge)"
+  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude/forge/template   [OUTSIDE this project -- global] (canonical template: used by forge-sync and the auto-installer)"
   [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/.claude           (per-project payload: skills, agents, dashboard, config)"
   [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/CLAUDE.md         (only if missing) and $PROJECT_DIR/.gitignore (Forge lines appended)"
   forge_log ""
@@ -573,7 +606,14 @@ main() {
   if [ "$DO_PROJECT" = "1" ]; then
     forge_log ""
     forge_log "Installing project payload -> $PROJECT_DIR/.claude"
-    mkdir -p -- "$PROJECT_DIR"
+    # COR-DRYRUN (wp-f2, 2026-09-24 Codex re-check): this ran UNCONDITIONALLY, even under --dry-run,
+    # contradicting "--dry-run shows every write without making one" -- a preview into a not-yet-existing
+    # target directory silently created it. Guarded like every other write in this installer now.
+    if [ "$DRY_RUN" = "1" ]; then
+      [ -d "$PROJECT_DIR" ] || forge_log "  [dry-run] would create directory: $PROJECT_DIR"
+    else
+      mkdir -p -- "$PROJECT_DIR"
+    fi
     if forge_copy_tree "$SOURCE_DIR/.claude" "$PROJECT_DIR/.claude" "1"; then
       PROJECT_OK="1"
     else

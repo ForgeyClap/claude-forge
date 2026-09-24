@@ -270,6 +270,62 @@ function loadVerifyTool() {
   return _verifyCache;
 }
 
+let _manifestCache; // undefined = not yet attempted, null = load failed, object = loaded module
+function loadManifestTool() {
+  if (_manifestCache !== undefined) return _manifestCache;
+  try { _manifestCache = require('./forge-manifest.cjs'); } catch { _manifestCache = null; }
+  return _manifestCache;
+}
+
+// ---- manifest completeness (RC-MANIFEST-STALE, 2026-09-24, out-p5.md — companion to isStalingEvent above) ---
+// The isStalingEvent fix above catches "armed AFTER a review". This catches the plainer case: a manifest was
+// armed once, a package never finished, and nothing after it ever re-reviewed — the run can still show
+// missing:[] for evidence-satisfied/verify-checked because those rules only ever asked "was ANY accepted
+// evidence event logged", never "did the run's OWN declared plan actually finish". A named, owner-authenticated
+// skip is the one legitimate way to close an armed package without a completion event.
+const MANIFEST_SKIP_RULE = 'manifest-complete';
+const MANIFEST_GATED_RULE_IDS = ['evidence-satisfied', 'verify-checked'];
+/** findManifestSkip(events, wpId, ownerAllowlist) -> {reason,by}|null — the SAME owner_override shape and
+ *  the SAME allow-list findOwnerOverride() enforces, additionally bound to ONE named wp_id: event_type
+ *  'owner_override', rule EXACT 'manifest-complete', wp_id EXACT match, a meaningful reason, `by` in the
+ *  configured owner allow-list. Fail-closed like every other override lookup in this file: no id, no reason,
+ *  or no configured allow-list means no skip is ever recognized. */
+function findManifestSkip(events, wpId, ownerAllowlist) {
+  for (const e of events) {
+    if (!e || typeof e !== 'object') continue;
+    if (typeof e.event_type !== 'string' || e.event_type.toLowerCase() !== 'owner_override') continue;
+    if (typeof e.rule !== 'string' || e.rule !== MANIFEST_SKIP_RULE) continue;
+    if (e.wp_id == null || String(e.wp_id) !== String(wpId)) continue;
+    if (!isMeaningfulReason(e.reason, MANIFEST_SKIP_RULE)) continue;
+    const by = (typeof e.by === 'string') ? e.by.trim() : '';
+    if (!by || !ownerAllowlist.has(by.toLowerCase())) continue;
+    return { reason: String(e.reason).trim(), by };
+  }
+  return null;
+}
+/** manifestCompleteness(root, runId, events, ownerAllowlist) -> {applicable, ok, outstanding:[{wp_id,status}]}
+ *  Reads the run's OWN manifest.json (via forge-manifest.cjs's `load()`) and projects its real status purely
+ *  from this run's events (forge-manifest.cjs's own pure `projectManifest()` — never writes, never re-derives
+ *  a second projection algorithm). A project without forge-manifest.cjs, or a run that never armed one, is
+ *  simply NOT APPLICABLE — never a fabricated block on a run that used no manifest at all. */
+function manifestCompleteness(root, runId, events, ownerAllowlist) {
+  const mod = loadManifestTool();
+  if (!mod || typeof mod.load !== 'function' || typeof mod.projectManifest !== 'function') {
+    return { applicable: false, ok: true, outstanding: [] };
+  }
+  let wps;
+  try { wps = mod.load(runId, { root }); }
+  catch { return { applicable: false, ok: true, outstanding: [] }; } // no manifest ever armed for this run
+  const projected = mod.projectManifest(wps, events);
+  const outstanding = [];
+  for (const wp of projected) {
+    if (wp.status === 'done') continue;
+    if (findManifestSkip(events, wp.wp_id, ownerAllowlist)) continue;
+    outstanding.push({ wp_id: wp.wp_id, status: wp.status });
+  }
+  return { applicable: true, ok: outstanding.length === 0, outstanding };
+}
+
 // ---- trigger applicability -------------------------------------------------------------------------------
 /** ruleApplies(rule, domain, complexity) -> boolean — see file header MODEL section. Both `domain` and
  *  `complexity` may be null/undefined (not known for this run); a rule scoped to the axis a caller knows
@@ -456,10 +512,31 @@ function toArray(v) {
   return Array.isArray(v) ? v : [v];
 }
 
+/** eventIsDisproven(e) — mirrors forge-manifest.cjs::eventIsDisproven(): log-event.cjs's own CONTENT
+ *  ORACLE already flagged this event's pass-claim as false (non-zero exit code / missing-or-blank proof
+ *  artifact). Such an event is a CLAIM, not evidence. */
+function eventIsDisproven(e) { return !!(e && e._forge_verify && e._forge_verify.proof_verified === false); }
+
+/** RC-CLAIMS-AS-PROOF (2026-09-24 Codex re-review, out-p5.md) — hasEvent() used to match on `event_type`
+ *  alone, so an event the writer's own content oracle already flagged as false
+ *  (`_forge_verify.proof_verified === false`) still satisfied any rule keyed to its type. REPRODUCED: seven
+ *  claimed events, each stamped proof_verified:false, produced CONTRACT OK with no real work or check ever
+ *  executed. A disproven claim is now rejected outright — never counted as satisfying evidence.
+ *  SCOPE NOTE (honesty): the fuller ask ("require the evidence reference fields the rule names — path/
+ *  tally/exit code — to be present") is NOT implemented for every event-present rule in this pass. Most
+ *  event-present rules (memory-read, owner-prefs-loaded, research-done, dispatch-logged, …) are narrative
+ *  one-shot facts with no natural path/tally/exit-code payload at all — inventing a required field for them
+ *  would need a FORGE_HARD_RULES.json schema change (check.evidence_fields) that is out of this file's
+ *  edit scope for this work package (that config is governed elsewhere) and would need a coordinated
+ *  fixture migration across ~30 historical runs and this project's own test suites to avoid a mass false-
+ *  red regression. The concrete, reproduced exploit (a disproven claim counting as proof) is fixed
+ *  unconditionally here; the broader schema-level evidence-grammar requirement is DEFERRED — see this
+ *  work package's report for the explicit classification. */
 function hasEvent(events, key) {
   const wanted = toArray(key).map((t) => String(t).toLowerCase());
   if (wanted.length === 0) return false;
-  return events.some((e) => e && typeof e === 'object' && typeof e.event_type === 'string' && wanted.includes(e.event_type.toLowerCase()));
+  return events.some((e) => e && typeof e === 'object' && typeof e.event_type === 'string'
+    && wanted.includes(e.event_type.toLowerCase()) && !eventIsDisproven(e));
 }
 
 /** hasArtifact(artifacts, key) -> boolean — case-insensitive filename-substring match AGAINST a genuinely
@@ -661,9 +738,27 @@ const POSITIEVE_REVIEW_VERDICTS = new Set(['pass', 'passed', 'approved', 'ok', '
  *  ontbrekende contractregel rechtstreeks opheffen, waardoor het contract ná het oordeel van "niet klaar"
  *  naar "klaar" verschuift zonder dat er ooit opnieuw is gekeken. De owner is daarmee géén uitvoerder —
  *  hij hoort niet in de werkersverzameling — maar zijn ingreep maakt een eerdere review wel verouderd. */
+/** RC-MANIFEST-STALE (2026-09-24 Codex re-review, out-p5.md) — REVERSES the 2026-09-24 Lead decision
+ *  recorded in FORGE_DECISIONS.md ("Poortclassificatie aangepast met reden"), which read `manifest_armed`
+ *  as fully inert because it "produces nothing of the reviewed product, same family as gate_evaluated".
+ *  That reasoning conflated two DIFFERENT questions this file asks about every event:
+ *    isWorkEvent    — did this event itself EXECUTE or PRODUCE something (decides who may not self-review);
+ *    isStalingEvent — can a PRIOR review still be trusted about the CURRENT state of the run.
+ *  Those are not the same axis. Arming a NEW work package after a review closed does not retroactively turn
+ *  the arming agent into an "executor" of that work — so manifest_armed correctly stays OUT of isWorkEvent
+ *  (the earlier decision was right about that half). But it DOES mean the reviewed subject just changed:
+ *  there is now unreviewed, still-armed work sitting in the run that a prior "everything looked done" review
+ *  could not possibly have judged, because it did not exist yet when that review ran. Treating it as inert
+ *  for BOTH axes let a green independent-review survive an arm-after-review with no re-check at all.
+ *  REPRODUCED (out-p5.md): arming a package after a green L2 review, through the real arm path, kept
+ *  `missing:[]` / `review.ok:true`. Removing only the manifest_armed exemption from isStalingEvent in memory
+ *  restored `missing:["independent-verification"]` — proving this one-line exemption, not some other defect,
+ *  was the whole gap. See manifestCompleteness() below for the companion half: even without a NEW arm-after-
+ *  review event, an armed package that simply never finished must not let evidence-satisfied/verify-checked
+ *  read as satisfied either. */
 function isStalingEvent(e) {
   const type = e && typeof e.event_type === 'string' ? e.event_type.toLowerCase() : '';
-  return type === 'owner_override' || isWorkEvent(e);
+  return type === 'owner_override' || type === 'manifest_armed' || isWorkEvent(e);
 }
 const SHA1_RE = /^[0-9a-f]{40}$/i;
 const SHA256_RE = /^[0-9a-f]{64}$/i;
@@ -1064,13 +1159,34 @@ function checkSatisfied(rule, ctx) {
   else if (c.type === 'artifact-present') satisfied = hasArtifact(ctx.artifacts, c.key);
   else if (c.type === 'doctor-check') satisfied = hasDoctorRun(ctx.events);
 
-  if (!satisfied && c.domain_aware === true && ctx.domain) {
+  /** RC-DOMAIN-BYPASS (2026-09-24, out-p5.md) — TWO compounding defects, not one:
+   *   (1) `{}` here starved forge-evidence.cjs's own artifactsOnDisk() of a runDir, so it always returned
+   *       {verified:false} for every claimed artifact and evidenceCheck() fell back to trusting the bare
+   *       claim — fixed by threading ctx.runDir through.
+   *   (2) the domain-aware check only ever ran `if (!satisfied ...)` — an OR, never an override. So even
+   *       with (1) fixed AND an explicit real domain passed, the cheap generic hasEvent() (ANY
+   *       browser_screenshot_captured event, any path, real or fabricated) already set satisfied=true and
+   *       the stronger, domain-specific 3-breakpoint check never even ran. REPRODUCED: an explicit
+   *       domain:"website" plus one browser_screenshot_captured event naming a NONEXISTENT file still
+   *       returned "web-responsive-evidence" satisfied.
+   *   Fix (2) is DELIBERATELY SCOPED by `rule.trigger`, not blanket-authoritative for every domain_aware
+   *   rule: 'web-responsive-evidence' triggers ONLY on 'web' — its domain is the entire reason it applies
+   *   at all, and its own rule text demands the specific 3-breakpoint set, so a real domain match makes the
+   *   stronger check AUTHORITATIVE both ways (grant AND revoke). 'evidence-satisfied' triggers 'always' and
+   *   its OWN documented rule text says "either a generic evidence-fact event, OR (when a real domain is
+   *   known) the domain's full required-evidence.json set" — an explicit OR, never a narrowing — so for an
+   *   'always'-triggered rule the domain-aware result only ever ADDS a way to satisfy it, never revokes a
+   *   real generic evidence-fact the rule already accepted on its own documented terms. */
+  if (c.domain_aware === true && ctx.domain) {
     const verify = loadVerifyTool();
     if (verify && typeof verify.evidenceCheck === 'function') {
       try {
-        const res = verify.evidenceCheck(ctx.events, ctx.domain, {});
-        if (res && res.ok === true) satisfied = true;
-      } catch { /* domain evidence check unavailable/malformed config — no fabricated pass */ }
+        const res = verify.evidenceCheck(ctx.events, ctx.domain, { runDir: ctx.runDir });
+        if (res) {
+          if (rule.trigger !== 'always') satisfied = res.ok === true; // domain IS why this rule applies at all
+          else if (res.ok === true) satisfied = true; // 'always' rule: domain proof only ADDS a path, never revokes
+        }
+      } catch { /* domain evidence check threw — leave the generic signal as the fallback */ }
     }
   }
   return satisfied;
@@ -1156,7 +1272,6 @@ function check(params, opts) {
   if (!params.run_id || typeof params.run_id !== 'string') {
     throw new Error('forge-runcontract: check() requires a non-empty "run_id" string');
   }
-  const domain = params.domain ? String(params.domain) : null;
 
   const root = opts.root ? path.resolve(opts.root) : DEFAULT_ROOT;
   const runDir = opts.runDir ? path.resolve(opts.runDir) : path.join(root, '.claude', 'forge-runs', params.run_id);
@@ -1179,6 +1294,19 @@ function check(params, opts) {
   let runMeta = null;
   try { runMeta = JSON.parse(fs.readFileSync(path.join(artifactsDir, 'run.json'), 'utf8')); } catch { runMeta = null; }
   const cx = resolveComplexity(events, runMeta, params.complexity);
+
+  /** RC-DOMAIN-BYPASS (2026-09-24, out-p5.md) — domain used to come ONLY from `params.domain`; a run whose
+   *  own run.json genuinely declared `domain:"finance"` was silently read as domain:null the moment a
+   *  caller (or the CLI's default invocation with no --domain) omitted it, skipping every domain-scoped
+   *  rule for a run that plainly said what domain it was. Declared metadata now provides the FALLBACK; an
+   *  explicit param still WINS (a caller may deliberately check under a different/narrower domain), but a
+   *  genuine conflict between the two is reported rather than silently dropped, so a mismatch is visible
+   *  instead of one value quietly overwriting the other with no trace. */
+  const declaredDomain = (runMeta && typeof runMeta.domain === 'string' && runMeta.domain.trim()) ? runMeta.domain.trim() : null;
+  const paramDomain = params.domain ? String(params.domain).trim() : null;
+  const domain = paramDomain || declaredDomain || null;
+  const domainOverridden = !!(paramDomain && declaredDomain && declaredDomain.toLowerCase() !== paramDomain.toLowerCase());
+  const domainSource = paramDomain ? (domainOverridden ? 'param-override' : 'param') : (declaredDomain ? 'declared' : 'none');
 
   const unknownTriggerIds = new Set(meta.unknownTriggers.map((u) => u.id));
   const satisfied = [];
@@ -1223,7 +1351,7 @@ function check(params, opts) {
      *  lezingen van een bestand dat tussendoor kan wijzigen. Nu een keer lezen en dat ene resultaat
      *  gebruiken, zodat de drie velden gegarandeerd bij dezelfde bewijsset horen. */
 
-    const ruleCtx = { events, artifacts, domain, commitSha: effectieveCommit || null, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
+    const ruleCtx = { events, artifacts, domain, runDir: artifactsDir, commitSha: effectieveCommit || null, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
     if (checkSatisfied(rule, ruleCtx)) {
       if (ruleCtx._independentVerification) ruleDetails['independent-verification'] = sanitizeIv(ruleCtx._independentVerification);
       satisfied.push(rule.id); continue;
@@ -1242,8 +1370,52 @@ function check(params, opts) {
     else warnings.push(rule.id);
   }
 
+  /** RC-UNKNOWN-RULE-GREEN (2026-09-24, out-p5.md) — an unevaluated rule was reported in `unevaluated` but
+   *  never affected `ok`, so a version-skewed rules file with an unsupported BLOCKING rule still produced
+   *  CONTRACT OK — that obligation was never judged, yet the contract claimed satisfaction. An unevaluated
+   *  ADVISORY (severity:"warn") rule is left alone (a caller cannot judge it either, and it never gated
+   *  anyway). A blocking one now gets its own `missing`-equivalent entry, kept namespaced (`unknown-rule:<id>`)
+   *  so it is never confused with a genuinely-evaluated-and-failed rule id in `missing`/rule_details. */
+  const unknownBlocking = [];
+  for (const u of meta.unknownTriggers) {
+    const rule = rules.find((r) => r.id === u.id);
+    if (rule && rule.severity === 'block') {
+      const markerId = 'unknown-rule:' + u.id;
+      unknownBlocking.push(markerId);
+      ruleDetails[markerId] = { ok: false, applicable: null, reason: 'BLOCKING rule "' + u.id + '" uses an unknown trigger ("' + u.trigger + '") this checker cannot evaluate — a version-skewed rules file must never read as satisfied for an obligation nobody judged' };
+    }
+  }
+  if (unknownBlocking.length) missing.push(...unknownBlocking);
+
+  /** RC-MANIFEST-STALE, part 2 (2026-09-24, out-p5.md) — see manifestCompleteness()'s own doc above. An
+   *  armed-but-never-finished (and never owner-skipped) work package retroactively invalidates a claimed
+   *  evidence-satisfied/verify-checked pass: those rules must reflect real completion of the run's OWN
+   *  declared plan, not merely "some accepted evidence event exists somewhere in the log". */
+  const manifestState = manifestCompleteness(root, params.run_id, events, ownerAllowlist);
+  if (manifestState.applicable) {
+    if (!manifestState.ok) {
+      const reason = 'armed manifest package(s) without a completion event or an owner-authenticated skip: '
+        + manifestState.outstanding.map((o) => o.wp_id + ' (' + o.status + ')').join(', ');
+      for (const gateId of MANIFEST_GATED_RULE_IDS) {
+        const idx = satisfied.indexOf(gateId);
+        if (idx !== -1) {
+          satisfied.splice(idx, 1);
+          if (!missing.includes(gateId)) missing.push(gateId);
+          const prevReason = ruleDetails[gateId] && ruleDetails[gateId].reason;
+          ruleDetails[gateId] = Object.assign({}, ruleDetails[gateId] || {}, { ok: false, reason: (prevReason ? prevReason + ' · ' : '') + 'RC-MANIFEST-STALE: ' + reason });
+        }
+      }
+      ruleDetails['manifest-complete'] = { ok: false, applicable: true, outstanding: manifestState.outstanding, reason };
+    } else {
+      ruleDetails['manifest-complete'] = { ok: true, applicable: true, outstanding: [] };
+    }
+  }
+
   const result = {
     ok: missing.length === 0, run_id: params.run_id, domain, satisfied, missing, warnings, overridden,
+    // RC-DOMAIN-BYPASS: a caller/reader must be able to see whether the effective domain came from an
+    // explicit --domain, the run's own declared run.json, or neither — and whether the two disagreed.
+    domain_source: domainSource, domain_declared: declaredDomain, domain_overridden: domainOverridden,
     // F-12: waarom een keyloze check faalde/slaagde, gesaneerd — anders toont een rood contract alleen een ID
     rule_details: ruleDetails,
     // complexity_* is reported on EVERY result, even when no rule is scoped to it — a caller must always be
@@ -1320,7 +1492,10 @@ module.exports = {
   // staat (F-08) — een magic string die niemand kan loggen is een route die alleen op papier bestaat.
   NON_WORK_EVENT_TYPES, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
   check, listRules, loadRules, loadRulesMeta, ruleApplies, checkSatisfied, findOwnerOverride, isMeaningfulReason, loadOwnerAllowlist,
-  readEventsJsonl, listRunArtifacts, hasEvent, hasArtifact, logGateEvaluated,
+  readEventsJsonl, listRunArtifacts, hasEvent, hasArtifact, logGateEvaluated, eventIsDisproven,
+  // RC-MANIFEST-STALE (2026-09-24) — exported so a test can exercise the manifest-completeness gate and the
+  // owner-authenticated per-package skip directly, without spawning the CLI.
+  manifestCompleteness, findManifestSkip, MANIFEST_SKIP_RULE, MANIFEST_GATED_RULE_IDS,
   resolveComplexity, countUnits, levelFromUnits, declaredLevel, parseLevel, isValidTrigger, isWellFormedTrigger,
   RULES_PATH, OWNER_PROFILE_PATH, KNOWN_TRIGGER_LITERALS, KNOWN_CHECK_TYPES, KNOWN_SEVERITIES,
   COMPLEXITY_TRIGGER_RE, DISPATCH_EVENT_TYPES, DECLARED_LEVEL_FIELDS,
@@ -1408,7 +1583,15 @@ if (require.main === module) {
           // An un-judgeable rule must be LOUD: a stale synced rules file that silently drops a rule is exactly
           // the failure this degrade path exists to make visible.
           for (const u of result.unevaluated) console.log('  ⚠ unevaluated: ' + u.id + ' — ' + u.reason);
+          // RC-PROOF-WRITE-SILENT (2026-09-24, out-p5.md) — text mode used to print NOTHING about a failed
+          // --log-event write; a green contract read as "CONTRACT OK" with no trace that the requested audit
+          // proof never landed. Both modes now say so explicitly.
+          if (opts.logEvent && result.logged) console.log(result.logged.ok ? '  ✓ proof logged (gate_evaluated)' : '  ✗ PROOF NOT LOGGED — ' + (result.logged.reason || 'unknown reason'));
         }
+        // RC-PROOF-WRITE-SILENT: the documented completion command (`.claude/commands/forge.md`) asks for
+        // --log-event as PART OF the completion claim, not as decoration — a writer failure here means the
+        // requested audit trail does not exist, so this run cannot honestly report exit 0 either.
+        const logWriteFailed = !!(opts.logEvent && result.logged && result.logged.ok !== true);
         // r4 #7 (2026-08-07): het gezaghebbende eindverdict zit nu IN het completionpad — met --finalize
         // eindigt een groen contract pas in exit 0 wanneer ook forge-finalize zijn digest-receipt schreef.
         if (result.ok && opts.finalize) {
@@ -1416,9 +1599,9 @@ if (require.main === module) {
           const fin = finMod.finalize(opts.root ? path.resolve(opts.root) : path.resolve(__dirname, '..', '..'), opts.run);
           if (opts.json) console.log(JSON.stringify({ finalize: fin.ok ? 'finalized' : 'refused', reason: fin.reason || null }));
           else console.log(fin.ok ? '  ⇒ FINALIZED @ ' + fin.receipt.digest.slice(0, 16) + '…' + (fin.idempotent ? ' (idempotente herbevestiging)' : '') : '  ⇒ FINALIZE REFUSED — ' + fin.reason);
-          process.exitCode = fin.ok ? 0 : 3;
+          process.exitCode = (fin.ok && !logWriteFailed) ? 0 : 3;
         } else {
-          process.exitCode = result.ok ? 0 : 3;
+          process.exitCode = (result.ok && !logWriteFailed) ? 0 : 3;
         }
       }
     } else {

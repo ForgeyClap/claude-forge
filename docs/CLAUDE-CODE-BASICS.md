@@ -22,8 +22,9 @@ almost every beginner, in plain words. You do not need to be good with computers
 
 ### 1. What you need
 
-- **A paid Claude plan** (Pro, Max, Team or Enterprise). The free plan does not include Claude Code, so it
-  installs and then refuses to work.
+- **A paid Claude plan** (Pro, Max, Team or Enterprise) **or a Claude Console account with API billing**. The free
+  consumer plan does not include Claude Code, so it installs and then refuses to work. With API billing you pay per
+  token instead of a subscription — the next bullet on `ANTHROPIC_API_KEY` explains how Claude Code decides which one it bills.
 - **Log in** inside Claude Code with **`/login`**. If it says "Not logged in" or "Login expired", type
   `/login` again.
 - **Careful with API keys:** if an `ANTHROPIC_API_KEY` is set on your computer, Claude Code bills that API
@@ -83,15 +84,23 @@ health check (the doctor) tells you when Node is missing.
 | Snapshot (PreCompact, manual and auto) | Before Claude summarises a long conversation | Saves the mission so Forge does not forget what it was doing. |
 | Re-inject (SessionStart after a summary) | Right after that summary | Puts the saved mission back into the conversation. |
 | Tool log (PostToolUse) | After Claude writes, edits or runs a command | Notes which file or command was touched, in `.claude/forge-runs/_toollog/` (not in git). |
-| Gate hook (PreToolUse, Bash and PowerShell) | Before every shell command | Blocks three dangerous kinds of command until you say yes — see below. |
+| Gate hook (PreToolUse, Bash and PowerShell) | Before every shell command | Blocks four dangerous kinds of command until you say yes — see below. |
 
 The **gate hook** stops recursive deletes (such as `rm -rf`), killing programs by name (such as
-`taskkill /IM node.exe`) and git commands that throw away work you have not committed (such as
-`git reset --hard` or `git checkout .`). Cleanups inside temporary folders (`_scratch`, `node_modules`,
-`dist`, the system temp folder) still pass. Turn it off with `/forge config set gate-hook off`.
+`taskkill /IM node.exe`), git commands that throw away work you have not committed (such as
+`git reset --hard` or `git checkout .`) and commands that hide what they would run (`eval`,
+`Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`).
+Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your
+project) still pass when the hook can prove the path is such a folder. If the hook cannot judge a command
+it says so instead of silently letting it through. You turn it off with `/forge config set gate-hook off`;
+an agent typing that itself is blocked, and a one-off approval (`--once "<your words>"`) covers exactly one
+command and expires within 10 minutes. The hook cannot check who typed the quoted words, so read the
+approval line Claude shows before the command runs.
 
-The same file also has **deny rules**: Claude cannot read `.env`, `.env.local`, the other common `.env.*`
-secret files or anything in `secrets/`. `.env.example` stays readable, because it only holds placeholders.
+The same file also has **deny rules** (28): Claude cannot read `.env`, `.env.local`, the other common `.env.*`
+secret files (including `.env.development`, `.env.staging`, `.env.test` and `.env.forge-setup`, at any depth),
+anything in `secrets/`, private keys, or your own credential files. `.env.example` stays readable, because it
+only holds placeholders.
 
 ### 4. Undo and going back
 
@@ -109,8 +118,8 @@ secret files or anything in `secrets/`. `.env.example` stays readable, because i
   app, claude.ai and the desktop app — chatting there uses the same allowance.
 - **When you hit a limit, recent Claude Code versions (2.1.234 and later) wait and continue by themselves
   after the reset.** You do not lose your work.
-- **Forge's usage guard** adds one thing on top: it pauses Forge at **98 %**, *before* the limit, so a task is
-  never cut off halfway. It is on by default; change it with `/forge config set usage-guard.pause-at 95` or
+- **Forge's usage guard** adds one thing on top: it pauses Forge at **98 %**, *before* the limit (best effort:
+  it measures every 2 minutes, so a task can still cross the limit between two samples). It is on by default; change it with `/forge config set usage-guard.pause-at 95` or
   switch it off with `/forge config set usage-guard off`. What it reads and sends: [SETTINGS.md](SETTINGS.md#what-the-usage-guard-does-with-your-data).
 - **Extra usage credits cost money.** Forge never turns them on for you — spending money is a hard gate.
 - The strongest model (Opus) uses your allowance faster. For routine work, Sonnet is enough (`/model sonnet`).
@@ -259,8 +268,8 @@ voorbeeldwaarden in.
   claude.ai en de desktop-app — chatten daar gaat van hetzelfde tegoed af.
 - **Raak je een limiet, dan wachten recente versies van Claude Code (2.1.234 en nieuwer) en gaan ze na de
   reset vanzelf verder.** Je werk gaat niet verloren.
-- **De usage guard van Forge** doet er één ding bij: hij pauzeert Forge op **98 %**, *vóór* de limiet, zodat
-  een taak nooit halverwege wordt afgekapt. Hij staat standaard aan; wijzig hem met
+- **De usage guard van Forge** doet er één ding bij: hij pauzeert Forge op **98 %**, *vóór* de limiet (beste-poging:
+  hij meet elke 2 minuten, dus een taak kan tussen twee metingen de limiet nog overschrijden). Hij staat standaard aan; wijzig hem met
   `/forge config set usage-guard.pause-at 95` of zet hem uit met `/forge config set usage-guard uit`. Wat hij
   leest en verstuurt: [SETTINGS.md](SETTINGS.md#what-the-usage-guard-does-with-your-data).
 - **Extra gebruikstegoed kost geld.** Forge zet dat nooit voor je aan — geld uitgeven is een harde poort.

@@ -367,14 +367,21 @@ t('a malformed config file never throws out of decide(): it falls back to the FO
   assert.strictEqual(r.modeSource, 'FORGE_AUTONOMY.json default');
   assert.ok(/damaged/.test(r.config_note || '') && !/\n/.test(r.config_note), 'M3: the degraded read is named: ' + r.config_note);
 });
-t('M3: a damaged GLOBAL settings file that said usage-guard ON -> the flagged key reads OFF (guard-off) + config_note, even with a paused state', () => {
+t('CFG-01 (Codex recheck 2026-09-24): a damaged GLOBAL settings file can never bypass an existing, unexpired pause', () => {
   const fx = configFixture({ 'usage-guard': true });
   fs.writeFileSync(path.join(fx.home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { 'usage-guard': { value: true }, 'usage-guard.pause-at': { value: 'banana' } } }));
   const g = guardState({ mode: 'paused' });
   const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: fx.configOpts });
-  assert.deepStrictEqual([u.active, u.source], [false, 'guard-off']);
-  assert.ok(/damaged/.test(u.config_note || '') && /usage-guard = off/.test(u.config_note), 'config_note: ' + u.config_note);
-  assert.ok(/settings unreadable/.test(u.reason), u.reason);
+  // "may forge-config collect usage data" (the switch, unreadable here) is a SEPARATE question from "must an
+  // already-recorded pause be honoured" (this call) — a damaged/unrelated setting must never disable tier 1.
+  assert.deepStrictEqual([u.active, u.source], [true, 'state'], 'a damaged config must still honour a recorded pause: ' + u.reason);
+  assert.strictEqual(u.config_note, undefined, 'honouring the pause needs no config at all');
+  // With NO pause on file at all, the damaged config still only affects the WORDING (never a real pause).
+  const noPause = guardState(null);
+  const u2 = autonomy.usageLimitActive({ statePath: noPause.statePath, configOpts: fx.configOpts });
+  assert.deepStrictEqual([u2.active, u2.source], [false, 'guard-off']);
+  assert.ok(/damaged/.test(u2.config_note || '') && /usage-guard = off/.test(u2.config_note), 'config_note: ' + u2.config_note);
+  assert.ok(/settings unreadable/.test(u2.reason), u2.reason);
   const fine = configFixture({ 'usage-guard': true });
   const ok = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: fine.configOpts });
   assert.deepStrictEqual([ok.active, ok.config_note], [true, undefined], 'a readable ON still honours the pause');
@@ -405,9 +412,14 @@ t('decideLive: guard state mode ok proceeds', () => {
   const r = autonomy.decideLive({ text: 'moving on', phaseTransition: true }, { statePath: g.statePath, configOpts: configFixture({}).configOpts });
   assert.strictEqual(r.proceed, true);
 });
-t('usageLimitActive: with usage-guard OFF in the config the state file is not consulted', () => {
+t('CFG-01: usage-guard OFF in the config still honours a fresh unexpired pause (the switch only labels an ABSENT pause)', () => {
   const g = guardState({ mode: 'paused' });
   const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({ 'usage-guard': false }).configOpts });
+  assert.deepStrictEqual([u.active, u.source], [true, 'state'], u.reason);
+});
+t('usageLimitActive: with usage-guard OFF and no pause on file at all, the reason is worded "guard-off"', () => {
+  const noPause = guardState(null);
+  const u = autonomy.usageLimitActive({ statePath: noPause.statePath, configOpts: configFixture({ 'usage-guard': false }).configOpts });
   assert.strictEqual(u.active, false);
   assert.strictEqual(u.source, 'guard-off');
 });

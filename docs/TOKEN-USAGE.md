@@ -77,7 +77,7 @@ So you can watch spend live on the dashboard, and Forge won't blow past your pla
 
 ### What the guard adds on top of Claude Code
 
-Recent Claude Code versions (2.1.234 and later) **already wait at a limit and continue by themselves after the reset** — you do not lose your work when you hit a limit. Forge's guard is therefore about the moment *before* the limit: it pauses at 98 %, between phases, so a build is never cut off in the middle of a step and the next session does not start from a half-finished change.
+Recent Claude Code versions (2.1.234 and later) **already wait at a limit and continue by themselves after the reset** — you do not lose your work when you hit a limit. Forge's guard is therefore about the moment *before* the limit: it pauses at 98 %, between phases, so the next session does not start from a half-finished change. This is best effort: the guard measures every 2 minutes (`usage-guard.interval`), so a step can still cross the limit between two samples — it is a pause before the limit, not a guaranteed instant block.
 
 | Setting | Default | Change it |
 |---|---|---|

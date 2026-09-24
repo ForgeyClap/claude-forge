@@ -68,7 +68,7 @@ fixed, and says which file and why.
 
 ## What `/forge config list --all` shows
 
-This is the real output of `node .claude/forge-bin/forge-config.cjs list --all --lang en --ascii` on a fresh 2.7.0 install (installer run into an empty project folder named `proj`, empty home, so every value is still its default):
+This is the real output of `node .claude/forge-bin/forge-config.cjs list --all --lang en --ascii` on a fresh install (installer run into an empty project folder named `proj`, empty home, so every value is still its default; captured on 2.7.0 and re-checked line by line against the 2.7.2 tool output):
 
 ```text
 Forge settings - project "proj" (everything is ON by default; change it with one command)
@@ -77,9 +77,11 @@ Status  Setting                      Value                    From             W
 ------  ---------------------------  -----------------------  ---------------  ----------------------------------------
 
 == On by default - Forge uses this on every run ==
-ON      usage-guard                  on                       default          Pauses Forge automatically just before
-                                                                               your Claude usage limit so a task is
-                                                                               never cut off mid-way. [1]
+ON      usage-guard                  on                       default          Pauses Forge automatically when your
+                                                                               Claude usage nears the limit. It measures
+                                                                               on an interval (2 minutes by default), so
+                                                                               this is a pause before the limit, not a
+                                                                               guaranteed instant block. [1]
 ON      usage-guard.pause-at         98 %                     default          Forge pauses at this percentage of your
                                                                                usage limit.
 ON      autonomy                     continue-within-mission  product-default  Keeps working across phases without
@@ -92,8 +94,9 @@ ON      start-gate                   off                      default          D
 ON      gate-hook                    on                       default          A real stop (not advice) on dangerous
                                                                                commands: recursive deletes, killing
                                                                                processes by name, git commands that
-                                                                               throw away uncommitted work. Forge asks
-                                                                               first.
+                                                                               throw away uncommitted work, and commands
+                                                                               that hide what they run (eval, a pipe
+                                                                               into a shell). Forge asks first.
 ON      git-checkpoint               on                       default          Creates a local git safety point (commit
                                                                                or branch, never pushed) before a bigger
                                                                                build so everything can be undone.
@@ -247,11 +250,11 @@ Change: /forge config set <setting> <value> - Explain: /forge config explain <se
 
 | Setting | Default | Saved for | What it does | Off / other value | Flags |
 |---|---|---|---|---|---|
-| `usage-guard` | on | this computer | Pauses Forge automatically just before your Claude usage limit so a task is never cut off mid-way. | Forge does not measure your usage and never pauses by itself. | C N U |
+| `usage-guard` | on | this computer | Pauses Forge automatically when your Claude usage nears the limit. It measures on an interval (2 minutes by default), so this is a pause before the limit, not a guaranteed instant block. | Forge does not measure your usage and never pauses by itself. | C N U |
 | `usage-guard.pause-at` | 98 % | this computer | Forge pauses at this percentage of your usage limit (50–99). | — | |
 | `autonomy` | continue-within-mission | this project | Keeps working across phases without asking "continue?" each time. STOP always works; deploy, push, spend, DNS and production always ask first. | `ask-each-phase`: Forge stops at every phase boundary and waits for you. (`full-auto-within-mission` is also allowed.) | |
 | `start-gate` | off | this project | Does not wait for a START before building: the plan is posted and work continues immediately (say STOP to pause). | `l4-only`: only large phased missions wait for START. `always`: every run waits for START. | |
-| `gate-hook` | on | this project | A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work. Forge asks first. | The hard gates still exist as classifier and rule, but the hook no longer enforces them. | |
+| `gate-hook` | on | this project | A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work, and commands that hide what they run (eval, a pipe into a shell). Forge asks first. | The hard gates still exist as classifier and rule, but the hook no longer enforces them. | |
 | `git-checkpoint` | on | this project | Creates a local git safety point (commit or branch, never pushed) before a bigger build, so everything can be undone. | No automatic safety point; only what you commit yourself. | |
 | `intake` | silent | this project | Answers the intake questions itself from your request and the project; asks at most one question when two targets are equally plausible. | `interview`: Forge asks you the intake questions one at a time. | |
 | `prompt-doctor` | on | this project | Checks your request for the classic traps (vague goal, no definition of done, no context) and fills the gaps itself or asks the one targeted question. | Forge takes your request literally, without the trap check. | |
@@ -333,8 +336,8 @@ The usage guard is the only setting that is on by default and reads a credential
   already running, followed by the one command that switches it off: `/forge config set usage-guard uit`
   (`off` works too).
 - When your 5-hour window or your weekly limit reaches 98 %, the guard marks your account as paused. Forge
-  checks that mark before every new phase and stops there, so no task is cut off halfway; it continues after
-  the reset. On any error the guard does nothing (fail-safe), and it never logs or prints your token.
+  checks that mark before every new phase and stops there (best effort: it measures every 2 minutes, so a
+  step can still cross the limit between two samples); it continues after the reset. On any error the guard does nothing (fail-safe), and it never logs or prints your token.
 
 More about limits and cost: [TOKEN-USAGE.md](TOKEN-USAGE.md).
 

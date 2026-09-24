@@ -20,6 +20,7 @@
     "kill-by-name",
     "destructive-delete",
     "git-destructive",
+    "opaque-exec",
     "write-outside-root",
     "usage-limit"
   ],

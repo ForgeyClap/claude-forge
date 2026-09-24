@@ -19,8 +19,13 @@ Forge is a multi-agent build/review system for Claude Code. It installs **three*
 | `~/.claude/` | the `forge-core` skill + `/forge` and `/setup-forge` commands | global: so `/forge` exists in every project |
 | `~/.claude/forge/template/` | a canonical copy of the project payload | global: `forge-sync status` compares each project against it and `/forge` installs Forge into a bare folder from it |
 
-It has **no runtime dependencies** — plain Node.js `.cjs` files. Nothing is downloaded at runtime,
-no package is installed, no service phones home.
+It has **no runtime dependencies** — plain Node.js `.cjs` files; the install itself downloads nothing beyond this
+repository and installs no package. Be exact about network use afterwards, because the user will ask: the **usage
+guard** (on by default) reads the Claude login token from `~/.claude/.credentials.json` and asks `api.anthropic.com`
+for the usage figures every couple of minutes — it says so the moment it really starts, and `/forge config set
+usage-guard off` stops it; the optional **Paperclip** runtime runs `npx paperclipai` (which downloads a package) only
+when the owner turns `paperclip` on; the vendored **setup-pre-commit** skill runs npm only when the user asks for it.
+Nothing else phones home.
 
 ---
 
@@ -97,7 +102,7 @@ the documented, supported Windows path is `install.ps1`. Pick one and finish wit
 
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
-- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is never replaced: Forge's hooks and deny rules are **merged into it** (your own hooks, allow rules and other keys stay exactly where they are; a timestamped backup `settings.json.forge-bak-<ts>` is written first; running again changes nothing). Only when the file is not valid JSON does the installer leave it alone and write Forge's version next to it as `settings.forge-recommended.json`, saying so in one line.
+- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is never replaced: Forge's hooks and deny rules are **merged into it** (your own hooks, allow rules and other keys stay where they are; BOM, line endings and indentation are preserved; a uniquely named backup is written first with exclusive-create, never over an earlier backup; running again changes nothing). The merge refuses and leaves the file alone — writing Forge's version next to it as `settings.forge-recommended.json` and saying so in one line — when the file is not valid JSON, when it holds content that cannot be reserialized losslessly (duplicate keys, numbers beyond what JSON round-trips), when `settings.json` is a directory or a link, or when the file changed under the tool between read and write.
 - An identical file is left untouched.
 - Your `CLAUDE.md` is **never overwritten** — it is only created when absent.
 - Your `.gitignore` only ever gets lines it does not already have.
@@ -131,15 +136,24 @@ Claude's reach:
    system temp folder for targets outside the project, …) passes. Quoted data — heredoc bodies, `echo` literals, log payloads, `grep` patterns —
    is never mistaken for a command. When the hook cannot judge a call (its own error, an oversized payload) it
    exits 1: visible, not blocking, never a silent pass. It is the only hook that blocks instead of advising; it is
-   ON by default. Only the user switches it off (`/forge config set gate-hook off`): the assistant's own attempt to
-   switch it off is itself blocked, a one-off `--once "<quoted approval>"` expires after 10 minutes, and while it
-   is off every call it would have stopped still prints a visible notice.
+   ON by default. It is built so the assistant cannot switch it off on its own (`/forge config set gate-hook off` is
+   for the user): the assistant's own attempt to switch it off is blocked whatever the spelling (quoted verb, any
+   path form, flags in any order), a one-off `--once "<quoted approval>"` must carry the user's words, is consumed
+   by exactly one command (a second identical command is blocked again), cannot be armed while another one-off is
+   pending, expires after at most 10 minutes, ignores the global settings file (no hidden global off), and while
+   the gate is off every call it would have stopped still prints a visible notice. Honest limit: the hook cannot
+   verify who typed the quoted words — the user reads the approval line before the command runs. A fourth gate,
+   `opaque-exec`, stops commands whose real content the hook cannot read (`eval`, `iex`/`Invoke-Expression`,
+   `sh -c`/`bash -c`/`pwsh -c` evaluating a variable or substitution, a pipe straight into a shell such as
+   `curl … | bash`, `certutil -decode … & …`); a fully literal `sh -c "echo hi"` and `| node`/`| python` are named,
+   deliberate gaps.
 
-**Deny rules** (`permissions.deny`, 23 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
+**Deny rules** (`permissions.deny`, 28 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
 `Read(./.env.development)`, `Read(./.env.production)`, `Read(./.env.staging)`, `Read(./.env.test)`,
-`Read(./secrets/**)`, the same names nested anywhere (`Read(./**/.env)`, `Read(./**/.env.local)`,
-`Read(./**/.env.*.local)`, `Read(./**/.env.production)`, `Read(./**/.env.prod)`, `Read(./**/.env.bak)`,
-`Read(./**/.env.backup)`, `Read(./**/secrets/**)`), private keys (`Read(./**/*.pem)`, `Read(./**/*.key)`,
+`Read(./.env.forge-setup)`, `Read(./secrets/**)`, the same names nested anywhere (`Read(./**/.env)`,
+`Read(./**/.env.local)`, `Read(./**/.env.*.local)`, `Read(./**/.env.development)`, `Read(./**/.env.production)`,
+`Read(./**/.env.staging)`, `Read(./**/.env.test)`, `Read(./**/.env.forge-setup)`, `Read(./**/.env.prod)`,
+`Read(./**/.env.bak)`, `Read(./**/.env.backup)`, `Read(./**/secrets/**)`), private keys (`Read(./**/*.pem)`, `Read(./**/*.key)`,
 `Read(./**/id_rsa*)`, `Read(./**/id_ed25519*)`) and the user's own credential files (`Read(~/.claude/.credentials.json)`,
 `Read(~/.claude/nvidia.env)`, `Read(~/.ssh/**)`). `.env.example` stays readable on purpose (Forge records new
 variable names in it; a test asserts it). Not covered: reading a file through the shell (`cat .env`).
@@ -147,10 +161,12 @@ variable names in it; a test asserts it). Not covered: reading a file through th
 Each hook runs a small, fast Node command that fires locally only — nothing phones home. To opt out of any hook,
 delete its entry from `.claude/settings.json` — nothing else depends on them. **If the project already had its own
 `.claude/settings.json`**, the installer (and every later `forge-sync install` upgrade) merges the five hooks and the
-deny rules into it with `forge-settings-merge.cjs`: existing entries are kept byte-for-byte and in place, only missing
-Forge entries are appended, a Forge hook whose timeout was still written in milliseconds is corrected to seconds, and a
-timestamped backup is written first. Running it again is a no-op. Only an unreadable (non-JSON) file is left alone, with
-Forge's version written next to it as `settings.forge-recommended.json`. Tell the user which of the three happened
+deny rules into it with `forge-settings-merge.cjs`: existing entries are kept in place, only missing Forge entries are
+added (into an existing matcher entry when one already carries part of them, never as a duplicate), a Forge hook whose
+timeout was still written in milliseconds is corrected to seconds, BOM/line endings/indentation are preserved, and a
+uniquely named backup is written first. Running it again is a no-op. The file is left alone (Forge's version written
+next to it as `settings.forge-recommended.json`) when it is not valid JSON, cannot be reserialized losslessly, is a
+directory or a link, or changed under the tool. Tell the user which of the three happened
 (created · merged · left alone) and, after a merge, name the backup path.
 
 **Everything is on by default, and `/forge config` shows and changes it.** `/forge config list` (in a terminal:

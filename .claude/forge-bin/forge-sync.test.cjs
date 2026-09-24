@@ -2758,7 +2758,7 @@ console.log('\n70) v2.7.0 settings payload (schema synced, the owner\'s FORGE_CO
   const files = sync.listSystemFiles(tplDir);
   t('70a FORGE_CONFIG_SCHEMA.json is in the synced SYSTEM file list', files.includes('config/orchestration/FORGE_CONFIG_SCHEMA.json'));
   t('70b the pinned schema really exists in this template (no dangling pin)', fs.existsSync(path.join(tplDir, 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json')));
-  t('70c the reader (forge-config.cjs + its -text/-cli helpers) is synced too', ['forge-config.cjs', 'forge-config-text.cjs', 'forge-config-cli.cjs'].every((f) => files.includes('forge-bin/' + f)));
+  t('70c the reader (forge-config.cjs + its -text/-cli helpers + its once/lock sibling) is synced too', ['forge-config.cjs', 'forge-config-text.cjs', 'forge-config-cli.cjs', 'forge-config-once.cjs'].every((f) => files.includes('forge-bin/' + f)));
   t('70d the owner\'s own FORGE_CONFIG.json is NOT in the synced list', !files.includes('FORGE_CONFIG.json'));
   const src = fs.readFileSync(path.join(__dirname, 'forge-sync.cjs'), 'utf8');
   const protect = src.match(/const PROTECT = new Set\(\[([\s\S]*?)\]\);/);
@@ -2890,6 +2890,114 @@ console.log('\n73) WP22 — settings.json merge wired into forge-sync install');
   t('73c settings.json bytes are unchanged on the second run', fs.readFileSync(path.join(pB, '.claude', 'settings.json'), 'utf8') === before);
   const backupFilesAfter = fs.readdirSync(path.join(pB, '.claude')).filter((f) => f.includes('.forge-bak-'));
   t('73c no new backup is taken on the no-op run', backupFilesAfter.length === backupFiles.length);
+}
+
+// 74) PROJECT-DIRECTORY-ESCAPE (wp-f2, 2026-09-24 Codex re-check): a `.claude` that is itself a junction must
+// never have its settings.json merged across that boundary — in the NO-OP file-plan branch specifically,
+// which is the exact shape Codex's own probe used (settings-only write, no other file activity to mask it).
+console.log('\n74) PROJECT-DIRECTORY-ESCAPE — a junctioned .claude refuses the settings step (no-op branch)');
+{
+  const tpl = freshDir('t74-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v1");\n');
+  fs.writeFileSync(path.join(tpl, 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 10 }] }] } }, null, 2) + '\n');
+
+  const root = freshDir('t74-root');
+  const outside = freshDir('t74-outside');
+  fs.mkdirSync(path.join(outside, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(outside, 'forge-bin', 'tool.cjs'), 'console.log("v1");\n'); // identical -> file plan is a true no-op
+  const p = path.join(root, 'proj');
+  fs.mkdirSync(p, { recursive: true });
+  let junctionOk = false;
+  try { fs.symlinkSync(outside, path.join(p, '.claude'), 'junction'); junctionOk = true; }
+  catch (e) { console.log('     (section 74: could not create a junction in this environment — ' + e.message + ' — skipping honestly)'); }
+  if (junctionOk) {
+    const r = sync.safeSyncProject(tpl, p, { batchId: 't74', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('74a the file plan itself is a true no-op (identical content through the junction)', r.noop === true);
+    t('74b the OVERALL result is ok:false — the settings step refused, so this is not a plain success', r.ok === false);
+    t('74c settingsMerge reports the containment refusal, not a merge/create', !!r.settingsMerge && r.settingsMerge.ok === false && r.settingsMerge.skipped === 'refused-containment');
+    t('74d NOTHING was written into the real outside directory (no settings.json appeared there)', !fs.existsSync(path.join(outside, 'settings.json')));
+  } else {
+    t('(section 74 skipped honestly — could not create a junction)', true);
+  }
+}
+
+// 75) SUCCESS-WITHOUT-SETTINGS (wp-f2): a settings-merge failure must make the OVERALL safeSyncProject result
+// (and the `install` CLI's exit code) not-ok — in BOTH the no-op branch and the real apply-and-validate branch.
+console.log('\n75) SUCCESS-WITHOUT-SETTINGS — a settings refusal makes the overall result/exit code not-ok');
+{
+  const tpl = freshDir('t75-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v1");\n');
+  fs.writeFileSync(path.join(tpl, 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 10 }] }] } }, null, 2) + '\n');
+
+  // (a) NO-OP file plan + a malformed existing settings.json -> overall ok:false
+  const rootA = freshDir('t75-root-a');
+  const pA = makeProject(rootA, 'projA', 0);
+  fs.mkdirSync(path.join(pA, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(pA, '.claude', 'forge-bin', 'tool.cjs'), 'console.log("v1");\n'); // matches template -> file no-op
+  fs.writeFileSync(path.join(pA, '.claude', 'settings.json'), '{ not valid json', 'utf8');
+  const rA = sync.safeSyncProject(tpl, pA, { batchId: 't75a', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('75a file plan is a no-op', rA.noop === true);
+  t('75a overall ok is false (settings refused)', rA.ok === false);
+  t('75a settingsMerge reports refused', !!rA.settingsMerge && rA.settingsMerge.status === 'refused');
+  t('75a the malformed settings.json was left untouched', fs.readFileSync(path.join(pA, '.claude', 'settings.json'), 'utf8') === '{ not valid json');
+
+  // (b) a REAL apply (new file to copy) + a malformed existing settings.json -> file sync still succeeds and
+  // is stamped (settings.json is deliberately independent of that commit — see syncProjectSettings's own doc
+  // comment), but the OVERALL ok must still be false.
+  const rootB = freshDir('t75-root-b');
+  const pB = makeProject(rootB, 'projB', 0);
+  fs.writeFileSync(path.join(pB, '.claude', 'settings.json'), '{ not valid json', 'utf8');
+  const rB = sync.safeSyncProject(tpl, pB, { batchId: 't75b', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('75b the file sync itself succeeded (receipt/version stamped)', !!rB.receipt && fs.existsSync(path.join(pB, '.claude', 'forge-bin', 'tool.cjs')));
+  t('75b overall ok is false (settings refused)', rB.ok === false);
+  t('75b settingsMerge reports refused', !!rB.settingsMerge && rB.settingsMerge.status === 'refused');
+
+  // (c) the `install` CLI exits non-zero for the same no-op-but-settings-refused shape (real subprocess)
+  const rootC = freshDir('t75-root-c');
+  const pC = makeProject(rootC, 'projC', 0);
+  fs.mkdirSync(path.join(pC, '.claude', 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(pC, '.claude', 'forge-bin', 'tool.cjs'), 'console.log("v1");\n');
+  fs.writeFileSync(path.join(pC, '.claude', 'settings.json'), '{ not valid json', 'utf8');
+  const cliResult = runCLIWithTemplate(['install', pC, '--no-central-backup'], tpl);
+  t('75c CLI install exits non-zero when the file plan is a no-op but settings.json is refused', cliResult.status !== 0);
+}
+
+// 76) sync-all --unsafe now shares the settings step with single-project `install --unsafe` (wp-f2).
+console.log('\n76) sync-all --unsafe installs AND reports settings.json (SUCCESS-WITHOUT-SETTINGS)');
+{
+  const tpl = freshDir('t76-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v1");\n');
+  fs.writeFileSync(path.join(tpl, 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 10 }] }] } }, null, 2) + '\n');
+  const root = freshDir('t76-root');
+  const p = makeProject(root, 'proj', null); // rawInstall does not run a doctor at all
+  const result = sync.runSyncAll(tpl, root, { unsafe: true, projects: [p], batchId: 't76', nowIso: '2026-01-01T00:00:00.000Z', centralBackupRoot: null });
+  t('76a --unsafe reports ok:true when the file copy AND the settings merge both succeed', result.ok === true);
+  t('76b settings.json was actually created on disk (not just reported)', fs.existsSync(path.join(p, '.claude', 'settings.json')));
+  t('76c the per-project result carries settingsMerge (status created)', !!result.projects[0].settingsMerge && result.projects[0].settingsMerge.status === 'created');
+
+  // now with a malformed existing settings.json -> --unsafe must report ok:false too (SUCCESS-WITHOUT-SETTINGS)
+  const root2 = freshDir('t76-root2');
+  const p2 = makeProject(root2, 'proj2', null);
+  fs.writeFileSync(path.join(p2, '.claude', 'settings.json'), '{ not valid json', 'utf8');
+  const result2 = sync.runSyncAll(tpl, root2, { unsafe: true, projects: [p2], batchId: 't76b', nowIso: '2026-01-01T00:00:00.000Z', centralBackupRoot: null });
+  t('76d --unsafe reports ok:false when settings.json is refused, even though the file copy itself succeeded', result2.ok === false);
+}
+
+// 77) DRY-RUN-MUTATION (wp-f2): sync-all's dry-run must show the settings.json preview too, not just the file plan.
+console.log('\n77) sync-all dry-run includes the settings.json preview');
+{
+  const tpl = freshDir('t77-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v1");\n');
+  fs.writeFileSync(path.join(tpl, 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 10 }] }] } }, null, 2) + '\n');
+  const root = freshDir('t77-root');
+  const p = makeProject(root, 'proj', 0);
+  const result = sync.runSyncAll(tpl, root, { dryRun: true, projects: [p], batchId: 't77', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('77a dry-run reports ok:true and writes nothing', result.ok === true && !fs.existsSync(path.join(p, '.claude', 'settings.json')));
+  t('77b the settings.json preview (would-create) is present on the plan entry, not discarded', !!result.projects[0].settingsMerge && result.projects[0].settingsMerge.status === 'would-create');
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

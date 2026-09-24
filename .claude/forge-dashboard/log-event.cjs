@@ -939,6 +939,14 @@ function readEventsClassified(file, opts) {
          *  GEKETENDE voorouder). opts.allowUnchainedAfterChained kiest de schrijversbril; de geketende
          *  entries zelf worden in beide standen volledig geverifieerd. */
         if (chained && !opts.allowUnchainedAfterChained) return bad(i, 'unchained entry after a chained one');
+        /** EVENT-RUN-BINDING-GAP (2026-09-24, out-p5.md) — this `continue` ran BEFORE any run_id check, so
+         *  an unchained/legacy entry carrying a FOREIGN run_id (`ev.run_id:"OTHER"` inside a log being read
+         *  for run "THIS") was classified valid regardless — reproduced: exactly that shape read as valid
+         *  for the wrong run. An entry whose run_id field is genuinely ABSENT (true pre-stamping legacy, or a
+         *  narrow unit fixture that never set one) still gets the historical free pass, unchanged — only a
+         *  run_id that is PRESENT and WRONG is now rejected here, closing the reproduced gap without
+         *  reclassifying every run_id-less fixture across this project's own test suites as corrupt. */
+        if (opts.runId && ev.run_id !== undefined && ev.run_id !== opts.runId) return bad(i, 'run_id mismatch (' + String(ev.run_id).slice(0, 40) + ') on an unchained/legacy entry');
         continue; // legacy-entry: draagt soms geen run_id/seq — schema-checks hierboven gelden wel
       }
       // run_id-binding geldt voor GEKETENDE entries (de writer zet run_id altijd; een geketend event van

@@ -8,7 +8,16 @@ const path = require('path');
 // force mock mode BEFORE requiring the adapter (no key may leak in from env/.env for this test)
 delete process.env.NVIDIA_API_KEY;
 process.env.NVIDIA_API_KEY = ''; // loader skips empty; CONFIG.key stays ''
+// TEST-CREDENTIAL-ISOLATION (2026-09-24): the module's own loadEnv() runs synchronously as part of THIS
+// require() (require() then caches the module, so loadEnv() never runs again) — it used to happen with
+// NVIDIA_SKIP_ENV_FILES unset, meaning this one require could read the REAL project .env AND the REAL
+// global ~/.claude/nvidia.env. Isolation must be established BEFORE this require, not after. The flag is
+// restored immediately afterwards so the later M5 tests (which deliberately stage real .env/nvidia.env
+// files and rely on baseEnv() inheriting the CURRENT process.env) are unaffected by a leaked skip flag.
+const _origSkipEnvFiles = process.env.NVIDIA_SKIP_ENV_FILES;
+process.env.NVIDIA_SKIP_ENV_FILES = '1';
 const P = require('./nvidia-provider.cjs');
+if (_origSkipEnvFiles === undefined) delete process.env.NVIDIA_SKIP_ENV_FILES; else process.env.NVIDIA_SKIP_ENV_FILES = _origSkipEnvFiles;
 const os = require('os');
 const { spawnSync } = require('child_process');
 
@@ -335,21 +344,150 @@ const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } 
   t('M5: a plain-http base URL (even from the global file) is REFUSED with a plain reason and ZERO requests',
     !!k2.forced && k2.forced.ok === false && k2.forced.mode === 'refused' && /must use https:/.test(k2.forced.reason) && k2.calls.length === 0 && k2.config.baseUrl === '');
   const k3 = m5({ global: globalKey + 'NVIDIA_BASE_URL=https://evil.example/v1\n' });
-  t('M5: an https base URL on a non-nvidia.com host is REFUSED with ZERO requests', !!k3.forced && k3.forced.mode === 'refused' && /not an nvidia\.com host/.test(k3.forced.reason) && k3.calls.length === 0);
+  t('M5: an https base URL on a non-nvidia.com host is REFUSED with ZERO requests', !!k3.forced && k3.forced.mode === 'refused' && /not on the fixed allow-list/.test(k3.forced.reason) && k3.calls.length === 0);
+  // NVIDIA-ENV-TRUST (2026-09-24): an env FILE (global or project) can no longer authorise its own
+  // custom base URL — NVIDIA_ALLOW_CUSTOM_BASE_URL only ever counts from the REAL process environment
+  // (see ENV_FILE_GLOBAL_ONLY in nvidia-provider.cjs). This test used to assert the GLOBAL file's allow
+  // flag was honoured; it now asserts the opposite — a hostile/mistaken global file can no longer both
+  // name an attacker endpoint AND flip the flag that used to stop that endpoint being checked.
   const k4 = m5({ global: globalKey + 'NVIDIA_BASE_URL=http://127.0.0.1:9/v1\nNVIDIA_ALLOW_CUSTOM_BASE_URL=1\n' });
-  t('M5: the GLOBAL file allow flag permits a custom endpoint (the spy sees the request go there)', !!k4.forced && k4.forced.ok === true && k4.calls.length >= 1 && k4.calls.every((c) => c.url.startsWith('http://127.0.0.1:9/v1/')));
+  t('NVIDIA-ENV-TRUST: a GLOBAL file allow flag no longer authorises anything — a plain-http custom endpoint from a file stays REFUSED, ZERO requests',
+    !!k4.forced && k4.forced.ok === false && k4.forced.mode === 'refused' && /must use https:/.test(k4.forced.reason) && k4.calls.length === 0);
   const k5 = m5({ project: 'NVIDIA_ALLOW_CUSTOM_BASE_URL=1\n', global: globalKey }, { NVIDIA_BASE_URL: 'http://127.0.0.1:9/v1' });
   t('M5: an allow flag in the PROJECT .env does not count — a real-env http base URL stays refused, ZERO requests', !!k5.forced && k5.forced.mode === 'refused' && k5.calls.length === 0);
   const k6 = m5({ global: globalKey }, { NVIDIA_BASE_URL: 'http://127.0.0.1:9/v1', NVIDIA_ALLOW_CUSTOM_BASE_URL: '1' });
   t('M5: the allow flag from the REAL environment permits a custom endpoint', !!k6.forced && k6.forced.ok === true && k6.calls.every((c) => c.url.startsWith('http://127.0.0.1:9/v1/')));
+  // NVIDIA-ENV-TRUST: the fixed allow-list is a SINGLE host (integrate.api.nvidia.com) — a different,
+  // even genuinely-nvidia.com-suffixed host is no longer accepted just because a global file named it
+  // and no allow flag was needed under the old "any *.nvidia.com" rule.
   const k7 = m5({ global: globalKey + 'NVIDIA_BASE_URL=https://custom.api.nvidia.com/v1/\n' });
-  t('M5: an https *.nvidia.com base URL from the global file is accepted (trailing slash normalised)', !!k7.forced && k7.forced.ok === true && k7.calls.every((c) => c.url.startsWith('https://custom.api.nvidia.com/v1/models')));
+  t('NVIDIA-ENV-TRUST: an https host OTHER than the fixed allow-list entry is REFUSED even from the global file, ZERO requests',
+    !!k7.forced && k7.forced.ok === false && k7.forced.mode === 'refused' && /not on the fixed allow-list/.test(k7.forced.reason) && k7.calls.length === 0);
   const cb = P.checkBaseUrl;
-  t('M5 checkBaseUrl: default ok; http, foreign host, look-alike hosts and junk refused; allowCustom lifts both checks',
+  t('checkBaseUrl: default ok; http, foreign host, look-alike hosts, ports and junk refused (fixed allow-list)',
     cb('https://integrate.api.nvidia.com/v1', false).ok === true && cb('http://integrate.api.nvidia.com/v1', false).ok === false
     && cb('https://evilnvidia.com/v1', false).ok === false && cb('https://nvidia.com.evil.io/v1', false).ok === false
     && cb('https://integrate.api.nvidia.com.evil.io/v1', false).ok === false && cb('not a url', false).ok === false
+    && cb('https://integrate.api.nvidia.com:8443/v1', false).ok === false
+    && cb('https://integrate.api.nvidia.com/v1/../v2', false).ok === false
+    && cb('https://custom.api.nvidia.com/v1', false).ok === false
     && cb('http://127.0.0.1:9/v1', true).ok === true && cb('https://integrate.api.nvidia.com/v1/', false).url === 'https://integrate.api.nvidia.com/v1');
+  t('checkBaseUrl: userinfo/query/fragment are refused REGARDLESS of allowCustom (NVIDIA-URL-LEAK)',
+    cb('https://integrate.api.nvidia.com/v1?api_key=SYNTHETICKEY', false).ok === false
+    && cb('https://user:pass@integrate.api.nvidia.com/v1', false).ok === false
+    && cb('https://integrate.api.nvidia.com/v1#frag', false).ok === false
+    && cb('https://user:pass@127.0.0.1:9/v1', true).ok === false
+    && cb('http://127.0.0.1:9/v1?leak=1', true).ok === false);
+  t('checkBaseUrl: no rejection reason ever echoes the raw untrusted input verbatim',
+    !/SYNTHETICKEY|user:pass|evil\.example/.test([
+      cb('https://integrate.api.nvidia.com/v1?api_key=SYNTHETICKEY', false).reason,
+      cb('https://user:pass@integrate.api.nvidia.com/v1', false).reason,
+      cb('https://evil.example/v1', false).reason,
+    ].join(' | ')));
+
+  // 13) NVIDIA-RETRY-OFF (2026-09-24): the owner switch is rechecked immediately before EVERY retry
+  // attempt, and the backoff wait itself is cancellable — a mid-loop switch-off must stop the NEXT
+  // attempt from ever firing, not merely be noticed afterwards.
+  console.log('13) NVIDIA-RETRY-OFF (no network)');
+  const retryOffProbe = (cfgDir) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-retryoff-'));
+    const script = path.join(dir, 'probe.cjs');
+    const cfgFile = path.join(cfgDir, 'FORGE_CONFIG.json');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'const fs = require("fs");',
+      'const cfgFile = ' + JSON.stringify(cfgFile) + ';',
+      'let calls = 0;',
+      'global.fetch = async () => {',
+      '  calls++;',
+      '  if (calls === 1) {',
+      '    fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, settings: { nvidia: { value: false } } }));',
+      '    return { ok: false, status: 503, headers: { get: (k) => (k === "retry-after" ? "1" : null) }, text: async () => "busy" };',
+      '  }',
+      '  return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ choices: [{ message: { content: "SHOULD NOT HAPPEN" } }] }) };',
+      '};',
+      'const P = require(' + JSON.stringify(CLI) + ');',
+      '(async () => {',
+      '  const out = await P.chat({ role: "default", prompt: "hi" });',
+      '  process.stdout.write(JSON.stringify({ out, calls }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const env = baseEnv({ NVIDIA_API_KEY: FAKE_KEY, NVIDIA_SKIP_ENV_FILES: '1', FORGE_PROJECT_ROOT: EMPTY_PROJECT, FORGE_CONFIG_HOME: cfgDir });
+    const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  };
+  const retryCfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-retryoff-cfg-'));
+  fs.writeFileSync(path.join(retryCfgDir, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { nvidia: { value: true } } }));
+  const retryOff = retryOffProbe(retryCfgDir);
+  t('NVIDIA-RETRY-OFF: switching nvidia off during a 503 backoff prevents the next attempt (exactly 1 fetch call, never the "SHOULD NOT HAPPEN" content)',
+    !!retryOff.out && retryOff.calls === 1 && !/SHOULD NOT HAPPEN/.test(JSON.stringify(retryOff.out))
+    && /switched off mid-retry/.test(retryOff.out.error || ''));
+  try { fs.rmSync(retryCfgDir, { recursive: true, force: true }); } catch { /* best effort */ }
+
+  // 14) NVIDIA-REDACTION-GAPS (2026-09-24): mask() must run on the FULL text BEFORE truncation — the
+  // previous `mask(text.slice(0, 300))` could cut a non-"nvapi-"-shaped secret exactly at the 300-char
+  // boundary, leaving its visible prefix (which no longer matches the FULL literal CONFIG.key) unmasked.
+  console.log('14) NVIDIA-REDACTION-GAPS: mask-before-truncate (no network)');
+  const redactOrderProbe = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-redact-'));
+    const script = path.join(dir, 'probe.cjs');
+    const secretKey = 'SYNTHETIC-NONNVAPI-KEY-1234567890ABCDEF'; // deliberately NOT nvapi-prefixed (regex-only masking would miss the truncated fragment too)
+    const body = 'x'.repeat(280) + secretKey + 'y'.repeat(50); // the key straddles the old 300-char cut point
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'process.env.NVIDIA_API_KEY = ' + JSON.stringify(secretKey) + ';',
+      'global.fetch = async () => ({ ok: false, status: 404, headers: { get: () => null }, text: async () => ' + JSON.stringify(body) + ' });',
+      'const P = require(' + JSON.stringify(CLI) + ');',
+      '(async () => {',
+      '  const h = await P.health({ force: true });',
+      '  process.stdout.write(JSON.stringify({ reason: h.reason }));',
+      '})();',
+    ].join('\n'), 'utf8');
+    const env = baseEnv({ NVIDIA_SKIP_ENV_FILES: '1', FORGE_PROJECT_ROOT: EMPTY_PROJECT, FORGE_CONFIG_HOME: CONFIG_HOME });
+    delete env.NVIDIA_API_KEY;
+    const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  };
+  const redactOrder = redactOrderProbe();
+  t('NVIDIA-REDACTION-GAPS: a secret straddling the old 300-char cut is FULLY masked, not partially leaked',
+    !!redactOrder.reason && !/SYNTHETIC-NONNVAPI-KEY/.test(redactOrder.reason) && /\*\*\*MASKED\*\*\*/.test(redactOrder.reason));
+
+  // 15) NVIDIA-REDACTION-GAPS: maskDeep() sanitizes the WHOLE returned shape at every public boundary —
+  // a synthetic key placed in `content`, nested `usage`, a model-name env override, or a route warning
+  // must never leave the module unmasked.
+  console.log('15) maskDeep at every public return (no network)');
+  const maskDeepProbe = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-maskdeep-'));
+    const script = path.join(dir, 'probe.cjs');
+    const leaked = 'nvapi-LEAKEDCONTENTKEY1234567890';
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'process.env.NVIDIA_API_KEY = "nvapi-REALKEYNOTUSEDHERE1234567890";',
+      'global.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({',
+      '  choices: [{ message: { content: "leaked in content: " + ' + JSON.stringify(leaked) + ' }, finish_reason: "stop" }],',
+      '  usage: { note: ' + JSON.stringify(leaked) + ', prompt_tokens: 3 },',
+      '}) });',
+      'const P = require(' + JSON.stringify(CLI) + ');',
+      '(async () => {',
+      '  const out = await P.chat({ role: "default", prompt: "hi" });',
+      '  process.stdout.write(JSON.stringify({ out }));',
+      '})();',
+    ].join('\n'), 'utf8');
+    const env = baseEnv({ NVIDIA_SKIP_ENV_FILES: '1', FORGE_PROJECT_ROOT: EMPTY_PROJECT, FORGE_CONFIG_HOME: CONFIG_HOME });
+    delete env.NVIDIA_API_KEY;
+    const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  };
+  const maskDeepOut = maskDeepProbe();
+  t('maskDeep: a synthetic key nested inside chat() content AND a nested usage object is masked in BOTH places',
+    !!maskDeepOut.out && !/LEAKEDCONTENTKEY/.test(JSON.stringify(maskDeepOut.out)) && /\*\*\*MASKED\*\*\*/.test(maskDeepOut.out.content || '') && /\*\*\*MASKED\*\*\*/.test((maskDeepOut.out.usage && maskDeepOut.out.usage.note) || ''));
+  const maskDeepUnit = P.maskDeep({ a: 'contains nvapi-UNITTESTKEY1234567890 here', b: [1, 'nvapi-UNITTESTKEY1234567890', null], c: { d: true, e: 'nvapi-UNITTESTKEY1234567890' }, f: 42, g: null, h: undefined });
+  t('maskDeep(): nested objects/arrays are walked, non-strings pass through untouched',
+    !JSON.stringify(maskDeepUnit).includes('UNITTESTKEY') && maskDeepUnit.f === 42 && maskDeepUnit.g === null && maskDeepUnit.h === undefined && maskDeepUnit.c.d === true);
+
   for (const d of [CONFIG_HOME, EMPTY_PROJECT, OFF_ROOT, ON_ROOT, BROKEN_ROOT]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
 
   console.log(pass + ' passed, ' + fail + ' failed');

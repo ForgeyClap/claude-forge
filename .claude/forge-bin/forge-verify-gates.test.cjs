@@ -8,8 +8,8 @@
  *  forge-verify 153 passed / 0 failed, and forge-doctor's "no-op tests" check saw nothing (that check only
  *  finds suites with zero assertion sites — this suite had plenty, they just could not fail).
  *
- *  The mechanism is general, and it is NOT specific to failure conditions: forge-verify has SIX gates and
- *  exactly one exit code. A test that asserts `exit === 1` proves nothing about the gate it names unless
+ *  The mechanism is general, and it is NOT specific to failure conditions: forge-verify has multiple gates
+ *  (see V.EXIT_GATES for the live count/list) and exactly one exit code. A test that asserts `exit === 1` proves nothing about the gate it names unless
  *  that gate is the ONLY reason the run is non-zero. The failure-condition test's scenario logged a
  *  `check_failed` from "Build Boss" followed by `agent_completed` — which is also a textbook agent
  *  MISMATCH (claims done with an unfinished task), and the mismatch gate alone already forced exit 1. The
@@ -200,6 +200,31 @@ const SCENARIOS = {
       { event_type: 'check_failed', agent: 'QA Boss', prd_id: 'prdgatefc', fc_id: 'fc-1', note: 'bundle is 2.3MB' },
     ]);
   },
+
+  // RC/VERIFY-READ-ERROR-GREEN (2026-09-24) — an otherwise spotless run (one task, terminated, then a
+  // completion claim, no tickets/PRD/paths) whose events.jsonl carries ONE malformed trailing line. The
+  // agent's own task set is unaffected (claimsDone with tasksDone===tasksTotal -> no mismatch), so this
+  // isolates purely the malformed-line count.
+  malformed_events: () => {
+    const runId = 'gate-malformed-only';
+    const dir = path.join(CLAUDE_DIR, 'forge-runs', runId);
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      { event_type: 'agent_started', agent: 'Clean Boss M' },
+      { event_type: 'check_passed', agent: 'Clean Boss M', task: 'suite' },
+      { event_type: 'agent_completed', agent: 'Clean Boss M' },
+    ].map((e) => JSON.stringify(Object.assign({ ts: new Date().toISOString() }, e)));
+    lines.push('{not valid json — a truncated/corrupted trailing line');
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), lines.join('\n') + '\n', 'utf8');
+    return runId;
+  },
+
+  // VERIFY-DEAD-WORKER-GREEN (2026-09-24) — a worker that logged a start + one heartbeat and then simply
+  // stopped: no completion claim (so `mismatches` stays 0), no failure claim, no tickets/PRD/paths.
+  dead_worker_heartbeats: () => writeRun('gate-dead-worker-only', [
+    { event_type: 'agent_started', agent: 'Dead Boss' },
+    { event_type: 'agent_progress', agent: 'Dead Boss', note: 'still working…' },
+  ]),
 };
 
 // ======================================================================================================

@@ -43,13 +43,17 @@
  *   FORGE_AUTONOMY.json "default". Seams: opts.configModule (null = absent), opts.configOpts (forge-config seams).
  *   decide() stays free of side effects and never looks at the live usage state; decideLive() does that:
  *
- *   usageLimitActive(opts) -> { active, reason, source: 'state'|'no-state'|'unreadable'|'guard-off', file? }
+ *   usageLimitActive(opts) -> { active, reason, source: 'state'|'no-state'|'unreadable'|'guard-off'|'stale', file? }
  *     reads <opts.statePath | FORGE_USAGE_GUARD_STATE | (opts.guardHome | FORGE_USAGE_GUARD_HOME | ~/.claude)
  *     /FORGE_USAGE_GUARD_STATE.json> — active only when mode === 'paused' and its resumeAtEpoch (if any) has not
- *     passed yet (the same self-heal rule as the global usage-guard hook). Consulted only while config
- *     `usage-guard` is on — it carries the C N U flags, so an unreadable settings file or an absent
- *     forge-config.cjs counts as OFF (source 'guard-off' + `config_note`), exactly like the guard itself then
- *     stops polling. Read-only; never opens the account login file.
+ *     passed yet (the same self-heal rule as the global usage-guard hook). CFG-01 (Codex recheck 2026-09-24):
+ *     the state file is ALWAYS consulted, regardless of whether config `usage-guard` reads on, off, or
+ *     degraded — "may forge-config collect NEW usage telemetry" (the switch; that decision belongs to
+ *     usage-guard.cjs itself) is a SEPARATE question from "must an already-recorded, unexpired pause be
+ *     honoured" (this function; a locked tier-1 gate, never optional). An unrelated malformed setting can
+ *     therefore never disable enforcement of a pause that already happened. The switch is used only to WORD
+ *     the reason when there is genuinely no pause on file (source 'guard-off') — it never gates the read.
+ *     Read-only; never opens the account login file.
  *   decideLive(input, opts) -> decide() with input.atUsageLimit filled from usageLimitActive(), plus `usageLimit`.
  *
  * CLI:
@@ -188,19 +192,19 @@ function stalePauseNote(st, now, opts) {
  *  now? See the file header for the path order and the self-heal rule. Read-only, never throws. */
 function usageLimitActive(opts) {
   opts = opts || {};
-  const sw = configRead('usage-guard', false, opts); // flagged (C N U): a degraded read is OFF, never silently on
-  if (sw.value === false) {
+  const sw = configRead('usage-guard', false, opts); // labels the reason only; it never gates the state-file read (CFG-01)
+  const guardOffResult = () => {
     const why = sw.degraded ? 'usage-guard counts as off (settings unreadable: ' + sw.reason + ')' : 'usage-guard is off in the owner config';
-    return Object.assign({ active: false, reason: why + ' — its state file is not consulted', source: 'guard-off' }, sw.degraded ? { config_note: sw.reason } : {});
-  }
+    return Object.assign({ active: false, reason: why + ' - no pause is currently recorded', source: 'guard-off', file }, sw.degraded ? { config_note: sw.reason } : {});
+  };
   const home = opts.guardHome || process.env.FORGE_USAGE_GUARD_HOME || path.join(os.homedir(), '.claude');
   const file = opts.statePath || process.env.FORGE_USAGE_GUARD_STATE || path.join(home, 'FORGE_USAGE_GUARD_STATE.json');
   let st;
   try { st = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\ufeff/, '')); } catch (e) {
-    if (e && e.code === 'ENOENT') return { active: false, reason: 'no usage-guard state file — no pause was ever recorded', source: 'no-state', file };
+    if (e && e.code === 'ENOENT') return sw.value === false ? guardOffResult() : { active: false, reason: 'no usage-guard state file — no pause was ever recorded', source: 'no-state', file };
     return { active: false, reason: 'usage-guard state unreadable (' + ((e && e.message) || e) + ') — not treated as a pause', source: 'unreadable', file };
   }
-  if (!st || st.mode !== 'paused') return { active: false, reason: 'usage guard is not paused', source: 'state', file };
+  if (!st || st.mode !== 'paused') return sw.value === false ? guardOffResult() : { active: false, reason: 'usage guard is not paused', source: 'state', file };
   const now = typeof opts.now === 'number' ? opts.now : Date.now();
   const resumeAt = Number(st.resumeAtEpoch);
   if (Number.isFinite(resumeAt) && now >= resumeAt) {

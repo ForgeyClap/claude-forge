@@ -24,7 +24,7 @@ Turn Claude Code into a coordinated **team of agents** that builds, automates, r
 
 ## 🤝 The beginner promise
 
-Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. The only things it always stops for are the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and a real usage-limit pause. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat.
+Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. It stops for the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and for a real usage-limit pause. Be precise about what "stops" means: three of those gates (destructive deletes, killing processes by name, git commands that throw work away) are enforced by a real hook that blocks the shell command before it runs; the others are rules the assistant follows and are checked by a text classifier, not by a technical stop — a model can still ignore a rule, so keep an eye on anything that deploys, pushes or spends. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat.
 
 **Nederlands:** Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt alleen altijd voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en een echte gebruikslimiet-pauze. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat.
 
@@ -127,12 +127,12 @@ Then run `/setup-forge` once. With Path A or B you are ready; with Path C, expec
 
 ## 🔌 Plugin vs Installer
 
-The plugin is **LITE**; the installer is **FULL**. This split is architectural, not a limitation we chose: a plugin lives in a read-only cache and cannot write your project or `~/.claude`.
+The plugin is **LITE**; the installer is **FULL**. This split is architectural, not a limitation we chose: a plugin lives in a read-only cache, so *installing* it writes nothing to your project or `~/.claude`. Its commands and agents still edit your project when you ask them to build something — that is what they are for; the difference is that the plugin brings no settings file, no safety hook and no dashboard.
 
 | | 🔌 **Plugin (LITE)** | 🛠️ **Installer (FULL)** |
 |---|---|---|
 | **What you get** | Commands + 18 agents + 22 curated skills (incl. the prompt coach) | Full system: 19 agents, 72 skills (incl. 21 vendored public skills), 102 tools |
-| **Files written** | None (read-only cache) | `./.claude` + `~/.claude` core |
+| **Files written by the install** | None (read-only plugin cache); its agents edit your project only when you ask them to build | `./.claude` + `~/.claude` core |
 | **Live dashboard** | No | ✅ Yes, localhost:4100 |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
 | **Settings (`/forge config`)** | No | ✅ Yes, 36 settings, everything on by default |
@@ -211,9 +211,11 @@ Status  Setting                      Value                    From             W
 ------  ---------------------------  -----------------------  ---------------  ----------------------------------------
 
 == On by default - Forge uses this on every run ==
-ON      usage-guard                  on                       default          Pauses Forge automatically just before
-                                                                               your Claude usage limit so a task is
-                                                                               never cut off mid-way. [1]
+ON      usage-guard                  on                       default          Pauses Forge automatically when your
+                                                                               Claude usage nears the limit. It measures
+                                                                               on an interval (2 minutes by default), so
+                                                                               this is a pause before the limit, not a
+                                                                               guaranteed instant block. [1]
 ON      usage-guard.pause-at         98 %                     default          Forge pauses at this percentage of your
                                                                                usage limit.
 ON      autonomy                     continue-within-mission  product-default  Keeps working across phases without
@@ -226,8 +228,9 @@ ON      start-gate                   off                      default          D
 ON      gate-hook                    on                       default          A real stop (not advice) on dangerous
                                                                                commands: recursive deletes, killing
                                                                                processes by name, git commands that
-                                                                               throw away uncommitted work. Forge asks
-                                                                               first.
+                                                                               throw away uncommitted work, and commands
+                                                                               that hide what they run (eval, a pipe
+                                                                               into a shell). Forge asks first.
 ON      git-checkpoint               on                       default          Creates a local git safety point (commit
                                                                                or branch, never pushed) before a bigger
                                                                                build so everything can be undone.
@@ -251,7 +254,7 @@ The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %*
 
 ## 🛡️ A real safety stop
 
-Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks three dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), and git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`). Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your project) still pass, and quoted text (a heredoc, an `echo`, a `grep` pattern) is never mistaken for a command. If the check cannot judge a command it says so instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files, `secrets/` folders, private keys and your own credential files (23 rules); `.env.example` stays readable. Only you can switch the stop off (`/forge config set gate-hook off`): the assistant cannot switch it off itself, a one-off approval expires after 10 minutes, and while it is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay exactly where they are, a timestamped backup is written first, and running it again changes nothing. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
+Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks four dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`), and commands whose real content is hidden from the check (`eval`, `Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`). Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your project) still pass, but only when the check can prove the path really is such a folder, and quoted text (a heredoc, an `echo`, a `grep` pattern) is never mistaken for a command. If the check cannot judge a command (unreadable input, a damaged config) it says so out loud instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files (also the `.env.development`, `.env.staging`, `.env.test` and setup variants, at any depth), `secrets/` folders, private keys and your own credential files (28 rules); `.env.example` stays readable. The stop is built so the assistant cannot switch it off on its own: an agent that types `set gate-hook off` is blocked, only `/forge config set gate-hook off` typed by you switches it off, and the one-off form (`--once "<your words>"`) must quote your approval, covers exactly one command, is used up the moment that command runs and expires after at most 10 minutes. What the check cannot do is verify who typed that quote, so when Claude reports "the owner approved this command", read that line before it runs. While the stop is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay in place, formatting is preserved, a backup is written first, and running it again changes nothing; a file it cannot preserve losslessly is left alone and reported. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
 
 ---
 
@@ -305,7 +308,7 @@ Honest answer: **a team of agents uses more tokens than a single chat** — that
 
 - **Tiered models** — Opus only for the hard/critical work, **Sonnet** for most of it, **Haiku** for trivial steps, and pure mechanical edits use **no model at all**.
 - **Right-sized teams** — a one-line fix doesn't summon a swarm; over-spawning is treated as waste, not a feature.
-- **Real cost visibility** — a live dashboard cost meter, plus a **usage guard** that reads the same official numbers as `/usage` and **pauses Forge at 98 %** of your 5-hour or weekly limit — *before* the limit, so a task is never cut off halfway. Claude Code itself (version 2.1.234 and later) already waits and continues after a limit reset; the guard's job is the pause before it.
+- **Real cost visibility** — a live dashboard cost meter, plus a **usage guard** that reads the same official numbers as `/usage` and **pauses Forge at 98 %** of your 5-hour or weekly limit — *before* the limit. It measures every 2 minutes (best effort: a task can still cross the limit between two samples, so this is a pause before the limit, not a guaranteed instant block). Claude Code itself (version 2.1.234 and later) already waits and continues after a limit reset; the guard's job is the pause before it.
 
 You pay through your existing Claude Code plan (no separate billing), and Forge **never invents a "savings" number**.
 
@@ -443,8 +446,8 @@ If Forge saves you time, a star helps others find it.
 
 ## Requirements
 
-- **[Claude Code](https://claude.com/claude-code)** — Forge is a configuration layer for it. Claude Code needs a **paid Claude plan** (Pro, Max, Team or Enterprise); see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md).
-- **Node.js 18+** — for Forge's `.cjs` tools and the dashboard (no packages to install). Claude Code itself does not need Node; Forge's doctor tells you when it is missing.
+- **[Claude Code](https://claude.com/claude-code)** — Forge is a configuration layer for it. Claude Code needs either a **paid Claude plan** (Pro, Max, Team or Enterprise) or a **Claude Console account with API billing** — the free consumer plan does not include it; see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md).
+- **Node.js 18+** — for Forge's `.cjs` tools (no packages to install). Claude Code itself does not need Node; Forge's doctor tells you when it is missing. **Building the dashboard yourself** needs Node **20.19+ or 22.12+** (its build tool, Vite 7, refuses older versions); the installer ships the tools without that step.
 - **Git** — recommended (leak-scan and safe key setup use it), not strictly required.
 
 ---

@@ -44,6 +44,16 @@ const STATE = { meta: { name: '—', port: '' }, run: {}, events: [], report: nu
 // Live vs Replay: visibleEvents() drives the whole model. Live = all events. Replay = slice up to cursor (animates WAITING→RUNNING→COMPLETED in event order).
 function visibleEvents() { const r = STATE.replay; return r.active ? STATE.events.slice(0, Math.max(0, Math.min(r.cursor, STATE.events.length))) : STATE.events; }
 function replayAtLive() { return !STATE.replay.active || STATE.replay.cursor >= STATE.events.length; }
+// DISPLAY-BYPASSES-CONTRACT (2026-09-24, out-p5.md) — `run.status === 'completed'` is a METADATA claim the
+// run itself writes; forge-finalize.cjs's run_finalized event is the one authoritative receipt-backed proof
+// this dashboard can see without a new API round-trip (the events it already streams/polls). A run whose
+// events do not end on a genuine run_finalized (never logged one, or logged more after it) is only a CLAIM,
+// not a verified completion — mirrors finalize.cjs's own "the log must end on run_finalized" check.
+function isReceiptFinalized(events) {
+  const list = Array.isArray(events) ? events : [];
+  const last = list.length ? list[list.length - 1] : null;
+  return !!(last && last.event_type === 'run_finalized');
+}
 let selectedKey = null, selRef = { refKey: null, refEvIdx: null }, CURRENT_MODEL = { nodes: [], edges: [], world: { w: 0, h: 0 } };
 
 const SYNTH = { run_started: 'orchestrator', run_completed: 'orchestrator', agent_selected: 'forge-router',
@@ -182,16 +192,42 @@ const TASK_PAIR_TERMINAL_TO_START = {};
 for (const startType of Object.keys(TASK_PAIRS)) for (const term of TASK_PAIRS[startType]) TASK_PAIR_TERMINAL_TO_START[term] = startType;
 
 /* ---------- status (6 states) ---------- */
+// VERIFY-FAILED-REVIEW-DONE (2026-09-24, out-p5.md) — mirrored 1:1 from forge-verify.cjs's statusClass():
+// "incomplete".includes("complete") is true, so a negated status read as done. Checked BEFORE the done/
+// pass substring test so it can never be shadowed by it.
+const NEGATED_DONE_RE = /\b(?:in|un|non|not)[ -]?(?:complete|completed|done|finished|pass|passed)\b|\bnot\s+(?:complete|completed|done|finished|pass(?:ed)?)\b/;
 function statusClass(s) { const v = String(s || '').toLowerCase();
   if (v.includes('internal') || v.includes('conceptual') || v.includes('role only')) return 'internal';
   if (v.includes('preview')) return 'previewing';
   if (v.includes('fail') || v.includes('block') || v.includes('refus')) return 'failed';
+  if (NEGATED_DONE_RE.test(v)) return 'failed';
   if (v.includes('done') || v.includes('complete') || v.includes('pass')) return 'done';
   if (v.includes('wait') || v.includes('ask') || v.includes('paus') || v.includes('pend') || v.includes('queue') || v.includes('select')) return 'waiting';
   if (v.includes('run') || v.includes('progress') || v.includes('start')) return 'running';
   return 'waiting';
 }
-function taskStatus(e) { if (e.status) return statusClass(e.status); const t = e.event_type;
+// VERIFY-FAILED-REVIEW-DONE (2026-09-24, out-p5.md) — mirrored from forge-runcontract.cjs's own
+// isGoedkeuring()/UITKOMST_VELDEN/POSITIEVE_REVIEW_VERDICTS (duplicated, not required: app.js is browser
+// JS and cannot require() that CommonJS module — same "mirror across the file boundary" discipline this
+// file already uses for TASK_PAIRS/BACKBONE). taskStatus() previously only ever read the generic `status`
+// field; a review_completed/codex_review_completed carrying `review_verdict:"fail"` (or `verdict`/`result`/
+// `outcome`, or `ok:false`) with NO `status` field fell straight into the done-bucket membership list below
+// regardless. Scoped to REVIEW_DONE_EVENT_TYPES only — every other event_type's derivation is unchanged.
+const REVIEW_DONE_EVENT_TYPES = new Set(['review_completed', 'codex_review_completed']);
+const REVIEW_OUTCOME_FIELDS = ['review_verdict', 'verdict', 'status', 'result', 'outcome'];
+const POSITIVE_REVIEW_VERDICTS = new Set(['pass', 'passed', 'approved', 'ok', 'akkoord', 'goedgekeurd']);
+function reviewOutcome(e) {
+  const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
+  const present = REVIEW_OUTCOME_FIELDS.filter((f) => e[f] !== undefined).map((f) => norm(e[f]));
+  if (!present.length) return null; // no outcome asserted at all — caller uses its own default
+  if (present.some((v) => v === '')) return 'failed'; // present but empty is not an approval
+  if (present.some((v) => !POSITIVE_REVIEW_VERDICTS.has(v))) return 'failed';
+  if (e.ok !== undefined && e.ok !== true) return 'failed';
+  return 'done';
+}
+function taskStatus(e) {
+  if (REVIEW_DONE_EVENT_TYPES.has(e.event_type)) { const ro = reviewOutcome(e); if (ro) return ro; }
+  if (e.status) return statusClass(e.status); const t = e.event_type;
   if (['check_passed', 'retest_completed', 'fix_completed', 'quality_gate_passed', 'agent_completed', 'run_completed',
        'subagent_completed', 'lead_review_completed', 'rework_completed', 'merge_completed', 'codex_review_completed',
        'final_output_created', 'mission_blueprint_created', 'role_map_created', 'skill_discovery', 'skill_map_created', 'custom_skill_created',
@@ -352,7 +388,11 @@ function closeHeartbeats(n, completionEvent, idx) {
     if (tk.evIdx >= idx) continue; // must be logged BEFORE the completion
     const tkWpId = (typeof tk.event.wp_id === 'string' && tk.event.wp_id.trim()) || null;
     const tkRole = (typeof tk.event.role === 'string' && tk.event.role.trim()) || null;
-    const match = wpId ? tkWpId === wpId : (!!tkRole && tkRole === role);
+    // VERIFY-DEAD-WORKER-GREEN (2026-09-24, out-p5.md) — mirrored from forge-verify.cjs::closeHeartbeats():
+    // a role-only completion (no wp_id) must never close a heartbeat that itself carries an explicit
+    // wp_id — only an exact wp_id match may close those. Reproduced: a role-only completion closed
+    // heartbeats belonging to two DIFFERENT explicit work-package IDs.
+    const match = wpId ? tkWpId === wpId : (!tkWpId && !!tkRole && tkRole === role);
     if (match) { tk.status = status; tk._closed = true; tk.evIdx = idx; tk.ts = completionEvent.timestamp; }
   }
 }
@@ -455,7 +495,12 @@ function buildNodes() {
     }
   });
   STATE._closesAdvisories = closesAdvisories; // advisory only — never affects status/progress
-  const runCompleted = replayAtLive() && (STATE.run.status || '').toLowerCase() === 'completed';
+  // DISPLAY-BYPASSES-CONTRACT (2026-09-24, out-p5.md) — this repaint used to trigger on the bare metadata
+  // claim `run.status === 'completed'` alone, so a run that merely CLAIMED completion (no matching
+  // run_finalized receipt event, or further work logged after one) got every still-running task silently
+  // repainted 'done' — hiding exactly the mismatch this repaint should never be able to hide. Requiring the
+  // real receipt event as well means an unverified claim renders as a claim, not as verified completion.
+  const runCompleted = replayAtLive() && (STATE.run.status || '').toLowerCase() === 'completed' && isReceiptFinalized(visibleEvents());
   for (const n of map.values()) {
     n.group = groupBandOf(n); if (n.title === n.key && n.role) n.title = n.role; if (n.wp && n.wp.mission && !n.mission) n.mission = n.wp.mission;
     const taskRunning = n.tasks.some((t) => t.status === 'running');
@@ -582,8 +627,14 @@ function buildId() { const id = (STATE.run && STATE.run.run_id) || ''; if (!id) 
 function renderTop() {
   const run = STATE.run || {}; const st = (run.status || '').toLowerCase();
   const dot = $('state-dot'), tdot = $('title-dot'), txt = $('state-text');
+  // DISPLAY-BYPASSES-CONTRACT (2026-09-24, out-p5.md) — `run.status === 'completed'` alone used to render a
+  // fully green "COMPLETE" badge. That field is a metadata CLAIM the run itself writes; the receipt-backed
+  // proof is a genuine run_finalized event as the log's last entry (see isReceiptFinalized() above). A
+  // claimed-but-unverified completion now renders distinctly instead of visually passing for a verified one.
+  const receiptFinalized = isReceiptFinalized(STATE.events);
   if (st === 'running') { dot.className = tdot.className = 'dot run'; txt.textContent = 'BUILDING'; }
-  else if (st === 'completed') { dot.className = tdot.className = 'dot done'; txt.textContent = 'COMPLETE'; }
+  else if (st === 'completed' && receiptFinalized) { dot.className = tdot.className = 'dot done'; txt.textContent = 'COMPLETE'; }
+  else if (st === 'completed') { dot.className = tdot.className = 'dot'; txt.textContent = 'CLAIMED COMPLETE (UNVERIFIED)'; }
   else if (st === 'failed') { dot.className = tdot.className = 'dot fail'; txt.textContent = 'FAILED'; }
   else if (st === 'armed') { dot.className = tdot.className = 'dot'; txt.textContent = 'ARMED — AWAITING START'; }
   else { dot.className = tdot.className = 'dot'; txt.textContent = 'IDLE'; }
@@ -593,7 +644,8 @@ function renderTop() {
   const proj = STATE.meta.name || 'FORGE'; const title = run.request ? (proj + ' / ' + run.request) : (proj || 'FORGE CONTROL CENTER');
   $('proj-title').textContent = trunc(title, 70).toUpperCase();
   // Fix 4c: a completed-run badge must never show COMPLETE while scrubbing a partial replay slice.
-  const liveCompleted = st === 'completed' && replayAtLive();
+  // DISPLAY-BYPASSES-CONTRACT: also requires the real receipt event, not just the metadata claim.
+  const liveCompleted = st === 'completed' && replayAtLive() && receiptFinalized;
   $('badge-complete').hidden = !liveCompleted; $('tp-check').hidden = !liveCompleted;
   const lvl = run.complexity || run.quality_target || run.project_type || ''; const lb = $('level-badge');
   if (lvl) { lb.hidden = false; lb.textContent = String(lvl).toUpperCase(); } else lb.hidden = true;
@@ -653,4 +705,5 @@ function startPolling(reason) { if (polling) return; const iv = STATE.settings.f
   setLive('poll', 'POLL ' + iv + 'ms'); polling = setInterval(async () => { if (await fetchState()) renderAll(); }, iv); }
 
 window.Forge = Object.assign(window.Forge || {}, { buildNodes, agentColor, roleOf, nodeState, statusClass, taskStatus, statusLabel, SYNTH, trunc, esc, hhmmss,
-  visibleEvents, replayAtLive, isPreflight, isSubagentNode, isLeadNode, isCodexNode, isReportNode, runtimeBadge, codexStatus, categoryLabel, governanceSummary });
+  visibleEvents, replayAtLive, isPreflight, isSubagentNode, isLeadNode, isCodexNode, isReportNode, runtimeBadge, codexStatus, categoryLabel, governanceSummary,
+  reviewOutcome, isReceiptFinalized });

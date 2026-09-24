@@ -117,11 +117,17 @@ let configDriftTool;
 try { configDriftTool = require('./forge-configdrift.cjs'); } catch { configDriftTool = null; }
 
 // ---- status semantics — MIRRORED from forge-dashboard/app.js (read that file before editing this) ----
+// VERIFY-FAILED-REVIEW-DONE (2026-09-24, out-p5.md) — substring matching turned "incomplete" into a DONE
+// status, because "incomplete".includes("complete") is true and the done-check ran before anything caught
+// it. A negation prefix on an otherwise-positive word is not a positive status; checked BEFORE the
+// done/pass check so it can never be shadowed by it. Mirrored 1:1 in app.js's statusClass().
+const NEGATED_DONE_RE = /\b(?:in|un|non|not)[ -]?(?:complete|completed|done|finished|pass|passed)\b|\bnot\s+(?:complete|completed|done|finished|pass(?:ed)?)\b/;
 function statusClass(s) {
   const v = String(s || '').toLowerCase();
   if (v.includes('internal') || v.includes('conceptual') || v.includes('role only')) return 'internal';
   if (v.includes('preview')) return 'previewing';
   if (v.includes('fail') || v.includes('block') || v.includes('refus')) return 'failed';
+  if (NEGATED_DONE_RE.test(v)) return 'failed';
   if (v.includes('done') || v.includes('complete') || v.includes('pass')) return 'done';
   if (v.includes('wait') || v.includes('ask') || v.includes('paus') || v.includes('pend') || v.includes('queue') || v.includes('select')) return 'waiting';
   if (v.includes('run') || v.includes('progress') || v.includes('start')) return 'running';
@@ -255,6 +261,35 @@ const TASK_PAIRS = {
 };
 const TASK_PAIR_TERMINAL_TO_START = {};
 for (const startType of Object.keys(TASK_PAIRS)) for (const term of TASK_PAIRS[startType]) TASK_PAIR_TERMINAL_TO_START[term] = startType;
+
+/** VERIFY-ARBITRARY-CLOSURE (2026-09-24, out-p5.md) — closes_event_id's ONLY proof requirement used to be
+ *  `typeof e.evidence === 'string' && e.evidence.trim().length > 0`, so a bare "." satisfied it; nothing
+ *  checked the target's TYPE (any earlier task, of any kind, could be "closed"); nothing prevented a SECOND
+ *  closer from re-closing an already-closed target (target._closed was set but never re-checked); and
+ *  nothing distinguished a closer clearing its OWN earlier task (self-closure) from a genuinely independent
+ *  one closing it. Four fixes, all additive to the existing forward-reference/unknown-id checks:
+ *   (1) a minimal MEANINGFUL-evidence grammar — non-blank, at least 3 characters, and not just punctuation.
+ *       A bare "." no longer counts as "evidence" (this alone closes the reproduced repro: a failed,
+ *       already-closed review turning "done" via `evidence:"."`).
+ *   (2) single consumption — an already-`_closed` target is refused, not silently re-closed.
+ *   (3) an OPEN task only — the target's CURRENT status (taskStatus(), the same status the dashboard and
+ *       every other gate in this file already agree on) must not already be 'done'. A closer that only ever
+ *       becomes a task at all in this loop is, by construction, never a BACKBONE milestone (those `return`
+ *       before a task object is created) — so this is genuinely "is there still open work here", not a
+ *       second, parallel type taxonomy that could drift from taskStatus().
+ *   (4) SELF-closure (the closer is the SAME agent that logged the target task) additionally needs a real
+ *       tally (n/m) or exit-code line in the evidence — ordinary meaningful prose closes a DIFFERENT agent's
+ *       task, but an agent clearing its own earlier task needs the stronger, harder-to-fabricate form. */
+const CLOSURE_TALLY_OR_EXIT_RE = /\b\d+\s*\/\s*\d+\b|\bexit(?:\s*code)?\s*[:=]?\s*-?\d+\b/i;
+function isMeaningfulClosureEvidence(evidence) {
+  const v = typeof evidence === 'string' ? evidence.trim() : '';
+  if (v.length < 3) return false; // "." / ".." / too short to be a real statement
+  if (/^[.\-_*~`'"]+$/.test(v)) return false; // punctuation-only
+  return true;
+}
+function hasTallyOrExitEvidence(evidence) {
+  return CLOSURE_TALLY_OR_EXIT_RE.test(typeof evidence === 'string' ? evidence.trim() : '');
+}
 // app.js taskStatus() "failed" list (L83-85)
 const FAILED_TYPES = new Set([
   'check_failed', 'agent_failed', 'subagent_failed', 'quality_gate_blocked', 'codex_blocked', 'claude_md_conflict_detected', 'custom_skill_conflict_detected',
@@ -305,8 +340,38 @@ const RUNNING_TYPES = new Set([
   // never a run-level backbone milestone.
   'wp_resumed',
 ]);
+/** VERIFY-FAILED-REVIEW-DONE (2026-09-24, out-p5.md) — taskStatus() only ever read the generic `status`
+ *  field; a review_completed/codex_review_completed carrying `review_verdict:"fail"` (or `verdict`/`result`/
+ *  `outcome`, or `ok:false`) with NO `status` field fell straight through to TERMINAL_TYPES membership and
+ *  read as 'done' regardless — the verifier and forge-runcontract.cjs's own independent-review gate then
+ *  DISAGREED about the same event. Fixed by reusing forge-runcontract.cjs's own explicit vocabulary
+ *  (isGoedkeuring/UITKOMST_VELDEN/POSITIEVE_REVIEW_VERDICTS) rather than re-deriving a second one that could
+ *  drift — REQUIRED here, this file already treats forge-runcontract.cjs as a sibling to lean on (see
+ *  evidenceCheck() above). Scoped to REVIEW_DONE_EVENT_TYPES only: every other event_type's status
+ *  derivation is unchanged. A bare `{event_type:'review_completed'}` carrying NONE of the outcome fields at
+ *  all falls through to the ordinary TERMINAL_TYPES-membership default below (a legacy/minimal event is not
+ *  penalised for a field it never had). */
+const REVIEW_DONE_EVENT_TYPES = new Set(['review_completed', 'codex_review_completed']);
+let _runcontractCache; // undefined = not yet attempted, null = load failed, object = loaded module
+function loadRuncontractTool() {
+  if (_runcontractCache !== undefined) return _runcontractCache;
+  try { _runcontractCache = require('./forge-runcontract.cjs'); } catch { _runcontractCache = null; }
+  return _runcontractCache;
+}
+function reviewOutcome(e) {
+  const rc = loadRuncontractTool();
+  if (!rc || typeof rc.isGoedkeuring !== 'function') return null; // sibling unavailable — fall back, never fabricate
+  const hasOutcomeField = ['review_verdict', 'verdict', 'status', 'result', 'outcome'].some((f) => e[f] !== undefined);
+  if (!hasOutcomeField) return null; // no outcome asserted at all — let the caller use its own default
+  return rc.isGoedkeuring(e).ok ? 'done' : 'failed';
+}
+
 // app.js taskStatus() — same branch semantics, reordered around disjoint sets (see header comment).
 function taskStatus(e) {
+  if (REVIEW_DONE_EVENT_TYPES.has(e.event_type)) {
+    const ro = reviewOutcome(e);
+    if (ro) return ro;
+  }
   if (e.status) return statusClass(e.status);
   const t = e.event_type;
   if (TERMINAL_TYPES.has(t)) return 'done';
@@ -334,6 +399,15 @@ const BACKBONE = new Set(['run_started', 'run_completed', 'agent_selected', 'age
   'audit_iteration', 'audit_finding']);
 
 // ---- reading events.jsonl (line-delimited JSON, BOM-tolerant, malformed lines skipped) ----
+/** EVENT-RUN-BINDING-GAP (2026-09-24, out-p5.md) — verifyRun() performed NO run-id validation at all: a
+ *  copied/foreign event carrying another run's `run_id` was processed as if it genuinely belonged here, so a
+ *  foreign-run heartbeat completion or a foreign-run closes_event_id could close/complete THIS run's work.
+ *  `expectedRunId` is derived from the run directory's own basename (the same `<root>/.claude/forge-runs/
+ *  <run_id>/` layout every caller already uses) — an event whose OWN `run_id` field is present and does not
+ *  match is a foreign entry and is excluded before any task/closure logic ever sees it. An event with NO
+ *  run_id field at all (older/minimal fixtures; the writer stamps run_id on every real write) is left alone —
+ *  narrowing to "present and present-and-wrong" avoids a mass regression on run_id-less fixtures while still
+ *  closing the reproduced exploit (a foreign run_id that IS present). */
 function readEventsJsonl(runDir) {
   const file = path.join(runDir, 'events.jsonl');
   if (!fs.existsSync(file)) {
@@ -341,14 +415,19 @@ function readEventsJsonl(runDir) {
   }
   let raw = fs.readFileSync(file, 'utf8');
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1); // strip BOM
+  const expectedRunId = path.basename(runDir);
   const events = [];
   let malformed = 0;
+  let foreignRunId = 0;
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s) continue;
-    try { events.push(JSON.parse(s)); } catch { malformed++; }
+    let parsed;
+    try { parsed = JSON.parse(s); } catch { malformed++; continue; }
+    if (parsed && typeof parsed === 'object' && typeof parsed.run_id === 'string' && parsed.run_id !== expectedRunId) { foreignRunId++; continue; }
+    events.push(parsed);
   }
-  return { events, malformed };
+  return { events, malformed, foreignRunId };
 }
 
 function taskTitle(e) {
@@ -374,7 +453,14 @@ function closeHeartbeats(rec, completionEvent, evIdx) {
   for (const tk of rec.tasks) {
     if (tk._closed || tk.status === 'done' || tk.event_type !== 'agent_progress') continue;
     if (tk.origEvIdx >= evIdx) continue; // must be logged BEFORE the completion
-    const match = wpId ? tk.wp_id === wpId : (!!tk.role && tk.role === role);
+    /** VERIFY-DEAD-WORKER-GREEN (2026-09-24, out-p5.md) — the role-only fallback (no wp_id on the
+     *  completion) used to match ANY heartbeat sharing that role, INCLUDING a heartbeat that itself carries
+     *  a wp_id of its own. A role-only completion carries no evidence about WHICH work package it refers
+     *  to, so it must never close a heartbeat that is itself already scoped to a specific wp_id — only an
+     *  explicit wp_id match may close those. Role-only fallback now closes role-only heartbeats ONLY.
+     *  Reproduced: a completion without wp_id, sharing only role, closed heartbeats belonging to two
+     *  DIFFERENT explicit work-package IDs — both must stay open instead. */
+    const match = wpId ? tk.wp_id === wpId : (!tk.wp_id && !!tk.role && tk.role === role);
     if (match) { tk.status = status; tk._closed = true; tk.evIdx = evIdx; }
   }
 }
@@ -396,7 +482,7 @@ function closeHeartbeats(rec, completionEvent, evIdx) {
  */
 function verifyRun(runDir, opts) {
   opts = opts || {};
-  const { events, malformed } = readEventsJsonl(runDir);
+  const { events, malformed, foreignRunId } = readEventsJsonl(runDir);
   const byAgent = new Map();
   const eventIdToTask = new Map(); // event_id -> task object, for RULE 2 cross-task/cross-agent closure
   const closesAdvisories = []; // RULE 2 — one plain-language line per ignored closes_event_id, never gates
@@ -404,9 +490,15 @@ function verifyRun(runDir, opts) {
     if (!e || typeof e !== 'object') return;
     const agent = e.agent;
     if (agent == null || agent === '') return; // skip events without an agent — no SYNTH fallback here
-    if (!byAgent.has(agent)) byAgent.set(agent, { agent, claimsDone: false, tasks: [] });
+    if (!byAgent.has(agent)) byAgent.set(agent, { agent, claimsDone: false, claimsFailed: false, tasks: [] });
     const rec = byAgent.get(agent);
     if (e.event_type === 'agent_completed' || e.event_type === 'subagent_completed') rec.claimsDone = true;
+    /** VERIFY-DEAD-WORKER-GREEN (2026-09-24, out-p5.md) — a worker that logged a heartbeat and then simply
+     *  stopped (process death) never claims done, so the OLD `mismatch: claimsDone && tasksDone < total`
+     *  predicate never saw it: "a start followed by an unfinished heartbeat" verified clean at exit 0. A
+     *  genuine failure claim (agent_failed/subagent_failed) is tracked separately so a worker that honestly
+     *  reported its own failure is not ALSO flagged as silently dead — see `deadWorker` below. */
+    if (e.event_type === 'agent_failed' || e.event_type === 'subagent_failed') rec.claimsFailed = true;
     const t = e.event_type;
 
     // RULE 1 — runs even for subagent_completed/subagent_failed, which are BACKBONE (never a task
@@ -430,9 +522,14 @@ function verifyRun(runDir, opts) {
       : openCandidates.find((tk) => !tk.review_id) || null;
     if (openTask) { openTask.status = taskStatus(e); openTask.evIdx = evIdx; openTask._closed = true; }
     else {
+      // VERIFY-FAILED-REVIEW-DONE: an orphan review_completed/codex_review_completed (no matching open
+      // review_started to close) proves nothing was ever paired to it — such a claim is not done, regardless
+      // of what taskStatus(e) would otherwise say (even an explicit positive verdict on an unpaired
+      // completion is unattributed and unverifiable as a real review).
+      const orphanReview = REVIEW_DONE_EVENT_TYPES.has(t);
       const task = {
-        title: taskTitle(e), evIdx, origEvIdx: evIdx, status: taskStatus(e), event_type: t, _closed: false,
-        wp_id: (typeof e.wp_id === 'string' && e.wp_id.trim()) || null,
+        title: taskTitle(e), evIdx, origEvIdx: evIdx, status: orphanReview ? 'failed' : taskStatus(e), event_type: t, _closed: false,
+        agent, wp_id: (typeof e.wp_id === 'string' && e.wp_id.trim()) || null,
         role: (typeof e.role === 'string' && e.role.trim()) || null,
         event_id: (typeof e.event_id === 'string' && e.event_id) || null,
         review_id: reviewId,
@@ -443,19 +540,25 @@ function verifyRun(runDir, opts) {
 
     // RULE 2 — independent of the TASK_PAIRS merge above: a fix_completed/check_passed is still recorded
     // as its own task/pair exactly as before; closes_event_id is an ADDITIONAL, separate closure of
-    // whatever earlier task it names.
+    // whatever earlier task it names. See VERIFY-ARBITRARY-CLOSURE's doc above for the full grammar.
     if (t === 'fix_completed' || t === 'check_passed') {
       const closesId = (typeof e.closes_event_id === 'string' && e.closes_event_id.trim()) || null;
       if (closesId) {
-        const hasEvidence = typeof e.evidence === 'string' && e.evidence.trim().length > 0;
-        if (!hasEvidence) {
+        const target = eventIdToTask.get(closesId);
+        if (!target) {
+          closesAdvisories.push('closes_event_id ignored: unknown event_id ' + closesId);
+        } else if (target.origEvIdx >= evIdx) {
+          closesAdvisories.push('closes_event_id ignored: forward reference (' + closesId + ' is not earlier than the closer)');
+        } else if (target._closed) {
+          closesAdvisories.push('closes_event_id ignored: target ' + closesId + ' is already closed — single consumption only');
+        } else if (target.status === 'done') {
+          closesAdvisories.push('closes_event_id ignored: target ' + closesId + ' is already done — nothing open to close');
+        } else if (!isMeaningfulClosureEvidence(e.evidence)) {
           closesAdvisories.push('closes_event_id ignored: no evidence (target ' + closesId + ')');
         } else {
-          const target = eventIdToTask.get(closesId);
-          if (!target) {
-            closesAdvisories.push('closes_event_id ignored: unknown event_id ' + closesId);
-          } else if (target.origEvIdx >= evIdx) {
-            closesAdvisories.push('closes_event_id ignored: forward reference (' + closesId + ' is not earlier than the closer)');
+          const selfClosure = target.agent === agent;
+          if (selfClosure && !hasTallyOrExitEvidence(e.evidence)) {
+            closesAdvisories.push('closes_event_id ignored: ' + agent + ' closing its own earlier task ' + closesId + ' needs a tally/exit-code line in the evidence, not just prose');
           } else {
             target.status = taskStatus(e);
             target._closed = true;
@@ -469,17 +572,23 @@ function verifyRun(runDir, opts) {
     const tasksDone = rec.tasks.filter((tk) => tk.status === 'done').length;
     const tasksOpen = rec.tasks.filter((tk) => tk.status !== 'done')
       .map((tk) => ({ title: tk.title, evIdx: tk.evIdx, status: tk.status, event_type: tk.event_type }));
+    // VERIFY-DEAD-WORKER-GREEN: an agent that never claimed done, never claimed failed, but left at least
+    // one 'agent_progress' heartbeat open is a worker that simply stopped reporting — a real gate, not
+    // dependent on claimsDone at all (that predicate exists for a DIFFERENT lie: "claims done but isn't").
+    const deadWorker = !rec.claimsDone && !rec.claimsFailed && rec.tasks.some((tk) => tk.event_type === 'agent_progress' && tk.status !== 'done');
     return {
       agent: rec.agent,
       claimsDone: rec.claimsDone,
+      claimsFailed: rec.claimsFailed,
       tasksTotal: rec.tasks.length,
       tasksDone,
       tasksOpen,
       mismatch: rec.claimsDone && tasksDone < rec.tasks.length,
+      deadWorker,
     };
   });
   const mismatches = agents.filter((a) => a.mismatch).length;
-  return { agents, mismatches, malformed, closesAdvisories };
+  return { agents, mismatches, malformed, foreignRunId, closesAdvisories };
 }
 
 /**
@@ -490,15 +599,25 @@ function verifyRun(runDir, opts) {
  * — a done-claim on a code ticket REQUIRES real test evidence. Every read is guarded — an unreadable
  * entity (corrupt/partial file) is skipped, never crashes the check.
  */
+/** VERIFY-READ-ERROR-GREEN (2026-09-24, out-p5.md) — a directory-listing error on the ticket store silently
+ *  became `ids=[]` ("no tickets exist"), and a per-entity read/parse failure was silently `continue`d — both
+ *  made an existing OPEN ticket vanish from the count instead of blocking on "we cannot prove this is
+ *  resolved". `storeError`/`unreadable` now carry the real failure so a caller can fail closed instead of
+ *  reading corruption as "clean". Folded into the EXISTING `open_tickets` exit gate (see EXIT_GATES below) —
+ *  an unreadable ticket is treated the same as an open one: unresolved status, until someone repairs it. */
 function verifyTickets(opts) {
   opts = opts || {};
   const runId = opts.run_id || null;
   let ids = [];
-  try { ids = store.listStore('tickets'); } catch { ids = []; }
+  let storeError = null;
+  try { ids = store.listStore('tickets'); }
+  catch (e) { storeError = (e && e.message) ? e.message : String(e); ids = []; }
   const tickets = [];
+  const unreadable = [];
   for (const id of ids) {
     let data;
-    try { data = store.getEntity('tickets', id); } catch { continue; } // guarded — skip unreadable entities
+    try { data = store.getEntity('tickets', id); }
+    catch (e) { unreadable.push({ id, reason: (e && e.message) ? e.message : String(e) }); continue; }
     tickets.push(Object.assign({ id }, data));
   }
   const relevant = runId ? tickets.filter((tk) => tk.run_id === runId) : tickets;
@@ -506,7 +625,7 @@ function verifyTickets(opts) {
   const unproven = relevant.filter((tk) => String(tk.status || '').toLowerCase() === 'done'
     && Array.isArray(tk.required_tests) && tk.required_tests.length > 0
     && !(typeof tk.test_evidence === 'string' && tk.test_evidence.trim()));
-  return { tickets: relevant, open, unproven };
+  return { tickets: relevant, open, unproven, unreadable, storeError };
 }
 
 // ---- required-evidence wire (WAVE C / C-INTEGRATE, 2026-07-18) ----------------------------------------
@@ -568,6 +687,10 @@ function evidenceCheck(events, domain, opts) {
   const eventTypes = [];
   for (const e of Array.isArray(events) ? events : []) {
     if (!e || typeof e !== 'object') continue;
+    // RC-CLAIMS-AS-PROOF (2026-09-24, out-p5.md): a disproven claim (log-event.cjs's own content oracle
+    // already flagged proof_verified:false) must not feed the domain evidence check either — the same
+    // discipline forge-runcontract.cjs::hasEvent() now applies to the generic event-present path.
+    if (e._forge_verify && e._forge_verify.proof_verified === false) continue;
     if (typeof e.event_type === 'string' && e.event_type) eventTypes.push(e.event_type);
     for (const field of EVIDENCE_ARTIFACT_FIELDS) {
       const v = e[field];
@@ -870,20 +993,38 @@ function acceptanceCriteria(meta) {
   });
 }
 
-// findAcOwnerDecision(events, prdId, acId) -> {decision, by} | null — an explicit, structured, attributed
-// decision for THIS exact criterion. Reuses the ALREADY-REGISTERED `decision_logged` event_type (see
-// log-event.cjs KNOWN_EVENT_TYPES) rather than inventing a new one or overloading forge-runcontract.cjs's
-// `owner_override` (a differently-scoped mechanism keyed to config/orchestration/FORGE_HARD_RULES.json rule
-// ids, not acceptance criteria). Requires a NON-blank decision text AND a NON-blank attribution on the SAME
-// event — a bare/empty decision_logged that merely references the right ids is not enough (same non-bare-
-// token rigor forge-runcontract.cjs's findOwnerOverride() applies elsewhere, applied to this domain).
-function findAcOwnerDecision(events, prdId, acId) {
+// VERIFY-SELF-WAIVER (2026-09-24, out-p5.md) — resolves the SAME owner allow-list forge-runcontract.cjs's
+// findOwnerOverride() already enforces (FORGE_HARD_RULES.json's own `owners_allowlist` + FORGE_OWNER_
+// PROFILE.json), reused rather than re-implemented. opts.ownerAllowlist (a Set) is a direct test seam;
+// otherwise opts.rulesPath/opts.ownerProfilePath thread through to the sibling's own loader. A sibling that
+// cannot be loaded, or a config that configures no id, resolves to an EMPTY Set — fail-closed, matching
+// forge-runcontract.cjs's own "no override possible" discipline, never "anyone is the owner".
+function resolveOwnerAllowlist(opts) {
+  opts = opts || {};
+  if (opts.ownerAllowlist instanceof Set) return opts.ownerAllowlist;
+  const rc = loadRuncontractTool();
+  if (!rc || typeof rc.loadOwnerAllowlist !== 'function') return new Set();
+  let rulesData = null;
+  try { rulesData = rc.loadRules(opts.rulesPath); } catch { rulesData = null; }
+  try { return rc.loadOwnerAllowlist(rulesData, opts); } catch { return new Set(); }
+}
+
+// findAcOwnerDecision(events, prdId, acId, ownerAllowlist) -> {decision, by} | null — an explicit,
+// structured, OWNER-attributed decision for THIS exact criterion. Reuses the ALREADY-REGISTERED
+// `decision_logged` event_type (see log-event.cjs KNOWN_EVENT_TYPES) rather than inventing a new one or
+// overloading forge-runcontract.cjs's `owner_override` (a differently-scoped mechanism keyed to
+// config/orchestration/FORGE_HARD_RULES.json rule ids, not acceptance criteria). Requires a NON-blank
+// decision text on the SAME event, and `by` — NEVER a fallback to `agent` — matching a configured owner id
+// (VERIFY-SELF-WAIVER: `by` used to accept `agent` as a fallback, so the very agent whose own work this
+// decision waives could author its own exception — a builder-authored waiver is now ignored outright).
+function findAcOwnerDecision(events, prdId, acId, ownerAllowlist) {
   for (const e of events) {
     if (!e || typeof e !== 'object' || e.event_type !== 'decision_logged') continue;
     if (e.prd_id !== prdId || e.ac_id !== acId) continue;
     const decision = (typeof e.decision === 'string' && e.decision.trim()) || (typeof e.note === 'string' && e.note.trim()) || '';
-    const by = (typeof e.by === 'string' && e.by.trim()) || (typeof e.agent === 'string' && e.agent.trim()) || '';
+    const by = (typeof e.by === 'string' && e.by.trim()) || '';
     if (!decision || !by) continue;
+    if (!(ownerAllowlist instanceof Set) || !ownerAllowlist.has(by.toLowerCase())) continue;
     return { decision, by };
   }
   return null;
@@ -930,6 +1071,7 @@ function checkAcceptanceCoverage(run_id, opts) {
   if (prdIds.length === 0) {
     return { run_id, prds_checked: [], acceptance_gaps: [], note: 'no PRD linked to this run' };
   }
+  const ownerAllowlist = resolveOwnerAllowlist(opts);
 
   const gaps = [];
   for (const prdId of prdIds) {
@@ -944,7 +1086,7 @@ function checkAcceptanceCoverage(run_id, opts) {
     }
     acceptanceCriteria(meta).forEach((ac, idx) => {
       const ticketId = 'tk-' + prdId + '-' + (idx + 1);
-      if (findAcOwnerDecision(events, prdId, ac.id)) return; // explicit owner decision clears this criterion
+      if (findAcOwnerDecision(events, prdId, ac.id, ownerAllowlist)) return; // explicit OWNER decision clears this criterion
 
       let ticket = null;
       try { ticket = store.getEntity('tickets', ticketId); } catch { ticket = null; }
@@ -1015,13 +1157,16 @@ function nonGoals(meta) {
  *  key (`ac_id`, `fc_id`, `ng_id`). SAME rigor: an explicit, attributed, non-blank decision_logged on the SAME
  *  event, using the already-registered event type — a bare token that merely names the right ids is not a
  *  decision and must not clear anything. */
-function findItemDecision(events, prdId, key, id) {
+// VERIFY-SELF-WAIVER: same fail-closed discipline as findAcOwnerDecision() above — `by` is REQUIRED as its
+// own field (never a fallback to `agent`) and must resolve against the configured owner allow-list.
+function findItemDecision(events, prdId, key, id, ownerAllowlist) {
   for (const e of events) {
     if (!e || typeof e !== 'object' || e.event_type !== 'decision_logged') continue;
     if (e.prd_id !== prdId || e[key] !== id) continue;
     const decision = (typeof e.decision === 'string' && e.decision.trim()) || (typeof e.note === 'string' && e.note.trim()) || '';
-    const by = (typeof e.by === 'string' && e.by.trim()) || (typeof e.agent === 'string' && e.agent.trim()) || '';
+    const by = (typeof e.by === 'string' && e.by.trim()) || '';
     if (!decision || !by) continue;
+    if (!(ownerAllowlist instanceof Set) || !ownerAllowlist.has(by.toLowerCase())) continue;
     return { decision, by };
   }
   return null;
@@ -1055,6 +1200,7 @@ function checkFailureConditions(run_id, opts) {
   if (prdIds.length === 0) {
     return { run_id, prds_checked: [], failure_hits: [], cleared: [], waived: [], unchecked: [], note: 'no PRD linked to this run' };
   }
+  const ownerAllowlist = resolveOwnerAllowlist(opts);
   const hits = [], cleared = [], waived = [], unchecked = [];
   for (const prdId of prdIds) {
     const meta = loadPrdMeta(prdId);
@@ -1067,7 +1213,7 @@ function checkFailureConditions(run_id, opts) {
         if (st === 'failed' && !hitEvent) hitEvent = e;
         else if (st === 'done' && !clearEvent) clearEvent = e;
       }
-      const decision = findItemDecision(events, prdId, 'fc_id', fc.id);
+      const decision = findItemDecision(events, prdId, 'fc_id', fc.id, ownerAllowlist);
       if (hitEvent && decision) {
         waived.push({ prd_id: prdId, fc_id: fc.id, text: fc.text, decision: decision.decision, by: decision.by });
         continue;
@@ -1188,12 +1334,13 @@ function checkNonGoals(run_id, opts) {
   if (prdIds.length === 0) {
     return { run_id, prds_checked: [], scope_violations: [], unchecked: [], delivered_paths: delivered.length, note: 'no PRD linked to this run' };
   }
+  const ownerAllowlist = resolveOwnerAllowlist(opts);
   const violations = [], unchecked = [];
   for (const prdId of prdIds) {
     const meta = loadPrdMeta(prdId);
     if (!meta) continue;
     for (const ng of nonGoals(meta)) {
-      if (findItemDecision(events, prdId, 'ng_id', ng.id)) continue; // an owner may deliberately re-scope
+      if (findItemDecision(events, prdId, 'ng_id', ng.id, ownerAllowlist)) continue; // an owner may deliberately re-scope
       const declared = ng.match && ng.match.length ? ng.match : null;
       const terms = declared || derivedTerms(ng.text);
       if (!terms.length) {
@@ -1385,7 +1532,11 @@ function buildAcceptanceEnforceEvents(gap) {
  */
 const EXIT_GATES = [
   { key: 'mismatches', label: 'mismatch(es)', count: (c) => c.verify.mismatches },
-  { key: 'open_tickets', label: 'open ticket(s)', count: (c) => c.tickets.open.length },
+  // VERIFY-READ-ERROR-GREEN (2026-09-24, out-p5.md): a directory-listing error (storeError) or a corrupt
+  // per-entity ticket file (unreadable) used to vanish into an empty ticket list, silently reading as "no
+  // open tickets" instead of "we cannot prove this store is clean". Folded into the SAME gate an ordinary
+  // open ticket already trips — an unreadable ticket is treated exactly like an unresolved one.
+  { key: 'open_tickets', label: 'open/unreadable ticket(s)', count: (c) => c.tickets.open.length + c.tickets.unreadable.length + (c.tickets.storeError ? 1 : 0) },
   { key: 'unproven_tickets', label: 'unproven done-ticket(s)', count: (c) => c.tickets.unproven.length },
   { key: 'isolation_violations', label: 'isolation violation(s)', count: (c) => c.isolation.violations.length },
   { key: 'acceptance_gaps', label: 'acceptance gap(s)', count: (c) => c.acceptance.acceptance_gaps.length },
@@ -1397,6 +1548,15 @@ const EXIT_GATES = [
   // 'unknown' and an unreadable verdict line count too (see forge-run-budget.cjs::countsAsStop): a record
   // we cannot read is not proof of completion, exactly like gateCount's own rule for a throwing accessor.
   { key: 'budget_stops', label: 'budget stop(s)', count: (c) => c.budget.count },
+  // RC/VERIFY-READ-ERROR-GREEN (2026-09-24, out-p5.md): a malformed events.jsonl line, or a copied/foreign-
+  // run event smuggled into this run's log, used to be counted (`malformed`) or silently dropped
+  // (`foreignRunId`) without ever affecting the exit code — "a malformed-only log produced exit:0". Both are
+  // now one gate: a log this file cannot fully trust is not a clean verification.
+  { key: 'malformed_events', label: 'malformed/foreign-run event line(s)', count: (c) => c.verify.malformed + c.verify.foreignRunId },
+  // VERIFY-DEAD-WORKER-GREEN (2026-09-24, out-p5.md): a worker that logged a heartbeat and then simply
+  // stopped (no completion, no failure claim) left unfinished work OUTSIDE the exit gate entirely, because
+  // the old mismatch predicate only fired on a FALSE claimsDone. See verifyRun()'s `deadWorker` field.
+  { key: 'dead_worker_heartbeats', label: 'dead-worker heartbeat(s)', count: (c) => c.verify.agents.filter((a) => a.deadWorker).length },
 ];
 /** gateCount(gate, ctx) -> a non-negative number. A gate whose accessor throws or returns a non-number is
  *  NOT silently zero: 0 would read as "this gate is clean", which is the one lie this file must not tell —
@@ -1423,6 +1583,9 @@ function exitCodeFor(ctx) {
 module.exports = {
   verifyRun, verifyTickets, TERMINAL_TYPES, BACKBONE, TASK_PAIRS, buildEnforceEvents,
   isolationTripwire, isPathOutsideRoot, roundsFromEvents, loopConvergence, ROUND_BOUNDARY_TYPES, FINDING_EVENT_TYPES,
+  // 2026-09-24 (out-p5.md fix-round) — exported so tests can exercise the closure grammar, the review-
+  // outcome vocabulary and the owner-allowlist resolution directly, without re-deriving them.
+  isMeaningfulClosureEvidence, hasTallyOrExitEvidence, reviewOutcome, REVIEW_DONE_EVENT_TYPES, resolveOwnerAllowlist,
   // 2026-08-01 ("pakket 2"): loopConvergence's report finally has a decision function AND a caller — see
   // loopBrake()'s own doc comment and the CLI's Loop: section / --enforce brake below.
   loopBrake, LOOP_MAX_ROUNDS, LOOP_DRY_STREAK,

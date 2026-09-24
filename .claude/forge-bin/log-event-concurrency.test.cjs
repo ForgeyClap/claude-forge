@@ -449,6 +449,45 @@ console.log('\n8) txn-idempotentie (exact-once)');
   t('8f een ongeldige --txn-vorm weigert (exit 1) zonder te schrijven', r6b.status === 1 && readLines(RUN).length === 13);
 }
 
+// ---------------------------------------------------------------------------------------------------
+// 9) EVENT-RUN-BINDING-GAP (2026-09-24, out-p5.md) — readEventsClassified({verifyChain:true, runId})
+//    used to accept an UNCHAINED/legacy entry carrying a FOREIGN run_id, because the run_id check only
+//    ran on the chained branch. A run_id-less legacy entry keeps its historical free pass unchanged.
+// ---------------------------------------------------------------------------------------------------
+{
+  const M = require(LOGEVT);
+  console.log('\n9) EVENT-RUN-BINDING-GAP — run_id validation on unchained/legacy entries');
+  const mkLine = (o) => JSON.stringify(o);
+
+  // (a) an unchained entry with a FOREIGN run_id is now rejected as corrupt, not "valid".
+  const foreignFile = path.join(SB, 'binding-foreign.jsonl');
+  fs.writeFileSync(foreignFile, [
+    mkLine({ event_type: 'agent_started', agent: 'x', run_id: 'OTHER-RUN' }),
+  ].join('\n') + '\n', 'utf8');
+  const foreignCls = M.readEventsClassified(foreignFile, { verifyChain: true, runId: 'THIS-RUN' });
+  t('9a a foreign run_id on an unchained entry is now CORRUPT, not valid', foreignCls.status === 'corrupt' && /run_id mismatch/.test((foreignCls.badLines[0] || {}).reason || ''));
+
+  // (b) an unchained entry with NO run_id field at all keeps its historical free pass.
+  const legacyFile = path.join(SB, 'binding-legacy.jsonl');
+  fs.writeFileSync(legacyFile, [
+    mkLine({ event_type: 'agent_started', agent: 'x' }),
+  ].join('\n') + '\n', 'utf8');
+  const legacyCls = M.readEventsClassified(legacyFile, { verifyChain: true, runId: 'THIS-RUN' });
+  t('9b a run_id-less unchained entry is unaffected — still valid (no mass-regression on legacy fixtures)', legacyCls.status === 'valid');
+
+  // (c) an unchained entry with the CORRECT run_id is unaffected — still valid.
+  const matchingFile = path.join(SB, 'binding-matching.jsonl');
+  fs.writeFileSync(matchingFile, [
+    mkLine({ event_type: 'agent_started', agent: 'x', run_id: 'THIS-RUN' }),
+  ].join('\n') + '\n', 'utf8');
+  const matchingCls = M.readEventsClassified(matchingFile, { verifyChain: true, runId: 'THIS-RUN' });
+  t('9c a matching run_id on an unchained entry is unaffected — still valid', matchingCls.status === 'valid');
+
+  // (d) without opts.runId at all (display/parse-only consumers), a foreign-looking run_id is not judged.
+  const noRunIdOptCls = M.readEventsClassified(foreignFile, { verifyChain: true });
+  t('9d without opts.runId, the run_id check is skipped entirely (display consumers unaffected)', noRunIdOptCls.status === 'valid');
+}
+
 try { fs.rmSync(SB, { recursive: true, force: true }); } catch { /* best effort */ }
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

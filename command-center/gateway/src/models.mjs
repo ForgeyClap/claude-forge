@@ -36,7 +36,11 @@ export function _setNvidiaProviderCjsForTests(p) { nvidiaProviderCjsOverride = p
 function parseNvidiaHealthOutput(stdout) {
   const line = String(stdout || '').trim();
   const okMatch = line.match(/^NVIDIA OK \(live\) — (\d+) models · (\d+)ms · (.+)$/);
-  if (okMatch) return { state: 'CONNECTED', models: Number(okMatch[1]), ms: Number(okMatch[2]), base_url: okMatch[3] };
+  // NVIDIA-URL-LEAK (2026-09-24): nvidia-provider.cjs's own checkBaseUrl() now refuses userinfo/query/
+  // fragment before a base URL is ever accepted, so this parsed value should already be credential-free
+  // — redact() here is a second, independent layer against a future validation regression on the
+  // producing side (defense-in-depth, not the primary control).
+  if (okMatch) return { state: 'CONNECTED', models: Number(okMatch[1]), ms: Number(okMatch[2]), base_url: redact(okMatch[3]) };
   if (/^NVIDIA OFF\b/.test(line)) return { state: 'OFF', note: redact(line).slice(0, 300) };
   if (/^NVIDIA MOCK MODE/i.test(line)) return { state: 'NOT CONFIGURED', note: line };
   if (/^NVIDIA FAIL/i.test(line)) return { state: 'DISCONNECTED', note: line };

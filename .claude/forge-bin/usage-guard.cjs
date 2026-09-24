@@ -86,6 +86,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync, execSync } = require('child_process');
+// The credential/redaction boundary (GUARD-TOKEN-ERROR / GUARD-TOKEN-FINGERPRINT, 2026-09-24) — split
+// out of this file because it is ~1500 lines (this project's own file-size guidance names ~500 as the
+// per-file target) and this is the one genuinely separable concern. See usage-guard-redact.cjs's own
+// header for exactly what it does and why.
+const guardRedact = require('./usage-guard-redact.cjs');
 
 const HOME = process.env.FORGE_USAGE_GUARD_HOME || path.join(os.homedir(), '.claude');
 const CRED_FILE = path.join(HOME, '.credentials.json');
@@ -100,8 +105,19 @@ const LOG_FILE = process.env.FORGE_USAGE_GUARD_LOG || path.join(HOME, 'forge-usa
 // tot een mens ze handmatig hervatte. Paperclip is een lokale, account-agnostische runtime — hervatten
 // onder account B van wat de guard zelf onder A pauzeerde is precies de bedoeling.
 const PAUSED_JOURNAL = process.env.FORGE_USAGE_GUARD_JOURNAL || path.join(HOME, 'forge-usage-guard-paused.jsonl');
+// GUARD-TOKEN-FINGERPRINT (2026-09-24): the opaque local account-mapping file (see usage-guard-redact.cjs's
+// resolveLocalAccountLabel) — NOT one of the artifacts the ACCOUNT IDENTITY header above warns about
+// (dashboards/sync/publish never touch this file; its whole purpose IS to hold the fp->label mapping so
+// nothing else ever has to).
+const ACCOUNT_MAP_FILE = process.env.FORGE_USAGE_GUARD_ACCOUNT_MAP || path.join(HOME, 'forge-usage-guard-account-map.json');
 const PC_BASE = process.env.PAPERCLIP_URL || 'http://127.0.0.1:3100';
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+// FORGE_USAGE_GUARD_FETCH_TIMEOUT_MS: test-only override for fetchUsage()'s abort deadline (mirrors the
+// existing FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS seam) — captured ONCE at module load time (same convention
+// as HOME/STATE_FILE/etc. above), never re-read per call, so a test that mutates this env var and then
+// reloads the module (delete require.cache + require()) affects only ITS OWN freshly-required instance,
+// never a concurrently-running async test's already-captured module instance. Unset/invalid keeps 30000.
+const FETCH_TIMEOUT_MS = Number(process.env.FORGE_USAGE_GUARD_FETCH_TIMEOUT_MS) > 0 ? Number(process.env.FORGE_USAGE_GUARD_FETCH_TIMEOUT_MS) : 30000;
 
 const args = process.argv.slice(2);
 const cmd = args[0] || 'status';
@@ -117,23 +133,59 @@ const guardKey = (flag) => GUARD_SWITCH_KEY + '.' + flag;
 const entryValue = (e) => (e !== null && typeof e === 'object' ? e.value : e);
 const entrySource = (e) => (e !== null && typeof e === 'object' && e.source === 'default' ? SOURCE_WORD.dflt : SOURCE_WORD.config);
 
-/** resolveGuardSettings(argvList, cfg) -> { 'pause-at'|'resume-at'|'interval'|'nvidia-shift-at'|'enabled': {value, source},
- *  force, warnings[] }. PURE (no I/O, inputs untouched). argvList = the CLI args after the script name; cfg = the
- *  `.cfg` of loadGuardConfig() ({ '<config key>': {value, source} }) or null. source is 'vlag' | 'instelling' |
- *  'standaard'. A flag that is not a number is ignored with a warning — a NaN threshold would silently never pause. */
-function resolveGuardSettings(argvList, cfg) {
+/** guardBounds(schemaPath) -> { [flag]: {min, max} } for pause-at/resume-at/interval/nvidia-shift-at, read
+ *  directly from FORGE_CONFIG_SCHEMA.json (CFG-05, 2026-09-24) — this file must never touch
+ *  forge-config.cjs itself (a separate work package owns that), so bounds are read straight from the
+ *  schema JSON. Never throws; a missing/unreadable/malformed schema degrades to NO bounds (accept any
+ *  finite integer, the pre-CFG-05 behaviour) rather than refusing to resolve settings at all — a
+ *  temporarily unreadable schema must not also break every threshold the guard already trusted. Pure. */
+function guardBounds(schemaPath) {
+  try {
+    const schema = JSON.parse(fs.readFileSync(schemaPath || GUARD_SCHEMA_PATH, 'utf8'));
+    const out = {};
+    for (const flag of Object.keys(GUARD_DEFAULTS)) {
+      const spec = schema && schema.settings && schema.settings[guardKey(flag)];
+      if (spec && Number.isFinite(spec.min) && Number.isFinite(spec.max)) out[flag] = { min: spec.min, max: spec.max };
+    }
+    return out;
+  } catch { return {}; }
+}
+/** resolveGuardSettings(argvList, cfg, opts) -> { 'pause-at'|'resume-at'|'interval'|'nvidia-shift-at'|'enabled':
+ *  {value, source}, force, warnings[] }. PURE (no I/O beyond opts.bounds's default schema read, which never
+ *  mutates anything the caller holds). argvList = the CLI args after the script name; cfg = the `.cfg` of
+ *  loadGuardConfig() ({ '<config key>': {value, source} }) or null. source is 'vlag' | 'instelling' | 'standaard'.
+ *  CFG-05 (2026-09-24): every candidate value (flag OR config) is validated against the schema's own
+ *  min/max/integer bounds — out-of-range, fractional or non-finite values are REJECTED with a warning and
+ *  fall through to the next source (flag -> config -> hard default), exactly like an unparseable flag
+ *  already did; a threshold that silently accepted e.g. -5 or 4.5 could then never meaningfully pause.
+ *  opts.bounds overrides the schema-derived bounds map (test seam); opts.schemaPath overrides the schema
+ *  file read by the default. */
+function resolveGuardSettings(argvList, cfg, opts) {
   const list = Array.isArray(argvList) ? argvList : [];
   const c = cfg !== null && typeof cfg === 'object' ? cfg : {};
+  const o = opts || {};
+  const bounds = o.bounds || guardBounds(o.schemaPath);
   const out = { warnings: [] };
   for (const flag of Object.keys(GUARD_DEFAULTS)) {
+    const b = bounds[flag];
+    const inBounds = (n) => !b || (Number.isInteger(n) && n >= b.min && n <= b.max);
+    const rangeTxt = b ? ' (' + b.min + '-' + b.max + ')' : '';
     const i = list.indexOf('--' + flag);
     const raw = i >= 0 && list[i + 1] !== undefined ? list[i + 1] : undefined;
     const n = raw === undefined || String(raw).trim() === '' ? NaN : Number(raw);
-    if (Number.isFinite(n)) { out[flag] = { value: n, source: SOURCE_WORD.flag }; continue; }
-    if (raw !== undefined) out.warnings.push('--' + flag + ' "' + raw + '" is geen getal en wordt genegeerd / is not a number and is ignored');
+    if (Number.isFinite(n)) {
+      if (inBounds(n)) { out[flag] = { value: n, source: SOURCE_WORD.flag }; continue; }
+      out.warnings.push('--' + flag + ' ' + n + ' is buiten het toegestane bereik' + rangeTxt + ' en wordt genegeerd / is out of the allowed range' + rangeTxt + ' and is ignored');
+    } else if (raw !== undefined) {
+      out.warnings.push('--' + flag + ' "' + raw + '" is geen getal en wordt genegeerd / is not a number and is ignored');
+    }
     const e = c[guardKey(flag)];
     const v = entryValue(e);
-    out[flag] = typeof v === 'number' && Number.isFinite(v) ? { value: v, source: entrySource(e) } : { value: GUARD_DEFAULTS[flag], source: SOURCE_WORD.dflt };
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      if (inBounds(v)) { out[flag] = { value: v, source: entrySource(e) }; continue; }
+      out.warnings.push('instelling ' + guardKey(flag) + '=' + v + ' is buiten het toegestane bereik' + rangeTxt + ' — standaardwaarde gebruikt / setting ' + guardKey(flag) + '=' + v + ' is out of the allowed range' + rangeTxt + ' — using the default instead');
+    }
+    out[flag] = { value: GUARD_DEFAULTS[flag], source: SOURCE_WORD.dflt };
   }
   const sw = c[GUARD_SWITCH_KEY];
   out.enabled = typeof entryValue(sw) === 'boolean' ? { value: entryValue(sw), source: entrySource(sw) } : { value: true, source: SOURCE_WORD.dflt };
@@ -208,10 +260,20 @@ function settingsLine(S) {
     part('nvidia-shift-at', S['nvidia-shift-at'].value, '%'), part('interval', Math.max(30, S.interval.value), 's'),
     'usage-guard ' + (S.enabled.value ? 'aan' : 'uit') + ' (bron: ' + S.enabled.source + ')'].join(' · ');
 }
-/** disclosureLines(d) — what a REAL start tells the owner: the schema's disclosure (nl, en) + the off command. */
+// GUARD-DISCLOSURE (2026-09-24): a FULL, non-optional fallback — used whenever the real schema disclosure
+// is unavailable (missing/malformed FORGE_CONFIG_SCHEMA.json, or forge-config.cjs itself missing). The
+// previous fallback only said "measures your usage", omitting the credential source, the destination
+// host, persistence after the session closes and the storage location — exactly the information an
+// unavailable-schema owner most needs before their first credential use.
+const DISCLOSURE_FALLBACK = {
+  nl: 'usage-guard leest je Claude-login-token lokaal uit ~/.claude/.credentials.json (en je account-id uit ~/.claude.json, alleen bewaard als een lokaal, niet naar het account herleidbaar label) en stuurt het token alleen naar api.anthropic.com om je gebruik te meten; draait als achtergrondproces op deze computer, ook na het sluiten van de sessie, en schrijft zijn status-/logbestanden onder ~/.claude.',
+  en: 'usage-guard reads your Claude login token locally from ~/.claude/.credentials.json (and your account id from ~/.claude.json, kept only as a local label that cannot be traced back to the account) and sends the token only to api.anthropic.com to measure your usage; runs as a background process on this machine, also after the session closes, and writes its state/log files under ~/.claude.',
+};
+/** disclosureLines(d) — what EVERY watcher activation path tells the owner, BEFORE the first credential
+ *  use: the schema's disclosure (nl, en) when available, else the complete DISCLOSURE_FALLBACK above +
+ *  the off command. Never partial, never optional. */
 function disclosureLines(d) {
-  const text = d && typeof d.nl === 'string' && typeof d.en === 'string' ? [d.nl, d.en]
-    : ['usage-guard draait nu op de achtergrond en meet je Claude-gebruik (uitleg: /forge config explain usage-guard) / the usage guard now runs in the background and measures your Claude usage'];
+  const text = d && typeof d.nl === 'string' && typeof d.en === 'string' ? [d.nl, d.en] : [DISCLOSURE_FALLBACK.nl, DISCLOSURE_FALLBACK.en];
   return [...text, 'Uit: /forge config set usage-guard uit'];
 }
 const _graceMinRaw = Number(argv('grace-min', 5));
@@ -347,7 +409,38 @@ function compactJournalIfNeeded() {
     }
   } catch { /* geen journal — niets te compacteren */ }
 }
-function readState() { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return { mode: 'ok' }; } }
+/** readState() -> the current guard state, honestly distinguishing MISSING from CORRUPT (GUARD-CORRUPT,
+ *  2026-09-24). A missing file (ENOENT — ordinary "nothing has ever been recorded yet") is the ONLY case
+ *  that legitimately reads as {mode:'ok'}. Any OTHER read/parse failure (a damaged file, unreadable
+ *  permissions, or JSON that parses to something that isn't a plausible state object — null, an array, a
+ *  bare primitive) now returns {mode:'corrupt', corruptAt, corruptReason} instead. This used to collapse
+ *  EVERY failure into the same {mode:'ok'} as "no file" — a corrupted or torn state file (a real pause,
+ *  an owner override, a paused-agent list) silently vanished and was replaced by "everything is fine" the
+ *  next time anything called readState(). `mode:'corrupt'` is deliberately its OWN literal (not
+ *  'paused') so it is never confused with a genuine, resumable pause — see tick()'s own handling: a
+ *  FAILED measurement while corrupt must preserve 'corrupt' (never silently invent 'ok'), while a fresh,
+ *  SUCCESSFUL, validated measurement is allowed to move the state forward normally (that is a validated
+ *  recovery, not a fabricated one) and logs the transition explicitly rather than silently. Never throws.
+ *  KNOWN GAP (documented, not silently left implicit): forge-autonomy.cjs's own usageLimitActive() reads
+ *  this same state file independently and only treats `mode === 'paused'` as blocking — it does not yet
+ *  treat `mode === 'corrupt'` as blocking. forge-autonomy.cjs is a read-only neighbour for this work
+ *  package and was intentionally not modified; propagating corrupt-state blocking into it is a follow-up
+ *  for whichever Boss owns that file next. */
+function readState() {
+  let raw;
+  try { raw = fs.readFileSync(STATE_FILE, 'utf8'); }
+  catch (e) {
+    if (e && e.code === 'ENOENT') return { mode: 'ok' };
+    return { mode: 'corrupt', corruptAt: new Date().toISOString(), corruptReason: (e && typeof e.code === 'string' && /^[A-Z]+$/.test(e.code)) ? e.code : 'EUNKNOWN' };
+  }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { return { mode: 'corrupt', corruptAt: new Date().toISOString(), corruptReason: 'invalid-json' }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { mode: 'corrupt', corruptAt: new Date().toISOString(), corruptReason: 'unexpected-shape' };
+  }
+  return parsed;
+}
 /** writeStateTo(file, s) — THE single choke point for every state write (audit finding 2026-08-03).
  *  doPause()/doResume() deliberately build a FRESH state object so a stale pause cannot survive, carrying
  *  only ownerOverride/credits forward by hand. The account stamp was not on that hand-written carry list,
@@ -428,23 +521,25 @@ function fingerprintAccount(oauthAccount) {
   }
   return { fp: null, source: 'unknown' };
 }
-/** readAccountIdentity — best-effort, never throws. Primary source is Claude Code's own oauthAccount
- *  profile; the fallback fingerprints the refresh token (stable within one login) so a machine without
- *  the profile file still distinguishes accounts. Unknown identity is reported honestly and must never
- *  be treated as "same account" evidence (see detectAccountSwitch). */
+/** readAccountIdentity — best-effort, never throws. GUARD-TOKEN-FINGERPRINT (2026-09-24): the ONLY
+ *  source is Claude Code's own oauthAccount profile (~/.claude.json — not itself a bearer credential,
+ *  the same non-secret account id Claude Code already stores in plaintext). The previous fallback
+ *  fingerprinted the REFRESH TOKEN (an actual bearer secret) when that profile file was unavailable —
+ *  removed entirely: without the profile, identity is honestly 'unknown' rather than derived from a
+ *  credential. detectAccountSwitch() already treats an unknown current identity as "no switch, keep
+ *  existing state" (see its own doc comment), so this is a safe degrade, never a silent misclassification.
+ *  The raw fingerprint fingerprintAccount() computes is immediately translated through
+ *  resolveLocalAccountLabel() into an OPAQUE LOCAL LABEL before it is ever returned — every caller
+ *  downstream (state, journal, log, stdout) only ever sees the label, never the underlying fingerprint. */
 function readAccountIdentity() {
   try {
     const j = JSON.parse(fs.readFileSync(IDENTITY_FILE, 'utf8'));
     const id = fingerprintAccount(j && j.oauthAccount);
-    if (id.fp) return id;
-  } catch { /* fall through to the token fallback */ }
-  try {
-    const cred = JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
-    const rt = cred && cred.claudeAiOauth && cred.claudeAiOauth.refreshToken;
-    if (typeof rt === 'string' && rt) {
-      return { fp: crypto.createHash('sha256').update('rt:' + rt).digest('hex').slice(0, 12), source: 'refresh-token' };
+    if (id.fp) {
+      const mapped = guardRedact.resolveLocalAccountLabel(id.fp, { mapFile: ACCOUNT_MAP_FILE });
+      if (mapped) return { fp: mapped.label, source: id.source };
     }
-  } catch { /* no identity available */ }
+  } catch { /* profile unreadable — identity unknown, see the header above */ }
   return { fp: null, source: 'unknown' };
 }
 /** readCredentialFp — de vingerafdruk van het credential dat NU in .credentials.json staat (zelfde
@@ -605,6 +700,30 @@ function credentialsPresent() {
 function noCredentialsLine(tail) {
   return 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (macOS keeps the login in the Keychain) — ' + tail;
 }
+/** guardNetworkAllowed(opts) -> { ok, reason } — GUARD-OFF-BYPASS (2026-09-24): the SINGLE point both
+ *  fetchUsage() and pc() consult before ever touching the network or reading the login token. With the
+ *  owner's `usage-guard` switch off (or its settings unreadable) NO command path may read the OAuth
+ *  token or contact Paperclip — not `check`, not `status`, not `credits`, not `watch --once`, not the
+ *  exported `tick`/`doPause`/`doResume`, and not the Paperclip call inside `override-on`. There are
+ *  exactly two documented exceptions, both explicit and narrow:
+ *   (1) opts.force === true — the CLI's own `--force` flag on `check`/`status`/`credits` (mirrors
+ *       nvidia-provider.cjs's identical `--force` convention); the normal watcher loop never sets this.
+ *   (2) `override-on`'s own Paperclip resume calls, gated on a VERIFIED owner-authorisation grant
+ *       (forge-ownergrant.cjs) rather than a bare flag — a stronger, authenticated form of consent,
+ *       passed down as `{ force: true }` only AFTER verifyOwnerGrant() succeeds (see the CLI handler).
+ *  There is no other bypass anywhere in this file. Never throws. */
+function guardNetworkAllowed(opts) {
+  const o = opts || {};
+  if (o.force === true) return { ok: true, reason: null };
+  const sw = readGuardSwitch(o);
+  if (sw.on) return { ok: true, reason: null };
+  return {
+    ok: false,
+    reason: sw.unreadable
+      ? 'instellingen onleesbaar — geen netwerkverkeer (veilige standaard: uit) / settings unreadable — no network traffic (safe default: off)'
+      : 'usage-guard staat uit — geen aanroep naar het meetpunt of Paperclip (aanzetten: /forge config set usage-guard aan; eenmalig toch meten: --force) / usage guard is switched off — no request to the usage endpoint or Paperclip (turn it back on: /forge config set usage-guard aan; measure once anyway: --force)',
+  };
+}
 function readToken() {
   let raw;
   try { raw = fs.readFileSync(CRED_FILE, 'utf8'); } catch (e) { throw credError(e); }
@@ -612,16 +731,42 @@ function readToken() {
   try { cred = JSON.parse(raw); } catch (e) { throw credError(e); }
   const t = cred && cred.claudeAiOauth && cred.claudeAiOauth.accessToken;
   if (!t) throw new Error('no OAuth token in the credentials file (.credentials.json)');
+  // GUARD-TOKEN-ERROR (2026-09-24): validate the token's SHAPE before it is EVER used to build a request
+  // header. An embedded control character (e.g. an injected newline) reaching fetch()'s Headers
+  // construction makes Node throw a TypeError that quotes the REJECTED VALUE verbatim — exactly the
+  // credential fragment this check exists to keep out of state/log/output.
+  if (!guardRedact.validateTokenShape(t)) throw new Error('OAuth token in the credentials file has an unexpected shape (rejected before use)');
   // CODEX ronde-3 #1 (2026-08-06): de vingerafdruk van het credential dat DEZE fetch werkelijk gebruikt,
-  // afgeleid in DEZELFDE read als het token zelf (zelfde derivatie als readAccountIdentity's fallback).
-  // De dubbele identiteits-lezing rond de fetch leest ~/.claude.json — een ANDER bestand dat tijdens een
-  // login later kan omklappen dan .credentials.json. Zonder deze binding kon het token al van account B
-  // zijn terwijl beide identiteits-lezingen nog A meldden.
+  // afgeleid in DEZELFDE read als het token zelf (zelfde derivatie als readCredentialFp). De dubbele
+  // identiteits-lezing rond de fetch leest ~/.claude.json — een ANDER bestand dat tijdens een login later
+  // kan omklappen dan .credentials.json. Zonder deze binding kon het token al van account B zijn terwijl
+  // beide identiteits-lezingen nog A meldden. GUARD-TOKEN-FINGERPRINT: kept ENTIRELY in memory for that
+  // one comparison (tick()'s mid-check rotation check) — never persisted to state/journal/log/stdout.
   const rt = cred.claudeAiOauth && cred.claudeAiOauth.refreshToken;
   const credFp = typeof rt === 'string' && rt ? crypto.createHash('sha256').update('rt:' + rt).digest('hex').slice(0, 12) : null;
   return { token: t, credFp };
 }
-async function fetchUsage() {
+/** combinedSignal(signals) -> an AbortSignal that aborts as soon as ANY given signal aborts. Manual
+ *  composition rather than AbortSignal.any() (Node 20.3+) so this keeps working on older Node runners.
+ *  Pure w.r.t. its inputs. */
+function combinedSignal(signals) {
+  const ac = new AbortController();
+  for (const s of signals) {
+    if (!s) continue;
+    if (s.aborted) { ac.abort(s.reason); break; }
+    s.addEventListener('abort', () => ac.abort(s.reason), { once: true });
+  }
+  return ac.signal;
+}
+// GUARD-STOP (2026-09-24): a module-level shutdown signal, consulted by fetchUsage() so the watch loop's
+// own SIGTERM handler can abort an ALREADY-IN-FLIGHT request, not merely prevent the NEXT one. Aborted
+// at most once, only by the watch loop's shutdown handler below.
+const SHUTDOWN_AC = new AbortController();
+async function fetchUsage(opts) {
+  // GUARD-OFF-BYPASS (2026-09-24): checked BEFORE readToken() — the login file is never even opened
+  // when the guard is off and no exception applies.
+  const gate = guardNetworkAllowed(opts);
+  if (!gate.ok) throw Object.assign(new Error(gate.reason), { code: 'GUARD_OFF' });
   // TIMEOUT (Codex adversarial review #8, 2026-08-03): this call had none. A hung request does not throw —
   // it simply never settles, so the tick never finishes and the watcher stops measuring while its process
   // stays alive: exactly the silent-death shape this guard was fixed for once already. 30s is far beyond
@@ -630,29 +775,57 @@ async function fetchUsage() {
   // process open (every `check`/`watch --once` with a bad login file lingered 30 s before exiting).
   const cred = readToken(); // token + credential-vingerafdruk uit EEN read (ronde-3 #1)
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 30000);
-  let r;
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  // GUARD-STOP: an external abort signal (opts.signal, the watch loop's per-tick request signal — see
+  // watchStep()) is combined with the internal deadline signal, so EITHER a timeout OR an explicit
+  // shutdown aborts this specific request.
+  const requestSignal = opts && opts.signal ? combinedSignal([ac.signal, opts.signal]) : ac.signal;
+  // GUARD-BODY-TIMEOUT (2026-09-24): clearTimeout now happens in THIS outer finally, which covers
+  // r.json() (body consumption) as well as the initial fetch() call. It used to run in an inner finally
+  // right after the response HEADERS arrived — a response that resolved its headers instantly but then
+  // stalled or trickled its body could hang well past the claimed 30s deadline with no timer left armed
+  // to stop it. The SAME AbortController/signal now stays live through the entire request, including
+  // body streaming, so a stall at any point is still aborted at the deadline.
   try {
-    r = await fetch(USAGE_URL, {
-      headers: { authorization: 'Bearer ' + cred.token, 'anthropic-beta': 'oauth-2025-04-20', 'content-type': 'application/json' },
-      signal: ac.signal,
-    });
-  } catch (e) {
-    if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message)))) throw new Error('usage endpoint timed out after 30s (no response) — treated as a failed check, never as "usage is fine"');
-    throw e;
+    let r;
+    try {
+      r = await fetch(USAGE_URL, {
+        headers: { authorization: 'Bearer ' + cred.token, 'anthropic-beta': 'oauth-2025-04-20', 'content-type': 'application/json' },
+        signal: requestSignal,
+      });
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message)))) {
+        throw new Error(opts && opts.signal && opts.signal.aborted
+          ? 'usage endpoint request aborted (watcher shutting down) — treated as a failed check, never as "usage is fine"'
+          : 'usage endpoint timed out after ' + Math.round(FETCH_TIMEOUT_MS / 1000) + 's (no response) — treated as a failed check, never as "usage is fine"');
+      }
+      // GUARD-TOKEN-ERROR (2026-09-24): never rethrow `e` verbatim — see readToken()'s own doc comment
+      // for the exact leak shape this closes. Only a fixed, non-echoing diagnostic code ever surfaces.
+      throw new Error('usage endpoint request failed (' + guardRedact.transportErrorCode(e) + ')');
+    }
+    if (!r.ok) throw new Error('usage endpoint HTTP ' + r.status);
+    let j;
+    try {
+      j = await r.json();
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || /abort/i.test(String(e.message)))) {
+        throw new Error(opts && opts.signal && opts.signal.aborted
+          ? 'usage endpoint request aborted mid-body (watcher shutting down) — treated as a failed check, never as "usage is fine"'
+          : 'usage endpoint timed out after ' + Math.round(FETCH_TIMEOUT_MS / 1000) + 's (response body never completed) — treated as a failed check, never as "usage is fine"');
+      }
+      throw new Error('usage endpoint returned unparsable data (' + guardRedact.transportErrorCode(e) + ')');
+    }
+    const fh = j.five_hour || {}, sd = j.seven_day || {};
+    return {
+      session: { pct: Number(fh.utilization ?? NaN), resetsAt: fh.resets_at || null },
+      week: { pct: Number(sd.utilization ?? NaN), resetsAt: sd.resets_at || null },
+      // every window the endpoint reports, typed — session/weekly_all/weekly_scoped and any future kind
+      // (see normalizeWindows). The two named fields above stay for the existing pressure/reporting paths.
+      windows: normalizeWindows(j),
+      credits: creditsFrom(j),
+      credentialFp: cred.credFp, // welke credential deze cijfers ECHT ophaalde (ronde-3 #1) — memory-only
+    };
   } finally { clearTimeout(timer); }
-  if (!r.ok) throw new Error('usage endpoint HTTP ' + r.status);
-  const j = await r.json();
-  const fh = j.five_hour || {}, sd = j.seven_day || {};
-  return {
-    session: { pct: Number(fh.utilization ?? NaN), resetsAt: fh.resets_at || null },
-    week: { pct: Number(sd.utilization ?? NaN), resetsAt: sd.resets_at || null },
-    // every window the endpoint reports, typed — session/weekly_all/weekly_scoped and any future kind
-    // (see normalizeWindows). The two named fields above stay for the existing pressure/reporting paths.
-    windows: normalizeWindows(j),
-    credits: creditsFrom(j),
-    credentialFp: cred.credFp, // welke credential deze cijfers ECHT ophaalde (ronde-3 #1)
-  };
 }
 // ---- purchased usage credits ("extra_usage") — the SEPARATE budget that keeps working past the plan limit ----
 function creditsFrom(j) { const e = (j && j.extra_usage);
@@ -670,7 +843,15 @@ function creditsExhausted(c) { if (!c || !c.present) return false; // NO data (e
 function fmtMoney(cents, cur, dec) { if (!Number.isFinite(cents)) return '?'; dec = dec == null ? 2 : dec; return '€' + (cents / Math.pow(10, dec)).toFixed(dec) + (cur && cur !== 'EUR' ? ' ' + cur : ''); }
 
 // ---- paperclip helpers (loopback only) ----
-async function pc(method, p, body) {
+/** pc(method, p, body, opts) -> the OTHER GUARD-OFF-BYPASS choke point (2026-09-24), alongside
+ *  fetchUsage() — see guardNetworkAllowed()'s own doc comment for the exact policy and its two
+ *  documented exceptions. A blocked call returns the SAME {status, json, err} shape every caller
+ *  already handles (status 0 = unreachable/blocked), so no call site needed to change its error
+ *  handling — allAgents() already treats any non-array `.json` as "runtime unreachable", and doPause/
+ *  doResume already treat a non-2xx status as a failed pause/resume attempt. */
+async function pc(method, p, body, opts) {
+  const gate = guardNetworkAllowed(opts);
+  if (!gate.ok) return { status: 0, json: null, err: gate.reason, blocked: true };
   try {
     const r = await fetch(PC_BASE + p, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) });
     let j = null; try { j = await r.json(); } catch {}
@@ -707,8 +888,41 @@ function fmtReset(iso) {
 function accountStamp(ident) {
   return ident && ident.fp ? { account: { fp: ident.fp, source: ident.source, stampedAt: new Date().toISOString() } } : {};
 }
+/** withStateLock(fn) -> await fn()'s result, having serialized it against every other state-writing
+ *  transaction via an exclusive lock on STATE_FILE + '.lock' (GUARD-STATE-RACE, 2026-09-24). doPause()/
+ *  doResume() read a snapshot of the state, then do real async work (allAgents()/pc() calls) BEFORE
+ *  writing — a concurrent writer's change made during that gap (most concretely: an owner clearing
+ *  ownerOverride via `override-off` while a pause round is mid-flight) could otherwise be silently
+ *  reverted the moment the earlier caller finally writes back what it read before the change. The lock
+ *  does not change WHAT is read/written; every caller must still re-read the state FRESH from INSIDE the
+ *  lock immediately before constructing its write (see doPause/doResume/override-on/override-off below)
+ *  — the lock only prevents two such read-then-write sequences from interleaving. Same open('wx')
+ *  spin/retry/stale-reclaim shape already proven by journalAppend()/rotateLogIfNeeded() above. A lock
+ *  that cannot be acquired within the retry budget is a fail-SAFE narrowing, never a dropped operation:
+ *  fn() still runs (unserialized, exactly today's pre-fix behaviour) rather than abandoning a real pause
+ *  or resume because of lock contention. */
+function stateLockPath() { return STATE_FILE + '.lock'; }
+async function withStateLock(fn) {
+  const lockPath = stateLockPath();
+  let lfd = null;
+  for (let i = 0; i < 80 && lfd === null; i++) {
+    try { lfd = fs.openSync(lockPath, 'wx'); }
+    catch (e) {
+      if (e.code !== 'EEXIST') break; // cannot create the lock file at all — proceed unserialized below
+      let age = Infinity;
+      try { age = Date.now() - fs.statSync(lockPath).mtimeMs; } catch { /* vanished under us mid-check */ }
+      if (age > STALE_LOCK_MS) { try { fs.unlinkSync(lockPath); } catch { /* another waiter already reclaimed it */ } continue; }
+      await new Promise((res) => setTimeout(res, 25));
+    }
+  }
+  if (lfd === null) {
+    log('state-lock: kon de lock niet claimen binnen de tijd (een andere schrijver houdt hem lang vast) — doorgaan zonder serialisatie voor deze poging / could not claim the state lock in time (another writer is holding it) — proceeding unserialized for this attempt');
+    return fn();
+  }
+  try { return await fn(); }
+  finally { try { fs.closeSync(lfd); } catch { /* already closed */ } try { fs.unlinkSync(lockPath); } catch { /* already gone */ } }
+}
 async function doPause(u, crossed, ident) {
-  const cur = readState(); // preserve owner intent across a pause (fix 2026-07-09 checkup)
   const agents = await allAgents();
   const toPause = (agents || []).filter((a) => a.status !== 'paused');
   const reason = 'USAGE GUARD: ' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' >= ' + PAUSE_AT + '% — auto-paused. Auto-resume when back to <= ' + RESUME_AT + '%.';
@@ -741,22 +955,30 @@ async function doPause(u, crossed, ident) {
     if (Number.isFinite(ms)) soonestResetMs = Number.isFinite(soonestResetMs) ? Math.min(soonestResetMs, ms) : ms;
   }
   const resumeAtEpoch = Number.isFinite(soonestResetMs) ? (soonestResetMs + GRACE_MIN * 60000) : NaN;
-  writeState({
-    mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, resumeAt: RESUME_AT,
-    ...accountStamp(ident),
-    // NEVER silently drop the owner's paid-credits override / last credit snapshot on a pause — the hook
-    // reads ownerOverride to keep working; a fresh object without it defeated that (an accounting desktop app flapping).
-    ...(cur.ownerOverride ? { ownerOverride: cur.ownerOverride } : {}),
-    ...(cur.credits ? { credits: cur.credits } : {}),
-    percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
-    pausedAgents: paused, lastPauseAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(),
-    graceMin: GRACE_MIN,
-    ...(Number.isFinite(resumeAtEpoch) ? { resumeAtEpoch } : {}),
-    notice: '⛔ USAGE GUARD — PAUZEER. Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + PAUSE_AT + '%). '
-      + 'Geen nieuwe subagents/workflows starten. Rond lopend werk minimaal af en meld de pauze. '
-      + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
-      + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
-      + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).'),
+  // GUARD-STATE-RACE (2026-09-24): `cur` is read FRESH from inside the state lock, immediately before
+  // the write — never at the top of this function, before the allAgents()/pc() awaits above. Reading it
+  // early (the pre-fix shape) meant a concurrent `override-off` clearing ownerOverride DURING those
+  // awaits could be silently reverted the moment this pause finally wrote back the stale value it read
+  // before the clear.
+  await withStateLock(() => {
+    const cur = readState(); // preserve owner intent across a pause (fix 2026-07-09 checkup) — FRESH, under the lock
+    writeState({
+      mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, resumeAt: RESUME_AT,
+      ...accountStamp(ident),
+      // NEVER silently drop the owner's paid-credits override / last credit snapshot on a pause — the hook
+      // reads ownerOverride to keep working; a fresh object without it defeated that (an accounting desktop app flapping).
+      ...(cur.ownerOverride ? { ownerOverride: cur.ownerOverride } : {}),
+      ...(cur.credits ? { credits: cur.credits } : {}),
+      percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
+      pausedAgents: paused, lastPauseAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(),
+      graceMin: GRACE_MIN,
+      ...(Number.isFinite(resumeAtEpoch) ? { resumeAtEpoch } : {}),
+      notice: '⛔ USAGE GUARD — PAUZEER. Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + PAUSE_AT + '%). '
+        + 'Geen nieuwe subagents/workflows starten. Rond lopend werk minimaal af en meld de pauze. '
+        + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
+        + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
+        + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).'),
+    });
   });
   log('PAUSED — ' + reason + ' · paperclip agents paused: ' + paused.length + (agents === null ? ' (runtime unreachable)' : '') + (Number.isFinite(resumeAtEpoch) ? ' · rhythm-resume at ' + new Date(resumeAtEpoch).toISOString() : ' · rhythm-resume: n/a (unparseable resets_at)'));
 }
@@ -783,32 +1005,43 @@ async function doResume(u, st, ident) {
       failed.push({ id: a.id, name: a.name, company: a.company });
     }
   }
+  // GUARD-STATE-RACE (2026-09-24): both writes below re-read the CURRENT ownerOverride from inside the
+  // state lock, immediately before writing, instead of trusting the `st` snapshot this function was
+  // called with (captured before the pc() awaits above) — the same fix shape as doPause().
   if (failed.length) {
     // r4 #15: een GEDEELTELIJKE resume schrijft geen mode:'ok' meer — de staat blijft paused met
     // resumePending, zodat de paused-tak van de volgende tick de rest opnieuw probeert.
-    writeState(Object.assign({}, st, {
-      mode: 'paused', pausedAgents: failed, resumePending: true,
-      ...accountStamp(ident),
-      lastCheckAt: new Date().toISOString(),
-      lastError: 'resume gedeeltelijk: ' + ok + '/' + byId.size + ' agents hervat — ' + failed.length + ' faalden; volgende tick probeert opnieuw',
-    }));
+    await withStateLock(() => {
+      const fresh = readState();
+      const next = Object.assign({}, st, {
+        mode: 'paused', pausedAgents: failed, resumePending: true,
+        ...accountStamp(ident),
+        lastCheckAt: new Date().toISOString(),
+        lastError: 'resume gedeeltelijk: ' + ok + '/' + byId.size + ' agents hervat — ' + failed.length + ' faalden; volgende tick probeert opnieuw',
+      });
+      if (fresh.ownerOverride) next.ownerOverride = fresh.ownerOverride; else delete next.ownerOverride;
+      writeState(next);
+    });
     log('RESUME PARTIAL — ' + ok + '/' + byId.size + ' hervat; ' + failed.length + ' gefaald (' + failed.map((f) => f.id).join(',') + ') — staat blijft paused/resumePending');
     return;
   }
-  writeState({
-    mode: 'ok', percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
-    ...accountStamp(ident),
-    ...(st.ownerOverride ? { ownerOverride: st.ownerOverride } : {}), // survive the reset (credits mode is orthogonal)
-    lastResumeAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(), resumedAgents: ok, pendingCheckup: true,
-    resumeNotice: '✅ USAGE GUARD — usage gereset (sessie ' + u.session.pct + '% · week ' + u.week.pct + '%). GA VERDER met waar je mee bezig was. '
-      + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
-      + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
-      + ok + '/' + byId.size + ' Paperclip agents hervat.',
+  await withStateLock(() => {
+    const fresh = readState();
+    writeState({
+      mode: 'ok', percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
+      ...accountStamp(ident),
+      ...(fresh.ownerOverride ? { ownerOverride: fresh.ownerOverride } : {}), // survive the reset (credits mode is orthogonal)
+      lastResumeAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(), resumedAgents: ok, pendingCheckup: true,
+      resumeNotice: '✅ USAGE GUARD — usage gereset (sessie ' + u.session.pct + '% · week ' + u.week.pct + '%). GA VERDER met waar je mee bezig was. '
+        + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
+        + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
+        + ok + '/' + byId.size + ' Paperclip agents hervat.',
+    });
   });
   log('RESUMED — session ' + u.session.pct + '% week ' + u.week.pct + '% · agents resumed: ' + ok + '/' + byId.size);
 }
 
-async function tick(deps) {
+async function tick(deps, opts) {
   // Injectable seams (broad Codex audit #13, 2026-08-05): the identity/fetch SEQUENCING below is the
   // fix, and sequencing can only be tested when the parts are replaceable. Production behaviour is
   // identical: every default is the real function.
@@ -816,17 +1049,15 @@ async function tick(deps) {
     fetchUsage, readIdentity: readAccountIdentity, readState, writeState, doPause, doResume, log,
     writePressureFile, readCredentialFp,
   }, deps || {});
-  // AUDIT #13 (2026-08-05): the identity used to be read ONCE, and only AFTER the fetch. The fetch reads
-  // the OAuth token from .credentials.json at ITS moment and can take up to 30s; a login during that
-  // window meant account A's percentages were stamped and acted on under account B's fingerprint —
-  // doPause then paused a fresh account at "95%". Identity is now captured BEFORE the fetch and
-  // re-checked AFTER it; when the two disagree, this tick takes NO action (fail-safe) — the next tick
-  // measures the new account consistently. Two different files feed this (token from .credentials.json,
-  // identity from ~/.claude.json, updated at different moments during a login), so the double read is
-  // the only honest consistency check available without an identity-carrying usage endpoint.
+  // GUARD-OFF-BYPASS (2026-09-24): opts.force is the ONE way a caller may tell fetchUsage() to proceed
+  // even while the owner's usage-guard switch is off — used ONLY by watchStep(), and ONLY for the single
+  // pre-existing, documented L2 exception (a watcher started with `start --force` keeps checking while
+  // off until it has seen the switch on at least once). Every other caller of tick() (watch --once, the
+  // exported API, these tests) gets the normal, unforced gate.
+  const tickOpts = opts || {};
   const identBefore = D.readIdentity();
   let u;
-  try { u = await D.fetchUsage(); } catch (e) {
+  try { u = await D.fetchUsage({ force: tickOpts.force === true, signal: tickOpts.signal }); } catch (e) {
     const st = D.readState(); st.lastError = String(e.message); st.lastCheckAt = new Date().toISOString(); D.writeState(st);
     D.writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); // level "unknown" — write on EVERY evaluation, no stale flag
     D.log('CHECK FAILED (no action taken — fail-safe): ' + e.message); return;
@@ -849,7 +1080,11 @@ async function tick(deps) {
   if (u.credentialFp && credNow && u.credentialFp !== credNow) {
     const st = D.readState();
     st.lastCheckAt = new Date().toISOString();
-    st.lastError = 'credential rotated mid-check (' + u.credentialFp + ' -> ' + credNow + ') — measurements discarded, no action taken';
+    // GUARD-TOKEN-FINGERPRINT (2026-09-24): u.credentialFp/credNow are sha256 fingerprints of the
+    // REFRESH TOKEN (an actual bearer secret) — kept ENTIRELY in memory for this one comparison, never
+    // persisted. The previous message embedded both values directly into st.lastError (written to the
+    // state file and the log); neither value appears here any more, only the fact that a mismatch fired.
+    st.lastError = 'credential rotated mid-check — measurements discarded, no action taken';
     D.writeState(st);
     D.log('CREDENTIAL ROTATED MID-CHECK — this tick\'s numbers were fetched with a credential that no longer matches; discarded (fail-safe)');
     return;
@@ -901,6 +1136,14 @@ async function tick(deps) {
     // fall through to the normal pause/resume logic below (pauses if still over the plan limit)
   }
   if (st.mode !== 'paused') {
+    // GUARD-CORRUPT (2026-09-24): a corrupt state is ONLY ever allowed to move forward via a fresh,
+    // successful, validated measurement (the `u` this tick just fetched for real) — never silently, and
+    // never by inventing 'ok' out of nothing. Log the transition explicitly and drop the now-stale
+    // corrupt-diagnostic fields rather than letting them linger on an object whose mode has moved on.
+    if (rawState.mode === 'corrupt') {
+      D.log('STATE WAS CORRUPT (' + rawState.corruptReason + ', since ' + rawState.corruptAt + ') — recovered via a fresh VALIDATED measurement (session ' + u.session.pct + '% · week ' + u.week.pct + '%), never a fabricated "ok"');
+      delete st.corruptAt; delete st.corruptReason;
+    }
     // EVERY reported window can trip the guard, not just the legacy session/week pair — a daily or
     // per-model scoped limit at 100% used to be completely invisible here (fix 2026-08-03).
     // The trigger now records the window's STABLE id so resume can find THIS window again (audit #15).
@@ -1221,7 +1464,13 @@ async function watchStep(ctx, deps) {
     D.exit(0);
     return { outcome: 'switched-off', seenOn };
   }
-  try { await D.tick(); } catch (e) { D.log('TICK FAILED (watcher stays alive): ' + ((e && e.stack) || e)); }
+  // GUARD-OFF-BYPASS (2026-09-24): by the time execution reaches here, EITHER sw.on is true (the normal
+  // case — no exception needed) OR this is the single documented forced-while-off exception the branch
+  // above just let through. `force: !sw.on` tells tick()'s fetchUsage() call to proceed in exactly that
+  // second case, and never in any other.
+  // GUARD-STOP (2026-09-24): SHUTDOWN_AC.signal lets the watch loop's own SIGTERM handler abort THIS
+  // tick's in-flight request the moment it fires, rather than only preventing the next scheduled tick.
+  try { await D.tick(undefined, { force: !sw.on, signal: SHUTDOWN_AC.signal }); } catch (e) { D.log('TICK FAILED (watcher stays alive): ' + ((e && e.stack) || e)); }
   return { outcome: 'ticked', seenOn };
 }
 
@@ -1234,6 +1483,11 @@ if (require.main === module) {
     if (cmd === 'status') {
       // printed BEFORE the fetch so the owner sees the active settings even when the usage endpoint is unreachable
       console.log('instellingen: ' + settingsLine(GUARD));
+      // REG-USAGE-GUARANTEE (2026-09-24): the code cannot guarantee a task is never cut off mid-way — it
+      // samples on an interval, so usage can cross the pause threshold BETWEEN two samples, and normal
+      // Agent-tool work has no per-step enforcement hook of its own (only Paperclip agents are actually
+      // paused). Say so plainly here rather than implying an instant, guaranteed block.
+      console.log('gemeten elke ' + INTERVAL + 's (beste-poging — een taak kan tussen twee metingen door de limiet nog overschrijden; dit is geen ogenblikkelijke, gegarandeerde blokkade) / sampled every ' + INTERVAL + 's (best effort — a task can still cross the limit between samples; this is not an instant, guaranteed block)');
       for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) console.log('note: ' + n);
     }
     // M6: without the login file there is nothing to measure with — say so plainly instead of a raw file error.
@@ -1243,9 +1497,20 @@ if (require.main === module) {
       if (cmd === 'status') { writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); console.log('pressure: unknown (usage data unavailable — no login file)'); }
       return;
     }
+    // GUARD-OFF-BYPASS (2026-09-24): the owner's usage-guard switch off means NO token read and NO
+    // network request from check/status either — the same policy fetchUsage() itself now enforces
+    // (this check exists only for a clean, honest exit-3 message instead of a generic fetch-failed one).
+    // --force overrides once, exactly like nvidia-provider.cjs's identical convention.
+    const gateCheckStatus = guardNetworkAllowed({ force: has('force') });
+    if (!gateCheckStatus.ok) {
+      console.log(gateCheckStatus.reason);
+      process.exitCode = 3;
+      if (cmd === 'status') { writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); console.log('pressure: unknown (usage guard is off)'); }
+      return;
+    }
     let u;
     try {
-      u = await fetchUsage();
+      u = await fetchUsage({ force: has('force') });
       // EVERY window the endpoint reports, typed — printing only session+week hid a daily/scoped limit
       // that could already be at 100% (fix 2026-08-03).
       const wl = (u.windows || []).map((w) => w.label + ' ' + w.pct + '% (reset ' + fmtReset(w.resetsAt) + ')').join(' · ');
@@ -1289,7 +1554,10 @@ if (require.main === module) {
     return; // clean exit (process.exit after pending fetch handles triggers a libuv assertion on Windows)
   }
   if (cmd === 'credits') {
-    try { const u = await fetchUsage(); const c = u.credits;
+    // GUARD-OFF-BYPASS: same policy as check/status — --force overrides once.
+    const gateCredits = guardNetworkAllowed({ force: has('force') });
+    if (!gateCredits.ok) { console.log(gateCredits.reason); process.exitCode = 3; return; }
+    try { const u = await fetchUsage({ force: has('force') }); const c = u.credits;
       console.log('usage credits (extra_usage): ' + (c.enabled ? 'ENABLED' : 'disabled') + ' · used ' + fmtMoney(c.used, c.currency, c.decimals) + ' / limit ' + fmtMoney(c.limit, c.currency, c.decimals) + ' · remaining ' + fmtMoney(c.remaining, c.currency, c.decimals) + (c.disabledReason ? ' · reason: ' + c.disabledReason : '') + (creditsExhausted(c) ? ' · EXHAUSTED' : ' · available'));
     } catch (e) { console.error('credits fetch failed: ' + e.message); process.exitCode = 1; }
     return;
@@ -1308,27 +1576,50 @@ if (require.main === module) {
       console.error('  run: node .claude/forge-bin/usage-guard.cjs override-on --owner-approval <token> --reason "<why>"');
       process.exit(3);
     }
-    const st = readState();
-    // best-effort resume any agents THIS guard paused — override-on used to strand them forever (fix 2026-07-09 checkup)
-    let resumed = 0; const wasPaused = (st.pausedAgents || []).length;
-    for (const a of (st.pausedAgents || [])) { const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}); if (r.status >= 200 && r.status < 300) resumed++; }
-    st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
-    let until = argv('until', null) || null;
-    if (until && !Number.isFinite(Date.parse(until))) { console.error('ignoring invalid --until "' + until + '" (not a parseable date) — override will have no time expiry'); until = null; }
-    st.ownerOverride = { active: true, at: new Date().toISOString(),
-      reason: argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn'),
-      reArmWhenCreditsExhausted: true, until };
-    writeState(st);
-    console.log('usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + '; auto re-arm when credits exhausted' + (st.ownerOverride.until ? ' or after ' + st.ownerOverride.until : ''));
+    // GUARD-STATE-RACE (2026-09-24): the whole read-resume-write sequence runs inside the state lock, so
+    // it can never interleave with a concurrent tick()'s doPause()/doResume() (or a concurrent
+    // override-off) reading/writing the same file mid-sequence.
+    let resumed = 0, wasPaused = 0, untilOut = null;
+    await withStateLock(async () => {
+      const st = readState();
+      // best-effort resume any agents THIS guard paused — override-on used to strand them forever (fix 2026-07-09 checkup)
+      // GUARD-OFF-BYPASS: this is the ONE documented exception where pc() is called with force:true even
+      // if the owner's usage-guard switch happens to be off right now — but ONLY because verifyOwnerGrant()
+      // just succeeded above (a VERIFIED, authenticated owner action, not a bare CLI flag any local agent
+      // could set). See guardNetworkAllowed()'s own doc comment.
+      wasPaused = (st.pausedAgents || []).length;
+      for (const a of (st.pausedAgents || [])) { const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true }); if (r.status >= 200 && r.status < 300) resumed++; }
+      st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
+      let until = argv('until', null) || null;
+      if (until && !Number.isFinite(Date.parse(until))) { console.error('ignoring invalid --until "' + until + '" (not a parseable date) — override will have no time expiry'); until = null; }
+      st.ownerOverride = { active: true, at: new Date().toISOString(),
+        reason: argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn'),
+        reArmWhenCreditsExhausted: true, until };
+      untilOut = until;
+      writeState(st);
+    });
+    console.log('usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + '; auto re-arm when credits exhausted' + (untilOut ? ' or after ' + untilOut : ''));
     process.exit(0);
   }
   if (cmd === 'override-off') {
-    const st = readState(); const had = !!st.ownerOverride; delete st.ownerOverride; writeState(st);
+    let had = false;
+    // GUARD-STATE-RACE: serialized against a concurrent doPause()/doResume()/override-on write.
+    await withStateLock(() => {
+      const st = readState(); had = !!st.ownerOverride; delete st.ownerOverride; writeState(st);
+    });
     console.log('usage-guard OVERRIDE ' + (had ? 'CLEARED' : 'was not set') + ' — normal plan-limit guard re-armed');
     process.exit(0);
   }
   if (cmd === 'watch') {
-    if (has('once')) { await tick(); return; }
+    if (has('once')) {
+      // GUARD-OFF-BYPASS (2026-09-24): `watch --once` used to call tick() directly, BEFORE any switch
+      // check — tick() itself now refuses (via fetchUsage()'s own gate) with no network call either way,
+      // but this explicit check gives a clean, honest message instead of a generic "CHECK FAILED" log
+      // line. No --force here: a one-shot watch tick has no documented off-switch exception.
+      const gateOnce = guardNetworkAllowed({});
+      if (!gateOnce.ok) { log(gateOnce.reason); return; }
+      await tick(); return;
+    }
     // Refuse a 2nd concurrent watcher — two would race the same state file (fix 2026-07-09 checkup).
     // CODEX finding #15: this parsed the pid file as a BARE NUMBER after the writer switched to JSON —
     // Number('{"pid":123,…}') is NaN, so the guard silently stopped guarding. CODEX audit #17 (2026-08-05):
@@ -1340,6 +1631,13 @@ if (require.main === module) {
     if (!claim.ok) { console.error(claim.reason); process.exit(1); }
     if (claim.mode === 'took-over-stale') log('took over a stale watcher slot (previous holder was gone) — this is now the only watcher');
     log('usage-guard watch started — ' + settingsLine(GUARD) + (ONLY_COMPANIES.length ? ' · companies: ' + ONLY_COMPANIES.join(',') : ''));
+    // GUARD-DISCLOSURE (2026-09-24): logged HERE, before safeTick()'s first tick ever reads a credential —
+    // this covers BOTH gaps the finding named: a DIRECT `watch` invocation (never printed a disclosure at
+    // all before) and `start`'s own race (the PARENT used to print its disclosure only after the child's
+    // claim was confirmed, by which time the CHILD could already have completed its first tick). The
+    // parent (`start`, below) still prints the same lines to ITS OWN stdout for immediate interactive
+    // feedback — this log call is the one that is guaranteed to precede this process's own first fetch.
+    for (const line of disclosureLines(GUARD_CFG.disclosure)) log(line);
     for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) log('note: ' + n);
     // SILENT-DEATH GUARD (2026-08-03): on this machine the loop stopped at 16:55 without a single error
     // line while the process stayed alive — only fetchUsage() was inside a try/catch, so a throw anywhere
@@ -1358,6 +1656,14 @@ if (require.main === module) {
     // pause decision gets made on stale numbers and then overwritten. A self-scheduling loop can only
     // ever have one tick in flight; the next one is scheduled after the previous finishes.
     let stopping = false;
+    // GUARD-STOP (2026-09-24): both timer handles are now retained (not just fired-and-forgotten) so a
+    // shutdown can actually clear them — the scheduling `setTimeout` for the NEXT tick, and the keep-
+    // alive `setInterval` that otherwise holds the event loop open forever. Neither was ever cleared
+    // before: SIGTERM only flipped `stopping`, so an already-scheduled tick could still run one more
+    // authenticated request, and the keep-alive interval kept the process alive indefinitely regardless.
+    let scheduledTimer = null;
+    let keepAliveInterval = null;
+    let inFlightTick = Promise.resolve();
     // r5 #22: iedere tick her-fenced zijn slot-eigendom — draagt het pid-bestand niet meer ONS pid (en,
     // indien meegegeven, ONZE start-nonce), dan heeft een ander het slot en stopt deze watcher direct.
     const myNonce = argv('start-nonce', null);
@@ -1371,16 +1677,45 @@ if (require.main === module) {
     const forced = has('force');
     let seenOn = false;
     const safeTick = async () => {
-      const step = await watchStep({ forced, seenOn }, { stillOwnsSlot });
+      // GUARD-STOP: check shutdown BEFORE starting new work — a SIGTERM that arrived while this
+      // invocation was merely SCHEDULED (not yet running) must never start a whole new tick.
+      if (stopping) return;
+      const stepPromise = watchStep({ forced, seenOn }, { stillOwnsSlot });
+      inFlightTick = stepPromise.catch(() => {}); // never let a rejection here surface as unhandled
+      const step = await stepPromise;
       seenOn = step.seenOn;
       if (step.outcome !== 'ticked') return;
-      if (!stopping) setTimeout(safeTick, INTERVAL * 1000).unref?.();
+      if (!stopping) {
+        scheduledTimer = setTimeout(safeTick, INTERVAL * 1000);
+        if (scheduledTimer.unref) scheduledTimer.unref();
+      }
     };
-    process.on('SIGTERM', () => { stopping = true; });
+    // GUARD-STOP: a single, idempotent shutdown path — clear every timer, abort any in-flight request
+    // (SHUTDOWN_AC, consulted by fetchUsage() via watchStep()'s own tick() call), wait for that aborted
+    // tick's own error handling to actually finish writing its state (never kill the process mid-write),
+    // THEN release the watcher slot and exit cleanly. A second SIGTERM while this is already running is
+    // a no-op — shutdown never restarts or double-runs.
+    let shuttingDown = false;
+    async function shutdownCleanly(signal) {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      stopping = true;
+      log('usage-guard watcher received ' + signal + ' — stopping (clearing timers, aborting any in-flight request, releasing the slot)');
+      if (scheduledTimer) { clearTimeout(scheduledTimer); scheduledTimer = null; }
+      try { SHUTDOWN_AC.abort(); } catch { /* already aborted */ }
+      try { await inFlightTick; } catch { /* best effort — the tick's own catch already logged/wrote state */ }
+      if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
+      try { releaseWatcherSlot(); } catch { /* best effort on the way out */ }
+      process.exit(0);
+    }
+    process.on('SIGTERM', () => {
+      shutdownCleanly('SIGTERM').catch((e) => { log('SIGTERM cleanup failed — exiting nonzero: ' + ((e && e.message) || e)); process.exit(1); });
+    });
     await safeTick();
     // Keep the event loop alive even though the scheduling timer is unref'd, so the process never exits
-    // between ticks (an unref'd timer alone would let node consider the loop empty and quit).
-    setInterval(() => {}, 1 << 30);
+    // between ticks (an unref'd timer alone would let node consider the loop empty and quit). Skipped
+    // entirely if shutdown already happened during that very first tick.
+    if (!stopping) keepAliveInterval = setInterval(() => {}, 1 << 30);
     return; // keep alive
   }
   if (cmd === 'start') {
@@ -1450,6 +1785,8 @@ if (require.main === module) {
       process.exit(1);
     }
     console.log('usage-guard started (pid ' + child.pid + ', claim geverifieerd) — ' + settingsLine(GUARD) + ' · log: ' + LOG_FILE);
+    // REG-USAGE-GUARANTEE (2026-09-24): same wording as `status` — see that call site's comment.
+    console.log('gemeten elke ' + INTERVAL + 's (beste-poging — een taak kan tussen twee metingen door de limiet nog overschrijden; dit is geen ogenblikkelijke, gegarandeerde blokkade) / sampled every ' + INTERVAL + 's (best effort — a task can still cross the limit between samples; this is not an instant, guaranteed block)');
     // DISCLOSURE (v2.7.0): only here, on a verified NEW watcher — never on "already running" or a refused start.
     for (const line of disclosureLines(GUARD_CFG.disclosure)) console.log(line);
     process.exit(0);
@@ -1458,6 +1795,11 @@ if (require.main === module) {
     // Never kill a PID we cannot prove is ours, and never `/T` (a tree-kill on a recycled pid is exactly
     // the incident class the owner's HARD MUST was written for). Unverifiable = refuse + say so.
     const rec = readPidRecord();
+    // GUARD-STOP (2026-09-24): the exit code now actually reflects whether the watcher was confirmed
+    // stopped — this used to `process.exit(0)` unconditionally at the end, even on the "still alive
+    // after the kill attempt" branch, so a caller scripting against the exit code could never tell a
+    // real stop from a failed one.
+    let stoppedOk = true;
     if (!rec.pid) console.log('usage-guard not running (no pid file)');
     else {
       const own = ownsPid(rec.pid, rec);
@@ -1466,12 +1808,21 @@ if (require.main === module) {
           if (process.platform === 'win32') execSync('taskkill /PID ' + rec.pid + ' /F', { stdio: 'ignore' });
           else process.kill(rec.pid, 'SIGTERM');
         } catch { /* verified below by liveness, not by the exit code */ }
+        // GUARD-STOP: SIGTERM handling now does real async cleanup (abort an in-flight request, wait for
+        // it to settle, clear timers, release the slot) before the watcher actually exits — checking
+        // liveness immediately after sending the signal would almost always see it still alive. Poll
+        // briefly (bounded at 3s) instead of assuming instant death; Windows' taskkill /F is already
+        // forceful and near-instant, so this mostly matters on POSIX.
+        const deadline = Date.now() + 3000;
+        while (pidAlive(rec.pid) && Date.now() < deadline) {
+          try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } catch { break; }
+        }
         // CODEX finding #17: the pid file used to be deleted unconditionally — including when the kill
         // was REFUSED or failed — which erased the only ownership evidence and let the next `start`
         // spawn a duplicate alongside a watcher that was still alive. Delete only on confirmed death.
         const dead = !pidAlive(rec.pid);
         if (dead) { try { fs.unlinkSync(PID_FILE); } catch {} console.log('usage-guard stopped (pid ' + rec.pid + ')'); }
-        else console.log('usage-guard NOT stopped — pid ' + rec.pid + ' is still alive after the kill attempt; pid file kept so the next start does not spawn a duplicate');
+        else { console.log('usage-guard NOT stopped — pid ' + rec.pid + ' is still alive after the kill attempt; pid file kept so the next start does not spawn a duplicate'); stoppedOk = false; }
       } else if (own.code === 'unverifiable') {
         // CODEX ronde-3 #4 (2026-08-06): 'unverifiable' betekent "mogelijk een ECHTE watcher waarvan we
         // de command line nu even niet kunnen lezen" (/proc weg, ps faalt). Het pid-bestand wissen zou
@@ -1485,7 +1836,7 @@ if (require.main === module) {
         try { fs.unlinkSync(PID_FILE); } catch {}
       }
     }
-    process.exit(0);
+    process.exit(stoppedOk ? 0 : 1);
   }
   console.error('unknown command: ' + cmd + ' (use check|status|credits|watch|start|stop|override-on|override-off)');
   process.exit(1);
@@ -1500,6 +1851,7 @@ module.exports = {
   claimWatcherSlot, releaseWatcherSlot, incumbentStatus, readPidRecordFrom, STALE_LOCK_MS,
   awaitChildClaim, journalAppend, unresolvedPausedAgents, rotateLogIfNeeded, compactJournalIfNeeded,
   computePressureLevel, buildPressureData, creditsExhausted,
-  resolveGuardSettings, loadGuardConfig, settingsLine, disclosureLines, GUARD_DEFAULTS,
+  resolveGuardSettings, loadGuardConfig, settingsLine, disclosureLines, GUARD_DEFAULTS, guardBounds,
   readGuardSwitch, watchStep, readToken, credentialsPresent, noCredentialsLine,
+  guardNetworkAllowed, readState, fetchUsage, pc,
 };

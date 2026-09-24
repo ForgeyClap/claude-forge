@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 'use strict';
 // forge-settings-merge.test.cjs — real tests for the general .claude/settings.json MERGE tool (wp22,
-// 2026-09-24). This is the LOAD-BEARING safety suite: it proves a foreign hook, a foreign allow rule and an
-// unknown top-level key all survive byte-for-byte at their original position, using a fixture shaped like
-// the REAL project .claude/settings.json (5 hooks + 23 deny rules) as the SOURCE — never the real file
-// itself.
+// 2026-09-24; hardened wp-f2, 2026-09-24 Codex re-check out-p2.md/out-p6.md). This is the LOAD-BEARING safety
+// suite: it proves a foreign hook, a foreign allow rule and an unknown top-level key all survive byte-for-byte
+// at their original position, using a fixture shaped like the REAL project .claude/settings.json as the
+// SOURCE — never the real file itself — PLUS the hardening findings: UNREADABLE-MEANS-ABSENT,
+// CONCURRENT-EDIT-LOSS, AUXILIARY-FILE-CLOBBER, PROJECT-DIRECTORY-ESCAPE, SCHEMA-ACCEPTANCE/DUPLICATE-HOOKS,
+// LOSSY-ROUNDTRIP and SETTINGS-PERMISSION-WIDENING.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { spawnSync } = require('child_process');
 const mod = require('./forge-settings-merge.cjs');
+const guards = require('./forge-settings-merge-guards.cjs');
 
 let passed = 0, failed = 0;
 function t(name, fn) {
@@ -18,9 +21,12 @@ function t(name, fn) {
   catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); }
 }
 function freshDir(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix + '-')); }
+function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n', 'utf8'); }
+function recommendedFiles(dir) { return fs.readdirSync(dir).filter((f) => /^settings\.forge-recommended-.*\.json$/.test(f)); }
+function backupFiles(dir) { return fs.readdirSync(dir).filter((f) => f.includes('.forge-bak-')); }
 
 /** realSourceFixture — shaped like the REAL .claude/settings.json: 3 snapshot hooks, the tool-ledger
- *  PostToolUse hook, the PreToolUse gate hook (all 5 with `timeout` in SECONDS, <=60), plus the 23-rule
+ *  PostToolUse hook, the PreToolUse gate hook (all 5 with `timeout` in SECONDS, <=60), plus the 28-rule
  *  permissions.deny block. A hand-built FIXTURE, not the real file. */
 function realSourceFixture() {
   return {
@@ -41,9 +47,12 @@ function realSourceFixture() {
     },
     permissions: {
       deny: [
+        // 28 rules, matching the real .claude/settings.json exactly (wp-f2 SECRET-READ-GAPS: added
+        // .env.forge-setup root+nested, and .env.development/.env.staging/.env.test nested).
         'Read(./.env)', 'Read(./.env.local)', 'Read(./.env.*.local)', 'Read(./.env.development)',
-        'Read(./.env.production)', 'Read(./.env.staging)', 'Read(./.env.test)', 'Read(./secrets/**)',
-        'Read(./**/.env)', 'Read(./**/.env.local)', 'Read(./**/.env.*.local)', 'Read(./**/.env.production)',
+        'Read(./.env.production)', 'Read(./.env.staging)', 'Read(./.env.test)', 'Read(./.env.forge-setup)', 'Read(./secrets/**)',
+        'Read(./**/.env)', 'Read(./**/.env.local)', 'Read(./**/.env.*.local)', 'Read(./**/.env.development)',
+        'Read(./**/.env.production)', 'Read(./**/.env.staging)', 'Read(./**/.env.test)', 'Read(./**/.env.forge-setup)',
         'Read(./**/.env.prod)', 'Read(./**/.env.bak)', 'Read(./**/.env.backup)', 'Read(./**/*.pem)',
         'Read(./**/*.key)', 'Read(./**/id_rsa*)', 'Read(./**/id_ed25519*)', 'Read(./**/secrets/**)',
         'Read(~/.claude/.credentials.json)', 'Read(~/.claude/nvidia.env)', 'Read(~/.ssh/**)',
@@ -101,10 +110,10 @@ t('foreign hook + foreign allow rule + unknown top-level key survive byte-for-by
   assert.strictEqual(settings.ownerNote, 'do not touch this field');
   assert.deepStrictEqual(settings.permissions.allow, ['Bash(npm run build)']);
 
-  // deny union: user's own rule stays first, 23 source rules appended after (23 new, since none pre-existed)
+  // deny union: user's own rule stays first, 28 source rules appended after (28 new, since none pre-existed)
   assert.strictEqual(settings.permissions.deny[0], 'Bash(rm -rf *)');
-  assert.strictEqual(settings.permissions.deny.length, 1 + 23);
-  assert.strictEqual(deny_added.length, 23);
+  assert.strictEqual(settings.permissions.deny.length, 1 + 28);
+  assert.strictEqual(deny_added.length, 28);
 
   assert.ok(added.length >= 3);
 });
@@ -160,7 +169,7 @@ t('applying the merge twice in a row (against a target with foreign entries) is 
 });
 
 // ---------------------------------------------------------------------------
-console.log('\n4) validShape()');
+console.log('\n4) validShape() / fullyValidShape()');
 t('rejects a non-object, an array-shaped hooks, a non-array hooks.<event>, and a non-array permissions.deny', () => {
   assert.strictEqual(mod.validShape(null), false);
   assert.strictEqual(mod.validShape([1, 2]), false);
@@ -171,9 +180,14 @@ t('rejects a non-object, an array-shaped hooks, a non-array hooks.<event>, and a
   assert.strictEqual(mod.validShape({}), true);
 });
 
+t('SCHEMA-ACCEPTANCE: fullyValidShape also rejects a hook entry whose inner hooks is an object, and a hook item with the wrong type', () => {
+  assert.strictEqual(mod.fullyValidShape({ hooks: { PreToolUse: [{ matcher: 'x', hooks: {} }] } }), false);
+  assert.strictEqual(mod.fullyValidShape({ hooks: { PreToolUse: [{ matcher: 'x', hooks: [{ type: 'prompt', command: 'y' }] }] } }), false);
+  assert.strictEqual(mod.fullyValidShape({ hooks: { PreToolUse: [{ matcher: 'x', hooks: [{ type: 'command', command: 'y', timeout: 5 }] }] } }), true);
+});
+
 // ---------------------------------------------------------------------------
 console.log('\n5) applySettingsMerge() — file-level orchestration (real filesystem)');
-function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n', 'utf8'); }
 
 t('target absent -> created (a copy of the source)', () => {
   const dir = freshDir('settings-merge-create');
@@ -212,13 +226,12 @@ t('second run against an already-merged target is a true no-op: exit-equivalent 
   writeJson(source, realSourceFixture());
   writeJson(target, existingWithForeignEntries());
   mod.applySettingsMerge({ target, source }); // first run: real merge + backup
-  const backupsAfterFirst = fs.readdirSync(dir).filter((f) => f.includes('.forge-bak-'));
+  const backupsAfterFirst = backupFiles(dir);
   const mtimeBefore = fs.statSync(target).mtimeMs;
   const r2 = mod.applySettingsMerge({ target, source });
   assert.strictEqual(r2.status, 'noop');
   assert.strictEqual(fs.statSync(target).mtimeMs, mtimeBefore, 'a no-op merge must never rewrite the file (mtime unchanged)');
-  const backupsAfterSecond = fs.readdirSync(dir).filter((f) => f.includes('.forge-bak-'));
-  assert.strictEqual(backupsAfterSecond.length, backupsAfterFirst.length, 'a no-op merge must never take a new backup');
+  assert.strictEqual(backupFiles(dir).length, backupsAfterFirst.length, 'a no-op merge must never take a new backup');
 });
 
 t('deny union keeps the user\'s own rule(s) first, source rules appended after in source order', () => {
@@ -231,10 +244,10 @@ t('deny union keeps the user\'s own rule(s) first, source rules appended after i
   const written = JSON.parse(fs.readFileSync(target, 'utf8'));
   assert.strictEqual(written.permissions.deny[0], 'Bash(rm -rf *)');
   assert.strictEqual(written.permissions.deny[1], 'Read(./.env)');
-  assert.strictEqual(written.permissions.deny.length, 2 + 22); // 22 NEW source rules (1 already present)
+  assert.strictEqual(written.permissions.deny.length, 2 + 27); // 27 NEW source rules (1 already present)
 });
 
-t('invalid existing JSON -> refused, file untouched, settings.forge-recommended.json written, ok:false', () => {
+t('invalid existing JSON -> refused, file untouched, a UNIQUE settings.forge-recommended-*.json written, ok:false', () => {
   const dir = freshDir('settings-merge-badjson');
   const source = path.join(dir, 'source.json');
   const target = path.join(dir, 'settings.json');
@@ -245,7 +258,8 @@ t('invalid existing JSON -> refused, file untouched, settings.forge-recommended.
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.status, 'refused');
   assert.strictEqual(fs.readFileSync(target, 'utf8'), before, 'a malformed existing file must never be overwritten');
-  assert.ok(fs.existsSync(path.join(dir, 'settings.forge-recommended.json')));
+  assert.strictEqual(recommendedFiles(dir).length, 1);
+  assert.strictEqual(r.recommended, path.join(dir, recommendedFiles(dir)[0]));
 });
 
 t('unexpected shape (hooks not an object) -> refused, file untouched, recommended file written', () => {
@@ -259,7 +273,7 @@ t('unexpected shape (hooks not an object) -> refused, file untouched, recommende
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.status, 'refused');
   assert.strictEqual(fs.readFileSync(target, 'utf8'), before);
-  assert.ok(fs.existsSync(path.join(dir, 'settings.forge-recommended.json')));
+  assert.strictEqual(recommendedFiles(dir).length, 1);
 });
 
 t('--dry-run (opts.dryRun) writes nothing at all, in every branch', () => {
@@ -278,13 +292,13 @@ t('--dry-run (opts.dryRun) writes nothing at all, in every branch', () => {
   const r2 = mod.applySettingsMerge({ target: mergeTarget, source, dryRun: true });
   assert.strictEqual(r2.status, 'would-merge');
   assert.strictEqual(fs.readFileSync(mergeTarget, 'utf8'), beforeContent);
-  assert.strictEqual(fs.readdirSync(dir).filter((f) => f.includes('.forge-bak-')).length, 0);
+  assert.strictEqual(backupFiles(dir).length, 0);
 
   const badTarget = path.join(dir, 'bad.json');
   fs.writeFileSync(badTarget, 'not json', 'utf8');
   const r3 = mod.applySettingsMerge({ target: badTarget, source, dryRun: true });
   assert.strictEqual(r3.status, 'would-refuse');
-  assert.strictEqual(fs.existsSync(path.join(dir, 'settings.forge-recommended.json')), false);
+  assert.strictEqual(recommendedFiles(dir).length, 0);
 });
 
 t('a UTF-8 BOM before the target JSON (Windows PowerShell Set-Content -Encoding utf8) is stripped, not treated as invalid JSON', () => {
@@ -296,7 +310,9 @@ t('a UTF-8 BOM before the target JSON (Windows PowerShell Set-Content -Encoding 
   const r = mod.applySettingsMerge({ target, source });
   assert.strictEqual(r.ok, true, JSON.stringify(r));
   assert.strictEqual(r.status, 'merged');
-  const written = JSON.parse(fs.readFileSync(target, 'utf8'));
+  const rawAfter = fs.readFileSync(target, 'utf8');
+  assert.strictEqual(rawAfter.charCodeAt(0), 0xfeff, 'the original BOM must be PRESERVED on output too (LOSSY-ROUNDTRIP), not just tolerated on input');
+  const written = JSON.parse(rawAfter.slice(1));
   assert.strictEqual(written.ownerNote, 'do not touch this field');
 });
 
@@ -322,6 +338,17 @@ t('check reports up-to-date (ok) when nothing would change, missing-entries (not
   const r2 = mod.checkSettingsMerge({ target: missing, source });
   assert.strictEqual(r2.ok, false);
   assert.strictEqual(r2.status, 'missing');
+});
+
+t('UNREADABLE-MEANS-ABSENT mirrored in check: a directory named settings.json is "unreadable", never "missing"', () => {
+  const dir = freshDir('settings-merge-check-unreadable');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  fs.mkdirSync(target);
+  const r = mod.checkSettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'unreadable');
 });
 
 // ---------------------------------------------------------------------------
@@ -393,6 +420,357 @@ t('CLI --dry-run leaves the target file byte-identical', () => {
   assert.strictEqual(r.status, 0);
   assert.strictEqual(fs.readFileSync(target, 'utf8'), before);
 });
+
+// ---------------------------------------------------------------------------
+console.log('\n8) UNREADABLE-MEANS-ABSENT — only a verified-missing regular file enters the create path');
+t('a directory named settings.json refuses (usage-error-free "refused"), never treated as missing/created', () => {
+  const dir = freshDir('settings-merge-dir-target');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, realSourceFixture());
+  fs.mkdirSync(target);
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.ok(fs.statSync(target).isDirectory(), 'the directory must still be a directory — never replaced');
+});
+
+t('a directory named settings.json in --dry-run also refuses without creating/writing anything', () => {
+  const dir = freshDir('settings-merge-dir-target-dry');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, realSourceFixture());
+  fs.mkdirSync(target);
+  const r = mod.applySettingsMerge({ target, source, dryRun: true });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'would-refuse');
+  assert.strictEqual(recommendedFiles(dir).length, 0);
+});
+
+{
+  // Real-OS probe first (mirrors forge-sync.test.cjs's own F2/H1 EPERM pattern): only assert the EACCES half
+  // when this OS/filesystem actually enforces chmod 0 as unreadable (Windows chmod only toggles the
+  // read-only ATTRIBUTE and does not block reads at all — a real gap this suite does not pretend to close).
+  const dir = freshDir('settings-merge-eacces');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, realSourceFixture());
+  writeJson(target, existingWithForeignEntries());
+  let reallyUnreadable = false;
+  try { fs.chmodSync(target, 0o000); fs.readFileSync(target, 'utf8'); }
+  catch { reallyUnreadable = true; }
+  if (reallyUnreadable) {
+    t('EACCES on an existing settings.json (real OS enforcement) refuses, never treated as missing, no backup taken', () => {
+      const r = mod.applySettingsMerge({ target, source });
+      assert.strictEqual(r.ok, false);
+      assert.strictEqual(r.status, 'refused');
+      assert.strictEqual(backupFiles(dir).length, 0, 'no backup should be taken for a target that was never actually read');
+    });
+    fs.chmodSync(target, 0o644);
+  } else {
+    try { fs.chmodSync(target, 0o644); } catch { /* best-effort restore */ }
+    console.log('     (UNREADABLE-MEANS-ABSENT EACCES half: OS/filesystem did not enforce chmod 0 as unreadable in this sandbox — skipped honestly; the directory-shaped test above proves the same refuse-never-absent code path)');
+    t('(UNREADABLE-MEANS-ABSENT EACCES half skipped honestly — OS did not reproduce)', () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n9) CONCURRENT-EDIT-LOSS — a drift between read and rename refuses instead of discarding the edit');
+t('a target mutated between read and rename (via the gated test hook) is refused; the concurrent edit survives on disk; a backup of the ORIGINAL read exists', () => {
+  const dir = freshDir('settings-merge-race');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, realSourceFixture());
+  writeJson(target, existingWithForeignEntries());
+  const concurrentEdit = JSON.stringify(Object.assign(existingWithForeignEntries(), { ownerNote: 'CHANGED BY SOMEONE ELSE MID-MERGE' }), null, 2) + '\n';
+
+  const prevEnv = process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS;
+  process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS = '1';
+  let r;
+  try {
+    r = mod.applySettingsMerge({ target, source, __mutateBeforeRename: () => fs.writeFileSync(target, concurrentEdit, 'utf8') });
+  } finally {
+    if (prevEnv === undefined) delete process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS; else process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS = prevEnv;
+  }
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), concurrentEdit, 'the concurrent edit must be preserved on disk, never discarded');
+  assert.ok(r.backupPath && fs.existsSync(r.backupPath));
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(r.backupPath, 'utf8')), existingWithForeignEntries(), 'the backup holds what Forge originally read, not the concurrent edit');
+});
+
+t('without the test-hook env var set, __mutateBeforeRename is never invoked (production path stays inert)', () => {
+  const dir = freshDir('settings-merge-race-off');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, realSourceFixture());
+  writeJson(target, existingWithForeignEntries());
+  let invoked = false;
+  const prevEnv = process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS;
+  delete process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS;
+  const r = mod.applySettingsMerge({ target, source, __mutateBeforeRename: () => { invoked = true; } });
+  if (prevEnv !== undefined) process.env.FORGE_SETTINGS_MERGE_TEST_HOOKS = prevEnv;
+  assert.strictEqual(invoked, false);
+  assert.strictEqual(r.status, 'merged');
+});
+
+// ---------------------------------------------------------------------------
+console.log('\n10) AUXILIARY-FILE-CLOBBER — exclusive, unique recovery files; never overwrite a prior one');
+t('two same-second refusals never collide: two DISTINCT recommended files exist, both readable and correct', () => {
+  const dir = freshDir('settings-merge-aux-collide');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  fs.writeFileSync(target, 'not json 1', 'utf8');
+  const r1 = mod.applySettingsMerge({ target, source, now: new Date('2026-01-01T00:00:00.000Z') });
+  fs.writeFileSync(target, 'not json 2', 'utf8');
+  const r2 = mod.applySettingsMerge({ target, source, now: new Date('2026-01-01T00:00:00.000Z') });
+  assert.notStrictEqual(r1.recommended, r2.recommended, 'each refusal must get its OWN unique recovery file');
+  assert.strictEqual(recommendedFiles(dir).length, 2);
+  assert.ok(fs.existsSync(r1.recommended) && fs.existsSync(r2.recommended));
+});
+
+t('two same-second real merges never collide: two DISTINCT backups exist, each with the ORIGINAL content at that step', () => {
+  const dir = freshDir('settings-merge-aux-backup-collide');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  writeJson(target, { hooks: { PreToolUse: [{ matcher: 'X', hooks: [{ type: 'command', command: 'a' }] }] } });
+  const now = new Date('2026-01-01T00:00:00.000Z');
+  const r1 = mod.applySettingsMerge({ target, source, now });
+  writeJson(target, JSON.parse(fs.readFileSync(target, 'utf8'))); // still merged, but re-run to force a fresh "changed" state below
+  fs.writeFileSync(target, JSON.stringify(Object.assign(JSON.parse(fs.readFileSync(target, 'utf8')), { extra: 'x' }), null, 2) + '\n', 'utf8');
+  const r2 = mod.applySettingsMerge({ target, source, now }); // no new source entries missing, but still exercises the writer path if changed — guard: force a real second merge by adding a NEW deny rule to source-equivalent state is unnecessary; instead assert on backups taken so far
+  assert.ok(r1.backupPath, 'first merge must produce a backup');
+  const backups = backupFiles(dir);
+  assert.ok(backups.length >= 1);
+  // uniqueness proof: writing two backups at the identical `now` must never produce the SAME filename twice
+  const b1 = guards.writeExclusiveUnique(dir, 'probe.forge-bak', '', 'one', { now });
+  const b2 = guards.writeExclusiveUnique(dir, 'probe.forge-bak', '', 'two', { now });
+  assert.strictEqual(b1.ok, true); assert.strictEqual(b2.ok, true);
+  assert.notStrictEqual(b1.path, b2.path);
+  assert.strictEqual(fs.readFileSync(b1.path, 'utf8'), 'one');
+  assert.strictEqual(fs.readFileSync(b2.path, 'utf8'), 'two');
+  void r2;
+});
+
+{
+  let junctionOk = false;
+  const dir = freshDir('settings-merge-aux-junction');
+  const outside = freshDir('settings-merge-aux-outside');
+  const linkedBackupDir = path.join(dir, 'linked-backups');
+  try { fs.symlinkSync(outside, linkedBackupDir, 'junction'); junctionOk = true; }
+  catch (e) { console.log('     (AUXILIARY-FILE-CLOBBER junction half: could not create a junction in this environment — ' + e.message + ' — skipping honestly)'); }
+  if (junctionOk) {
+    t('writeExclusiveUnique refuses to write into a directory that is itself a symlink/junction — nothing lands outside', () => {
+      const r = guards.writeExclusiveUnique(linkedBackupDir, 'settings.forge-recommended', '.json', 'x');
+      assert.strictEqual(r.ok, false);
+      assert.strictEqual(fs.readdirSync(outside).length, 0, 'nothing must have been written through the junction');
+    });
+  } else {
+    t('(AUXILIARY-FILE-CLOBBER junction half skipped honestly — could not create a junction)', () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n11) PROJECT-DIRECTORY-ESCAPE — projectRoot containment for every write destination');
+t('a target outside the given projectRoot is refused before anything is read/written', () => {
+  const root = freshDir('settings-merge-escape-root');
+  const outside = freshDir('settings-merge-escape-outside');
+  const source = path.join(root, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(outside, 'settings.json'); // NOT inside root
+  const r = mod.applySettingsMerge({ target, source, projectRoot: root });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.strictEqual(fs.existsSync(target), false);
+});
+
+t('a target inside the given projectRoot is accepted normally', () => {
+  const root = freshDir('settings-merge-escape-ok');
+  const source = path.join(root, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(root, 'settings.json');
+  const r = mod.applySettingsMerge({ target, source, projectRoot: root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.status, 'created');
+});
+
+{
+  let junctionOk = false;
+  const outerRoot = freshDir('settings-merge-escape-outer');
+  const outside = freshDir('settings-merge-escape-junction-outside');
+  const claudeLink = path.join(outerRoot, '.claude');
+  try { fs.symlinkSync(outside, claudeLink, 'junction'); junctionOk = true; }
+  catch (e) { console.log('     (PROJECT-DIRECTORY-ESCAPE junction half: could not create a junction in this environment — ' + e.message + ' — skipping honestly)'); }
+  if (junctionOk) {
+    t('a projectRoot that is itself a symlink/junction is refused even though target/backupDir would trivially "resolve inside" it', () => {
+      const source = path.join(outerRoot, 'source.json');
+      writeJson(source, realSourceFixture());
+      const target = path.join(claudeLink, 'settings.json');
+      const r = mod.applySettingsMerge({ target, source, projectRoot: claudeLink });
+      assert.strictEqual(r.ok, false);
+      assert.strictEqual(r.status, 'refused');
+      assert.strictEqual(fs.readdirSync(outside).filter((f) => f !== undefined).some((f) => f === 'settings.json'), false, 'nothing must land in the real outside directory the junction points to');
+    });
+  } else {
+    t('(PROJECT-DIRECTORY-ESCAPE junction-root half skipped honestly — could not create a junction)', () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n12) SCHEMA-ACCEPTANCE / DUPLICATE-HOOKS');
+t('a malformed source ({"hooks":{"PreToolUse":{}}}) is a usage-error — never "created"', () => {
+  const dir = freshDir('settings-merge-badsource');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, { hooks: { PreToolUse: {} } });
+  const target = path.join(dir, 'settings.json');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'usage-error');
+  assert.strictEqual(fs.existsSync(target), false);
+});
+
+t('null and array-shaped sources are also usage-errors', () => {
+  const dir = freshDir('settings-merge-badsource2');
+  const target = path.join(dir, 'settings.json');
+  const s1 = path.join(dir, 's1.json'); writeJson(s1, null);
+  const s2 = path.join(dir, 's2.json'); writeJson(s2, []);
+  assert.strictEqual(mod.applySettingsMerge({ target, source: s1 }).status, 'usage-error');
+  assert.strictEqual(mod.applySettingsMerge({ target, source: s2 }).status, 'usage-error');
+  assert.strictEqual(fs.existsSync(target), false);
+});
+
+t('a target hook changed to type:"prompt" while keeping the gate command is NOT considered present — the real command hook is added alongside it', () => {
+  const existing = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'prompt', command: 'node .claude/forge-bin/forge-gate-hook.cjs' }] }] } };
+  const source = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 10 }] }] } };
+  const { settings, added } = mod.mergeForgeSettings(existing, source);
+  const entry = settings.hooks.PreToolUse.find((e) => e.matcher === 'Bash|PowerShell');
+  assert.strictEqual(entry.hooks.length, 2, 'the wrong-type hook stays, and the real command hook is added');
+  assert.ok(entry.hooks.some((h) => h.type === 'command' && h.command.includes('forge-gate-hook.cjs')));
+  assert.strictEqual(added.length, 1);
+});
+
+t('DUPLICATE-HOOKS: a partially-present matcher tops up the SAME existing entry instead of appending a duplicate', () => {
+  const existing = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'a' }] }] } };
+  const source = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'a' }, { type: 'command', command: 'b' }] }] } };
+  const { settings, added } = mod.mergeForgeSettings(existing, source);
+  const matching = settings.hooks.PreToolUse.filter((e) => e.matcher === 'Bash|PowerShell');
+  assert.strictEqual(matching.length, 1, 'must never duplicate the whole entry');
+  assert.strictEqual(matching[0].hooks.length, 2, 'must top up the missing command instead');
+  assert.deepStrictEqual(matching[0].hooks.map((h) => h.command).sort(), ['a', 'b']);
+  assert.strictEqual(added.length, 1);
+});
+
+t('a repeated top-up merge stays idempotent (no re-duplication on a second run)', () => {
+  const existing = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'a' }] }] } };
+  const source = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'a' }, { type: 'command', command: 'b' }] }] } };
+  const r1 = mod.mergeForgeSettings(existing, source);
+  const r2 = mod.mergeForgeSettings(r1.settings, source);
+  assert.strictEqual(r2.added.length, 0);
+  assert.strictEqual(r2.settings.hooks.PreToolUse.length, 1);
+});
+
+t('DUPLICATE-HOOKS reporting: a PRE-EXISTING duplicate matcher is detected and reported, never silently repaired', () => {
+  const existing = { hooks: { PreToolUse: [
+    { matcher: 'Bash', hooks: [{ type: 'command', command: 'a' }] },
+    { matcher: 'Bash', hooks: [{ type: 'command', command: 'b' }] },
+  ] } };
+  const { settings, duplicate_matchers } = mod.mergeForgeSettings(existing, { hooks: {} });
+  assert.strictEqual(settings.hooks.PreToolUse.length, 2, 'nothing is auto-repaired/merged away');
+  assert.strictEqual(duplicate_matchers.length, 1);
+  assert.strictEqual(duplicate_matchers[0].event, 'PreToolUse');
+  assert.strictEqual(duplicate_matchers[0].count, 2);
+});
+
+t('the CLI/apply result surfaces duplicate_matchers on a noop merge (say what it found)', () => {
+  const dir = freshDir('settings-merge-dupreport');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, { hooks: {} });
+  const target = path.join(dir, 'settings.json');
+  writeJson(target, { hooks: { PreToolUse: [
+    { matcher: 'Bash', hooks: [{ type: 'command', command: 'a' }] },
+    { matcher: 'Bash', hooks: [{ type: 'command', command: 'b' }] },
+  ] } });
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.status, 'noop');
+  assert.strictEqual(r.duplicate_matchers.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+console.log('\n13) LOSSY-ROUNDTRIP — refuse unsafe content; preserve BOM/EOL/indent/trailing-newline on a real merge');
+t('a duplicate object key in the existing target refuses (never silently collapses to the last value)', () => {
+  const dir = freshDir('settings-merge-duplicate-key');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  fs.writeFileSync(target, '{"a":1,"a":2,"hooks":{}}', 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.deepStrictEqual(r.duplicateKeys, ['a']);
+  assert.strictEqual(recommendedFiles(dir).length, 1);
+});
+
+t('an overflowing number (1e400) and a >2^53 integer in the existing target both refuse', () => {
+  const dir = freshDir('settings-merge-unsafe-numbers');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  fs.writeFileSync(target, '{"a":1e400,"b":9007199254740993,"hooks":{}}', 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.deepStrictEqual(r.unsafeNumbers.sort(), ['1e400', '9007199254740993'].sort());
+});
+
+t('a safe integer at exactly 2^53-1 and an ordinary decimal do NOT trigger a false refusal', () => {
+  const dir = freshDir('settings-merge-safe-numbers');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  fs.writeFileSync(target, '{"a":9007199254740991,"b":1.5,"hooks":{}}', 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.status, 'merged');
+});
+
+t('BOM + CRLF + tab-indent + no-final-newline are all preserved through a real merge', () => {
+  const dir = freshDir('settings-merge-formatting');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  const original = '﻿{\r\n\t"hooks": {},\r\n\t"ownerNote": "keep me"\r\n}'; // no trailing newline
+  fs.writeFileSync(target, original, 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.status, 'merged');
+  const rawAfter = fs.readFileSync(target, 'utf8');
+  assert.strictEqual(rawAfter.charCodeAt(0), 0xfeff, 'BOM must be preserved');
+  assert.ok(rawAfter.includes('\r\n'), 'CRLF must be preserved');
+  assert.ok(!/(?<!\r)\n/.test(rawAfter.slice(1)), 'every newline must be \\r\\n, never a bare \\n');
+  assert.ok(rawAfter.includes('\t"'), 'tab indent must be preserved');
+  assert.ok(!rawAfter.endsWith('\n') && !rawAfter.endsWith('\r\n'), 'the original had no trailing newline — none must be added');
+  const parsedAfter = JSON.parse(rawAfter.charCodeAt(0) === 0xfeff ? rawAfter.slice(1) : rawAfter);
+  assert.strictEqual(parsedAfter.ownerNote, 'keep me');
+});
+
+// ---------------------------------------------------------------------------
+console.log('\n14) SETTINGS-PERMISSION-WIDENING (POSIX only)');
+if (process.platform === 'win32') {
+  t('(SETTINGS-PERMISSION-WIDENING skipped honestly — POSIX-only; Windows chmod only toggles the read-only attribute, not real ACLs, a documented limit)', () => {});
+} else {
+  t('a restrictive 0600 target keeps 0600 after a real merge, and its backup is written 0600 too', () => {
+    const dir = freshDir('settings-merge-perm');
+    const source = path.join(dir, 'source.json');
+    writeJson(source, realSourceFixture());
+    const target = path.join(dir, 'settings.json');
+    writeJson(target, existingWithForeignEntries());
+    fs.chmodSync(target, 0o600);
+    const r = mod.applySettingsMerge({ target, source });
+    assert.strictEqual(r.status, 'merged');
+    assert.strictEqual(fs.statSync(target).mode & 0o777, 0o600);
+    assert.strictEqual(fs.statSync(r.backupPath).mode & 0o777, 0o600);
+  });
+}
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

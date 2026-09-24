@@ -31,22 +31,37 @@ const crypto = require('crypto');
 
 const DEFAULT_ROOT = path.resolve(__dirname, '..', '..');
 
+/** relativeSecretLabel(file, root) -> a project-relative label for an owner-authorisation secret file
+ *  path (OWNER-CREDENTIAL-PATH, 2026-09-24) — never the resolved absolute path, which can carry a
+ *  private machine username, home directory or project folder name into a refusal reason an agent
+ *  might print to stderr. Falls back to the basename when the file is not actually under `root` (e.g.
+ *  an explicit absolute --secret-file elsewhere). Pure, never throws. */
+function relativeSecretLabel(file, root) {
+  if (typeof file !== 'string' || !file) return '(unknown file)';
+  try {
+    const rel = path.relative(root || DEFAULT_ROOT, file);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel.split(path.sep).join('/');
+  } catch { /* fall through to basename */ }
+  return path.basename(file);
+}
+
 /** readOwnerSecret — file first (authoritative), env only when the caller explicitly opts in. */
 function readOwnerSecret(opts) {
   opts = opts || {};
   const root = opts.projectRoot ? path.resolve(opts.projectRoot) : DEFAULT_ROOT;
   const rel = opts.secretFile || path.join('.claude', 'config', 'forge-owner-grant.txt');
   const file = path.isAbsolute(rel) ? rel : path.join(root, rel);
+  const label = relativeSecretLabel(file, root);
   try {
     const v = fs.readFileSync(file, 'utf8').trim();
-    if (v) return { value: v, source: 'file', file };
+    if (v) return { value: v, source: 'file', file, label };
   } catch { /* absent/unreadable — reported as none below */ }
   if (opts.allowEnv === true && opts.envVar) {
     const env = opts.env || process.env;
     const v = typeof env[opts.envVar] === 'string' ? env[opts.envVar].trim() : '';
-    if (v) return { value: v, source: 'env', file };
+    if (v) return { value: v, source: 'env', file, label };
   }
-  return { value: null, source: 'none', file };
+  return { value: null, source: 'none', file, label };
 }
 
 /** verifyOwnerGrant — the single decision. */
@@ -56,8 +71,10 @@ function verifyOwnerGrant(opts) {
   if (!secret.value) {
     return {
       ok: false, source: 'none',
-      reason: 'no owner authorisation secret is configured — write one to ' + secret.file
-        + ' so this can be VERIFIED instead of assumed (an environment variable does not count: the process asking for permission can set it)',
+      // OWNER-CREDENTIAL-PATH (2026-09-24): a project-relative LABEL, never secret.file's resolved
+      // absolute path — see relativeSecretLabel() above.
+      reason: 'no owner authorisation secret is configured — write one to ' + secret.label
+        + ' (relative to the project root) so this can be VERIFIED instead of assumed (an environment variable does not count: the process asking for permission can set it)',
     };
   }
   const token = opts.token;
@@ -72,7 +89,7 @@ function verifyOwnerGrant(opts) {
   return { ok: true, source: secret.source, reason: 'owner authorisation verified (' + secret.source + ')' };
 }
 
-module.exports = { verifyOwnerGrant, readOwnerSecret, DEFAULT_ROOT };
+module.exports = { verifyOwnerGrant, readOwnerSecret, relativeSecretLabel, DEFAULT_ROOT };
 
 // ---- CLI: `node forge-ownergrant.cjs check --token <t> [--secret-file <rel>] [--root <dir>]` ----
 if (require.main === module) {

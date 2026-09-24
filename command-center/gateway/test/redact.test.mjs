@@ -15,7 +15,7 @@ import {
   _setConversationsDirForTests,
   _resetConversationsForTests,
 } from '../src/conversations.mjs';
-import { buildCapabilities, _resetCapabilitiesCacheForTests } from '../src/capabilities.mjs';
+import { buildCapabilities, _resetCapabilitiesCacheForTests, _setForgeCapabilitiesCjsForTests } from '../src/capabilities.mjs';
 
 test('redact() strips all 5 real credential shapes and leaves ordinary text untouched', () => {
   const names = _secretPatternNamesForTests();
@@ -158,19 +158,33 @@ test('#12 SECURITY: capabilities.mjs redacts a secret that leaks into a spawn-fa
     _resetCapabilitiesCacheForTests();
     const binDir = path.join(projectRoot, '.claude', 'forge-bin');
     fs.mkdirSync(binDir, { recursive: true });
-    // A fixture "forge-capabilities.cjs" that fails and echoes a real credential shape to stderr —
-    // exactly the D.2 "child stdout/stderr unredacted in responses" path the WP10 threat model
-    // named. Node's child_process error messages embed stderr verbatim on a non-zero exit.
+    // SEC-PROJECT-CODE (2026-09-24): buildCapabilities() now ALWAYS runs the gateway's own CENTRAL
+    // forge-capabilities.cjs against the selected project's DATA (via --root) — never a script that
+    // happens to live inside the selected project's own .claude/forge-bin/. A tampered/failing script
+    // planted there (as this fixture used to be, and as this control arm still proves) must therefore
+    // never execute at all; see capabilities.test.mjs's own SEC-PROJECT-CODE sentinel test for the
+    // direct "it never ran" proof. Redaction of the CENTRAL script's own failure path is proven below
+    // via the test-only override seam instead — exactly the D.2 "child stdout/stderr unredacted in
+    // responses" path the WP10 threat model named. Node's child_process error messages embed stderr
+    // verbatim on a non-zero exit.
     fs.writeFileSync(
       path.join(binDir, 'forge-capabilities.cjs'),
       "console.error('leaked during failure: nvapi-abcdefghij1234567890'); process.exit(1);\n",
       'utf8',
     );
+    const notExecuted = await buildCapabilities(projectRoot);
+    assert.equal(notExecuted.available, true, 'the project-local script must never run — the central script answers instead: ' + notExecuted.note);
+
+    _resetCapabilitiesCacheForTests();
+    const fixture = path.join(projectRoot, 'fake-forge-capabilities.cjs');
+    fs.writeFileSync(fixture, "console.error('leaked during failure: nvapi-abcdefghij1234567890'); process.exit(1);\n", 'utf8');
+    _setForgeCapabilitiesCjsForTests(fixture);
     const result = await buildCapabilities(projectRoot);
     assert.equal(result.available, false);
     assert.doesNotMatch(result.note, /nvapi-abcdefghij1234567890/, 'the raw secret must never reach the response');
     assert.match(result.note, /\[REDACTED:NVIDIA_API_KEY\]/);
   } finally {
+    _setForgeCapabilitiesCjsForTests(null);
     _resetCapabilitiesCacheForTests();
     fs.rmSync(projectRoot, { recursive: true, force: true });
   }

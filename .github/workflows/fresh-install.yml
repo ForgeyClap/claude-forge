@@ -310,3 +310,45 @@ jobs:
           $backups2 = Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Filter 'settings.json.forge-bak-*'
           if ($backups2.Count -ne 1) { Write-Host "::error::a no-op second install must not take a new backup (found $($backups2.Count))"; exit 1 }
           Write-Host 'ok   second install is a true no-op (byte-identical, no new backup)'
+
+      # UNSAFE-FIRST-COPY (wp-f2, 2026-09-24 Codex re-check): a settings.json that is a DIRECTORY (not a
+      # file) must be REFUSED, never `cp`/Copy-Item'd INTO (which would nest the payload's settings.json
+      # inside it while reporting success). No nested file, and (POSIX) a non-zero exit.
+      - name: settings.json as a DIRECTORY refuses cleanly, no nested file (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set +e   # the refusal's non-zero exit is the expected, asserted outcome
+          proj="$RUNNER_TEMP/settings-dir-project"
+          mkdir -p "$proj/.claude/settings.json"
+          bash install.sh --project "$proj" --yes
+          status=$?
+          set -e
+          [ "$status" -ne 0 ] || { echo "::error::install.sh accepted a directory-shaped settings.json instead of refusing it"; exit 1; }
+          entries=$(find "$proj/.claude/settings.json" -mindepth 1 | wc -l)
+          [ "$entries" -eq 0 ] || { echo "::error::something was nested inside the settings.json directory (found $entries entr(y/ies))"; exit 1; }
+          [ -d "$proj/.claude/settings.json" ] || { echo "::error::settings.json is no longer a directory — it should never have been touched"; exit 1; }
+          [ -f "$proj/.claude/settings.forge-recommended.json" ] && { echo "::error::a recommended-file fallback should not exist either — this is a hard refusal"; exit 1; }
+          [ -f "$proj/.claude/forge-bin/forge-doctor.cjs" ] || { echo "::error::every OTHER payload file should still install even though settings.json was refused"; exit 1; }
+          echo "ok   install.sh refused the directory-shaped settings.json (exit $status), nested nothing, everything else still installed"
+
+      - name: settings.json as a DIRECTORY refuses cleanly, no nested file (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'settings-dir-project'
+          $settingsDir = Join-Path $proj '.claude\settings.json'
+          New-Item -ItemType Directory -Force $settingsDir | Out-Null
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes
+          if (-not (Test-Path -LiteralPath $settingsDir -PathType Container)) { Write-Host '::error::settings.json is no longer a directory -- it should never have been touched'; exit 1 }
+          $entries = Get-ChildItem -LiteralPath $settingsDir -Force
+          if ($entries.Count -ne 0) { Write-Host "::error::something was nested inside the settings.json directory (found $($entries.Count) entr(y/ies))"; exit 1 }
+          $recommended = Join-Path $proj '.claude\settings.forge-recommended.json'
+          if (Test-Path -LiteralPath $recommended -PathType Leaf) { Write-Host '::error::a recommended-file fallback should not exist either -- this is a hard refusal'; exit 1 }
+          $doctorPath = Join-Path $proj '.claude\forge-bin\forge-doctor.cjs'
+          if (-not (Test-Path -LiteralPath $doctorPath -PathType Leaf)) { Write-Host '::error::every OTHER payload file should still install even though settings.json was refused'; exit 1 }
+          Write-Host 'ok   install.ps1 refused the directory-shaped settings.json, nested nothing, everything else still installed'

@@ -28,6 +28,34 @@ const CONFIG_SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-cfg-'));
 process.env.FORGE_CONFIG_HOME = path.join(CONFIG_SANDBOX, 'home');
 process.env.FORGE_PROJECT_ROOT = path.join(CONFIG_SANDBOX, 'project');
 
+// TEST-CREDENTIAL-ISOLATION (2026-09-24): every path usage-guard.cjs derives from HOME (CRED_FILE,
+// STATE_FILE, PID_FILE, LOG_FILE, PAUSED_JOURNAL, PRESSURE_FILE, IDENTITY_FILE, the account-map file) is
+// computed ONCE at module load time from FORGE_USAGE_GUARD_HOME / FORGE_USAGE_GUARD_IDENTITY (or the
+// real ~/.claude when those are unset). This file used to set only the two config-sandbox vars above
+// before the module's first `require()` below — every OTHER seam kept resolving to the REAL ~/.claude,
+// so a test whose injected `deps` omitted one function (readCredentialFp — confirmed missing from
+// tickHarness, see the #13 tests) silently fell back to the real reader and touched the real
+// .credentials.json. ALL isolation now happens BEFORE this file's own first require of the module.
+const REAL_HOME = os.homedir();
+const ISOLATED_HOME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-isolated-home-'));
+const ISOLATED_CLAUDE_HOME = path.join(ISOLATED_HOME_ROOT, '.claude');
+fs.mkdirSync(ISOLATED_CLAUDE_HOME, { recursive: true });
+process.env.HOME = ISOLATED_HOME_ROOT;
+process.env.USERPROFILE = ISOLATED_HOME_ROOT;
+process.env.FORGE_USAGE_GUARD_HOME = ISOLATED_CLAUDE_HOME;
+process.env.FORGE_USAGE_GUARD_IDENTITY = path.join(ISOLATED_CLAUDE_HOME, '.claude.json');
+
+// Deny-by-default net: every path override above should make a real-credential read impossible, but a
+// regression must be a loud, immediate test failure — never a silent real-network/real-credential read.
+const realFsReadFileSync = fs.readFileSync;
+const REAL_CRED_FILE = path.join(REAL_HOME, '.claude', '.credentials.json');
+fs.readFileSync = function guardedReadFileSync(p, ...rest) {
+  if (typeof p === 'string' && path.resolve(p) === REAL_CRED_FILE) {
+    throw new Error('TEST ISOLATION VIOLATION: attempted to read the REAL credentials file at ' + p);
+  }
+  return realFsReadFileSync.call(fs, p, ...rest);
+};
+
 let pass = 0, fail = 0;
 // PROMISE-AWARE (2026-08-06): an async test used to be counted PASS the moment fn() returned a pending
 // promise — its assertions ran later as unhandled rejections and could never fail the suite. Async tests
@@ -767,6 +795,13 @@ function tickHarness(overrides) {
     doResume: async (u, st, ident) => { calls.doResume.push({ st, ident }); },
     log: (m) => calls.logs.push(m),
     writePressureFile: () => {},
+    // TEST-CREDENTIAL-ISOLATION (2026-09-24): without this override, tick()'s default readCredentialFp
+    // reads the real CRED_FILE (now redirected by the isolated FORGE_USAGE_GUARD_HOME above, but this
+    // explicit override is the correct fix regardless of that isolation — a harness's injected deps
+    // object should be fully self-contained, not rely on a module-level env seam it never mentions).
+    // null mirrors "no credential readable", which is harmless here: fetchUsage() is always overridden
+    // per-test and never sets u.credentialFp unless a test explicitly wants to exercise that branch.
+    readCredentialFp: () => null,
     ...overrides.deps,
   };
   return { deps, calls, state, stateFile };
@@ -1149,6 +1184,84 @@ test('H3.3 logrotatie: een log boven de grens roteert naar .1 en verliest de rec
 }
 
 // ============================================================================================
+// H6 — GUARD-CORRUPT (Codex recheck wp-f4, 2026-09-24): a malformed/unreadable state file must read as
+// mode:'corrupt' (an explicit, honest label — never a silently-invented mode:'ok'), a FAILED measurement
+// must preserve 'corrupt' rather than replacing it with a fabricated 'ok', and only a fresh, SUCCESSFUL,
+// validated measurement may move the state forward — explicitly logged, never silently.
+//
+// Each test is fully self-contained (its own temp dir/env-var set-restore, awaited to completion inside
+// the async test body itself) — the module's async `test()` wrapper QUEUES a promise-returning test body
+// rather than running it immediately, so a shared outer setup/teardown block (the H4 pattern, which only
+// ever holds SYNCHRONOUS tests) would tear down the temp dir before these async bodies actually run.
+// ============================================================================================
+const failingFetch6 = async () => { throw new Error('simulated fetch failure'); };
+const unknownIdent6 = () => ({ fp: null, source: 'unknown' });
+async function withCorruptStateGuard6(initialContent, run) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-corrupt-'));
+  const stateFile = path.join(dir, 'state.json');
+  const orig = process.env.FORGE_USAGE_GUARD_STATE;
+  process.env.FORGE_USAGE_GUARD_STATE = stateFile;
+  delete require.cache[require.resolve('./usage-guard.cjs')];
+  const G6 = require('./usage-guard.cjs');
+  try {
+    if (initialContent !== null) fs.writeFileSync(stateFile, initialContent);
+    else try { fs.unlinkSync(stateFile); } catch { /* genuinely missing on purpose */ }
+    await run(G6, stateFile);
+  } finally {
+    if (orig === undefined) delete process.env.FORGE_USAGE_GUARD_STATE; else process.env.FORGE_USAGE_GUARD_STATE = orig;
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
+test('GUARD-CORRUPT: a malformed state file reads as mode:"corrupt"; a failed measurement preserves it (never a fabricated "ok")', () =>
+  withCorruptStateGuard6('{ not valid json', async (G6, stateFile) => {
+    await G6.tick({ fetchUsage: failingFetch6, readIdentity: unknownIdent6, log: () => {} });
+    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.strictEqual(persisted.mode, 'corrupt', 'a failed measurement must never replace corrupt state with a fabricated ok: ' + JSON.stringify(persisted));
+    assert.strictEqual(persisted.corruptReason, 'invalid-json');
+    assert.ok(typeof persisted.lastError === 'string' && persisted.lastError.length > 0, 'the failed measurement is still honestly recorded');
+  }));
+
+test('GUARD-CORRUPT: an unexpected JSON shape (a bare array) also reads as corrupt, never ok', () =>
+  withCorruptStateGuard6(JSON.stringify([1, 2, 3]), async (G6, stateFile) => {
+    await G6.tick({ fetchUsage: failingFetch6, readIdentity: unknownIdent6, log: () => {} });
+    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.strictEqual(persisted.mode, 'corrupt');
+    assert.strictEqual(persisted.corruptReason, 'unexpected-shape');
+  }));
+
+test('GUARD-CORRUPT: a genuinely MISSING state file (never written yet) is legitimately mode:"ok", not corrupt', () =>
+  withCorruptStateGuard6(null, async (G6, stateFile) => {
+    await G6.tick({ fetchUsage: failingFetch6, readIdentity: unknownIdent6, log: () => {} });
+    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.strictEqual(persisted.mode, 'ok');
+    assert.strictEqual(persisted.corruptReason, undefined);
+  }));
+
+test('GUARD-CORRUPT: a fresh SUCCESSFUL measurement recovers corrupt state explicitly (logged, stale fields cleared) — never silently', () =>
+  withCorruptStateGuard6('{ not valid json', async (G6, stateFile) => {
+    const logs = [];
+    const windows = G6.normalizeWindows({ limits: [{ kind: 'session', group: 'session', percent: 10, resets_at: null }] });
+    const usage = { session: { pct: 10, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows, credits: { used: NaN, limit: NaN, remaining: NaN } };
+    await G6.tick({ fetchUsage: async () => usage, readIdentity: unknownIdent6, log: (m) => logs.push(m), doPause: async () => {}, doResume: async () => {} });
+    const persisted = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.strictEqual(persisted.mode, 'ok');
+    assert.strictEqual(persisted.corruptReason, undefined, 'stale corrupt-diagnostic fields must not linger once recovered');
+    assert.strictEqual(persisted.corruptAt, undefined);
+    assert.ok(logs.some((l) => /STATE WAS CORRUPT/.test(l)), 'the recovery must be explicitly logged, never silent: ' + JSON.stringify(logs));
+  }));
+
+test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fresh measurement pauses for real (does not need to "resume" first)', () =>
+  withCorruptStateGuard6('not json at all', async (G6) => {
+    const calls = { doPause: 0 };
+    const windows = G6.normalizeWindows({ limits: [{ kind: 'session', group: 'session', percent: 99, resets_at: null }] });
+    const usage = { session: { pct: 99, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows, credits: { used: NaN, limit: NaN, remaining: NaN } };
+    await G6.tick({ fetchUsage: async () => usage, readIdentity: unknownIdent6, log: () => {}, doPause: async () => { calls.doPause++; }, doResume: async () => {} });
+    assert.strictEqual(calls.doPause, 1, 'a real crossed window on the recovering measurement must pause immediately');
+  }));
+
+// ============================================================================================
 // H5 — v2.7.0 (2026-09-24): the guard's settings come from /forge config. Precedence: CLI flag > forge-config
 //      value > the hard default (pause-at 98 — the only pause literal left; the 93/95 drift is gone). `start`
 //      refuses when the owner switched the guard off, and prints the disclosure only on a REAL start.
@@ -1418,6 +1531,402 @@ test('H3.3 logrotatie: een log boven de grens roteert naar .1 en verliest de rec
       }
     }
   });
+  // ---- GUARD-OFF-BYPASS (Codex recheck wp-f4, 2026-09-24): with usage-guard OFF, no command path may
+  // read the login token or contact the network/Paperclip — enforced at the SAME two choke points
+  // (fetchUsage/pc) every caller (check/status/credits/watch --once/tick/doPause/doResume/override-on)
+  // shares. --force is the one documented CLI exception.
+  //
+  // Both tests below spawn an isolated SUBPROCESS (matching nvidia-provider.test.cjs's own fetch-spy
+  // convention, and this file's own runGuard()/H3.2b pattern) rather than monkey-patching the shared
+  // `global.fetch`/`process.env` of THIS test process in an async test body — the async test() wrapper
+  // queues promise-returning bodies rather than running them to completion immediately (see the H6
+  // GUARD-CORRUPT section's own comment on this), so two such bodies genuinely interleave and a global
+  // mutation in one is visible to the other. A real subprocess has its own process-wide state, so this
+  // hazard cannot occur no matter how the two tests interleave.
+  function spawnGuardProbe(env, scriptLines) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-probe-'));
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, scriptLines.join('\n'), 'utf8');
+    const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 30000, env });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  }
+  t5('GUARD-OFF-BYPASS: fetchUsage()/pc() refuse when the switch is off (guardNetworkAllowed is the shared gate)', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const out = spawnGuardProbe(sb.env, [
+      "'use strict';",
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      '(async () => {',
+      '  const gate = G.guardNetworkAllowed({});',
+      '  let fetchErr = null; try { await G.fetchUsage(); } catch (e) { fetchErr = e.message; }',
+      '  const pcResult = await G.pc("GET", "/api/companies");',
+      '  process.stdout.write(JSON.stringify({ gateOk: gate.ok, fetchErr, pcStatus: pcResult.status, pcBlocked: pcResult.blocked }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ]);
+    assert.strictEqual(out.gateOk, false, JSON.stringify(out));
+    assert.ok(/usage-guard staat uit|usage guard is switched off/.test(out.fetchErr || ''), JSON.stringify(out));
+    assert.strictEqual(out.pcStatus, 0, JSON.stringify(out));
+    assert.strictEqual(out.pcBlocked, true, JSON.stringify(out));
+  });
+  t5('GUARD-OFF-BYPASS: fetchUsage({force:true}) genuinely proceeds past the off-switch gate (verified via a fetch spy in an isolated subprocess — no real network)', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const out = spawnGuardProbe(sb.env, [
+      "'use strict';",
+      'let calls = 0;',
+      'global.fetch = async () => { calls++; return { ok: true, status: 200, json: async () => ({ five_hour: { utilization: 5 }, seven_day: { utilization: 5 } }) }; };',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      '(async () => {',
+      '  let blockedErr = null; try { await G.fetchUsage(); } catch (e) { blockedErr = e.message; }',
+      '  const blockedCalls = calls;',
+      '  const u = await G.fetchUsage({ force: true });',
+      '  process.stdout.write(JSON.stringify({ blockedErr, blockedCalls, forcedCalls: calls, forcedPct: u.session.pct }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ]);
+    assert.ok(/usage-guard staat uit|usage guard is switched off/.test(out.blockedErr || ''), JSON.stringify(out));
+    assert.strictEqual(out.blockedCalls, 0, 'no fetch happened before force was passed: ' + JSON.stringify(out));
+    assert.strictEqual(out.forcedCalls, 1, 'force:true reaches the real request path: ' + JSON.stringify(out));
+    assert.strictEqual(out.forcedPct, 5, JSON.stringify(out));
+  });
+  t5('GUARD-OFF-BYPASS: CLI check/status/credits refuse cleanly when usage-guard is off — a login file IS present, but never read', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    for (const argvCmd of [['check'], ['status'], ['credits']]) {
+      const r = runGuard(argvCmd, sb.env);
+      assert.strictEqual(r.status, 3, argvCmd.join(' ') + ': ' + (r.stdout || '') + (r.stderr || ''));
+      assert.ok(/usage-guard staat uit|usage guard is switched off/.test(r.stdout || ''), argvCmd.join(' ') + ': ' + r.stdout);
+      assert.ok(!/no OAuth token|REAL usage \(official endpoint\)|usage endpoint HTTP/.test(r.stdout || ''), argvCmd.join(' ') + ' must never have reached the token/network: ' + r.stdout);
+    }
+  });
+  t5('GUARD-OFF-BYPASS: watch --once refuses cleanly when off, with no CHECK FAILED / no-OAuth-token noise (never reads the token)', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const r = runGuard(['watch', '--once'], sb.env);
+    const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);
+    assert.ok(/usage-guard staat uit|usage guard is switched off/.test(logText), logText || (r.stdout + r.stderr));
+    assert.ok(!/no OAuth token|CHECK FAILED/.test(logText), 'watch --once must refuse before ever reading the token: ' + logText);
+  });
+
+  // ---- GUARD-TOKEN-ERROR (2026-09-24): a syntactically valid credentials file whose token is
+  // structurally malformed (an embedded control character) must never reach fetch()'s Headers
+  // construction — Node's own header validation would otherwise throw a TypeError quoting the token
+  // verbatim. readToken() rejects it first, with a FIXED message that never echoes the token.
+  t5('GUARD-TOKEN-ERROR: a control-character token is rejected BEFORE fetch(); state/log/stdout carry a FIXED message, never the token', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'SYNTHETIC-OAUTH\nINJECTED-SECRET-FRAGMENT' } }));
+    const r = runGuard(['watch', '--once'], sb.env);
+    const state = readIf(sb.env.FORGE_USAGE_GUARD_STATE);
+    const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);
+    assert.ok(state.length > 0, 'the failed check was recorded: ' + (r.stdout || '') + (r.stderr || ''));
+    assert.strictEqual(JSON.parse(state).lastError, 'OAuth token in the credentials file has an unexpected shape (rejected before use)');
+    for (const [name, text] of [['state', state], ['log', logText], ['stdout', r.stdout || ''], ['stderr', r.stderr || '']]) {
+      assert.ok(!/SYNTHETIC-OAUTH|INJECTED-SECRET-FRAGMENT/.test(text), name + ' must not carry any part of the malformed token: ' + text.slice(0, 300));
+    }
+  });
+
+  // ---- GUARD-TOKEN-FINGERPRINT (2026-09-24): a credential-derived fingerprint (sha256 of
+  // accountUuid+organizationUuid) must never reach a persisted artifact — readAccountIdentity() now
+  // returns an OPAQUE LOCAL LABEL (via the local-only account-map file), never the raw fingerprint.
+  function withIdentitySandbox(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-fp-'));
+    const identityFile = path.join(dir, 'identity.json');
+    const mapFile = path.join(dir, 'account-map.json');
+    const saved = { FORGE_USAGE_GUARD_IDENTITY: process.env.FORGE_USAGE_GUARD_IDENTITY, FORGE_USAGE_GUARD_ACCOUNT_MAP: process.env.FORGE_USAGE_GUARD_ACCOUNT_MAP };
+    process.env.FORGE_USAGE_GUARD_IDENTITY = identityFile;
+    process.env.FORGE_USAGE_GUARD_ACCOUNT_MAP = mapFile;
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    const G8 = require('./usage-guard.cjs');
+    try { return fn(G8, identityFile, mapFile); }
+    finally {
+      for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+      delete require.cache[require.resolve('./usage-guard.cjs')];
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  t5('GUARD-TOKEN-FINGERPRINT: readAccountIdentity() returns an OPAQUE LOCAL LABEL, never the raw sha256 fingerprint, and is STABLE across calls', () => {
+    withIdentitySandbox((G8, identityFile, mapFile) => {
+      fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'aaaaaaaa-0000-0000-0000-000000000001', organizationUuid: 'org-1' } }));
+      const id1 = G8.readAccountIdentity();
+      assert.ok(id1.fp, 'an identity is derived');
+      assert.ok(!/^[0-9a-f]{12}$/.test(id1.fp), 'the returned fp must not LOOK like the raw 12-hex-char sha256 fingerprint: ' + id1.fp);
+      const rawFp = G8.fingerprintAccount({ accountUuid: 'aaaaaaaa-0000-0000-0000-000000000001', organizationUuid: 'org-1' }).fp;
+      assert.ok(!id1.fp.includes(rawFp), 'the label must not embed the raw fingerprint');
+      const id2 = G8.readAccountIdentity();
+      assert.strictEqual(id2.fp, id1.fp, 'the SAME identity maps to the SAME label across calls (persisted local mapping)');
+      // the raw fingerprint is allowed to live ONLY in the local, purpose-built mapping file (never
+      // synced/dashboarded/published — see usage-guard-redact.cjs's own header).
+      assert.ok(fs.readFileSync(mapFile, 'utf8').includes(rawFp));
+    });
+  });
+  t5('GUARD-TOKEN-FINGERPRINT: two DIFFERENT account identities map to two DIFFERENT labels', () => {
+    withIdentitySandbox((G8, identityFile) => {
+      fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'aaaaaaaa-0000-0000-0000-000000000001' } }));
+      const idA = G8.readAccountIdentity();
+      fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'bbbbbbbb-0000-0000-0000-000000000002' } }));
+      const idB = G8.readAccountIdentity();
+      assert.notStrictEqual(idA.fp, idB.fp);
+    });
+  });
+  t5('GUARD-TOKEN-FINGERPRINT: without the profile file, identity is honestly "unknown" — the removed refresh-token fallback never fires (a refresh token is never hashed for identity)', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { refreshToken: 'SYNTHETIC-REFRESH-TOKEN-SHOULD-NEVER-BE-HASHED-FOR-IDENTITY' } }));
+    const savedEnv = {};
+    for (const k of Object.keys(sb.env)) { savedEnv[k] = process.env[k]; process.env[k] = sb.env[k]; }
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    const G9 = require('./usage-guard.cjs');
+    try {
+      const id = G9.readAccountIdentity();
+      assert.strictEqual(id.fp, null);
+      assert.strictEqual(id.source, 'unknown');
+    } finally {
+      for (const k of Object.keys(savedEnv)) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
+      delete require.cache[require.resolve('./usage-guard.cjs')];
+    }
+  });
+
+  // ---- GUARD-BODY-TIMEOUT (2026-09-24): the abort deadline must cover body consumption (r.json()), not
+  // just the initial fetch() — a response whose headers resolve instantly but whose body stalls must
+  // still be aborted at the deadline. Uses FORGE_USAGE_GUARD_FETCH_TIMEOUT_MS (a test-only override,
+  // mirroring the existing FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS seam) so this is provable with a real,
+  // short, bounded wait instead of the real 30s.
+  t5('GUARD-BODY-TIMEOUT: a response that resolves its headers but stalls its body is aborted at the deadline, not left hanging', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const env = Object.assign({}, sb.env, { FORGE_USAGE_GUARD_FETCH_TIMEOUT_MS: '300' });
+    const start = Date.now();
+    const out = spawnGuardProbe(env, [
+      "'use strict';",
+      // headers resolve immediately; the body NEVER completes on its own — only the deadline's abort
+      // signal can ever settle this promise. If GUARD-BODY-TIMEOUT regressed (clearTimeout back in an
+      // inner finally right after fetch() resolves), this promise would hang forever and the child
+      // process would be killed by the spawnSync timeout instead of exiting quickly on its own.
+      'global.fetch = async (url, init) => ({ ok: true, status: 200, json: () => new Promise((resolve, reject) => {',
+      '  if (init.signal.aborted) return reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));',
+      '  init.signal.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })), { once: true });',
+      '}) });',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      '(async () => {',
+      '  let err = null; try { await G.fetchUsage(); } catch (e) { err = e.message; }',
+      '  process.stdout.write(JSON.stringify({ err }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ]);
+    assert.ok(Date.now() - start < 10000, 'the abort must fire close to the short override deadline, not hang the whole subprocess');
+    assert.match(out.err || '', /usage endpoint timed out after 0s \(response body never completed\)/, JSON.stringify(out));
+  });
+
+  // ---- GUARD-STATE-RACE (Codex recheck wp-f4, 2026-09-24): doPause()/doResume() must read
+  // ownerOverride/credits FRESH at write-time (inside the state lock), never from a snapshot captured
+  // before their own async Paperclip work — otherwise a concurrent override-off clearing the override
+  // mid-pause-round is silently reverted the moment the stale pause finally writes.
+  t5('GUARD-STATE-RACE: doPause() honors an ownerOverride cleared WHILE it is mid-flight, instead of reviving it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-race-'));
+    const stateFile = path.join(dir, 'state.json');
+    const saved = process.env.FORGE_USAGE_GUARD_STATE;
+    process.env.FORGE_USAGE_GUARD_STATE = stateFile;
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    const G11 = require('./usage-guard.cjs');
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ mode: 'ok', ownerOverride: { active: true, at: new Date().toISOString(), reason: 'test' } }));
+      const u = { session: { pct: 99, resetsAt: null }, week: { pct: 10, resetsAt: null } };
+      const crossed = [{ id: 'session|session|session', name: 'session', metric: 'session', pct: 99, resetsAt: null }];
+      // doPause() is called but NOT yet awaited: its first real work (allAgents() -> pc() -> a real
+      // fetch() to an unreachable loopback Paperclip) is genuine async I/O, so none of its continuations
+      // can run until this synchronous block below finishes and the event loop is given a chance —
+      // meaning the state mutation below is GUARANTEED to land before doPause() ever reads the state for
+      // its write, deterministically reproducing "a concurrent clear happened mid-pause-round" without
+      // relying on real timing.
+      const pausePromise = G11.doPause(u, crossed, { fp: null, source: 'unknown' });
+      const midFlight = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      delete midFlight.ownerOverride;
+      fs.writeFileSync(stateFile, JSON.stringify(midFlight));
+      await pausePromise;
+      const final = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.strictEqual(final.ownerOverride, undefined, 'a concurrently-cleared override must not be silently restored: ' + JSON.stringify(final));
+      assert.strictEqual(final.mode, 'paused');
+    } finally {
+      if (saved === undefined) delete process.env.FORGE_USAGE_GUARD_STATE; else process.env.FORGE_USAGE_GUARD_STATE = saved;
+      delete require.cache[require.resolve('./usage-guard.cjs')];
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  t5('GUARD-STATE-RACE: an ownerOverride SET while doPause() is mid-flight (the mirror case) still survives — the fresh read is not one-directional', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-race2-'));
+    const stateFile = path.join(dir, 'state.json');
+    const saved = process.env.FORGE_USAGE_GUARD_STATE;
+    process.env.FORGE_USAGE_GUARD_STATE = stateFile;
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    const G12 = require('./usage-guard.cjs');
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ mode: 'ok' }));
+      const u = { session: { pct: 99, resetsAt: null }, week: { pct: 10, resetsAt: null } };
+      const crossed = [{ id: 'session|session|session', name: 'session', metric: 'session', pct: 99, resetsAt: null }];
+      const pausePromise = G12.doPause(u, crossed, { fp: null, source: 'unknown' });
+      const midFlight = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      midFlight.ownerOverride = { active: true, at: new Date().toISOString(), reason: 'set mid-flight' };
+      fs.writeFileSync(stateFile, JSON.stringify(midFlight));
+      await pausePromise;
+      const final = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.strictEqual(final.ownerOverride && final.ownerOverride.reason, 'set mid-flight');
+    } finally {
+      if (saved === undefined) delete process.env.FORGE_USAGE_GUARD_STATE; else process.env.FORGE_USAGE_GUARD_STATE = saved;
+      delete require.cache[require.resolve('./usage-guard.cjs')];
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---- GUARD-STOP (Codex recheck wp-f4, 2026-09-24): retained timer handles, a shutdown check BEFORE
+  // starting new work, an abortable in-flight request, and a `stop` exit code that actually reflects
+  // whether the watcher was confirmed dead.
+  t5('GUARD-STOP: fetchUsage(opts.signal) aborts an in-flight request when an EXTERNAL signal fires, not just the internal timeout', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const out = spawnGuardProbe(sb.env, [
+      "'use strict';",
+      'global.fetch = async (url, init) => ({ ok: true, status: 200, json: () => new Promise((resolve, reject) => {',
+      '  if (init.signal.aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));',
+      '  init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });',
+      '}) });',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      'const ac = new AbortController();',
+      '(async () => {',
+      '  const p = G.fetchUsage({ signal: ac.signal });',
+      '  setTimeout(() => ac.abort(), 50);',
+      '  let err = null; try { await p; } catch (e) { err = e.message; }',
+      '  process.stdout.write(JSON.stringify({ err }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ]);
+    assert.match(out.err || '', /shutting down/, JSON.stringify(out));
+  });
+  t5('GUARD-STOP: `stop` actually terminates a real running watcher and exits 0; stopping an already-gone watcher is a clean, honest no-op', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const startR = runGuard(['start', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000' }));
+    let pid = null;
+    try { pid = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid; } catch { pid = null; }
+    try {
+      assert.strictEqual(startR.status, 0, (startR.stdout || '') + (startR.stderr || ''));
+      assert.ok(pid && G5.pidAlive(pid), 'the watcher actually started');
+      const stopR = runGuard(['stop'], sb.env);
+      assert.strictEqual(stopR.status, 0, 'a real, successful stop must exit 0: ' + (stopR.stdout || '') + (stopR.stderr || ''));
+      assert.ok(/usage-guard stopped/.test(stopR.stdout || ''), stopR.stdout);
+      assert.ok(!G5.pidAlive(pid), 'the watcher process is actually gone');
+      assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'the pid file was removed on confirmed death');
+      const stopAgain = runGuard(['stop'], sb.env);
+      assert.strictEqual(stopAgain.status, 0);
+      assert.ok(/not running/.test(stopAgain.stdout || ''), stopAgain.stdout);
+    } finally {
+      if (pid && pid !== process.pid && G5.pidAlive(pid)) { try { process.kill(pid); } catch { /* best effort */ } }
+    }
+  });
+  t5('GUARD-STOP: a `stop` that cannot confirm death exits NONZERO (contract check — the old code always exited 0)', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'usage-guard.cjs'), 'utf8');
+    assert.match(src, /process\.exit\(stoppedOk \? 0 : 1\)/, 'the stop command must report a real, non-hardcoded exit code');
+  });
+
+  // ---- GUARD-DISCLOSURE (Codex recheck wp-f4, 2026-09-24): every watcher activation path discloses
+  // BEFORE its first credential use — a direct `watch` invocation (never disclosed at all before) and a
+  // schema-unavailable fallback (previously omitted the credential source/destination/persistence/
+  // storage-location details).
+  t5('GUARD-DISCLOSURE: the real (non --once) watcher logs the disclosure BEFORE its first tick/check line — covers both the direct-`watch` code path and start\'s own race', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} })); // present but tokenless — readToken() fails fast, no real network either way
+    const r = runGuard(['start', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000' }));
+    let pid = null;
+    try { pid = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid; } catch { pid = null; }
+    try {
+      assert.strictEqual(r.status, 0, (r.stdout || '') + (r.stderr || ''));
+      const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);
+      const disclosureIdx = logText.search(/Reads your Claude login token locally|leest je Claude-login-token/);
+      assert.ok(disclosureIdx >= 0, 'the real watcher must have LOGGED its disclosure: ' + logText);
+      const tickIdx = logText.search(/CHECK FAILED|REAL usage|ok — /);
+      if (tickIdx >= 0) assert.ok(disclosureIdx < tickIdx, 'the disclosure must precede the first tick/check line, not follow it');
+    } finally {
+      if (pid && pid !== process.pid && G5.pidAlive(pid)) { try { process.kill(pid); } catch { /* best effort */ } }
+    }
+  });
+  t5('GUARD-DISCLOSURE: the fallback (schema/forge-config unavailable) is a COMPLETE disclosure — credential source, destination, persistence and storage location, not just "measures your usage"', () => {
+    const lines = G5.disclosureLines(null);
+    const joined = lines.join(' ');
+    assert.match(joined, /\.credentials\.json/, 'names the credential source');
+    assert.match(joined, /api\.anthropic\.com/, 'names the destination');
+    assert.match(joined, /background process|achtergrondproces/i, 'discloses it keeps running in the background');
+    assert.match(joined, /also after the session closes|ook na het sluiten van de sessie/i, 'discloses persistence after the session closes');
+    assert.match(joined, /~\/\.claude/, 'names the storage location');
+    assert.match(joined, /usage-guard uit/, 'names the off command');
+  });
+
+  // ---- CFG-05 (Codex recheck wp-f4, 2026-09-24): thresholds/flags are validated against the schema's own
+  // min/max/integer bounds — out-of-range, fractional or nonfinite values are rejected with a warning and
+  // the guard falls back to the next source instead of silently accepting them.
+  t5('CFG-05: an out-of-range --pause-at flag is rejected with a warning; the config value is used instead', () => {
+    const s = G5.resolveGuardSettings(['--pause-at', '150'], { 'usage-guard.pause-at': { value: 90, source: 'global' } });
+    assert.deepStrictEqual([s['pause-at'].value, s['pause-at'].source], [90, 'instelling']);
+    assert.strictEqual(s.warnings.length, 1);
+    assert.match(s.warnings[0], /--pause-at 150 is buiten het toegestane bereik|out of the allowed range/);
+  });
+  t5('CFG-05: a fractional --interval flag is rejected (Number.isInteger check) — falls through to the default', () => {
+    const s = G5.resolveGuardSettings(['--interval', '45.5'], null);
+    assert.deepStrictEqual([s.interval.value, s.interval.source], [120, 'standaard']);
+    assert.strictEqual(s.warnings.length, 1);
+  });
+  t5('CFG-05: a negative --resume-at flag is rejected — the schema minimum is 0', () => {
+    const s = G5.resolveGuardSettings(['--resume-at', '-5'], null);
+    assert.deepStrictEqual([s['resume-at'].value, s['resume-at'].source], [0, 'standaard']);
+    assert.strictEqual(s.warnings.length, 1);
+  });
+  t5('CFG-05: an out-of-range CONFIG value (not a flag) is also rejected, with its own warning, and the hard default is used', () => {
+    const s = G5.resolveGuardSettings([], { 'usage-guard.nvidia-shift-at': { value: 5, source: 'global' } });
+    assert.deepStrictEqual([s['nvidia-shift-at'].value, s['nvidia-shift-at'].source], [80, 'standaard']);
+    assert.strictEqual(s.warnings.length, 1);
+    assert.match(s.warnings[0], /usage-guard\.nvidia-shift-at=5 is buiten|is out of the allowed range/);
+  });
+  t5('CFG-05: values exactly AT the schema min/max boundary are accepted (inclusive bounds)', () => {
+    const s1 = G5.resolveGuardSettings(['--pause-at', '50'], null); // schema min
+    assert.deepStrictEqual([s1['pause-at'].value, s1['pause-at'].source], [50, 'vlag']);
+    const s2 = G5.resolveGuardSettings(['--pause-at', '99'], null); // schema max
+    assert.deepStrictEqual([s2['pause-at'].value, s2['pause-at'].source], [99, 'vlag']);
+  });
+  t5('CFG-05: a 100% window still pauses at every ACCEPTED threshold (the bounds check never disables the actual pause decision)', () => {
+    for (const pauseAt of [50, 90, 99]) {
+      const windows = G5.normalizeWindows({ limits: [{ kind: 'session', group: 'session', percent: 100, resets_at: null }] });
+      assert.strictEqual(G5.crossedWindows(windows, pauseAt).length, 1, 'pause-at ' + pauseAt + ' must still trip on 100%');
+    }
+  });
+  t5('CFG-05: guardBounds() degrades to no bounds (accept any finite integer) when the schema is unreadable, rather than breaking every threshold', () => {
+    const b = G5.guardBounds(path.join(os.tmpdir(), 'this-schema-does-not-exist-' + Date.now() + '.json'));
+    assert.deepStrictEqual(b, {});
+    const s = G5.resolveGuardSettings(['--pause-at', '150'], null, { bounds: b });
+    assert.deepStrictEqual([s['pause-at'].value, s['pause-at'].source], [150, 'vlag'], 'no bounds known -> the pre-CFG-05 behaviour (accept any finite number)');
+  });
+
+  // ---- REG-USAGE-GUARANTEE (Codex recheck wp-f4, 2026-09-24 — code part): the guard cannot guarantee a
+  // task is never cut off mid-way (it samples on an interval); `status`/`start` must say so in plain
+  // words instead of implying an instant, guaranteed block. Exact wording (report to Docs Boss so the
+  // README/CHANGELOG match): "sampled every N s (best effort — a task can still cross the limit between
+  // samples; this is not an instant, guaranteed block)" / NL: "gemeten elke N s (beste-poging — een taak
+  // kan tussen twee metingen door de limiet nog overschrijden; dit is geen ogenblikkelijke, gegarandeerde
+  // blokkade)".
+  t5('REG-USAGE-GUARANTEE: CLI status prints the "sampled every Ns, best effort" wording, never implying an instant guarantee', () => {
+    const sb = sandbox5(null);
+    const r = runGuard(['status'], sb.env);
+    assert.match(r.stdout || '', /sampled every \d+s \(best effort — a task can still cross the limit between samples; this is not an instant, guaranteed block\)/, r.stdout);
+    assert.match(r.stdout || '', /gemeten elke \d+s \(beste-poging/, r.stdout);
+  });
+  t5('REG-USAGE-GUARANTEE: CLI start prints the SAME wording on a real, verified start', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-VALIDSHAPEDTOKEN1234567890' } }));
+    const r = runGuard(['start', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000' }));
+    let pid = null;
+    try { pid = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid; } catch { pid = null; }
+    try {
+      assert.strictEqual(r.status, 0, (r.stdout || '') + (r.stderr || ''));
+      assert.match(r.stdout || '', /sampled every 60s \(best effort — a task can still cross the limit between samples; this is not an instant, guaranteed block\)/, r.stdout);
+    } finally {
+      if (pid && pid !== process.pid && G5.pidAlive(pid)) { try { process.kill(pid); } catch { /* best effort */ } }
+    }
+  });
+
   t5('L2: watchStep re-reads the REAL settings file before every check — flipping it to OFF stops the watcher and releases its pid file', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-l2-'));
     const home = path.join(dir, 'home');
@@ -1477,5 +1986,7 @@ test('H3.3 logrotatie: een log boven de grens roteert naar .1 en verliest de rec
 
 Promise.all(asyncQueue).then(() => {
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
+  fs.readFileSync = realFsReadFileSync; // TEST-CREDENTIAL-ISOLATION: restore before the process exits
+  try { fs.rmSync(ISOLATED_HOME_ROOT, { recursive: true, force: true }); } catch { }
   process.exit(fail ? 1 : 0);
 });

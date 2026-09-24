@@ -296,37 +296,57 @@ command form. The hook therefore works even when the session's working directory
 
 | Gate | What gets blocked | Safe variant the message offers |
 |---|---|---|
-| `destructive-delete` | `rm -rf ./build`, `rm -r ./src` / `rm -R` / `rm --recursive` (security H1), `Remove-Item -Recurse -Force ./src`, `rd /s /q dist`, `rimraf ./lib`, a recursive `Get-ChildItem … \| Remove-Item` | name the exact path and check it first, delete single files, or clean up inside a scratch area. A delete whose every segment is a provable scratch delete PASSES (see "Scratch pass-through"). |
-| `kill-by-name` | `taskkill /IM node.exe`, a `taskkill /FI` filter other than `PID eq` (security M1), `Stop-Process -Name` / `-N` / `-Na` / `-Nam`, `pkill`, `killall`, `gps node \| Stop-Process`, `ps node \| kill`, `kill $(pgrep node)`, `pgrep node \| xargs kill`, `ps aux \| grep node \| xargs kill` | kill only the exact PID you started (`taskkill /PID <pid>`, `Stop-Process -Id <pid>`). Never a pass-through. |
-| `git-destructive` | `git reset --hard`, `git clean -f`, `git checkout -f`, `git checkout .`, `git checkout -- <path>`, `git checkout <tree-ish> -- <path>`, `git restore <path>` / `git restore .`, `git switch -f` / `--force` / `--discard-changes`, `git stash drop` / `clear` | commit or stash first (`git stash push`). Never a pass-through. |
-| `gate-hook-self-disable` (security M3, hook-only) | a Bash/PowerShell call to forge-config that sets `gate-hook` to off (any off-synonym: off, uit, false, no, nee, 0, disabled…) without the exact `--once` shape, or `unset gate-hook` (`reset` is allowed: it restores the default, which is ON) | see "Switching the gate off" below. |
+| `destructive-delete` | `rm -rf ./build`, `rm -r ./src` / `rm -R` / `rm --recursive` (security H1), `Remove-Item -Recurse -Force ./src`, `rd /s /q dist`, `rimraf ./lib`, a recursive `Get-ChildItem … \| Remove-Item` | name the exact path and check it first, delete single files, or clean up inside a scratch area. A delete whose every segment is a provable scratch delete PASSES (see "Scratch pass-through") — codex-recheck 2026-09-24 (I01): this proof now runs for EVERY recursive-delete SHAPE, even one the classifier's own 16-literal except-valve already excused, so `mv src _scratch; rm -rf _scratch` still blocks. |
+| `kill-by-name` | `taskkill /IM node.exe`, a `taskkill /FI` filter other than `PID eq` (security M1), `Stop-Process -Name` / `-N` / `-Na` / `-Nam`, `pkill`, `killall`, `gps node \| Stop-Process`, `ps node \| kill`, `kill $(pgrep node)`, `pgrep node \| xargs kill`, `ps aux \| grep node \| xargs kill`, `Stop-Process -InputObject (Get-Process node)` (codex-recheck S04) | kill only the exact PID you started (`taskkill /PID <pid>`, `Stop-Process -Id <pid>`). Never a pass-through. |
+| `git-destructive` | `git reset --hard`, `git clean -f`, `git checkout -f` / `-qf`, `git checkout .`, `git checkout -- <path>`, `git checkout <tree-ish> -- <path>`, `git restore <path>` / `git restore .`, `git switch -f` / `--force` / `--discard-changes`, `git stash drop` / `clear`, `git worktree remove --force`, `git -c clean.requireForce=false clean -d` (codex-recheck D01), `git.exe`, a quoted or glued `-C` (`-C/repo`, `-C "/repo with spaces"`) | commit or stash first (`git stash push`). Never a pass-through. |
+| `opaque-exec` (codex-recheck 2026-09-24, S03; command-position fix by the Lead the same day) | `iex`/`Invoke-Expression`/`eval` **as the command of a segment** (after optional `NAME=value`, sudo/time/nohup/exec/env or the PowerShell `&`) — the same words inside a file name, a commit message or prose are silent; `sh -c`/`bash -c`/`pwsh -c`/`powershell -c` evaluating a variable or substitution; `pwsh`/`powershell -e`/`-ec`/`-enc`/`-EncodedCommand` (the encoded shape itself); a pipe straight into an interpreter (`\| sh`, `curl … \| bash`, `base64 -d \| sh`); `certutil -decode … & …` | write the command out in full, or run it as a separate readable script file — Forge cannot see what an opaque call would run, so it stops rather than guessing. |
+| `gate-hook-self-disable` (security M3, hook-only) | any Bash/PowerShell forge-config invocation — any path form, a quoted verb, flags in any order, `--json`/`--global` (codex-recheck S05: read from PARSED ARGV, not a spelling match) — whose target key is `gate-hook` with `set <off-word>` or `unset`, without the EXACT `--once` shape (`reset` is allowed: it restores the default, which is ON) | see "Switching the gate off" below. |
 
 **The `git-destructive` gap this closed.** Before WP16, `git checkout .`, `git checkout -- src/app.js` and
 `git restore src/app.js` were classified "no gate triggered". All three discard uncommitted edits with no
-reflog entry. The gate has five more arms now, including `git switch` with a force flag. These stay silent:
+reflog entry. The gate has five more arms now, including `git switch` with a force flag. Codex-recheck 2026-09-24
+(D01/DATA-GIT-SPELLINGS) closed a further, independent set of spelling gaps: `git.exe`, a quoted/glued `-C`,
+`git checkout -qf` (a bundled short flag), `git worktree remove --force`, and `git -c clean.requireForce=false
+clean -d` (a config override that makes an unforced clean destructive). These stay silent:
 - `git restore --staged <path>` (it only unstages);
-- `git checkout main` and `git checkout -b x`;
+- `git checkout main`, `git checkout -b x` and `git checkout src/app.js` (no `--`: same shape as a branch switch
+  — deliberately NOT closed, see "Honest limits");
 - `git switch main`;
-- a trailing `--` with no path.
+- a trailing `--` with no path;
+- `git worktree remove ../wt-a` without `--force` (git itself refuses a dirty worktree there);
+- `git -c clean.requireForce=false clean -d -n` / `--dry-run` (a dry run never deletes).
 
-### Switching the gate off (security M3, review M4)
+### Switching the gate off (security M3, review M4, codex-recheck S05/S06/S07)
 - **The owner** can always switch it off: run `/forge config set gate-hook off` yourself, or any command
   with `!` in front (bash mode runs in the owner's own shell, not through Claude's tool). You can also delete
   the `PreToolUse` entry from `.claude/settings.json`. Switch it back on with `… set gate-hook on`.
-- **An agent cannot switch it off.** The hook blocks the agent's own `forge-config … set gate-hook off`,
-  and `unset gate-hook`. A `reset` (project or global, with or without `--yes`) is allowed, because it can
-  only restore the default, which is ON.
+- **An agent cannot switch it off**, from a PARSED ARGV rather than a spelling match (codex-recheck S05): any
+  path form to `forge-config.cjs`, a quoted verb (`"set"`), flags in any order/position, `--json`/`--global` —
+  whose target key is `gate-hook` with `set <off-word>` or `unset` — is blocked. A `reset` (project or global,
+  with or without `--yes`) is allowed, because it can only restore the default, which is ON.
 - **There is one exception: the beginner yes-path.** When the owner has explicitly said yes, the agent may run
   exactly `node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<the owner's words>"`, and
-  nothing else on the same line. That is a one-off 10-minute off whose expiry lives in forge-config.cjs (wp21).
-  - Until wp21 ships `--once`, the CLI rejects the unknown flag with exit 2 and writes nothing. So the
-    exception cannot become a permanent off by accident.
+  nothing else on the same line — an extra flag or a trailing argument after the quote is NOT exempt.
+  That writes a one-off 10-minute off entry (`forge-config.cjs::setOnce`).
   - The quote's field name in `get()` is read defensively (`once_quote`, `approval_quote`, `quote` or
-    `approval`), because wp21 had not landed when this was written.
-- **While the gate is off it is never silent about what it would have stopped.** Every call that would have
-  been blocked exits 1 with one visible line:
-  - `FORGE GATE is OFF (set_at <ts>, set_by <who>) — this would have been blocked (<gates>)`, or, for a one-off,
-  - `FORGE GATE is OFF until <expires_at> — one-off approval: "<quote>" — this would have been blocked (<gates>)`.
+    `approval`).
+- **A once-grant is consumed ATOMICALLY, per affected command — never a blanket 10-minute window (codex-recheck
+  S06).** Setting the grant is not itself the approval for every command that follows: the FIRST command that
+  would have been blocked while the grant is armed calls `forge-config.cjs::consumeOnce('gate-hook',
+  {commandSha256})`, which marks the entry consumed and returns `{ok:true}` exactly once. That command is
+  allowed with a visible notice (`FORGE GATE: one-off approval used for this command (<gates>)`, exit 1); every
+  subsequent command — even an identical one — sees `{ok:false, reason:'consumed'}` and is BLOCKED. If
+  `consumeOnce` is absent from the config module, or it throws, the hook fails CLOSED (blocks) rather than
+  guessing. A self-disable attempt arriving during a once-window is never approvable through it either — it
+  always gets the off-notice below, and never calls `consumeOnce` at all.
+- **While the gate is off it is never silent about what it would have stopped — on either off-path, including
+  a self-disable attempt (codex-recheck S07).** Every affected call exits 1 with one visible line:
+  - `FORGE GATE is OFF (set_at <ts>, set_by <who>) — this would have been blocked (<gates>)` for a PERSISTENT
+    off (no expiry — an out-of-band owner action, e.g. a direct config edit or the dashboard), or
+  - `FORGE GATE is OFF until <expires_at> — one-off approval: "<quote>" — this would have been blocked (<gates>)`
+    for a once-grant whose `consumeOnce` call has not yet succeeded for THIS command.
+  An inspection failure (the classifier is unavailable) is likewise ALWAYS visible, on or off — it is never
+  folded into the off-branch at all.
 - **Optional hardening — not installed by default (security M3 point 3).** The hook only sees Bash and
   PowerShell. An agent could still edit the switch files with the Write or Edit tools. A user who wants that
   closed too can add these lines to `permissions.deny`:
@@ -353,19 +373,35 @@ and any doubt means nothing is stripped. If that module is missing, nothing is s
 - **(a) A bash heredoc body**, when all of these hold:
   - the consumer is a pure writer: `cat`, `tee`, `printf` or `echo`;
   - it is not piped;
-  - its head line has no quote, `$(`, backtick or `#` before it;
-  - it does not write a script file.
+  - its head line has no quote, `$(`, backtick or `#` before it — codex-recheck 2026-09-24 (C02) now also
+    reads LEADING INDENTATION before the writer and a QUOTED redirect destination (`cat > 'notes.txt' <<'EOF'`,
+    `  cat > notes.txt <<'EOF'`), which the original head-only regex used to reject outright;
+  - it does not write a script file (a quoted script destination, `cat > 'evil.sh' <<'EOF'`, is still refused).
 
   An UNQUOTED delimiter (`<<EOF`) qualifies only when the body has no `$(`, backtick or `${`. The Claude Code
-  commit form `git commit -m "$(cat <<'EOF'` … `EOF` / `)"` also qualifies.
+  commit form `git commit -m "$(cat <<'EOF'` … `EOF` / `)"` also qualifies. **Codex-recheck 2026-09-24 (S01) —
+  quote-STATE awareness:** a `<<` that only LOOKS like a heredoc marker while it is actually sitting inside an
+  already-open, multi-line shell quote is never treated as a real one (`echo '` … `cat <<EOF` … `'` … a real
+  command … `EOF` no longer hides the command in between); a `$(...)` command substitution is its own lexical
+  context and is never swallowed by an enclosing quote's scan, so the Claude Code commit form above still works
+  even though it sits inside a double-quoted `-m` argument. An unterminated quote anywhere refuses the WHOLE
+  heredoc pass (fail closed).
 - **(b) Quoted literals** — single-quoted, or double-quoted without `$` — given to:
   - `echo` or `printf`;
-  - `git commit -m|-am|--message`;
+  - `git commit -m|-am|--message`, and (codex-recheck SEC-EXECUTABLE-QUOTE) `git grep`/`git log --grep` ONLY
+    when `grep`/`log` is genuinely the git SUBCOMMAND of that segment (found by walking past `git`'s own global
+    options `-c <k=v>`/`-C <path>`/`--git-dir=…`/`--work-tree=…`) — a `-c alias.x=<value>` or any other later
+    argument that merely equals the word "grep" no longer gets its value mistaken for an inert search pattern;
   - `.claude/forge-dashboard/log-event.cjs`;
-  - the search tools `grep`, `rg`, `egrep`, `fgrep`, `ag`, `Select-String`, `findstr`, `git grep` and
-    `git log --grep` (review L3: a search tool never executes its pattern).
+  - the search tools `grep`, `rg`, `egrep`, `fgrep`, `ag`, `Select-String`, `findstr` (a search tool never
+    executes its pattern — this was already correctly scoped to the tool being the segment's OWN command).
 
   This applies only when that segment is not piped (into anything) and nothing is piped into an interpreter.
+  **Codex-recheck 2026-09-24 (S02) — PowerShell smart quotes:** this scanner understands straight ASCII quotes
+  only, and PowerShell also accepts the Unicode "smart quote" pair (`' ' " "`) as real string delimiters — a
+  straight-quote-only scan can misjudge where such a string actually ends, hiding a live command inside what
+  looks like inert echo data. Rather than replicate PowerShell's own open/close matching, a PowerShell command
+  containing ANY smart quote refuses the data exception entirely (fail closed, nothing stripped).
 - **Review L1:** a region is NEVER stripped when an interpreter (`bash`, `sh`, `zsh`, `node`, `python*`,
   `pwsh`, `powershell`, `cmd`, `eval`, `source`, `.`, `iex`, `xargs`, `chmod`) or a layout/rename command
   (`mv`, `ln`, `mklink`, `cp`, `rename`, `Move-Item`, `Copy-Item`, …) appears ANYWHERE later in the same
@@ -374,20 +410,32 @@ and any doubt means nothing is stripped. If that module is missing, nothing is s
 **What stays classified.**
 - `bash <<'EOF'`, `bash -c "…"`, `node -e '…'`, `echo "…" | bash`, `echo "…" | cat`.
 - `X='…'; $X`, and `$(…)` inside double quotes.
-- An escaped quote outside quotes (`it\'s`), a PowerShell lone `&`.
+- An escaped quote outside quotes (`it\'s`), a PowerShell lone `&`, ANY PowerShell command containing a smart
+  quote (S02, fail closed).
 - `grep -l "pkill" . | xargs kill`.
+- A `git -c alias.x='<payload>' <alias>` invocation, even next to an unrelated trailing `grep` argument
+  (SEC-EXECUTABLE-QUOTE) — the quoted value is preserved because `grep` was not the actual subcommand.
 
 All of these are proven in `forge-gate-hook.test.cjs` section 4c. Measured live on 2026-09-24:
 `grep -rn "taskkill /IM" …HOOKS_OPT_IN.md` PASSED, and `echo "git reset --hard" | cat` was BLOCKED.
 
-### Scratch pass-through (WP16 follow-up, review L2, security L3)
+### Scratch pass-through (WP16 follow-up, review L2, security L3, codex-recheck I01/I02)
 
 **Why.** Once warnings became blocks, the config's own price counts would have stalled every agent. The count
 is now 62 of 90 legitimate cleanup commands after security H1; examples are `rm -rf ./_scratch/run-1` and
 `rm -r ./_scratch/x`. So the hook, not the classifier, makes one narrow exception.
 
 **The rule.**
-- It applies only when the ONLY command gate that fired is `destructive-delete`.
+- It applies to every command whose destructive-delete SHAPE is present — **not only** when the classifier's
+  own verdict names `destructive-delete` (codex-recheck 2026-09-24, I01/ISO-SCRATCH-SHORTCIRCUIT): the
+  classifier's 16-literal except-valve (`rm -rf node_modules`, `rm -rf _scratch`, and their `Remove-Item`/
+  `rimraf` siblings) is supplemental detection for the classifier's OWN advisory verdict, never an enforcement
+  shortcut for this hook. `rm -rf node_modules` on its own still passes (with a notice), but `mv src _scratch;
+  rm -rf _scratch` — the delete segment is byte-identical to an excused literal, but the real content being
+  destroyed is `src`, moved there first to disguise it — now BLOCKS, because it is still routed through the
+  same cwd/layout/exec-token and containment checks below.
+- The pass-through itself still only ever emits its "allowed" notice when NO OTHER command gate fired alongside
+  the delete shape (a delete next to `taskkill`/`git reset --hard` still blocks on the other gate).
 - EVERY segment of the command must itself be a provable delete (review L2). So `rm -rf ./_scratch/x && npm ci`,
   `git mv …`, `/bin/mv …` and `command mv …` all block.
 - There must be no `{ } ( )`, and no `cd`, `pushd`, `Set-Location`, `mv`, `cp`, `ln`, `mklink`, `New-Item`,
@@ -411,6 +459,10 @@ is now 62 of 90 legitimate cleanup commands after security H1; examples are `rm 
   - A target that IS a protected root, or CONTAINS one (an ancestor folder), never passes.
   - A target INSIDE a protected root passes only through the named scratch sub-areas above.
   - The temp rule applies only to targets outside every protected root.
+  - **Codex-recheck 2026-09-24 (I02) — a canonicalization FAILURE is never treated as proof.** If `realpath`
+    cannot resolve the target, a protected root, the temp dir, or the project root itself (a permission error,
+    a broken link), the scratch exception is refused outright rather than silently substituting the unresolved
+    lexical path — a stale/failed proof can never accidentally look like containment.
 
   This is proven in `forge-gate-hook.test.cjs` section 4d, by a hook copied into a project made with
   `fs.mkdtempSync(os.tmpdir())`. There, `rm -rf src`, `rm -rf .`, `rm -r ./src`, `rm -rf .claude`, the project
@@ -453,11 +505,19 @@ beginner's doctor cannot turn red on timing. The hook writes nothing to disk and
   unavailable — this call was NOT checked".
 - Any other internal error, an oversized payload, or a stdin error or timeout exits 1 (visible, not blocking).
   A broken hook never breaks a session, and never hides that it did not check.
-- Unparseable stdin, or a payload that is not a Bash/PowerShell PreToolUse call, exits 0 silently.
+- **Codex-recheck 2026-09-24 (C01) — a call this hook cannot actually judge is NEVER silently allowed.**
+  Unparseable stdin, a null/array/string payload, or a shell tool with a missing/non-string command now exits 1
+  with a visible "… this call was NOT checked" line — exactly like an internal error. Silent exit 0 is reserved
+  for a call the hook can POSITIVELY tell is unrelated: a real `PostToolUse` (or other non-`PreToolUse`) event,
+  a recognised non-shell tool (`Write`, `Read`, `Edit`, …), or a genuinely empty/whitespace-only command (which
+  runs nothing, so there is nothing to classify).
 
-**Proof.** `forge-gate-hook.test.cjs` is 142/142. It uses real spawned processes with hermetic
-`FORGE_CONFIG_HOME` and `FORGE_PROJECT_ROOT` temp dirs, and includes a fixture tree with `hard-gates.json`
-removed. Live proofs in a real Claude Code session, 2026-09-24:
+**Proof.** `forge-gate-hook.test.cjs` is 188/188 (up from 142/142 after the codex-recheck 2026-09-24 remediation
+— wp-f1: C01/S01–S07/I01/I02/D01/S03/S04). It uses real spawned processes with hermetic `FORGE_CONFIG_HOME` and
+`FORGE_PROJECT_ROOT` temp dirs, and includes a fixture tree with `hard-gates.json` removed. The scratch-area
+lexer (`tokenize`/`realish`/`areaOf`/`scratchPassThrough`) now lives in its own file, `forge-gate-scratch.cjs`,
+split out from the hook to keep both under 500 lines; an absent copy fails closed (no pass-through, ever). Live
+proofs in a real Claude Code session, 2026-09-24:
 - `echo probe git checkout .` was blocked by both the relative and the `$CLAUDE_PROJECT_DIR` command forms.
 - `echo probe rm -r ./src` was blocked (H1).
 - `echo probe git switch -f main` was blocked.
@@ -466,10 +526,14 @@ removed. Live proofs in a real Claude Code session, 2026-09-24:
 
 ### Honest limits (not hidden)
 - **It sees Bash and PowerShell command TEXT only.** It inherits every blind spot of the classifier, which
-  `hard-gates.json` → `_not_caught` lists and executes. Examples: `iex $cmd`, an encoded command,
-  `npm run clean`, `node -e "require('fs').rmSync(…)"`, `robocopy /MIR`, `git checkout src/app.js` written
-  without `--`, and `kill -n node` (PowerShell's kill alias with a -Name prefix; POSIX `-n` is a signal
-  number). It cannot see the Write or Edit tools.
+  `hard-gates.json` → `_not_caught` lists and executes. Examples: `npm run clean`, `node -e "require('fs').rmSync(…)"`,
+  an encoded command reaching PowerShell by any route other than the `-EncodedCommand` flag (the flag itself
+  now fires `opaque-exec` on its shape; the payload is still never decoded),
+  `robocopy /MIR`, `git checkout src/app.js` written without `--` (deliberately left open: it has exactly the
+  same shape as the branch switch `git checkout main`, and closing it would block that everyday command too),
+  and `kill -n node` (PowerShell's kill alias with a -Name prefix; POSIX `-n` is a signal number). Codex-recheck
+  2026-09-24 (S03) closed the sibling gap for `iex $cmd`/`Invoke-Expression $cmd`/`eval`/`sh -c "$VAR"`/a pipe
+  into an interpreter — those now fire `opaque-exec` — but it cannot see the Write or Edit tools.
 - **Text gates and `write-outside-root` are not enforced here.** Text gates match spoken intent. Blocking on
   them would hit legitimate flows: a push to the authorised remote, `git commit -m "deploy notes"`, editing
   the authorised distribution copy.
@@ -487,14 +551,21 @@ removed. Live proofs in a real Claude Code session, 2026-09-24:
 
 ## 6b. `permissions.deny` — secrets stay out of Claude's Read tool (LIVE)
 
-The deny list now holds 23 rules:
-- the 8 original ones: `./.env`, `./.env.local`, `./.env.*.local`, `./.env.development`, `./.env.production`,
-  `./.env.staging`, `./.env.test`, `./secrets/**`;
-- plus security L5: `./**/.env`, `./**/.env.local`, `./**/.env.*.local`, `./**/.env.production`,
-  `./**/.env.prod`, `./**/.env.bak`, `./**/.env.backup`, `./**/*.pem`, `./**/*.key`, `./**/id_rsa*`,
-  `./**/id_ed25519*`, `./**/secrets/**`, `~/.claude/.credentials.json`, `~/.claude/nvidia.env`, `~/.ssh/**`.
+The deny list now holds 28 rules (wp-f2, 2026-09-24 Codex re-check SECRET-READ-GAPS closed the two gaps
+below):
+- the 9 root-level ones: `./.env`, `./.env.local`, `./.env.*.local`, `./.env.development`, `./.env.production`,
+  `./.env.staging`, `./.env.test`, `./.env.forge-setup`, `./secrets/**`;
+- plus security L5 (and SECRET-READ-GAPS): `./**/.env`, `./**/.env.local`, `./**/.env.*.local`,
+  `./**/.env.development`, `./**/.env.production`, `./**/.env.staging`, `./**/.env.test`,
+  `./**/.env.forge-setup`, `./**/.env.prod`, `./**/.env.bak`, `./**/.env.backup`, `./**/*.pem`, `./**/*.key`,
+  `./**/id_rsa*`, `./**/id_ed25519*`, `./**/secrets/**`, `~/.claude/.credentials.json`, `~/.claude/nvidia.env`,
+  `~/.ssh/**`.
 
-All of them are in the `Read(...)` form.
+All of them are in the `Read(...)` form. `.env.forge-setup` (the file README.md/AI-INSTALL.md tell a beginner
+to fill with keys during setup) previously had no rule at all, root or nested; `.env.development`,
+`.env.staging` and `.env.test` previously had a root rule but no `./**/` nested equivalent, unlike every other
+`.env.*` variant — both were real coverage gaps in the Read tool itself, independent of the acknowledged shell
+bypass below.
 
 **Why:** without these rules Claude can read a secret straight into its context, and from there into logs,
 transcripts and reports. The rule form (`Read(./.env)`, `Read(./secrets/**)`) is the one in the official
@@ -508,8 +579,7 @@ cannot be undone with an allow rule, because deny always wins. Every Forge build
 **Not covered (honest):**
 - **Reading a secret through the shell** (`cat .env`, `Get-Content .env`). Deny rules govern Claude's Read
   tool, not the commands a shell runs. The gate hook does not treat a read as a destructive command either.
-- Unlisted names such as `.env.staging2`.
-- `.env.development` or `.env.test` below the root.
+- Unlisted names such as `.env.staging2` or any other variant not in the 28-rule list above.
 
 **No `_doc` key inside `permissions`.** Claude Code is proven to tolerate an unknown key on a hook-matcher
 object: the existing `_matcher_doc` is there and the ledger keeps recording. It is not proven to tolerate one
@@ -531,14 +601,22 @@ a pre-existing project's `.claude/settings.json` never received the gate hook or
 pure function, deep-clone, append-only, exact matcher+command match, idempotent — from the 2 snapshot hooks
 to every `hooks.<event>[]` entry plus `permissions.deny`). Absent `settings.json` -> created (a copy of the
 template's). Present -> MERGED: every foreign hook entry, foreign `permissions.allow`/`ask` rule, and unknown
-top-level key is kept byte-for-byte at its original position; the template's own hooks (including the gate
-hook) and deny rules are added; a stale pre-2026-09-24 millisecond-as-seconds Forge hook timeout is fixed in
-place. A backup of the pre-merge file is written first at `<file>.forge-bak-<yyyyMMdd-HHmmss>` (same naming
-convention the installers already use for every other merge-safe file) — see it with
-`diff <file>.forge-bak-<ts> settings.json` (POSIX) or `Compare-Object` (PowerShell). Only a genuinely
-malformed or unexpectedly-shaped existing `settings.json` still falls back to the old
-`settings.forge-recommended.json` behaviour — reported plainly, never silently. Re-running the installer or
-`forge-sync install` a second time is a true no-op: nothing is rewritten and no new backup is taken.
+top-level key is kept byte-for-byte at its original position; a matcher partially present tops up only the
+missing hook(s) instead of duplicating the whole entry; the template's own hooks (including the gate hook) and
+deny rules are added; a stale pre-2026-09-24 millisecond-as-seconds Forge hook timeout is fixed in place. A
+backup of the pre-merge file is written first, EXCLUSIVELY and uniquely named
+(`<file>.forge-bak-<yyyyMMdd-HHmmss>-<random>`, wp-f2 2026-09-24 hardening: never overwrites a prior recovery
+file, and refuses outright if its own directory is a symlink/junction) — find the latest one with
+`ls <file>.forge-bak-*` (POSIX) or `Get-ChildItem` (PowerShell) and `diff`/`Compare-Object` it against the
+merged file. A genuinely unreadable (not just "absent" — a directory, a symlink, or a permission error never
+counts as absent), malformed, unexpectedly-shaped, or round-trip-unsafe (a duplicate JSON key, or a number
+whose value would change on reserialize) existing `settings.json` refuses instead and writes a uniquely-named
+`settings.forge-recommended-<stamp>-<random>.json` next to it — reported plainly, never silently, and the
+existing file is never touched. A concurrent edit detected immediately before the write (someone else changed
+`settings.json` between when Forge read it and when it would have written) also refuses rather than silently
+discarding that edit. Re-running the installer or `forge-sync install` a second time is a true no-op: nothing
+is rewritten and no new backup is taken; a pre-existing duplicate-matcher condition (however it got there) is
+reported on the result, never silently auto-repaired.
 `node .claude/forge-bin/forge-settings-merge.cjs check --target .claude/settings.json --source <template>/.claude/settings.json`
 answers "is this project's settings.json behind the template?" without writing anything.
 

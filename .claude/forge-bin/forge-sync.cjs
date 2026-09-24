@@ -399,6 +399,24 @@ const SYSTEM = [
   // SYSTEM_GLOB below (forge-bin/*.cjs) — pinned here explicitly too anyway (same belt-and-suspenders
   // discipline as every prior wave's precedent above).
   'forge-bin/forge-settings-merge.cjs', 'forge-bin/forge-settings-merge.test.cjs',
+  // wp-f2 (2026-09-24, Codex re-check forge-2026-09-24-codex-fixes): the containment/symlink guards,
+  // duplicate-key/unsafe-number JSON round-trip scanner, and exclusive-create recovery-file writer extracted
+  // out of forge-settings-merge.cjs so that file stays under the project's file-size guidance. No dedicated
+  // test file of its own — exercised via forge-settings-merge.test.cjs. Already covered by SYSTEM_GLOB below
+  // (forge-bin/*.cjs) — pinned here explicitly too anyway (same belt-and-suspenders discipline).
+  'forge-bin/forge-settings-merge-guards.cjs',
+  // wp-f3 (2026-09-24, Codex re-check, same run): forge-config.cjs's once/lock machinery split into its own
+  // sibling so any consumer that copies forge-config.cjs standalone (e.g. a hook that vendors just that one
+  // file) copies this too. No dedicated test file of its own yet. Already covered by SYSTEM_GLOB below —
+  // pinned here explicitly too anyway.
+  'forge-bin/forge-config-once.cjs',
+  // wp-f1 (2026-09-24, Codex re-check, same run): a gate-hook command-line scratch/lexer helper. No dedicated
+  // test file of its own yet. Already covered by SYSTEM_GLOB below — pinned here explicitly too anyway.
+  'forge-bin/forge-gate-scratch.cjs',
+  // wp-f4 (2026-09-24, Codex re-check, same run): usage-guard's own redaction helper (keeps secret-shaped
+  // values out of logged/printed usage-guard output). Already covered by SYSTEM_GLOB below — pinned here
+  // explicitly too anyway.
+  'forge-bin/usage-guard-redact.cjs', 'forge-bin/usage-guard-redact.test.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by
@@ -1819,7 +1837,10 @@ function safeSyncProject(templateDir, projectDir, opts) {
     const blocked = plan.unknownDrift.length > 0 || plan.conflicts.length > 0;
     // WP22: even when the FILE plan is a no-op, settings.json may still be behind the template (a project
     // synced before wp22 shipped, or hand-edited) — the settings merge is independent of the file plan.
-    return { ok: !blocked, noop: !blocked, blocked, projectDir, plan, templateVersion: templateVer, settingsMerge: blocked ? null : syncProjectSettings(templateDir, projectDir, {}) };
+    const settingsMergeNoop = blocked ? null : syncProjectSettings(templateDir, projectDir, {});
+    // SUCCESS-WITHOUT-SETTINGS (wp-f2): a file-plan no-op must not report ok:true when the required gate
+    // (settings.json merge) itself failed/was refused — the caller would otherwise see a plain success.
+    return { ok: !blocked && !settingsMergeFailed(settingsMergeNoop), noop: !blocked, blocked, projectDir, plan, templateVersion: templateVer, settingsMerge: settingsMergeNoop };
   }
 
   const nowIso = opts.nowIso || new Date().toISOString();
@@ -1995,8 +2016,15 @@ function safeSyncProject(templateDir, projectDir, opts) {
   // merge (malformed/unexpected-shape existing settings.json) is reported on the result, never rolls back or
   // fails an otherwise-successful file sync.
   const settingsMerge = syncProjectSettings(templateDir, projectDir, {});
-  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest, settingsMerge };
+  // SUCCESS-WITHOUT-SETTINGS (wp-f2): the file sync itself succeeded (receipt/version already committed
+  // above, deliberately independent of this step — see syncProjectSettings's own doc comment), but the
+  // OVERALL result must not claim plain success when the settings.json gate failed/was refused.
+  return { ok: !settingsMergeFailed(settingsMerge), projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest, settingsMerge };
 }
+/** settingsMergeFailed — true only when a settings-merge result explicitly reports ok:false (a genuine
+ *  usage-error/refused/skipped-containment/skipped-tool-error) — never true for `null` (blocked before the
+ *  step ran) or a `{ok:true, skipped:'no-template-settings'}` benign skip. */
+function settingsMergeFailed(sm) { return !!(sm && sm.ok === false); }
 
 /** adoptProject — NEW COMMAND: `forge-sync adopt <projectDir>`. Establishes a baseline receipt from the
  *  project's CURRENT file hashes WITHOUT writing a single template/system file, and reports which files
@@ -2231,7 +2259,16 @@ function runSyncAll(templateDir, rootDir, opts) {
     console.warn('*** --unsafe: legacy-style sync (NO canary, NO validation) — a real backup is still taken per project (never "no undo") ***');
     const projects = Array.isArray(opts.projects) ? opts.projects : findForgeProjects(rootDir);
     let bad = 0; const results = [];
-    for (const p of projects) { const r = rawInstall(templateDir, p, { dryRun: opts.dryRun, batchId, nowIso, centralBackupRoot, runId }); results.push(r); if (!r.ok) bad++; }
+    for (const p of projects) {
+      const r = rawInstall(templateDir, p, { dryRun: opts.dryRun, batchId, nowIso, centralBackupRoot, runId });
+      // SUCCESS-WITHOUT-SETTINGS (wp-f2): sync-all --unsafe used to call ONLY rawInstall, so an --unsafe
+      // batch never installed/reported settings.json at all — single-project `install --unsafe` already did.
+      // Both now share this exact step.
+      let settingsResult = null;
+      if (r.ok) { settingsResult = syncProjectSettings(templateDir, p, { dryRun: opts.dryRun }); r.settingsMerge = settingsResult; printSettingsMergeResult(p, settingsResult); }
+      results.push(r);
+      if (!r.ok || settingsMergeFailed(settingsResult)) bad++;
+    }
     return { ok: bad === 0, unsafe: true, batchId, projects: results };
   }
 
@@ -2241,7 +2278,13 @@ function runSyncAll(templateDir, rootDir, opts) {
     // be previewed WITHOUT ever calling canaryInit() (which would create real files on disk).
     const dedicatedPlan = buildPlan(templateDir, dedicatedCanaryDir(rootDir), { forceOverwrite: !!opts.forceOverwrite });
     const projects = Array.isArray(opts.projects) ? opts.projects : findForgeProjects(rootDir);
-    const plans = projects.map((p) => ({ projectDir: p, plan: safeSyncProject(templateDir, p, Object.assign({}, syncOpts, { dryRun: true })).plan }));
+    // DRY-RUN-MUTATION (wp-f2): sync-all's dry-run used to keep ONLY `.plan` from safeSyncProject's dry-run
+    // result, discarding `.settingsMerge` — so the settings.json preview a REAL run would perform (create/
+    // merge/refuse) never appeared in a dry-run at all. Kept here too now.
+    const plans = projects.map((p) => {
+      const r = safeSyncProject(templateDir, p, Object.assign({}, syncOpts, { dryRun: true }));
+      return { projectDir: p, plan: r.plan, settingsMerge: r.settingsMerge };
+    });
     return { ok: true, dryRun: true, batchId, dedicatedCanary: { projectDir: dedicatedCanaryDir(rootDir), plan: dedicatedPlan }, projects: plans };
   }
 
@@ -2397,11 +2440,20 @@ function syncProjectSettings(templateDir, projectDir, opts) {
   opts = opts || {};
   const srcPath = path.join(templateDir, 'settings.json');
   if (!fs.existsSync(srcPath)) return { ok: true, skipped: 'no-template-settings' };
+  const dst = claudeDirOf(projectDir);
+  // PROJECT-DIRECTORY-ESCAPE (wp-f2, 2026-09-24 Codex re-check): the settings step runs in EVERY branch
+  // (dry-run, the no-op branch, and the real success path — all three call this one function), so the SAME
+  // containment/symlink guard the per-file sync path already applies to every system file is applied here
+  // too, once, rather than only in the "normal" branch. A `.claude` that is itself a symlink/junction (or
+  // resolves outside its own project) refuses instead of merging settings.json across that boundary.
+  if (isSymlinkPath(dst) || !containmentSafe(projectDir, dst)) {
+    return { ok: false, skipped: 'refused-containment', error: '.claude resolves outside its project (or is itself a symlink/junction) — refusing to merge settings.json across that boundary' };
+  }
   let mergeTool;
   try { mergeTool = require('./forge-settings-merge.cjs'); }
   catch (e) { return { ok: false, skipped: 'merge-tool-unavailable', error: e.message }; }
-  const dstPath = path.join(claudeDirOf(projectDir), 'settings.json');
-  try { return mergeTool.applySettingsMerge({ target: dstPath, source: srcPath, dryRun: !!opts.dryRun }); }
+  const dstPath = path.join(dst, 'settings.json');
+  try { return mergeTool.applySettingsMerge({ target: dstPath, source: srcPath, dryRun: !!opts.dryRun, projectRoot: dst }); }
   catch (e) { return { ok: false, skipped: 'merge-error', error: e.message }; }
 }
 /** printSettingsMergeResult — one plain status line for the CLI/sync-all output, never throws, never blocks
@@ -2411,12 +2463,16 @@ function printSettingsMergeResult(projectDir, r) {
   const name = path.basename(projectDir);
   if (!r) return;
   if (r.skipped) { if (r.skipped !== 'no-template-settings') console.error(name + ': settings.json merge skipped (' + r.skipped + (r.error ? ': ' + r.error : '') + ')'); return; }
+  const dupNote = (rr) => (rr.duplicate_matchers && rr.duplicate_matchers.length ? (' (NOTE: ' + rr.duplicate_matchers.length + ' pre-existing duplicate matcher group(s) found — not auto-repaired)') : '');
   if (r.status === 'created') console.log(name + ': settings.json created (from template)');
   else if (r.status === 'would-create') console.log('[dry-run] ' + name + ': settings.json would be created (from template)');
-  else if (r.status === 'noop') console.log(name + ': settings.json already merged');
+  else if (r.status === 'noop') console.log(name + ': settings.json already merged' + dupNote(r));
   else if (r.status === 'would-merge') console.log('[dry-run] ' + name + ': settings.json would merge — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s)');
-  else if (r.status === 'merged') console.log(name + ': settings.json merged — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath);
+  else if (r.status === 'merged') console.log(name + ': settings.json merged — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath + dupNote(r));
   else if (r.status === 'refused' || r.status === 'would-refuse') console.error(name + ': ' + r.message);
+  // SUCCESS-WITHOUT-SETTINGS (wp-f2): a malformed TEMPLATE source (usage-error) used to be silently omitted
+  // from every printer — the ONLY status this function never printed anything for.
+  else if (r.status === 'usage-error') console.error(name + ': settings.json merge could not run (' + r.message + ')');
 }
 
 module.exports = {
@@ -2498,6 +2554,9 @@ if (require.main === module) {
     refuseForeignTargetOnFallback(pos[0]); // audit #23: never seed another project from this one
     // B5: default central backup hub lives OUTSIDE the project (its parent dir), never inside it.
     const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(path.dirname(path.resolve(pos[0])), '.forge-backup-hub'));
+    // OUTSIDE-WRITES-BY-DEFAULT (wp-f2): named explicitly in the dry-run preview — this is a real write
+    // destination OUTSIDE the project root, on by default, not something the printed plan should leave implicit.
+    if (flags.dryRun && centralBackupRoot) console.log('[dry-run] backups would be written to: ' + centralBackupRoot + ' (OUTSIDE the project — pass --no-central-backup to keep everything inside it)');
     const lock = flags.dryRun ? { ok: true, lockPath: null } : acquireLock(claudeDirOf(pos[0])); // M2
     if (!lock.ok) { console.error('forge-sync: ' + lock.reason); process.exit(1); }
     let exitCode = 1;
@@ -2505,16 +2564,20 @@ if (require.main === module) {
       if (flags.unsafe) {
         console.warn('*** --unsafe: legacy-style install for ' + pos[0] + ' — NO canary, NO validation; a real backup is still taken (never "no undo") ***');
         const r = rawInstall(TEMPLATE, pos[0], { dryRun: flags.dryRun, batchId, centralBackupRoot, runId: flags.runId });
-        if (r.ok) printSettingsMergeResult(pos[0], syncProjectSettings(TEMPLATE, pos[0], { dryRun: flags.dryRun }));
-        exitCode = r.ok ? 0 : 1;
+        let settingsResult = null;
+        if (r.ok) { settingsResult = syncProjectSettings(TEMPLATE, pos[0], { dryRun: flags.dryRun }); printSettingsMergeResult(pos[0], settingsResult); }
+        // SUCCESS-WITHOUT-SETTINGS (wp-f2): --unsafe must not exit 0 when the file copy succeeded but the
+        // required settings.json gate failed/was refused.
+        exitCode = (r.ok && !settingsMergeFailed(settingsResult)) ? 0 : 1;
       } else {
         const r = safeSyncProject(TEMPLATE, pos[0], {
           dryRun: flags.dryRun, forceOverwrite: flags.forceOverwrite, batchId, centralBackupRoot, runId: flags.runId,
           allowDegraded: flags.allowDegraded, doctorTimeoutMs: flags.doctorTimeout, resumeBatch: flags.resumeBatch,
           refuseOnUnresolvedDrift: true, // B3: a direct single-project install is all-or-nothing (sync-all is not)
-        }); // settings.json merge is internal to safeSyncProject (WP22) — r.settingsMerge is already set
+        }); // settings.json merge is internal to safeSyncProject (WP22) — r.settingsMerge is already set, and
+        // r.ok already folds settingsMergeFailed(r.settingsMerge) in (see safeSyncProject's own return sites)
         printSafeSyncResult(pos[0], r);
-        exitCode = (r.ok || r.dryRun || r.noop) ? 0 : 1;
+        exitCode = (r.ok || r.dryRun) ? 0 : 1;
       }
     } finally { releaseLock(lock); }
     process.exit(exitCode);
@@ -2591,7 +2654,7 @@ if (require.main === module) {
         else {
           console.log('[DRY-RUN] sync-all plan for ' + (result.projects ? result.projects.length : 0) + ' project(s) under ' + rootDir + ' — WRITES NOTHING:');
           if (result.dedicatedCanary && result.dedicatedCanary.plan) { console.log('\ndedicated canary (' + path.basename(result.dedicatedCanary.projectDir) + '):'); printPlanSummary(result.dedicatedCanary.plan); }
-          for (const p of (result.projects || [])) { console.log('\n' + path.basename(p.projectDir) + ':'); if (p.plan) printPlanSummary(p.plan); else console.log('  (no plan — ' + (p.reason || 'unavailable') + ')'); }
+          for (const p of (result.projects || [])) { console.log('\n' + path.basename(p.projectDir) + ':'); if (p.plan) printPlanSummary(p.plan); else console.log('  (no plan — ' + (p.reason || 'unavailable') + ')'); printSettingsMergeResult(p.projectDir, p.settingsMerge); }
         }
       }
       exitCode = result.ok ? 0 : 1;

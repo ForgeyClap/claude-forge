@@ -284,6 +284,27 @@ function testCommandGate(gate, text) {
   return false;
 }
 
+/** testCommandGateRaw(gate, text) -> boolean — the SAME shape test as testCommandGate(), but IGNORING
+ *  match.except entirely (codex-recheck 2026-09-24, I01 / ISO-SCRATCH-SHORTCIRCUIT). The `except` valve is a
+ *  false-ALARM suppressor for the classifier's own advisory verdict; it was never meant to be an ENFORCEMENT
+ *  shortcut for the PreToolUse hook. forge-gate-hook.cjs uses this to decide whether a command has the SHAPE
+ *  of a recursive delete at all — regardless of whether the valve would excuse it — so that every such shape
+ *  is still routed through the hook's own scratchPassThrough() containment proof, never let through merely
+ *  because it happened to be byte-identical to one of the 16 excused literals. Pure, never throws. */
+function testCommandGateRaw(gate, text) {
+  if (!text) return false;
+  const m = gate.match;
+  if (m.kind !== 'command') return false;
+  const flags = m.flags || 'i';
+  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(String(text))) return true;
+  if (!m.pattern) return false;
+  const re = new RegExp(m.pattern, flags);
+  for (const entry of splitCommandsDetailed(text)) {
+    if (re.test(entry.segment)) return true;
+  }
+  return false;
+}
+
 /** isPathEscape — true when targetPath resolves outside projectRoot. Resolves the longest EXISTING real
  *  ancestor of the target (a not-yet-existing leaf can't itself be a reparse point/symlink) so a
  *  symlinked/junctioned intermediate directory can't hide an escape, mirroring forge-sync.cjs's
@@ -358,10 +379,14 @@ const KNOWN_GATES = ['deploy', 'git-push', 'spend', 'dns-change', 'prod-activate
   // owner's global Orchestration-Safety HARD MUST names, which the nine free-text gates above could never
   // see because they describe spoken intent, not a command line.
   'kill-by-name', 'destructive-delete', 'git-destructive',
+  // codex-recheck 2026-09-24 (S03) — a FOURTH command gate: feeding unknown/decoded content straight into an
+  // interpreter (a pipe into sh/bash/pwsh/powershell, iex/Invoke-Expression/eval, `sh -c "$VAR"`) hides the
+  // real command from every other gate; Forge cannot inspect it, so it stops instead of guessing.
+  'opaque-exec',
   'write-outside-root'];
 
 module.exports = {
-  classify, listGates, loadGates, isPathEscape, testTextGate, testCommandGate, splitCommands, normalizeInput,
+  classify, listGates, loadGates, isPathEscape, testTextGate, testCommandGate, testCommandGateRaw, splitCommands, normalizeInput,
   // the whole except valve, exported so the INVARIANT test can assert the valve itself and not merely the
   // gate's verdict: excusedSegments() IS the allow-list, isExcusedSegment() IS the membership test.
   excusedSegments, isExcusedSegment,

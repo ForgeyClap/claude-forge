@@ -889,5 +889,167 @@ const reviewConcurrentAgent = reviewConcurrent.agents.find((a) => a.agent === 'R
 t('RULE 3e: closing rv-b leaves rv-a (a different review_id) genuinely open', reviewConcurrentAgent.tasksOpen.some((tk) => tk.event_type === 'review_started'));
 t('RULE 3e: exactly one review_started remains open (rv-a), rv-b closed', reviewConcurrentAgent.tasksOpen.filter((tk) => tk.event_type === 'review_started').length === 1);
 
+// =====================================================================================================
+// 2026-09-24 (out-p5.md fix-round) — VERIFY-FAILED-REVIEW-DONE / VERIFY-DEAD-WORKER-GREEN /
+// VERIFY-ARBITRARY-CLOSURE / VERIFY-SELF-WAIVER / EVENT-RUN-BINDING-GAP
+// =====================================================================================================
+
+// ---- statusClass "incomplete" substring bug: negated-done text must not read as done ----
+t('statusClass: "incomplete" is not read as done via the "complete" substring', V.taskStatus({ event_type: 'x', status: 'incomplete' }) !== 'done');
+t('statusClass: "not completed" is not read as done', V.taskStatus({ event_type: 'x', status: 'not completed' }) !== 'done');
+t('statusClass: a genuinely positive "complete" still reads done', V.taskStatus({ event_type: 'x', status: 'complete' }) === 'done');
+
+// ---- VERIFY-FAILED-REVIEW-DONE: review_verdict (not `status`) drives the outcome ----
+t('reviewOutcome: review_verdict:"fail" (no status field) is failed, not done', V.reviewOutcome({ event_type: 'review_completed', review_verdict: 'fail' }) === 'failed');
+t('reviewOutcome: review_verdict:"approved" is done', V.reviewOutcome({ event_type: 'review_completed', review_verdict: 'approved' }) === 'done');
+t('reviewOutcome: ok:false alongside a positive verdict field still fails (contradiction is a rejection)', V.reviewOutcome({ event_type: 'review_completed', review_verdict: 'approved', ok: false }) === 'failed');
+t('reviewOutcome: no outcome field at all returns null (caller uses its own default)', V.reviewOutcome({ event_type: 'review_completed' }) === null);
+const verdictDoneDir = writeEvents('run-verdict-fail', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-verdict', task: 'review x' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-verdict', review_verdict: 'CHANGES_REQUIRED' }),
+]);
+const verdictFail = V.verifyRun(verdictDoneDir, {});
+const verdictFailAgent = verdictFail.agents.find((a) => a.agent === 'Review Boss');
+const verdictFailTask = verdictFailAgent.tasksOpen.find((tk) => tk.event_type === 'review_started');
+t('verifyRun: a review_verdict:CHANGES_REQUIRED (no status field) resolves the paired task as failed, not done', !!verdictFailTask && verdictFailTask.status === 'failed');
+
+// ---- VERIFY-FAILED-REVIEW-DONE: an orphan review_completed (no matching review_started) is NOT done ----
+const orphanReviewDir = writeEvents('run-orphan-review', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-orphan', status: 'PASS' }),
+]);
+const orphanReview = V.verifyRun(orphanReviewDir, {});
+const orphanReviewAgent = orphanReview.agents.find((a) => a.agent === 'Review Boss');
+const orphanTask = orphanReviewAgent.tasksOpen.find((tk) => tk.event_type === 'review_completed');
+t('verifyRun: an orphan review_completed (no matching start) is NOT counted done, even with a positive status', !!orphanTask);
+
+// ---- VERIFY-DEAD-WORKER-GREEN: a start + unfinished heartbeat, no completion, no failure claim ----
+const deadWorkerDir = writeEvents('run-dead-worker', [
+  ev({ event_type: 'agent_started', agent: 'Ghost Boss' }),
+  ev({ event_type: 'agent_progress', agent: 'Ghost Boss', note: 'still going…' }),
+]);
+const deadWorker = V.verifyRun(deadWorkerDir, {});
+const ghostAgent = deadWorker.agents.find((a) => a.agent === 'Ghost Boss');
+t('VERIFY-DEAD-WORKER-GREEN: an agent with an open heartbeat and no completion/failure claim is flagged deadWorker', ghostAgent.deadWorker === true);
+t('VERIFY-DEAD-WORKER-GREEN: mismatch stays false for it (that predicate is about claimsDone specifically)', ghostAgent.mismatch === false);
+// counterweight: an honest agent_failed claim is NOT also flagged deadWorker
+const failedWorkerDir = writeEvents('run-failed-worker', [
+  ev({ event_type: 'agent_started', agent: 'Honest Boss' }),
+  ev({ event_type: 'agent_progress', agent: 'Honest Boss', note: 'trying…' }),
+  ev({ event_type: 'agent_failed', agent: 'Honest Boss', note: 'crashed, reported honestly' }),
+]);
+const failedWorker = V.verifyRun(failedWorkerDir, {});
+const honestAgent = failedWorker.agents.find((a) => a.agent === 'Honest Boss');
+t('VERIFY-DEAD-WORKER-GREEN counterweight: an honest agent_failed claim is NOT flagged deadWorker', honestAgent.deadWorker === false);
+
+// ---- VERIFY-DEAD-WORKER-GREEN (role-only fallback): two DIFFERENT wp_id heartbeats must BOTH stay open
+// when only a role-only completion (no wp_id) is logged ----
+const roleOnlyDir = writeEvents('run-role-only-two-wps', [
+  ev({ event_type: 'agent_started', agent: 'Multi Boss', role: 'build' }),
+  ev({ event_type: 'agent_progress', agent: 'Multi Boss', wp_id: 'wp-a', role: 'build', note: 'hb a' }),
+  ev({ event_type: 'agent_progress', agent: 'Multi Boss', wp_id: 'wp-b', role: 'build', note: 'hb b' }),
+  ev({ event_type: 'subagent_completed', agent: 'Multi Boss', role: 'build', status: 'completed' }), // no wp_id
+]);
+const roleOnly = V.verifyRun(roleOnlyDir, {});
+const multiAgent = roleOnly.agents.find((a) => a.agent === 'Multi Boss');
+const openHeartbeats = multiAgent.tasksOpen.filter((tk) => tk.event_type === 'agent_progress');
+t('VERIFY-DEAD-WORKER-GREEN: a role-only completion (no wp_id) closes NEITHER of two explicit-wp_id heartbeats', openHeartbeats.length === 2);
+
+// ---- VERIFY-ARBITRARY-CLOSURE: "." is not evidence ----
+const closeDotDir = writeEvents('run-closes-dot-evidence', [
+  ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-dot-1', task: 'lint gate' }),
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-dot-1', evidence: '.' }),
+]);
+const closeDot = V.verifyRun(closeDotDir, {});
+const closeDotAgent = closeDot.agents.find((a) => a.agent === 'Review Boss');
+t('VERIFY-ARBITRARY-CLOSURE: a bare "." is rejected as evidence (task stays open)', closeDotAgent.tasksOpen.length === 1);
+t('VERIFY-ARBITRARY-CLOSURE: an advisory names "no evidence" for the bare "."', /no evidence/.test(closeDot.closesAdvisories[0] || ''));
+
+// ---- VERIFY-ARBITRARY-CLOSURE: single consumption — a SECOND closer cannot re-close an already-closed target ----
+const closeDoubleDir = writeEvents('run-closes-double', [
+  ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-double-1', task: 'lint gate' }),
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-double-1', evidence: 'first fix, 3/3 passed' }),
+  ev({ event_type: 'check_failed', agent: 'Other Boss', event_id: 'ev-double-2', task: 'unrelated' }),
+  ev({ event_type: 'fix_completed', agent: 'Second Closer', closes_event_id: 'ev-double-1', evidence: 'trying to re-close, exit 0' }),
+]);
+const closeDouble = V.verifyRun(closeDoubleDir, {});
+t('VERIFY-ARBITRARY-CLOSURE: a second closer cannot re-close an already-closed target', closeDouble.closesAdvisories.some((a) => /already closed/.test(a)));
+
+// ---- VERIFY-ARBITRARY-CLOSURE: an already-DONE target cannot be "closed" retroactively ----
+const closeDoneDir = writeEvents('run-closes-done-target', [
+  ev({ event_type: 'ticket_created', agent: 'orchestrator', event_id: 'ev-already-done-1', note: 'fact' }),
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-already-done-1', evidence: 'trying to close a done fact, exit 0' }),
+]);
+const closeDone = V.verifyRun(closeDoneDir, {});
+t('VERIFY-ARBITRARY-CLOSURE: an already-done target is refused with an advisory naming it', closeDone.closesAdvisories.some((a) => /already done/.test(a)));
+
+// ---- VERIFY-ARBITRARY-CLOSURE: self-closure needs a tally/exit line, cross-agent needs only real evidence ----
+const selfCloseWeakDir = writeEvents('run-self-close-weak', [
+  ev({ event_type: 'check_failed', agent: 'Build Boss', event_id: 'ev-self-weak-1', task: 'lint gate' }),
+  ev({ event_type: 'fix_completed', agent: 'Build Boss', closes_event_id: 'ev-self-weak-1', evidence: 'fixed it, looks good now' }),
+]);
+const selfCloseWeak = V.verifyRun(selfCloseWeakDir, {});
+const selfCloseWeakAgent = selfCloseWeak.agents.find((a) => a.agent === 'Build Boss');
+t('VERIFY-ARBITRARY-CLOSURE: self-closure with only prose (no tally/exit) is refused', selfCloseWeakAgent.tasksOpen.length === 1);
+t('VERIFY-ARBITRARY-CLOSURE: the advisory names the self-closure tally/exit requirement', selfCloseWeak.closesAdvisories.some((a) => /tally\/exit-code/.test(a)));
+const selfCloseStrongDir = writeEvents('run-self-close-strong', [
+  ev({ event_type: 'check_failed', agent: 'Build Boss', event_id: 'ev-self-strong-1', task: 'lint gate' }),
+  ev({ event_type: 'fix_completed', agent: 'Build Boss', closes_event_id: 'ev-self-strong-1', evidence: 'reran the suite: 12/12 passed' }),
+]);
+const selfCloseStrong = V.verifyRun(selfCloseStrongDir, {});
+const selfCloseStrongAgent = selfCloseStrong.agents.find((a) => a.agent === 'Build Boss');
+t('VERIFY-ARBITRARY-CLOSURE: self-closure WITH a real tally line succeeds', selfCloseStrongAgent.tasksOpen.length === 0);
+
+// ---- VERIFY-SELF-WAIVER: an agent-attributed (non-owner) decision must NOT clear an acceptance gap ----
+writePrdMeta('prd-cov-self-waiver', [{ id: 'ac-1', text: 'Needs a real owner decision' }]);
+const selfWaiverDir = writeEvents('run-ac-self-waiver', [
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-self-waiver', run_id: 'run-ac-self-waiver' }),
+  ev({ event_type: 'decision_logged', agent: 'Build Boss', prd_id: 'prd-cov-self-waiver', ac_id: 'ac-1', decision: 'I decided this is fine, skipping the ticket', by: 'Build Boss' }),
+]);
+const selfWaiver = V.checkAcceptanceCoverage('run-ac-self-waiver', { runDir: selfWaiverDir, ownerAllowlist: new Set(['owner']) });
+t('VERIFY-SELF-WAIVER: a decision attributed to a non-owner agent does NOT clear the gap', selfWaiver.acceptance_gaps.length === 1);
+// counterweight: the SAME shape with `by` in the allow-list clears it
+const realWaiverDir = writeEvents('run-ac-real-waiver', [
+  ev({ event_type: 'prd_generated', agent: 'orchestrator', prd_id: 'prd-cov-self-waiver', run_id: 'run-ac-real-waiver' }),
+  ev({ event_type: 'decision_logged', agent: 'Build Boss', prd_id: 'prd-cov-self-waiver', ac_id: 'ac-1', decision: 'owner reviewed and waived this criterion', by: 'owner' }),
+]);
+const realWaiver = V.checkAcceptanceCoverage('run-ac-real-waiver', { runDir: realWaiverDir, ownerAllowlist: new Set(['owner']) });
+t('VERIFY-SELF-WAIVER counterweight: a decision attributed to a configured owner id DOES clear the gap', realWaiver.acceptance_gaps.length === 0);
+
+// ---- EVENT-RUN-BINDING-GAP: a foreign run_id event must not be treated as belonging to THIS run ----
+const foreignRunDir = writeEvents('run-foreign-binding-target', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'check_started', agent: 'Build Boss', task: 'unit tests' }),
+  ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'unit tests', run_id: 'OTHER-RUN' }), // foreign run_id
+  ev({ event_type: 'agent_completed', agent: 'Build Boss', status: 'done' }),
+]);
+const foreignRun = V.verifyRun(foreignRunDir, {});
+t('EVENT-RUN-BINDING-GAP: a foreign run_id event is excluded and reported', foreignRun.foreignRunId === 1);
+const foreignRunAgent = foreignRun.agents.find((a) => a.agent === 'Build Boss');
+t('EVENT-RUN-BINDING-GAP: the excluded foreign event never closed the local check_started (still open, real mismatch)', foreignRunAgent.mismatch === true);
+
+// ---- VERIFY-READ-ERROR-GREEN: a corrupt ticket / an unreadable ticket store fails closed, isolated env ----
+{
+  const freshTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-verify-unreadable-'));
+  const freshClaude = path.join(freshTmp, '.claude');
+  fs.mkdirSync(path.join(freshClaude, 'forge-tickets'), { recursive: true });
+  fs.writeFileSync(path.join(freshClaude, 'forge-tickets', 'tk-corrupt-gate.json'), '{not valid json', 'utf8');
+  fs.mkdirSync(path.join(freshClaude, 'forge-dashboard'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), path.join(freshClaude, 'forge-dashboard', 'log-event.cjs'));
+  const runId = 'run-unreadable-ticket';
+  const runDir = path.join(freshClaude, 'forge-runs', runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), [
+    ev({ event_type: 'agent_started', agent: 'Clean Boss' }),
+    ev({ event_type: 'check_passed', agent: 'Clean Boss', task: 'suite' }),
+    ev({ event_type: 'agent_completed', agent: 'Clean Boss' }),
+  ].join('\n') + '\n', 'utf8');
+  const freshEnv = Object.assign({}, process.env, { FORGE_STORE_ROOT: freshClaude });
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'forge-verify.cjs'), runId, '--root', freshTmp, '--json'], { env: freshEnv, encoding: 'utf8' });
+  t('VERIFY-READ-ERROR-GREEN: a corrupt ticket file in the store gates the CLI (nonzero), even though the run itself is otherwise clean', r.status !== 0);
+  t('VERIFY-READ-ERROR-GREEN: the printed VERIFY line names the open/unreadable ticket gate', /open\/unreadable ticket/.test(r.stdout));
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

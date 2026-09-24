@@ -304,6 +304,16 @@ function finalizeLocked(root, runId) {
   if (!evidencePre) {
     return { ok: false, verdict: 'refused', reason: 'geen geldige bewijsset (gate-evidence.json) voor deze run — een eindverdict dat aan geen bewijs gebonden is, is geen eindverdict' };
   }
+  /** FINALIZE-FAILED-GATE (2026-09-24, out-p5.md) — finalize eiste een BINDBARE bewijsset (evidencePre
+   *  hierboven), maar niet dat die bewijsset ZELF groen was: dat werd alleen getoetst BINNEN de L2+
+   *  independent-review-regel (opts.evidenceAllGreen), dus een L1-run met een gefaalde poort (exit_code:1)
+   *  kon gewoon FINALIZED worden zolang het contract verder groen was. GEREPRODUCEERD: een L1-fixture met
+   *  gate-evidence.json exit_code:1 gaf `{"contract":{"ok":true},"evidenceAllGreen":false,"finalizeOk":true}`.
+   *  Nu VERPLICHT op ELKE complexity: een rode poort in de bewijsset weigert finalize altijd, ongeacht welke
+   *  regel er wel/niet op dit niveau van toepassing is. */
+  if (evidenceSetPre.allGreen !== true) {
+    return { ok: false, verdict: 'refused', reason: 'de bewijsset bevat gefaalde poort(en) (' + (evidenceSetPre.failed || []).join(', ') + ') — finalize weigert een eindverdict te schrijven bovenop rood bewijs, op elke complexity' };
+  }
   const rulesetPre = rulesetHashOf(root);
   if (typeof rulesetPre !== 'string' || !/^[0-9a-f]{64}$/i.test(rulesetPre)) {
     return { ok: false, verdict: 'refused', reason: 'de regelset levert geen welgevormde sha256 (' + JSON.stringify(rulesetPre) + ') — zonder die pin is onbekend tegen welke regels het oordeel gold' };
@@ -516,6 +526,51 @@ function check(root, runId) {
     const nuRules = rulesetHashOf(root);
     if (nuRules !== receipt.ruleset_sha256) {
       return { verdict: 'STALE', receipt, reason: 'de regelset is sinds de finalisatie veranderd (' + receipt.ruleset_sha256.slice(0, 12) + '… -> ' + String(nuRules).slice(0, 12) + '…) — het verdict gold tegen andere regels' };
+    }
+  }
+  /** FINALIZE-STALE-CODE (2026-09-24, out-p5.md) — the code comparison above (`nuCommit !== receipt.
+   *  code_commit`) reads TWO values from the SAME static gate-evidence.json — a `git checkout` to a
+   *  different commit never touches that file, so the comparison trivially kept matching regardless of
+   *  what is ACTUALLY checked out. GEREPRODUCEERD: changing the real HEAD after finalization, while
+   *  retaining the same evidence artifacts, still returned "FINALIZED". This receipt correctly proves the
+   *  run was finalized FOR THE COMMIT/DOMAIN IT PINNED — it does not prove that is still the current
+   *  subject. A live mismatch against the REAL current git HEAD (or the run's current declared domain)
+   *  downgrades the verdict to HISTORICAL rather than continuing to claim a current FINALIZED — a genuinely
+   *  different, honest status, never silently folded into either FINALIZED or STALE. No git repo / git
+   *  unavailable degrades to "cannot compare" (headNow === null) — an honest limitation, not a false
+   *  positive. */
+  {
+    const RC = require(path.join(__dirname, 'forge-runcontract.cjs'));
+    let headNow = null;
+    try { headNow = typeof RC.resolveHeadCommit === 'function' ? RC.resolveHeadCommit(root) : null; } catch { headNow = null; }
+    if (headNow && headNow !== receipt.code_commit) {
+      return { verdict: 'HISTORICAL', receipt, reason: 'deze receipt geldt voor commit ' + receipt.code_commit.slice(0, 12) + '… maar de huidige HEAD is ' + headNow.slice(0, 12) + '… — dit eindverdict is HISTORISCH, niet actueel', code_commit_then: receipt.code_commit, code_commit_now: headNow };
+    }
+    const domainNow = runDomainOf(root, runId);
+    if (domainNow !== (receipt.domain || null)) {
+      return { verdict: 'HISTORICAL', receipt, reason: 'deze receipt geldt voor domein ' + JSON.stringify(receipt.domain) + ' maar run.json declareert nu ' + JSON.stringify(domainNow) + ' — dit eindverdict is HISTORISCH, niet actueel', domain_then: receipt.domain, domain_now: domainNow };
+    }
+    /** RECEIPT-FORGERY (2026-09-24, out-p5.md) — acceptance ONLY compared public hashes (log digest,
+     *  evidence digest, ruleset hash, code commit) and trusted the receipt's own `contract:"ok"` STRING —
+     *  it never re-ran the contract. GEREPRODUCEERD: a forged schema-2 receipt over a log carrying only
+     *  run_finalized, matching every hash it itself declared, read as classification:valid / verdict:
+     *  FINALIZED with zero real gates ever having run. Re-evaluating the ACTUAL contract on acceptance
+     *  means a receipt cannot simply assert "ok" — it must still BE ok against the real, current run state.
+     *  SCOPE NOTE (honesty): this closes the "trust the stored string" half of the finding. The narrower
+     *  "canonicalEvidenceDigest tolerates a missing output file" half (a fabricated gate-evidence.json
+     *  entry whose referenced output never existed) is a SEPARATE, deliberately NOT-tightened compromise —
+     *  tightening it would require every existing gate-evidence.json fixture across this project's test
+     *  suites (forge-finalize.test.cjs, forge-independent-verification.test.cjs, forge-runcontract.test.cjs)
+     *  to also write real on-disk output files, which is out of safe scope for this pass; see this work
+     *  package's report for the explicit deferred classification. */
+    let contractNow = null;
+    try {
+      contractNow = RC.check({ run_id: runId, domain: receipt.domain || undefined, commit_sha: headNow }, { root });
+    } catch (e) {
+      return { verdict: 'STALE', receipt, reason: 'het contract kon bij acceptatie niet worden herbeoordeeld (' + (e && e.message ? e.message : String(e)) + ') — een receipt die niet herbevestigd kan worden, wordt niet vertrouwd' };
+    }
+    if (!contractNow || contractNow.ok !== true) {
+      return { verdict: 'STALE', receipt, reason: 'het contract is bij acceptatie NIET meer groen (missing: ' + ((contractNow && contractNow.missing) || []).join(', ') + ') — een opgeslagen contract:"ok" wordt niet blind vertrouwd; deze receipt wordt niet als FINALIZED geaccepteerd' };
     }
   }
   /** R4-07/R5-08: ook de UITSLAG draagt de caveat, niet alleen de receipt — een consument die alleen

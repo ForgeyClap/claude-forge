@@ -98,7 +98,7 @@
  *
  * CLI:
  *   node .claude/forge-bin/forge-setup.cjs <command> [--project <dir>] [--json] [--quiet]
- *     status | guard | init-keys [--type <t>] [--tmp <file>] | place-keys [--tmp <file>]
+ *     status | guard | gitignore | checkpoint-scan | init-keys [--type <t>] [--tmp <file>] | place-keys [--tmp <file>]
  *     mark --name <n> --lang <code> [--goal <g>] [--type <t>] | self-heal | doctor | lang
  *   --project defaults to two levels up from this file (i.e. the project this forge-bin/ ships in).
  *
@@ -109,8 +109,13 @@
  *     isManagedDefaultTmp, refusesAsEnvTarget, detectLineEnding, sanitizeLang, pathsEqualForFs,
  *     ensureTmpGitignored, isPathInside, detectUtf16Bom, checkGitIgnoreStatus, verifyAndReinforceIgnored,
  *     countUnparseableContentLines, isAllPlaceholderVocab, findConflictingDuplicateKeys,
- *     extractKeyValueFromLine, protectSecrets, KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES,
+ *     extractKeyValueFromLine, protectSecrets, findDefeatingNegations, isSecretShapedName,
+ *     listCheckpointCandidates, scanCheckpointSecrets, KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES,
  *     KEEP_NEGATION_LINE, DEFAULT_TMP_NAME, CHECKPOINT_SECRET_LINES }
+ *   CLI adds `checkpoint-scan` (Codex recheck 2026-09-24, SECRET-CHECKPOINT): validates every path the
+ *   checkpoint's `git add -A` is about to pick up against the shared credential-name policy BEFORE it is
+ *   staged — exit 0 nothing at risk, exit 3 one or more secret-shaped candidates are blocked (named, with
+ *   why), exit 1 usage/dir error. Never stages anything itself.
  */
 const fs = require('fs');
 const path = require('path');
@@ -188,15 +193,45 @@ function verifyAndReinforceIgnored(projectDir, relPath) {
   return { verified: second !== null, ignored: second === true, reinforced: true };
 }
 
-// ---- checkpoint secret protection (review-boss M5, 2026-09-24) ----------------------------------------
+// ---- checkpoint secret protection (review-boss M5, 2026-09-24; hardened Codex recheck 2026-09-24
+// SECRET-CHECKPOINT) ------------------------------------------------------------------------------------
 // The /forge git checkpoint stages the whole project, so BEFORE staging every secret-shaped name must already be
 // ignored. Append-only (grep-before-append): never removes or reorders a line; creates .gitignore when missing.
 // `.env.*` also matches .env.example, so `!.env.example` must come AFTER the last `.env.*` line (git: last match
 // wins) — it is re-appended at the end whenever it does not. No git call, no tracked-check: that is guard()'s job.
-const CHECKPOINT_SECRET_LINES = ['.env.*', '*.pem', '*.key', 'id_rsa*', 'credentials*.json', 'secrets/'];
+// `id_ed25519*` covers the conventional Ed25519 private-key filename — the SAME name settings.json's Read-deny
+// list already recognizes; this is the ONE shared credential-name list (see isSecretShapedName below, and
+// forge.md's checkpoint paragraph, which names these same patterns in prose).
+const CHECKPOINT_SECRET_LINES = ['.env.*', '*.pem', '*.key', 'id_rsa*', 'id_ed25519*', 'credentials*.json', 'secrets/'];
+
+/** findDefeatingNegations(lines, patterns) -> [{pattern, negation, atLine}] — a `!<name>` line sitting AFTER
+ *  the pattern that is supposed to protect it defeats that protection under git's last-match-wins rule; the
+ *  mere PRESENCE of our own line is not proof (the exact SECRET-CHECKPOINT evidence: existing patterns
+ *  followed by negations left appended:[] and the negations untouched). `!.env.example` is the one
+ *  deliberate, wanted exception (KEEP_NEGATION_LINE) and is never reported as defeating anything. */
+function findDefeatingNegations(lines, patterns) {
+  const out = [];
+  for (const pat of patterns) {
+    const patIdx = lines.lastIndexOf(pat);
+    if (patIdx < 0) continue;
+    const bare = pat.replace(/\*+$/, '').replace(/\/$/, '');
+    for (let i = patIdx + 1; i < lines.length; i++) {
+      const l = lines[i];
+      if (!l.startsWith('!') || l === KEEP_NEGATION_LINE) continue;
+      const neg = l.slice(1);
+      if (neg === pat || (bare && (neg === bare || neg.startsWith(bare)))) { out.push({ pattern: pat, negation: l, atLine: i }); break; }
+    }
+  }
+  return out;
+}
+
+/** protectSecrets(projectDir) -> { ok, path, created, appended, patterns, reinforced }. `reinforced` lists
+ *  every pattern that had to be re-appended at the end because an existing negation elsewhere was defeating
+ *  it (SECRET-CHECKPOINT) — a non-empty `reinforced` is worth surfacing to the owner even though `ok` stays
+ *  true (the file itself is fixed by the time this returns). */
 function protectSecrets(projectDir) {
   const invalidDir = validateProjectDir(projectDir);
-  if (invalidDir) return { ok: false, reason: invalidDir.reason, path: null, created: false, appended: [], patterns: [] };
+  if (invalidDir) return { ok: false, reason: invalidDir.reason, path: null, created: false, appended: [], patterns: [], reinforced: [] };
   const gitignorePath = path.join(projectDir, '.gitignore');
   const existedBefore = fs.existsSync(gitignorePath);
   let content = existedBefore ? fs.readFileSync(gitignorePath, 'utf8') : '# Forge V2 — secrets (managed by forge-setup)\n';
@@ -208,8 +243,70 @@ function protectSecrets(projectDir) {
   for (const line of patterns) if (!present.has(line)) { add(line); present.add(line); }
   const ls = linesNow();
   if (ls.lastIndexOf(KEEP_NEGATION_LINE) < ls.lastIndexOf('.env.*')) add(KEEP_NEGATION_LINE);
+  const reinforced = findDefeatingNegations(linesNow(), patterns);
+  for (const d of reinforced) add(d.pattern);
   if (!existedBefore || appended.length > 0) fs.writeFileSync(gitignorePath, content, 'utf8');
-  return { ok: true, path: gitignorePath, created: !existedBefore, appended, patterns: patterns.concat(KEEP_NEGATION_LINE) };
+  return { ok: true, path: gitignorePath, created: !existedBefore, appended, patterns: patterns.concat(KEEP_NEGATION_LINE), reinforced };
+}
+
+// ---- checkpoint-time candidate scan (Codex recheck 2026-09-24, SECRET-CHECKPOINT) -----------------------
+// The checkpoint procedure must validate BEFORE staging, never stage-then-unstage: every path `git add -A`
+// is about to pick up is checked here with the SAME git-backed verification the .env guard already trusts
+// (PRINCIPLE A, VERIFY DON'T ASSUME — checkGitIgnoreStatus). isSecretShapedName is the ONE shared
+// credential-name policy (REQUIRED_GITIGNORE_LINES + CHECKPOINT_SECRET_LINES) — forge.md's checkpoint
+// paragraph names the same patterns in prose so the two can never quietly drift apart.
+const SECRET_NAME_PATTERNS = [...new Set(REQUIRED_GITIGNORE_LINES.concat(CHECKPOINT_SECRET_LINES))];
+function isSecretShapedName(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!p || p === '.env.example' || p.endsWith('/.env.example')) return false;
+  const base = p.split('/').pop();
+  const segs = p.split('/').slice(0, -1);
+  const globRe = (glob) => new RegExp('^' + glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*') + '$');
+  for (const pat of SECRET_NAME_PATTERNS) {
+    if (pat.endsWith('/')) { if (segs.includes(pat.slice(0, -1))) return true; continue; }
+    if (globRe(pat).test(base)) return true;
+  }
+  return false;
+}
+
+/** listCheckpointCandidates(projectDir) -> relative paths `git add -A` would touch right now (untracked,
+ *  modified, renamed, deleted), via `git status --porcelain -z --untracked-files=all`. Never throws; a git
+ *  failure (or not a repo) returns []. */
+function listCheckpointCandidates(projectDir) {
+  const r = spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: projectDir, encoding: 'utf8' });
+  if (r.error || typeof r.stdout !== 'string') return [];
+  const out = [];
+  const recs = r.stdout.split('\0').filter(Boolean);
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i];
+    const code = rec.slice(0, 2);
+    out.push(rec.slice(3));
+    if (code[0] === 'R' || code[1] === 'R') i++; // a rename record is followed by its own oldpath \0-record
+  }
+  return out.filter(Boolean);
+}
+
+/** scanCheckpointSecrets(projectDir) -> { ok, gitAvailable, blocked: [{path, reason}] }. `blocked` names every
+ *  checkpoint candidate that is secret-shaped AND not positively confirmed git-ignored — the checkpoint step
+ *  must refuse to `git add` these (never stage them and unstage afterwards). `ok` is false only when
+ *  `blocked.length > 0`. A git failure / not a repo is permissive (ok:true, gitAvailable:false), the same
+ *  posture as checkEnvTracked() — nothing to scan there. Does not catch an already-committed, UNMODIFIED
+ *  secret-shaped file from an earlier mistake (out of scope: that needs history scanning, not a checkpoint
+ *  candidate scan — report it, do not claim it is covered). */
+function scanCheckpointSecrets(projectDir) {
+  const invalidDir = validateProjectDir(projectDir);
+  if (invalidDir) return { ok: false, gitAvailable: false, blocked: [], reason: invalidDir.reason };
+  const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectDir, encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) return { ok: true, gitAvailable: false, blocked: [] };
+  const candidates = listCheckpointCandidates(projectDir);
+  const blocked = [];
+  for (const rel of candidates) {
+    if (!isSecretShapedName(rel)) continue;
+    const ignored = checkGitIgnoreStatus(projectDir, rel);
+    if (ignored === true) continue;
+    blocked.push({ path: rel, reason: ignored === false ? 'secret-shaped and NOT git-ignored (a negation may be overriding it)' : 'secret-shaped and git could not confirm it is ignored' });
+  }
+  return { ok: blocked.length === 0, gitAvailable: true, blocked };
 }
 
 // Ensure .gitignore protects secrets. Grep-before-append, create-if-missing, never rewrites/removes
@@ -1056,7 +1153,8 @@ module.exports = {
   validateProjectDir, resolveTmpPath, isManagedDefaultTmp, refusesAsEnvTarget, detectLineEnding, sanitizeLang,
   pathsEqualForFs, ensureTmpGitignored, isPathInside, detectUtf16Bom,
   checkGitIgnoreStatus, verifyAndReinforceIgnored, countUnparseableContentLines, isAllPlaceholderVocab,
-  findConflictingDuplicateKeys, extractKeyValueFromLine, protectSecrets,
+  findConflictingDuplicateKeys, extractKeyValueFromLine, protectSecrets, findDefeatingNegations,
+  isSecretShapedName, listCheckpointCandidates, scanCheckpointSecrets,
   KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES, KEEP_NEGATION_LINE, DEFAULT_TMP_NAME, CHECKPOINT_SECRET_LINES,
 };
 
@@ -1120,7 +1218,20 @@ if (require.main === module) {
         if (opts.json) { console.log(JSON.stringify(g, null, 2)); return; }
         if (g.created) console.log('created .gitignore');
         for (const l of g.appended) console.log('gitignore: added "' + l + '"');
+        if (g.reinforced && g.reinforced.length) for (const d of g.reinforced) console.log('gitignore: reinforced "' + d.pattern + '" (a "' + d.negation + '" line was overriding it)');
         if (!g.created && g.appended.length === 0) console.log('.gitignore already keeps secret-shaped files out of git — no changes needed');
+        return;
+      }
+      case 'checkpoint-scan': {
+        const r = scanCheckpointSecrets(projectDir);
+        if (!r.gitAvailable && r.reason) { console.error(r.reason); process.exitCode = 1; return; }
+        if (opts.json) { console.log(JSON.stringify(r, null, 2)); return; }
+        if (r.blocked.length) {
+          console.error('!!! WARNING: secret-shaped file(s) would be staged and are not confirmed git-ignored:');
+          for (const b of r.blocked) console.error('  - ' + b.path + ' (' + b.reason + ')');
+          process.exitCode = 3; return;
+        }
+        console.log(r.gitAvailable ? 'No secret-shaped files at risk of being staged.' : 'Not a git repository (or git unavailable) — nothing to scan.');
         return;
       }
       case 'init-keys': {
@@ -1193,7 +1304,7 @@ if (require.main === module) {
         return;
       }
       default:
-        console.error('Usage: node forge-setup.cjs <status|guard|gitignore|init-keys|place-keys|mark|self-heal|doctor|lang> [--project <dir>] [--json] [--quiet]');
+        console.error('Usage: node forge-setup.cjs <status|guard|gitignore|checkpoint-scan|init-keys|place-keys|mark|self-heal|doctor|lang> [--project <dir>] [--json] [--quiet]');
         process.exitCode = 1;
     }
   };

@@ -1,11 +1,16 @@
-// GET /api/capabilities source: spawns the SELECTED project's own already-reviewed
-// `forge-capabilities.cjs report --json` — the ONE allowlisted forge-bin execution this whole WP
-// is permitted (every other tool stays a read-only inventory entry via tools.mjs). Fixed args,
-// never built from request input beyond the already-allowlisted project path (resolved upstream
-// via the trusted project registry, exactly like models.mjs's NVIDIA probe and projects.mjs's
-// forge-sync spawn). `forge-capabilities.cjs`'s own PROJECT_ROOT_DEFAULT resolves relative to the
-// SCRIPT's own location (two directories up from forge-bin/), so no `--root` override is needed —
-// spawning THAT project's own copy of the script naturally reports on THAT project.
+// GET /api/capabilities source (SEC-PROJECT-CODE, 2026-09-24): runs THIS gateway's own CENTRAL copy of
+// `forge-capabilities.cjs report --json` against the SELECTED project's data, via `--root <selected
+// project>` — never the selected project's own copy of the script. This used to spawn the selected
+// project's `.claude/forge-bin/forge-capabilities.cjs` directly, meaning selecting a project in the
+// dashboard and requesting its capabilities executed THAT PROJECT'S OWN CODE with the gateway's
+// inherited environment and privileges — exactly the "never runs a selected project's own code" promise
+// this project's CHANGELOG makes, and exactly the same class of gap wp20/config.mjs already closed for
+// GET /api/config's forge-config.cjs. The fix is the same pattern: one trusted CENTRAL script, a
+// `--root`/env-scoped view of the SELECTED project's data, and a credential-free exec-bridge env
+// allowlist (this tool needs no credential at all — it only reads local forge-bin/skills/gates/runs/
+// agent-memory files). `forge-capabilities.cjs` already supports `--root <dir>` (it resolves every other
+// path — claudeDir/binDir/skillsDir/etc. — relative to that root unless individually overridden), so no
+// change to that script was needed.
 //
 // This is genuinely expensive (it scans forge-bin + skills + every run's events.jsonl + every
 // agent-memory file), so results are cached 10 minutes per project with the same stale-while-
@@ -18,8 +23,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { containmentOk } from './security.mjs';
 import { redact, redactDeep } from './redact.mjs';
+import { filteredEnv } from './exec-cli.mjs';
+import { PROJECT_ROOT } from './paths.mjs';
+
+// The one forge-capabilities.cjs this gateway ever executes (SEC-PROJECT-CODE) — its own, never the
+// selected project's.
+const CENTRAL_FORGE_CAPABILITIES_CJS = path.join(PROJECT_ROOT, '.claude', 'forge-bin', 'forge-capabilities.cjs');
 
 const execFileAsync = promisify(execFile);
 const CAPABILITIES_TIMEOUT_MS = 60_000;
@@ -34,6 +44,13 @@ const MAX_CACHE_ENTRIES = 100;
 const cacheByProject = new Map(); // projectPath -> { data, capturedAtMs, expiresAt }
 const refreshInFlightByProject = new Map(); // projectPath -> Promise<void>
 
+// Test-only override seam (mirrors config.mjs's _setForgeConfigCjsForTests / models.mjs's
+// _setNvidiaProviderCjsForTests): replaces the CENTRAL script with a fixture so a tampered-script
+// sentinel test can prove the selected project's own script never runs, without touching the real
+// forge-capabilities.cjs. Production code never calls the setter.
+let forgeCapabilitiesCjsOverride = null;
+export function _setForgeCapabilitiesCjsForTests(p) { forgeCapabilitiesCjsOverride = p; }
+
 // Only evicts when `key` would be a genuinely NEW entry — updating an existing project's cache
 // entry (the stale-while-revalidate refresh path) never counts against the cap or triggers an
 // eviction of a different project's entry.
@@ -45,21 +62,21 @@ function evictIfNeeded(key) {
   }
 }
 
-function capabilitiesScriptPath(projectPath) {
-  return path.join(projectPath, '.claude', 'forge-bin', 'forge-capabilities.cjs');
+function hasClaudeDir(projectPath) {
+  try { return fs.statSync(path.join(projectPath, '.claude')).isDirectory(); } catch { return false; }
 }
 
 async function probeCapabilitiesLive(projectPath) {
-  const claudeDir = path.join(projectPath, '.claude');
-  const scriptPath = capabilitiesScriptPath(projectPath);
-  if (!containmentOk(claudeDir, scriptPath)) {
-    return { available: false, state: 'UNAVAILABLE', note: 'path containment violation', capabilities: [], summary: null };
+  if (!hasClaudeDir(projectPath)) {
+    return { available: false, state: 'UNAVAILABLE', note: 'this project has no .claude/ folder — there is nothing to report on', capabilities: [], summary: null };
   }
+  const scriptPath = forgeCapabilitiesCjsOverride || CENTRAL_FORGE_CAPABILITIES_CJS;
   if (!fs.existsSync(scriptPath)) {
-    return { available: false, state: 'UNAVAILABLE', note: 'forge-capabilities.cjs not found for this project', capabilities: [], summary: null };
+    return { available: false, state: 'UNAVAILABLE', note: 'the central forge-capabilities.cjs was not found', capabilities: [], summary: null };
   }
   try {
-    const { stdout } = await execFileAsync(process.execPath, [scriptPath, 'report', '--json'], {
+    const { stdout } = await execFileAsync(process.execPath, [scriptPath, 'report', '--json', '--root', projectPath], {
+      cwd: PROJECT_ROOT, env: filteredEnv({ credentialFree: true }),
       timeout: CAPABILITIES_TIMEOUT_MS, windowsHide: true, encoding: 'utf8', maxBuffer: MAX_BUFFER_BYTES,
     });
     const parsed = JSON.parse(stdout);

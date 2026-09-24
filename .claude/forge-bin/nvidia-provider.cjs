@@ -61,12 +61,21 @@
  * value means OFF with reason 'config unreadable → safe default off' — never a silent fall-back to ON.
  * chat(args, opts) / health(opts) / listModels(opts): opts.configModule injects a module (tests).
  *
- * ENV FILES (security fix M5, 2026-09-24): from the project .env AND the global ~/.claude/nvidia.env only
- * NVIDIA_API_KEY and NVIDIA_<ROLE>_MODEL are loaded — every other name is ignored. NVIDIA_BASE_URL and
- * NVIDIA_ALLOW_CUSTOM_BASE_URL are honoured ONLY from the real environment or the GLOBAL file, never from a
- * project .env (a cloned repo could otherwise send the owner's global key to any host). The base URL must be
- * https: with a hostname ending in .nvidia.com unless NVIDIA_ALLOW_CUSTOM_BASE_URL=1; a violation refuses every
- * request with a plain reason (no request is sent).
+ * ENV FILES (security fix M5, 2026-09-24; tightened NVIDIA-ENV-TRUST, 2026-09-24): from the project .env AND
+ * the global ~/.claude/nvidia.env only NVIDIA_API_KEY and NVIDIA_<ROLE>_MODEL are loaded — every other name is
+ * ignored. NVIDIA_BASE_URL is honoured from the real environment or the GLOBAL file (never from a project .env
+ * — a cloned repo could otherwise send the owner's global key to a foreign host). NVIDIA_ALLOW_CUSTOM_BASE_URL
+ * is honoured from the REAL PROCESS ENVIRONMENT ONLY — no file, not even the global one, may set it: an env
+ * FILE authorising its OWN exception is exactly the hole NVIDIA-ENV-TRUST closed (a hostile/mistaken global
+ * file used to be able to both name an attacker endpoint AND flip the flag that made the code stop checking
+ * it). Without that flag the base URL must resolve to EXACTLY https://integrate.api.nvidia.com/v1 (a fixed,
+ * single-entry allow-list — see ALLOWED_HOSTS/ALLOWED_PATH) — no other host, no port, no userinfo, no query
+ * string, no fragment, no path other than the canonical one (normalized, so a traversal segment cannot slip a
+ * different effective path past this check). A violation refuses every request with a plain, non-echoing
+ * reason (no request is sent, and the reason never repeats the untrusted input verbatim). Even an explicitly
+ * authorised custom endpoint (real-env allow flag) still refuses userinfo/query/fragment (NVIDIA-URL-LEAK): a
+ * credential accidentally placed inside the base URL itself must never reach a request target, an exported
+ * CONFIG, or the dashboard's health-probe parser.
  */
 const fs = require('fs');
 const path = require('path');
@@ -118,7 +127,12 @@ function nvidiaState(opts) {
 // the key lives once, globally, and works for every Forge project — no copying secrets per project).
 // M5 (2026-09-24): a file may only set the names below; the base-URL pair is GLOBAL-file (or real env) only.
 const ENV_FILE_ANY = /^NVIDIA_(?:API_KEY|[A-Z0-9_]+_MODEL)$/;
-const ENV_FILE_GLOBAL_ONLY = new Set(['NVIDIA_BASE_URL', 'NVIDIA_ALLOW_CUSTOM_BASE_URL']);
+// NVIDIA-ENV-TRUST (2026-09-24): NVIDIA_ALLOW_CUSTOM_BASE_URL is deliberately NOT in this set any more —
+// no file (project or global) may set it, only the real process environment (checked directly via
+// process.env below, never through loadEnvFile). An env file authorising its own exception is exactly
+// the hole this closed; NVIDIA_BASE_URL alone (without the allow flag) is still checked against the
+// fixed allow-list in checkBaseUrl(), so a global file naming any other host still refuses.
+const ENV_FILE_GLOBAL_ONLY = new Set(['NVIDIA_BASE_URL']);
 /** loadEnvFile(envFile, isGlobal) — loads the allowed names from one KEY=VALUE file into process.env (a name
  *  that is already set wins). Never logs values; a missing file is fine. */
 function loadEnvFile(envFile, isGlobal) {
@@ -142,17 +156,37 @@ function loadEnv() {
 loadEnv();
 
 const DEFAULT_BASE_URL = 'https://integrate.api.nvidia.com/v1';
-/** checkBaseUrl(raw, allowCustom) -> { ok: true, url } | { ok: false, reason } (M5). https: + a hostname ending in
- *  .nvidia.com, unless allowCustom. The reason names only the scheme/host, never the full URL. Pure. */
+// NVIDIA-ENV-TRUST (2026-09-24): a FIXED, single-entry allow-list — not "any *.nvidia.com host" (a
+// look-alike or a legitimate-but-unexpected NVIDIA subdomain was previously accepted with no further
+// checks) — and a FIXED canonical path. Both mirror MATRIX.provider.baseUrlDefault exactly.
+const ALLOWED_HOSTS = new Set(['integrate.api.nvidia.com']);
+const ALLOWED_PATH = '/v1';
+/** checkBaseUrl(raw, allowCustom) -> { ok: true, url } | { ok: false, reason }. NVIDIA-ENV-TRUST (2026-09-24):
+ *  `allowCustom` must be true ONLY when it came from the REAL process environment (never a project or
+ *  global env file — see ENV_FILE_GLOBAL_ONLY above). Without it, the URL must resolve to EXACTLY
+ *  https://integrate.api.nvidia.com/v1 (fixed host allow-list + fixed canonical path, normalized so a
+ *  traversal segment cannot slip a different effective path past this check) — no port, no userinfo, no
+ *  query string, no fragment. Even WITH allowCustom, userinfo/query/fragment are still refused
+ *  (NVIDIA-URL-LEAK): a credential placed inside the base URL itself must never become part of a request
+ *  target, an exported CONFIG field, or a dashboard's parsed health-probe output. Every reason names only
+ *  fixed, non-credential-bearing labels (scheme/host/port presence/path) — never the raw input verbatim,
+ *  even for a rejected candidate. Pure. */
 function checkBaseUrl(raw, allowCustom) {
   let u;
   try { u = new URL(String(raw)); } catch { return { ok: false, reason: 'NVIDIA_BASE_URL is not a valid URL — refused, no request sent' }; }
-  const url = u.href.replace(/\/+$/, '');
-  if (allowCustom) return { ok: true, url };
-  const how = ' — refused, no request sent (allow a custom endpoint with NVIDIA_ALLOW_CUSTOM_BASE_URL=1 in the real environment or ~/.claude/nvidia.env)';
+  if (u.username || u.password) return { ok: false, reason: 'NVIDIA_BASE_URL must not contain userinfo (a username/password) — refused, no request sent' };
+  if (u.search || u.hash) return { ok: false, reason: 'NVIDIA_BASE_URL must not contain a query string or a fragment — refused, no request sent' };
+  if (allowCustom) return { ok: true, url: (u.origin + u.pathname).replace(/\/+$/, '') };
+  const how = ' — refused, no request sent (allow a custom endpoint with NVIDIA_ALLOW_CUSTOM_BASE_URL=1 in the REAL environment only — this can never be set from a project or global env file)';
   if (u.protocol !== 'https:') return { ok: false, reason: 'NVIDIA_BASE_URL must use https: (got ' + u.protocol + ')' + how };
-  if (!u.hostname.toLowerCase().endsWith('.nvidia.com')) return { ok: false, reason: 'NVIDIA_BASE_URL host "' + u.hostname + '" is not an nvidia.com host' + how };
-  return { ok: true, url };
+  if (u.port) return { ok: false, reason: 'NVIDIA_BASE_URL must not specify a port' + how };
+  if (!ALLOWED_HOSTS.has(u.hostname.toLowerCase())) return { ok: false, reason: 'NVIDIA_BASE_URL host is not on the fixed allow-list' + how };
+  // WHATWG URL parsing already collapses "." / ".." dot-segments during normalization; re-checking the
+  // normalized pathname here is defense-in-depth against any future parser/runtime that does not. A
+  // trailing slash is trimmed first (matching the pre-existing "trailing slash normalised" behaviour).
+  const normalizedPath = path.posix.normalize(u.pathname).replace(/\/+$/, '') || '/';
+  if (normalizedPath !== ALLOWED_PATH) return { ok: false, reason: 'NVIDIA_BASE_URL path must be exactly ' + ALLOWED_PATH + how };
+  return { ok: true, url: 'https://' + u.hostname.toLowerCase() + ALLOWED_PATH };
 }
 
 function readJson(f, fallback) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; } }
@@ -175,8 +209,10 @@ function normAgent(agent) { if (agent == null) return null; let s = String(agent
 function isKnownAgent(slug) { return !!(slug && (MODEL_MAP.agents || {})[slug]); }
 function policyFor(agent) { const a = normAgent(agent); if (!a) return 'unclassified'; if (SKIP_AGENTS.has(a)) return 'claude-first-skip'; if (BULK_AGENTS.has(a)) return 'nvidia-bulk-only'; return 'unclassified'; }
 
-// M5: after loadEnv(), NVIDIA_BASE_URL / NVIDIA_ALLOW_CUSTOM_BASE_URL can only have come from the real environment
-// or the global file (a project .env can no longer set them).
+// M5/NVIDIA-ENV-TRUST: after loadEnv(), NVIDIA_BASE_URL can only have come from the real environment or the
+// global file (a project .env can no longer set it); NVIDIA_ALLOW_CUSTOM_BASE_URL can ONLY ever be a real
+// process env var — it was removed from ENV_FILE_GLOBAL_ONLY above, so no file (project OR global) can ever
+// populate process.env with it via loadEnvFile(). Reading it directly here is therefore already real-env-only.
 const BASE = checkBaseUrl(process.env.NVIDIA_BASE_URL || (MATRIX.provider && MATRIX.provider.baseUrlDefault) || DEFAULT_BASE_URL,
   process.env.NVIDIA_ALLOW_CUSTOM_BASE_URL === '1');
 const CONFIG = {
@@ -195,6 +231,52 @@ const mask = (s) => {
   if (CONFIG.key) out = out.split(CONFIG.key).join('***MASKED***');
   return out;
 };
+/** maskDeep(value) -> a structure-preserving deep copy of `value` with every STRING run through mask()
+ *  (NVIDIA-REDACTION-GAPS, 2026-09-24). A shallow string-level mask() only protects a caller that
+ *  remembers to call it on every field it prints; this walks the whole shape so a nested `usage` object,
+ *  a model-name field, an array of warnings, or an override reason can never carry an unmasked
+ *  configured key out of the module. Non-string types (numbers/booleans/null/undefined) pass through
+ *  unchanged; nothing is ever dropped or coerced. Applied at every public function's return AND at the
+ *  CLI boundary — see chat()/health()/listModels()/routeFor() below. Pure. */
+function maskDeep(value) {
+  if (typeof value === 'string') return mask(value);
+  if (Array.isArray(value)) return value.map(maskDeep);
+  if (value !== null && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = maskDeep(v);
+    return out;
+  }
+  return value;
+}
+/** combinedSignal(signals) -> an AbortSignal that aborts as soon as ANY given signal aborts. Manual
+ *  composition rather than AbortSignal.any() (Node 20.3+) so this keeps working on older Node runners
+ *  (this project's own CI comments mention a Node 18 runner). Pure w.r.t. its inputs. */
+function combinedSignal(signals) {
+  const ac = new AbortController();
+  for (const s of signals) {
+    if (!s) continue;
+    if (s.aborted) { ac.abort(s.reason); break; }
+    s.addEventListener('abort', () => ac.abort(s.reason), { once: true });
+  }
+  return ac.signal;
+}
+/** delayCancellable(ms, isCancelled) -> resolves after `ms` ms, or as soon as isCancelled() reports true
+ *  (checked on a short poll), whichever comes first. NVIDIA-RETRY-OFF (2026-09-24): a retry backoff must
+ *  not blindly run to completion once the owner switches NVIDIA off mid-wait — the very next attempted
+ *  request is what this exists to prevent. Never runs longer than `ms`. */
+function delayCancellable(ms, isCancelled) {
+  return new Promise((resolve) => {
+    const POLL_MS = 200;
+    const deadline = Date.now() + Math.max(0, ms);
+    const tick = () => {
+      if (isCancelled && isCancelled()) return resolve();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return resolve();
+      setTimeout(tick, Math.min(POLL_MS, remaining));
+    };
+    tick();
+  });
+}
 
 // role -> model id, honoring env overrides (NVIDIA_<ROLE>_MODEL) then the matrix
 function modelForRole(role) {
@@ -205,31 +287,50 @@ function modelForRole(role) {
 }
 
 // ---- HTTP (native fetch, Node >= 18) with retry/timeout/429 ----
-async function call(method, p, body) {
+/** call(method, p, body, opts) -> the single HTTP choke point. NVIDIA-RETRY-OFF (2026-09-24): a public
+ *  wrapper (chat/health/listModels) already checks the owner's `nvidia` switch ONCE before entering
+ *  call(); this function re-checks it fresh (via offResult(opts), the same fail-safe check) immediately
+ *  before EVERY attempt, including the first, and again right after a caught exception — a long retry
+ *  loop must never keep transmitting the key after the owner switches NVIDIA off mid-loop. The backoff
+ *  wait itself is cancellable (delayCancellable) so a switch-off during a wait is not silently ignored
+ *  until the wait naturally elapses, and the in-flight request is aborted via combinedSignal the moment
+ *  a short poll observes the switch went off. opts.force carries the same force-override the public
+ *  wrappers already support. */
+async function call(method, p, body, opts) {
   if (!hasKey()) return { mock: true, status: 0, error: 'no NVIDIA_API_KEY set — mock mode (no live call made)' };
   if (CONFIG.baseUrlError) return { refused: true, status: 0, error: CONFIG.baseUrlError }; // M5: never send the key to a refused endpoint
+  const authorized = () => offResult(opts) === null;
   let lastErr = null;
   for (let attempt = 0; attempt <= CONFIG.retries; attempt++) {
+    if (!authorized()) return { status: 0, error: 'NVIDIA switched off mid-retry — no further attempt made', cancelled: true };
+    const offAc = new AbortController();
+    const offPoll = setInterval(() => { if (!authorized()) offAc.abort(); }, 200);
     try {
       const r = await fetch(CONFIG.baseUrl + p, {
         method,
         headers: { authorization: 'Bearer ' + CONFIG.key, 'content-type': 'application/json', accept: 'application/json' },
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(CONFIG.timeoutMs),
+        signal: combinedSignal([offAc.signal, AbortSignal.timeout(CONFIG.timeoutMs)]),
       });
       // Retryable: 429 rate-limit (free tier ~40 req/min) + transient upstream failures (Codex F3).
       if ([408, 429, 500, 502, 503, 504].includes(r.status)) {
         const wait = Math.min(30000, (Number(r.headers.get('retry-after')) || 2 ** attempt * 2) * 1000);
         lastErr = 'HTTP ' + r.status + (r.status === 429 ? ' rate-limited' : ' transient') + ' (waited ' + wait + 'ms)';
-        if (attempt < CONFIG.retries) { await new Promise((res) => setTimeout(res, wait)); continue; }
+        if (attempt < CONFIG.retries) { await delayCancellable(wait, () => !authorized()); continue; }
       }
       let j = null; const text = await r.text();
       try { j = JSON.parse(text); } catch {}
-      if (!r.ok) return { status: r.status, error: mask('HTTP ' + r.status + ': ' + text.slice(0, 300)), json: j };
+      // NVIDIA-REDACTION-GAPS (2026-09-24): mask the FULL text FIRST, then truncate — truncating first
+      // (the previous `mask(...text.slice(0, 300))`) could cut a secret in half exactly at the 300-char
+      // boundary, leaving an unmasked fragment on the surviving side.
+      if (!r.ok) return { status: r.status, error: 'HTTP ' + r.status + ': ' + mask(text).slice(0, 300), json: j };
       return { status: r.status, json: j };
     } catch (e) {
+      if (!authorized()) return { status: 0, error: 'NVIDIA switched off mid-retry — no further attempt made', cancelled: true };
       lastErr = mask(String(e && e.message));
-      if (attempt < CONFIG.retries) await new Promise((res) => setTimeout(res, 2 ** attempt * 1500));
+      if (attempt < CONFIG.retries) await delayCancellable(2 ** attempt * 1500, () => !authorized());
+    } finally {
+      clearInterval(offPoll);
     }
   }
   return { status: 0, error: 'failed after ' + (CONFIG.retries + 1) + ' attempts: ' + lastErr };
@@ -244,21 +345,21 @@ function offResult(opts) {
 }
 async function listModels(opts) {
   const off = offResult(opts);
-  if (off) return Object.assign(off, { models: [] });
-  const r = await call('GET', '/models');
-  if (r.mock) return { mock: true, models: [], note: r.error };
-  if (r.error) return r.refused ? { error: r.error, models: [], refused: true } : { error: r.error, models: [] };
+  if (off) return maskDeep(Object.assign(off, { models: [] }));
+  const r = await call('GET', '/models', undefined, opts);
+  if (r.mock) return maskDeep({ mock: true, models: [], note: r.error });
+  if (r.error) return maskDeep(r.refused ? { error: r.error, models: [], refused: true } : { error: r.error, models: [] });
   const models = ((r.json && r.json.data) || []).map((m) => m.id).sort();
-  return { models };
+  return maskDeep({ models });
 }
 async function health(opts) {
   const off = offResult(opts);
-  if (off) return off;
+  if (off) return maskDeep(off);
   if (!hasKey()) return { ok: false, mode: 'mock', reason: 'NVIDIA_API_KEY not set (adapter works in mock mode; no live calls)' };
   const t0 = Date.now();
   const r = await listModels({ force: true }); // the switch was checked just above
-  if (r.error) return { ok: false, mode: r.refused ? 'refused' : 'live', reason: r.error };
-  return { ok: true, mode: 'live', models: r.models.length, ms: Date.now() - t0, baseUrl: CONFIG.baseUrl };
+  if (r.error) return maskDeep({ ok: false, mode: r.refused ? 'refused' : 'live', reason: r.error });
+  return maskDeep({ ok: true, mode: 'live', models: r.models.length, ms: Date.now() - t0, baseUrl: CONFIG.baseUrl });
 }
 // role → capability the assigned model MUST have (generic validation; Codex F2)
 const ROLE_REQUIRED_CAP = { reasoning: 'reasoning', coding: 'coding', 'coding-fast': 'coding', vision: 'vision', review: ['review', 'reasoning'] };
@@ -294,6 +395,13 @@ function resolveFunction(func, fitMap) {
 // either way, so a broken/avoid-tier env override still warns even when the final `model` field is
 // nulled out for a blocked agent.
 function routeFor(agent, func, forceOverride) {
+  // NVIDIA-REDACTION-GAPS (2026-09-24): a bogus env-model-override (e.g. NVIDIA_CODING_MODEL set to an
+  // actual leaked key-shaped string) can reach `model`/`fallbackModel`/`warnings` below — maskDeep()
+  // sanitizes the WHOLE returned shape at this one boundary, not just the fields a caller remembers to
+  // check.
+  return maskDeep(routeForRaw(agent, func, forceOverride));
+}
+function routeForRaw(agent, func, forceOverride) {
   const a = (MODEL_MAP.agents || {})[agent];
   if (!a) return { error: 'unknown agent "' + agent + '" — see config/agents/agent-registry.json' };
   let nvidiaRoleUsed = a.nvidia;
@@ -320,7 +428,15 @@ function routeFor(agent, func, forceOverride) {
   const blocked = !allowed && !forceOverride;
   return { agent, claudeTier: a.claudeTier, nvidiaRole: nvidiaRoleUsed, model: blocked ? null : primary, fallbackModel: fallback, premium: a.premium, why: a.why, prohibited: a.prohibited || [], policy, allowed, func: func || null, funcNote, warnings };
 }
-async function chat({ role, model, prompt, system, maxTokens, agent, func, forceOverride, overrideReason }, opts) {
+/** chat(args, opts) -> maskDeep(chatRaw(args, opts)) (NVIDIA-REDACTION-GAPS, 2026-09-24). chatRaw() has
+ *  several early returns (skip/error/mock/success); wrapping the ONE call site here — rather than each
+ *  return individually — means a future new return path is sanitized automatically instead of by
+ *  convention. `content`/`usage`/`finish`/`overrideReason` are exactly the fields the finding's evidence
+ *  named as unmasked leak surfaces. */
+async function chat(args, opts) {
+  return maskDeep(await chatRaw(args, opts));
+}
+async function chatRaw({ role, model, prompt, system, maxTokens, agent, func, forceOverride, overrideReason }, opts) {
   // Owner setting first (v2.7.0): nvidia=off means NO call at all — checked before anything else is resolved.
   // An unreadable setting is OFF too (M3), with its own reason.
   const ns = nvidiaState(opts);
@@ -371,15 +487,19 @@ async function chat({ role, model, prompt, system, maxTokens, agent, func, force
     max_tokens: Number(maxTokens || 1024),
     temperature: 0.2,
   };
-  const r = await call('POST', '/chat/completions', body);
+  const r = await call('POST', '/chat/completions', body, opts);
   if (r.error) return { model: id, agent, policy, ...policyStamp, error: r.error };
   const choice = r.json && r.json.choices && r.json.choices[0];
   return { model: id, agent, policy, ...policyStamp, content: (choice && choice.message && choice.message.content) || '', usage: r.json && r.json.usage, finish: choice && choice.finish_reason };
 }
 
 // Exported CONFIG is a REDACTED copy — the key never leaves this module (Fable security hardening).
-module.exports = { chat, health, listModels, routeFor, resolveFunction, loadEnv, CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '' }, modelForRole, mask, configOn,
-  nvidiaState, checkBaseUrl, NVIDIA_OFF_REASON, NVIDIA_UNREADABLE_REASON };
+// NVIDIA-URL-LEAK: baseUrl/baseUrlError are masked too — checkBaseUrl() should already keep them
+// credential-free (userinfo/query/fragment are refused before a URL is ever accepted), but a masked
+// export costs nothing and is a second, independent layer against a future validation regression.
+module.exports = { chat, health, listModels, routeFor, resolveFunction, loadEnv,
+  CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '', baseUrl: mask(CONFIG.baseUrl), baseUrlError: CONFIG.baseUrlError ? mask(CONFIG.baseUrlError) : CONFIG.baseUrlError },
+  modelForRole, mask, maskDeep, configOn, nvidiaState, checkBaseUrl, NVIDIA_OFF_REASON, NVIDIA_UNREADABLE_REASON };
 
 // ---- CLI ----
 if (require.main === module) {

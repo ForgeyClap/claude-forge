@@ -295,9 +295,9 @@ t('testCommandGate() is only consulted for match.kind "command" (a regex gate is
   assert.strictEqual(gate.testCommandGate(cmdGate, 'pkill node'), true);
 });
 
-t('the config really declares three command gates and they are all class irreversible', () => {
+t('the config really declares four command gates and they are all class irreversible', () => {
   const cmdGates = gate.loadGates().gates.filter((g) => g.match.kind === 'command');
-  assert.deepStrictEqual(cmdGates.map((g) => g.id).sort(), ['destructive-delete', 'git-destructive', 'kill-by-name']);
+  assert.deepStrictEqual(cmdGates.map((g) => g.id).sort(), ['destructive-delete', 'git-destructive', 'kill-by-name', 'opaque-exec']);
   for (const g of cmdGates) assert.strictEqual(g.class, 'irreversible');
 });
 
@@ -1005,16 +1005,21 @@ console.log('\n2c-novies) WP16 — git checkout . / checkout -- <path> / restore
 // (read directly: ALL_GATES / NOT_CAUGHT are declared further down, in 2d/2e, and are not yet initialised here)
 const GD_CONFIG = gate.loadGates();
 const GD_GATE = GD_CONFIG.gates.find((g) => g.id === 'git-destructive');
-// Top-level arms of the pattern. Every arm starts with `\bgit(`, so splitting on a `|` that is followed by
-// that prefix is exact — a naive split on `|` would also cut the `(?:\s|$)` alternation inside an arm.
-const GD_ARMS = GD_GATE.match.pattern.split(/\|(?=\\bgit\()/);
+// Top-level arms of the pattern. Every arm starts with `(?:\bgit.exe\b|...)` (the codex-recheck 2026-09-24
+// executable-basename fragment, D01/DATA-GIT-SPELLINGS), so splitting on a `|` that is followed by that exact
+// prefix is precise — a naive split on `|` would also cut every alternation INSIDE an arm (the executable
+// fragment's own `|`s, `(?:\s|$)`, etc).
+const GD_ARM_HEAD = '(?:\\bgit\\.exe\\b|';
+const GD_ARMS = GD_GATE.match.pattern.split(new RegExp('\\|(?=' + GD_ARM_HEAD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')'));
 const WP16_ARM = (a) => /restore\\b|switch\\b/.test(a) || a.includes('\\s--\\s+\\S') || a.includes('\\s\\.[');
+const D01_ARM = (a) => a.includes('worktree\\s+remove\\b') || a.includes('clean\\.requireForce');
 const LEAD_MEASURED = ['git checkout .', 'git checkout -- src/app.js', 'git restore src/app.js'];
 
 t('git-destructive stays a COMMAND gate (the PreToolUse gate hook enforces command-kind gates only)', () => {
   assert.strictEqual(GD_GATE.match.kind, 'command');
-  assert.strictEqual(GD_ARMS.length, 9, 'expected 4 pre-WP16 arms + 5 WP16 arms (incl. the switch follow-up), got ' + GD_ARMS.length);
+  assert.strictEqual(GD_ARMS.length, 11, 'expected 4 pre-WP16 arms + 5 WP16 arms + 2 codex-recheck D01 arms (worktree remove --force, clean.requireForce=false), got ' + GD_ARMS.length);
   assert.strictEqual(GD_ARMS.filter(WP16_ARM).length, 5, 'the five WP16 arms are not all present');
+  assert.strictEqual(GD_ARMS.filter(D01_ARM).length, 2, 'the two codex-recheck D01 arms are not both present');
 });
 
 for (const cmd of LEAD_MEASURED) {
@@ -1281,16 +1286,16 @@ const DECLARED_BLIND_SPOTS = [
   { cmd: 'dd if=/dev/zero of=/dev/sdX', topic: 'truncation_and_raw_device_writes' },
   { cmd: 'Clear-Content important.log', topic: 'truncation_and_raw_device_writes' },
   { cmd: 'mkfs.ext4 /dev/sdb1', topic: 'truncation_and_raw_device_writes' },
-  { cmd: 'powershell -EncodedCommand cm0gLXJmIC5jbGF1ZGU=', topic: 'encoded_or_obfuscated_commands' },
-  { cmd: 'echo cm0gLXJmIC5jbGF1ZGU= | base64 -d | sh', topic: 'encoded_or_obfuscated_commands' },
-  { cmd: 'iex $cmd', topic: 'variable_indirection' },
-  { cmd: 'eval "$CMD"', topic: 'variable_indirection' },
+  // 2026-09-24 (Lead): the `-EncodedCommand` FLAG now fires opaque-exec on its shape; the still-open form is an
+  // encoded payload reaching PowerShell by another route — decoded inside the command text without the flag.
+  { cmd: 'powershell -Command "[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(\'cgBtACAALQByAGYAIAAuAGMAbABhAHUAZABlAA==\'))"', topic: 'encoded_or_obfuscated_commands' },
+  { cmd: '& $tool $args', topic: 'variable_indirection' },
+  { cmd: 'Start-Process -ArgumentList $a', topic: 'variable_indirection' },
   { cmd: 'npm run clean', topic: 'danger_inside_a_script_or_file' },
   { cmd: './scripts/reset.sh', topic: 'danger_inside_a_script_or_file' },
   { cmd: 'make distclean', topic: 'danger_inside_a_script_or_file' },
   { cmd: "find . -name '*.x' -print0 | xargs -0 rm -f", topic: 'pipeline_deletes_only_partly_covered' },
   { cmd: 'find . -delete', topic: 'pipeline_deletes_only_partly_covered' },
-  { cmd: 'git worktree remove --force ../wt-a', topic: '_gate_coverage.git-destructive' },
   { cmd: 'git gc --prune=now', topic: '_gate_coverage.git-destructive' },
   { cmd: 'git branch -D feature-x', topic: '_gate_coverage.git-destructive' },
   { cmd: 'kill -n node', topic: '_gate_coverage.kill-by-name' }, // `gps node | Stop-Process` fires since WP16/M1

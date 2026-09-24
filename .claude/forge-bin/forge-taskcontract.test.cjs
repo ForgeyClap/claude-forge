@@ -378,7 +378,7 @@ t('CLI exit 1 with a hit failure condition as the ONLY non-zero counter — the 
   const r = runVerifyCli(runId);
   const line = r.stdout.split(/\r?\n/).find((l) => l.startsWith('VERIFY: '));
   assert.ok(line, 'no VERIFY: line in:\n' + r.stdout);
-  assert.ok(/^VERIFY: 0 mismatch\(es\), 0 open ticket\(s\), 0 unproven done-ticket\(s\), 0 isolation violation\(s\), 0 acceptance gap\(s\), 1 failure-condition hit\(s\)/.test(line),
+  assert.ok(/^VERIFY: 0 mismatch\(es\), 0 open\/unreadable ticket\(s\), 0 unproven done-ticket\(s\), 0 isolation violation\(s\), 0 acceptance gap\(s\), 1 failure-condition hit\(s\)/.test(line),
     'this run is NOT isolated to the failure-condition gate — some other gate is non-zero, so its exit code ' +
     'would prove nothing:\n' + line);
   assert.strictEqual(r.status, 1,

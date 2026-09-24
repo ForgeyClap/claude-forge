@@ -2107,9 +2107,9 @@ function modelChoiceHint() {
   return beginnerResult('model-choice-hint', 'info',
     'model choice affects quality and cost together: a balanced, Sonnet-class model already covers everyday '
     + 'work well, a heavier model is worth reaching for only on genuinely high-risk work (security, '
-    + 'production, a hard bug), a usage guard steps in automatically before your usage limit is reached '
-    + 'instead of cutting a task off mid-way, and both `/costs` and `/insights` keep the amount already used '
-    + 'visible inside Claude Code.');
+    + 'production, a hard bug), a usage guard pauses Forge when you near your usage limit (it measures on an '
+    + 'interval, so it is a pause before the limit, not a guaranteed instant block), and both `/costs` and '
+    + '`/insights` keep the amount already used visible inside Claude Code.');
 }
 
 /** beginnerSetup(root, {env, platform, probeClaudeDoctor, claudeDoctorTimeoutMs, overrideMap, settingsSource}) ->

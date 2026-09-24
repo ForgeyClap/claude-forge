@@ -9,18 +9,26 @@
  * consumers, locked items); THIS file is the only code that resolves, validates or writes it. Consumers
  * require() it as a soft sibling and degrade to the schema default when it is absent — the same
  * single-source discipline as hard-gates.json + forge-actiongate.cjs. Zero-dependency
- * (fs/path/os/crypto/child_process).
+ * (fs/path/os/crypto/child_process). The one-off (`--once`) state machine and the cross-process file lock
+ * live in the sibling forge-config-once.cjs (Codex recheck 2026-09-24 — split out to keep this file a
+ * readable size); see that file's header for the full one-off/lock contract.
  *
  * MODEL
  *   Files   global  <FORGE_CONFIG_HOME, else ~/.claude>/FORGE_CONFIG.json            (seams: opts.configHome, opts.globalPath)
  *           project <FORGE_PROJECT_ROOT, else two levels up>/.claude/FORGE_CONFIG.json (seams: opts.projectRoot, opts.projectPath)
  *           shape { "version": 1, "settings": { "<key>": { "value", "set_at", "set_by" } } }; unknown top-level
  *           keys survive every write. A MISSING file means "all defaults" (normal, noted). A PRESENT but
- *           malformed file (bad JSON, wrong shape, an invalid value for a known key) THROWS / exits 2 and
- *           nothing is written — never silently treated as "no settings" (fail-closed, like forge-prefs.cjs).
+ *           malformed file (bad JSON, wrong shape, or a value that is not the setting's CANONICAL schema
+ *           type — an exact boolean/enum-string/integer-in-range, never a CLI-style coercion like "false",
+ *           0, "off" or [0], CFG-05-fix CFG-02) THROWS / exits 2 and nothing is written — never silently
+ *           treated as "no settings" (fail-closed, like forge-prefs.cjs).
  *   Order   per-run flag (opts.flags / --flag k=v, never written) > project file > global file >
  *           product-default (owner-profile pref via forge-prefs.cjs, READ-ONLY, schema product_default_map)
- *           > schema default. A scope:"global" key ignores a project-file value with a visible note.
+ *           > schema default. A scope:"global" key ignores a project-file value with a visible note — EXCEPT
+ *           a boolean project value that matches the schema's own default, which may only STRENGTHEN
+ *           protection back to that default, never weaken a global ON (CFG-04). A setting with
+ *           `ignore_global:true` (gate-hook) is project-scope-only for READS: a global-file value for it is
+ *           never applied, only noted, and `set ... --global` on it is refused (CFG-08).
  *   Locked  schema.locked[] + forge-actiongate KNOWN_GATES + FORGE_AUTONOMY.json always_interrupt are never
  *           settable: set/unset/--flag on one exits 3 with file bytes unchanged; one found inside a file is
  *           ignored with a note; a schema whose settings collide with one is rejected as malformed.
@@ -29,7 +37,11 @@
  *           change, diff() logs ONE config_changed event through the real log-event.cjs (never appends to
  *           events.jsonl itself) and marks the state seen only when that log succeeded, so a change is never
  *           dropped silently. Per-run flags are compared but never stored as "seen".
- *   Writes  atomic: a unique temp file in the same directory, then rename.
+ *   Writes  atomic (a unique temp file in the same directory, fsynced, then renamed and the directory
+ *           fsynced — best effort where the platform cannot fsync a directory, e.g. Windows, CFG-10) AND
+ *           serialized per target file with forge-config-once.cjs's withLock (CFG-09): every writer
+ *           re-reads the file only AFTER acquiring its lock, so two concurrent writers can never lose one
+ *           another's update.
  *   Bridge  a bool setting whose schema entry carries "bridge": "<project-relative file>:<field>" (ecc-full-test ->
  *           .claude/FORGE_ECC_MODE.json:ecc_full_test_mode) is mirrored into that legacy file as "on"/"off" by
  *           set/unset/reset, other keys preserved; a damaged legacy file is refused before any write (exit 2).
@@ -39,14 +51,19 @@
  *           disclosure it prints is schema text.
  *   Safe    safeGet(key) is what CONSUMERS call (review-boss M3): it never throws, and when the settings cannot be
  *           read a key with a disclosure flag (C N X $ U D) comes back at its SAFE value (bool off; enum off /
- *           report / on-request) — never silently ON — with degraded:true and a plain reason. The CLI stays
- *           fail-closed (a damaged file still exits 2); `reset --yes` moves a damaged file aside as a backup.
- *   One-off `set gate-hook off --once "<owner's words>"` (ONCE_KEYS only, project file only) carries expires_at =
- *           now + 10 min; an expired one-off counts as absent (noted), a normal `set` clears it.
+ *           report / on-request) — never silently ON — with degraded:true and a plain reason. Both the flagged
+ *           safe value and an unflagged key's fallback come from the immutable FAILSAFE_FLAGGED table or the
+ *           caller's own opts.fallback — NEVER from a rejected schema's own (possibly invalid) default/allowed
+ *           list (CFG-03). The CLI stays fail-closed (a damaged file still exits 2); `reset --yes` moves a
+ *           damaged file aside as a backup.
+ *   One-off `set gate-hook off --once "<owner's words>"` (ONCE_KEYS only, project file only) carries
+ *           expires_at = now + 10 min, consumed_at:null; an expired OR consumed one-off counts as absent
+ *           (noted), a normal `set` clears it, and consumeOnce() is the single atomic use (CFG-07/S06) —
+ *           see forge-config-once.cjs. Re-issuing `--once` while an unconsumed one is still armed is refused.
  *
- * API  resolve, get, safeGet, list, set, unset, reset, explain, diff, markSeen, parseValue, SCHEMA, DEFAULT_PATHS,
- *      LOCKED_IDS — plus helpers ConfigError, validateSchema, parseSentence, normLang, detectLang, safeValueOf,
- *      ONCE_KEYS, ONCE_MS, FAILSAFE_FLAGGED.
+ * API  resolve, get, safeGet, list, set, unset, reset, explain, diff, markSeen, parseValue, parseFlagValue,
+ *      consumeOnce, SCHEMA, DEFAULT_PATHS, LOCKED_IDS — plus helpers ConfigError, validateSchema, parseSentence,
+ *      normLang, detectLang, safeValueOf, ONCE_KEYS, ONCE_MS, FAILSAFE_FLAGGED.
  * CLI  node .claude/forge-bin/forge-config.cjs <list|get|set|unset|reset|explain|diff|parse> ... (--help on each);
  *      the argv/output layer is forge-config-cli.cjs, the nl/en wording is forge-config-text.cjs.
  * Exit 0 ok · 1 not found (get/explain on an unknown key) · 2 usage / validation / malformed file (nothing
@@ -59,6 +76,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const text = require('./forge-config-text.cjs');
+// One-off approvals + the cross-process file lock live in forge-config-once.cjs (Codex recheck 2026-09-24,
+// CFG-07/S06/CFG-09/CFG-10) so this file stays a readable size — see that file's header for the full
+// contract. ONCE_KEYS/ONCE_MS stay exported here unchanged for existing consumers.
+const onceLib = require('./forge-config-once.cjs');
+const { ONCE_KEYS, ONCE_MS, ONCE_QUOTE_MAX } = onceLib;
 
 const PROJECT_ROOT_DEFAULT = path.resolve(__dirname, '..', '..');
 const SCHEMA_PATH_DEFAULT = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json');
@@ -68,11 +90,6 @@ const SCOPES = ['global', 'project'];
 const FLAGS = ['C', 'N', '$', 'U', 'X', 'D'];
 const RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
 const VERB_BOOL = { aanzetten: 'aan', inschakelen: 'aan', activeren: 'aan', uitzetten: 'uit', uitschakelen: 'uit', deactiveren: 'uit' };
-// One-off approvals (review-boss M4 + the wp16 hook contract): `set gate-hook off --once "<owner's words>"` writes a
-// project-file entry carrying expires_at = now + 10 min; an entry whose expires_at has passed counts as absent.
-const ONCE_KEYS = ['gate-hook'];
-const ONCE_MS = 10 * 60 * 1000;
-const ONCE_QUOTE_MAX = 200;
 // Fail-safe reads (review-boss M3): when the settings cannot be read, a key with a disclosure flag resolves to its
 // SAFE value — bool false, an enum's first off-like word below, else its default. FAILSAFE_FLAGGED is the last resort
 // when even the schema is unreadable; forge-config.test.cjs pins it to the schema's flagged keys.
@@ -164,6 +181,12 @@ function validateSchema(schema, extraLockedIds) {
     for (const f of ['off_means', 'disclosure']) if (hasOwn(s, f) && !bothLangs(s[f])) bad(f + ' needs nl + en');
     if (hasOwn(s, 'flags') && !(Array.isArray(s.flags) && s.flags.every((f) => FLAGS.includes(f)))) bad('flags must be a subset of ' + FLAGS.join(' '));
     if (hasOwn(s, 'aliases') && !(isObj(s.aliases) && ['nl', 'en'].every((l) => !hasOwn(s.aliases, l) || Array.isArray(s.aliases[l])))) bad('aliases must look like {"nl": [...], "en": [...]}');
+    // CFG-08: ignore_global only makes sense for a project-scope setting (a global-scope key is already
+    // machine-wide by definition) and must be a plain boolean, never a truthy-ish stand-in.
+    if (hasOwn(s, 'ignore_global')) {
+      if (typeof s.ignore_global !== 'boolean') bad('ignore_global must be a boolean');
+      else if (s.ignore_global && s.scope !== 'project') bad('ignore_global only makes sense for a scope:"project" setting');
+    }
   }
   const pdm = schema.product_default_map;
   if (pdm != null && !isObj(pdm)) problems.push('"product_default_map" must be an object');
@@ -337,6 +360,16 @@ function parseValue(key, raw, schema, lang) {
   return n;
 }
 
+/** parseFlagValue(key, raw) -> parseValue(key, raw) against the REAL schema, in English — a small, stable,
+ *  2-argument surface for an external consumer CLI's own flag parsing. CFG-05 (Codex recheck 2026-09-24):
+ *  usage-guard.cjs's resolveGuardSettings() validated `--pause-at` etc with only Number.isFinite(n), so an
+ *  out-of-range or fractional threshold the config core would reject (bounds, integer-ness, unit suffix,
+ *  Dutch decimal comma) was silently accepted by the consumer CLI. Every consumer flag that maps onto a
+ *  schema setting must validate through THIS function (same parser, same bounds) instead of re-implementing
+ *  its own number check — throws the same ConfigError parseValue() throws (code 'invalid_value'/'unknown_key',
+ *  exitCode 2) on anything the schema would refuse. */
+function parseFlagValue(key, raw) { return parseValue(key, raw); }
+
 // ---- files ----
 function malformedError(file, reason, lang, P) {
   return new ConfigError('malformed', text.t(lang).malformed(prettyPath(file, P), reason), 2, { file });
@@ -361,18 +394,6 @@ function readRaw(file, lang, P) {
   if (!isObj(r.data.settings)) throw malformedError(file, 'missing a "settings" object', lang, P);
   return r;
 }
-/** onceState(entry, nowMs) -> null (a normal entry) | {expired:true} | {expired:false, expires_at, minutesLeft}.
- *  An unparseable expires_at counts as expired: a broken one-off never keeps anything switched off. */
-function onceState(ent, nowMs) {
-  if (!isObj(ent) || !hasOwn(ent, 'expires_at')) return null;
-  const ms = typeof ent.expires_at === 'string' ? Date.parse(ent.expires_at) : NaN;
-  if (!Number.isFinite(ms) || ms <= nowMs) return { expired: true };
-  return { expired: false, expires_at: new Date(ms).toISOString(), minutesLeft: Math.max(1, Math.ceil((ms - nowMs) / 60000)) };
-}
-function onceQuote(ent) {
-  if (typeof ent.once_quote === 'string' && ent.once_quote) return ent.once_quote; // the field the gate hook reads first
-  return typeof ent.set_by === 'string' && ent.set_by.startsWith(text.ONCE_BY) ? ent.set_by.slice(text.ONCE_BY.length) : '';
-}
 function readConfigFile(file, schema, locked, lang, P, nowMs) {
   const r = readRaw(file, lang, P);
   const out = { present: r.present, entries: {}, notes: [], keyNotes: {} };
@@ -385,13 +406,19 @@ function readConfigFile(file, schema, locked, lang, P, nowMs) {
     if (locked.has(key)) { out.notes.push(T.fileLockedIgnored(key, pretty)); continue; }
     if (!hasOwn(schema.settings, key)) { out.notes.push(T.fileUnknownIgnored(key, pretty)); continue; }
     if (!isObj(ent) || !hasOwn(ent, 'value')) throw malformedError(file, '"' + key + '" must look like {"value": ...}', lang, P);
-    const once = onceState(ent, now);
-    if (once && once.expired) { note(key, T.onceExpired(key, pretty)); continue; }
-    let value;
-    try { value = parseValue(key, ent.value, schema, lang); }
-    catch (e) { throw malformedError(file, e.message, lang, P); }
-    out.entries[key] = { value, set_at: typeof ent.set_at === 'string' ? ent.set_at : null, set_by: typeof ent.set_by === 'string' ? ent.set_by : null, expires_at: once ? once.expires_at : null };
-    if (once) note(key, T.onceActive(key, once.minutesLeft, onceQuote(ent)));
+    const stamp = onceLib.onceState(ent, now);
+    if (stamp && stamp.expired) { note(key, T.onceExpired(key, pretty)); continue; }
+    const spec = schema.settings[key];
+    // CFG-02 (Codex recheck 2026-09-24): a PERSISTED file must already hold the CANONICAL schema type — an
+    // exact boolean, an integer in range, an exact allowed enum string, ... `typeOk` is the same canonical
+    // check validateSchema() uses on a schema's own default; reusing it here means "false", 0, "off", [0]
+    // and similar CLI-only coercions read out of a hand-edited or corrupted file are reported as DAMAGE
+    // (fail-closed to the safe default), never silently accepted as if they were a real value. Coercion
+    // (bool synonyms, a unit suffix, a Dutch decimal comma, case-insensitive enum words) stays a CLI/text
+    // input convenience — parseValue() — never a way to read a non-canonical shape out of the file itself.
+    if (!typeOk(spec, ent.value)) throw malformedError(file, '"' + key + '" has a value of the wrong type for a ' + spec.type + ' setting (got ' + JSON.stringify(ent.value).slice(0, 60) + ')', lang, P);
+    out.entries[key] = { value: ent.value, set_at: typeof ent.set_at === 'string' ? ent.set_at : null, set_by: typeof ent.set_by === 'string' ? ent.set_by : null, expires_at: stamp ? stamp.expires_at : null };
+    if (stamp) note(key, T.onceActive(key, stamp.minutesLeft, onceLib.onceQuote(ent, text.ONCE_BY)));
   }
   return out;
 }
@@ -405,13 +432,34 @@ function renameWithRetry(from, to) {
     }
   }
 }
+// CFG-10 (Codex recheck 2026-09-24): a successful return must mean the new bytes actually survive a crash,
+// not just that writeFileSync()+rename() returned without throwing. fsyncFile flushes the temp file's
+// content to disk before it is ever renamed over the real file; fsyncDir flushes the directory entry (the
+// rename itself) afterwards. Both are wrapped in try/catch: fsync-ing a DIRECTORY handle is not supported
+// on every platform (notably Windows/NTFS, which throws EISDIR/EPERM opening one for fsync) — a platform
+// that cannot honor this is a best-effort degrade, never a thrown error or a lost write.
+function fsyncFile(fd) { try { fs.fsyncSync(fd); } catch { /* best effort — see header note */ } }
+function fsyncDir(dir) {
+  let fd;
+  try { fd = fs.openSync(dir, 'r'); fs.fsyncSync(fd); }
+  catch { /* directory fsync is not supported on every platform — best effort, see header note */ }
+  if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+}
 function atomicWriteJson(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
   const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+  let fd;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+    fd = fs.openSync(tmp, 'w');
+    fs.writeSync(fd, JSON.stringify(obj, null, 2) + '\n');
+    fsyncFile(fd);
+    fs.closeSync(fd);
+    fd = undefined;
     renameWithRetry(tmp, file);
+    fsyncDir(dir);
   } catch (e) {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
     try { fs.unlinkSync(tmp); } catch { /* the temp file was never created or is already gone */ }
     throw e;
   }
@@ -514,13 +562,34 @@ function resolve(opts) {
   const pd = productDefaults(schema, opts, P, lang0);
   const settings = {};
   const ignored = [];
+  const strengthened = [];
+  const globalIgnoredForSafety = [];
   for (const [key, spec] of Object.entries(schema.settings)) {
     let e = entryOf(key, spec.default, 'default');
     if (hasOwn(pd.values, key)) e = entryOf(key, pd.values[key].value, 'product-default', null, 'owner profile: ' + pd.values[key].pref);
-    if (hasOwn(g.entries, key)) e = fileEntry(key, g, 'global');
+    // CFG-08 (Codex recheck 2026-09-24): a handful of safety-critical settings (spec.ignore_global, e.g.
+    // gate-hook) are project-scope-only for READS — a value sitting in the GLOBAL file is never applied,
+    // only noted, so it can never lurk beneath a protective project override and get "exposed" the moment
+    // that project override is reset/removed.
+    if (hasOwn(g.entries, key)) {
+      if (spec.ignore_global) globalIgnoredForSafety.push(key);
+      else e = fileEntry(key, g, 'global');
+    }
     if (hasOwn(p.entries, key)) {
-      if (spec.scope === 'global') ignored.push(key);
-      else e = fileEntry(key, p, 'project');
+      if (spec.scope === 'global') {
+        // CFG-04: a global-scope key is machine-wide, so a project-file value is normally ignored — EXCEPT
+        // a boolean project value that matches the schema's own (protective, everything-on-by-default)
+        // default: that can only ever STRENGTHEN protection (turn a protective setting back ON locally),
+        // never weaken a global ON. A project value that would move the effective value AWAY from the
+        // default is still ignored, exactly as before.
+        const projectVal = p.entries[key].value;
+        if (spec.type === 'bool' && projectVal === spec.default) {
+          if (e.value !== projectVal) strengthened.push(key);
+          e = fileEntry(key, p, 'project');
+        } else {
+          ignored.push(key);
+        }
+      } else e = fileEntry(key, p, 'project');
     }
     if (hasOwn(flags, key)) e = entryOf(key, flags[key], 'flag', null, '--flag');
     settings[key] = e;
@@ -536,6 +605,8 @@ function resolve(opts) {
   if (lk.notes.length) notes.push(T.lockSourceNote(lk.notes.join('; ')));
   notes.push(...g.notes, ...p.notes);
   for (const k of ignored) notes.push(T.scopeIgnored(k));
+  for (const k of strengthened) notes.push(T.scopeStrengthened(k));
+  for (const k of globalIgnoredForSafety) notes.push(T.globalIgnoredForSafety(k));
   notes.push(...pd.notes);
   const gp = prettyPath(P.global, P);
   const pp = prettyPath(P.project, P);
@@ -553,6 +624,7 @@ function resolve(opts) {
     key_notes: keyNotes,
     lang,
     ignored_project_values: ignored,
+    strengthened_project_values: strengthened,
   };
 }
 
@@ -590,12 +662,15 @@ function safeValueOf(spec) {
   }
   return spec.default;
 }
+/** specForSafety(key, P, opts) -> the schema's OWN validated setting definition for `key`, or null. CFG-03
+ *  (Codex recheck 2026-09-24): a schema that fails to load OR fails validateSchema() is REJECTED IN FULL —
+ *  never salvage a setting's default/allowed/type from its own unvalidated bytes (a rejected schema could
+ *  otherwise "safely" authorize exactly the value that got it rejected in the first place). A missing file, a
+ *  bad-JSON file, and a schema that parses but fails validation are all treated identically here: null. safeGet
+ *  below then resolves the degraded value only from the immutable FAILSAFE_FLAGGED table (a known flagged key)
+ *  or the caller's own opts.fallback (everything else) — never from anything read out of rejected bytes. */
 function specForSafety(key, P, opts) {
-  try { return loadSchema(P.schema, opts).settings[key] || null; } catch { /* the schema itself is damaged: read it raw below */ }
-  try {
-    const raw = JSON.parse(stripBom(fs.readFileSync(P.schema, 'utf8')));
-    return isObj(raw) && isObj(raw.settings) && isObj(raw.settings[key]) ? raw.settings[key] : null;
-  } catch { return null; /* no schema at all: FAILSAFE_FLAGGED and opts.fallback decide */ }
+  try { return loadSchema(P.schema, opts).settings[key] || null; } catch { return null; }
 }
 /** safeGet(key, opts) -> { key, value, source, degraded, reason, notes } — the read every consumer uses. Never
  *  throws. A readable config gives get()'s value with degraded:false. When the settings cannot be read (a damaged
@@ -660,21 +735,32 @@ function list(opts) {
 
 // ---- writes ----
 function noFlags(opts) { return Object.assign({}, opts, { flags: undefined }); }
-function writableKey(key, opts) {
+function lockOptsOf(opts) { return { timeoutMs: opts && opts.lockTimeoutMs, staleMs: opts && opts.lockStaleMs, pollMs: opts && opts.lockPollMs }; }
+/** writableKey(key, opts, checkIgnoreGlobal) -> { P, schema, lang }, or throws 'locked' (exit 3). With
+ *  checkIgnoreGlobal, a --global request on a spec.ignore_global setting (gate-hook, CFG-08) is ALSO refused
+ *  (exit 2) up front — a --global write there would silently do nothing, since resolve() never reads it
+ *  back. Only set() passes checkIgnoreGlobal: unset()/reset() may still remove a stray global entry
+ *  (cleanup, never exposure) and setOnce() already refuses --global for its own, more specific reason. */
+function writableKey(key, opts, checkIgnoreGlobal) {
   const P = pathsFor(opts);
   const schema = loadSchema(P.schema, opts);
   const lang = detectLang(opts, P);
   if (lockedIds(schema, opts).ids.has(key)) throw lockedError(key, schema, lang);
+  if (checkIgnoreGlobal && opts && opts.global && hasOwn(schema.settings, key) && schema.settings[key].ignore_global) {
+    throw new ConfigError('usage', text.t(lang).globalIgnoredRefuse(key), 2, { key });
+  }
   return { P, schema, lang };
 }
 
 /** set(key, rawValue, opts) — validates, then atomically writes the value into the project file (or the global
  *  file for opts.global and for every scope:"global" key). Returns { key, from, to, file, scope, entry, ... }.
- *  Throws (nothing written): 'locked' exit 3 · 'unknown_key' / 'invalid_value' / 'malformed' exit 2. */
+ *  Throws (nothing written): 'locked' exit 3 · 'unknown_key' / 'invalid_value' / 'malformed' exit 2. The actual
+ *  read-modify-write against `file` is serialized with onceLib.withLock (CFG-09): a concurrent writer targeting
+ *  the same file always re-reads AFTER acquiring the lock, so neither writer's change can be lost. */
 function set(key, rawValue, opts) {
   opts = opts || {};
   if (opts.once != null) return setOnce(key, rawValue, opts);
-  const { P, schema, lang } = writableKey(key, opts);
+  const { P, schema, lang } = writableKey(key, opts, true);
   if (!hasOwn(schema.settings, key)) throw unknownKeyError(key, schema, lang, 2);
   const spec = schema.settings[key];
   const value = parseValue(key, rawValue, schema, lang);
@@ -683,27 +769,29 @@ function set(key, rawValue, opts) {
   const before = resolve(noFlags(opts));
   const toGlobal = !!opts.global || spec.scope === 'global';
   const file = toGlobal ? P.global : P.project;
-  const cur = readRaw(file, lang, P);
-  const data = cur.present ? cur.data : { version: 1, settings: {} };
-  const old = data.settings[key];
   let unchanged = false;
   let clearedOnce = false;
-  if (onceState(old, nowMsOf(opts))) {
-    // A normal set always ends a one-off approval ("set gate-hook on" clears it): drop that entry first, and keep a
-    // permanent value only when the layer beneath does not already give the requested one.
-    const settings = Object.assign({}, data.settings);
-    delete settings[key];
-    atomicWriteJson(file, Object.assign({}, data, { settings }));
-    clearedOnce = true;
-    unchanged = resolve(noFlags(opts)).settings[key].value === value;
-  } else if (isObj(old) && hasOwn(old, 'value')) {
-    try { unchanged = parseValue(key, old.value, schema, lang) === value; } catch { unchanged = false; /* an invalid old value is simply replaced */ }
-  }
-  if (!unchanged) {
-    const entry = { value, set_at: new Date(nowMsOf(opts)).toISOString(), set_by: text.SET_BY };
-    const settings = Object.assign({}, data.settings, { [key]: entry });
-    atomicWriteJson(file, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings }));
-  }
+  onceLib.withLock(file, () => {
+    const cur = readRaw(file, lang, P);
+    const data = cur.present ? cur.data : { version: 1, settings: {} };
+    const old = data.settings[key];
+    if (onceLib.onceState(old, nowMsOf(opts))) {
+      // A normal set always ends a one-off approval ("set gate-hook on" clears it): drop that entry first, and
+      // keep a permanent value only when the layer beneath does not already give the requested one.
+      const settings = Object.assign({}, data.settings);
+      delete settings[key];
+      atomicWriteJson(file, Object.assign({}, data, { settings }));
+      clearedOnce = true;
+      unchanged = resolve(noFlags(opts)).settings[key].value === value;
+    } else if (isObj(old) && hasOwn(old, 'value')) {
+      try { unchanged = parseValue(key, old.value, schema, lang) === value; } catch { unchanged = false; /* an invalid old value is simply replaced */ }
+    }
+    if (!unchanged) {
+      const entry = { value, set_at: new Date(nowMsOf(opts)).toISOString(), set_by: text.SET_BY };
+      const settings = Object.assign({}, data.settings, { [key]: entry });
+      atomicWriteJson(file, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings }));
+    }
+  }, lockOptsOf(opts));
   const after = resolve(noFlags(opts)).settings[key];
   const bridged = bridge ? applyBridge(bridge, after.value, schema, lang, P) : null;
   let shadow = null;
@@ -718,25 +806,38 @@ function set(key, rawValue, opts) {
 }
 
 /** setOnce(key, rawValue, opts) — `set gate-hook off --once "<owner's words>"`: switches a ONCE_KEYS key off for
- *  ONE approved command. Writes { value:false, set_at, set_by:"owner one-off approval: <quote>", once_quote,
- *  expires_at: now+10 min } into the PROJECT file only (once_quote is the field forge-gate-hook.cjs reads first);
- *  get/list/resolve ignore it once expired, `set <key> on` clears it. Refused (exit 2, nothing written): another
- *  key, --global, a value other than off, or no quote. */
+ *  ONE approved command/run, single-use (CFG-07/S06). Writes { value:false, set_at, set_by:"owner one-off
+ *  approval: <quote>", once_quote, expires_at: now+10 min, consumed_at:null, consumed_command_sha256:null } into
+ *  the PROJECT file only (once_quote is the field forge-gate-hook.cjs reads first); consumeOnce() below is the
+ *  atomic single use. get/list/resolve ignore it once expired OR consumed; `set <key> on` clears it. Refused
+ *  (exit 2, nothing written): another key, --global, a value other than off, no quote, or an unexpired
+ *  UNCONSUMED one-off already armed for this key ("one-off already armed" — re-issuing can never silently
+ *  extend the window; wait for it to be consumed or to expire first). The whole read-check-write is inside
+ *  onceLib.withLock so two concurrent `--once` requests can never both succeed. */
 function setOnce(key, rawValue, opts) {
   const { P, schema, lang } = writableKey(key, opts);
   const T = text.t(lang);
   if (!ONCE_KEYS.includes(key)) throw new ConfigError('usage', T.onceOnlyFor(key, ONCE_KEYS), 2, { key });
   if (opts.global) throw new ConfigError('usage', T.onceNoGlobal(key), 2, { key });
   if (parseValue(key, rawValue, schema, lang) !== false) throw new ConfigError('usage', T.onceOnlyOff(key), 2, { key });
-  const quote = Array.from(String(opts.once)).map((c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? ' ' : c)).join('').replace(/\s+/g, ' ').trim().slice(0, ONCE_QUOTE_MAX);
+  const quote = onceLib.sanitizeQuote(opts.once);
   if (!quote) throw new ConfigError('usage', T.onceNeedsQuote(key), 2, { key });
   const spec = schema.settings[key];
   const before = resolve(noFlags(opts));
-  const cur = readRaw(P.project, lang, P);
-  const data = cur.present ? cur.data : { version: 1, settings: {} };
   const nowMs = nowMsOf(opts);
-  const entry = { value: false, set_at: new Date(nowMs).toISOString(), set_by: text.ONCE_BY + quote, once_quote: quote, expires_at: new Date(nowMs + ONCE_MS).toISOString() };
-  atomicWriteJson(P.project, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings: Object.assign({}, data.settings, { [key]: entry }) }));
+  const entry = onceLib.withLock(P.project, () => {
+    const cur = readRaw(P.project, lang, P);
+    const data = cur.present ? cur.data : { version: 1, settings: {} };
+    const old = data.settings[key];
+    const st = onceLib.onceState(old, nowMs);
+    if (st && !st.expired) throw new ConfigError('usage', T.onceAlreadyArmed(key), 2, { key });
+    const ent = {
+      value: false, set_at: new Date(nowMs).toISOString(), set_by: text.ONCE_BY + quote, once_quote: quote,
+      expires_at: new Date(nowMs + ONCE_MS).toISOString(), consumed_at: null, consumed_command_sha256: null,
+    };
+    atomicWriteJson(P.project, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings: Object.assign({}, data.settings, { [key]: ent }) }));
+    return ent;
+  }, lockOptsOf(opts));
   const after = resolve(noFlags(opts)).settings[key];
   return {
     key, from: before.settings[key].value, to: false, file: P.project, file_pretty: prettyPath(P.project, P),
@@ -747,27 +848,70 @@ function setOnce(key, rawValue, opts) {
   };
 }
 
+/** consumeOnce(key, opts) -> { ok:true } | { ok:false, reason:'consumed'|'expired'|'absent'|'clock' } (CFG-07/S06).
+ *  The ONE atomic single-use step every hard-gate check must call before honouring a `--once` approval: it
+ *  marks the PROJECT-file entry consumed (consumed_at, opts.commandSha256 -> consumed_command_sha256) and
+ *  returns ok:true EXACTLY ONCE for an entry that is armed (unexpired) and not yet consumed; every other call
+ *  — a second consume, an expired entry, no entry at all, or a set_at that lies in the future relative to
+ *  opts.now (a clock-integrity problem) — returns ok:false with the matching reason and writes nothing. Reads
+ *  and writes happen inside onceLib.withLock on the SAME project file setOnce() uses, so two concurrent
+ *  consume attempts (parallel requests sharing one approval — the exact CFG-07 evidence) can never both
+ *  succeed: the second one always re-reads the first one's committed consumed_at. Never throws for a normal
+ *  call; a schema/path problem is reported as reason:'absent' (fail closed — no approval, no proceed). */
+function consumeOnce(key, opts) {
+  opts = opts || {};
+  let P;
+  try { P = pathsFor(opts); } catch { return { ok: false, reason: 'absent' }; }
+  if (!ONCE_KEYS.includes(key)) return { ok: false, reason: 'absent' };
+  let lang = 'en';
+  try { lang = detectLang(opts, P); } catch { lang = 'en'; }
+  const nowMs = nowMsOf(opts);
+  const commandSha256 = typeof opts.commandSha256 === 'string' && opts.commandSha256 ? opts.commandSha256 : null;
+  try {
+    return onceLib.withLock(P.project, () => {
+      let cur;
+      try { cur = readRaw(P.project, lang, P); } catch { return { ok: false, reason: 'absent' }; }
+      if (!cur.present || !hasOwn(cur.data.settings, key)) return { ok: false, reason: 'absent' };
+      const ent = cur.data.settings[key];
+      if (!isObj(ent) || !hasOwn(ent, 'expires_at')) return { ok: false, reason: 'absent' };
+      const setAtMs = typeof ent.set_at === 'string' ? Date.parse(ent.set_at) : NaN;
+      if (!Number.isFinite(setAtMs) || nowMs < setAtMs) return { ok: false, reason: 'clock' };
+      if (ent.consumed_at) return { ok: false, reason: 'consumed' };
+      const st = onceLib.onceState(ent, nowMs);
+      if (!st || st.expired) return { ok: false, reason: 'expired' };
+      const updated = Object.assign({}, ent, { consumed_at: new Date(nowMs).toISOString(), consumed_command_sha256: commandSha256 });
+      const settings = Object.assign({}, cur.data.settings, { [key]: updated });
+      atomicWriteJson(P.project, Object.assign({}, cur.data, { settings }));
+      return { ok: true };
+    }, lockOptsOf(opts));
+  } catch { return { ok: false, reason: 'absent' }; /* a lock/IO problem is never treated as an approval */ }
+}
+
 /** unset(key, opts) — removes the owner's own value. --global: the global file only. Otherwise a project-scope
  *  key leaves the project file; a global-scope key leaves the global file AND any (ignored) stray copy in the
- *  project file. A key unknown to the schema may still be removed when it literally sits in a target file. */
+ *  project file. A key unknown to the schema may still be removed when it literally sits in a target file.
+ *  Each target file's read-decide-write is serialized with onceLib.withLock (CFG-09). */
 function unset(key, opts) {
   opts = opts || {};
   const { P, schema, lang } = writableKey(key, opts);
   const known = hasOwn(schema.settings, key);
   const wanted = opts.global ? [P.global] : known && schema.settings[key].scope === 'global' ? [P.global, P.project] : [P.project];
   const targets = [...new Set(wanted.map((f) => path.resolve(f)))];
-  const raws = targets.map((f) => ({ f, r: readRaw(f, lang, P) }));
-  if (!known && !raws.some((x) => x.r.present && hasOwn(x.r.data.settings, key))) throw unknownKeyError(key, schema, lang, 2);
+  const precheck = targets.map((f) => ({ f, r: readRaw(f, lang, P) }));
+  if (!known && !precheck.some((x) => x.r.present && hasOwn(x.r.data.settings, key))) throw unknownKeyError(key, schema, lang, 2);
   const bridge = known ? bridgeOf(key, schema, P, opts) : null;
   if (bridge) readBridge(bridge, lang, P); // fail closed before any write
   const before = known ? resolve(noFlags(opts)).settings[key].value : null;
   const removed = [];
-  for (const { f, r } of raws) {
-    if (!r.present || !hasOwn(r.data.settings, key)) continue;
-    const settings = Object.assign({}, r.data.settings);
-    delete settings[key];
-    atomicWriteJson(f, Object.assign({}, r.data, { settings }));
-    removed.push(f);
+  for (const f of targets) {
+    onceLib.withLock(f, () => {
+      const r = readRaw(f, lang, P);
+      if (!r.present || !hasOwn(r.data.settings, key)) return;
+      const settings = Object.assign({}, r.data.settings);
+      delete settings[key];
+      atomicWriteJson(f, Object.assign({}, r.data, { settings }));
+      removed.push(f);
+    }, lockOptsOf(opts));
   }
   const entry = known ? resolve(noFlags(opts)).settings[key] : null;
   const bridged = bridge && entry ? applyBridge(bridge, entry.value, schema, lang, P) : null;
@@ -779,32 +923,35 @@ function unset(key, opts) {
  *  file is the one way back from degraded mode (forge.md §0): { damaged:true, moved_to } — with opts.yes it is
  *  renamed to <file>.damaged-<time> (kept as a backup, never deleted) and a fresh empty settings file takes its
  *  place; without opts.yes nothing moves. Any other damaged file (the other settings file, a legacy bridge file)
- *  still refuses the reset (exit 2). */
+ *  still refuses the reset (exit 2). The whole validate-then-write sequence runs inside onceLib.withLock on
+ *  `file` (CFG-09) so a concurrent reset/set on the same file can never race. */
 function reset(opts) {
   opts = opts || {};
   const P = pathsFor(opts);
   const schema = loadSchema(P.schema, opts);
   const lang = detectLang(opts, P);
   const file = opts.global ? P.global : P.project;
-  try { readConfigFile(file, schema, lockedIds(schema, opts).ids, lang, P, nowMsOf(opts)); } // full validation first
-  catch (e) {
-    if (!(e instanceof ConfigError) || e.code !== 'malformed') throw e;
-    const aside = file + '.damaged-' + new Date(nowMsOf(opts)).toISOString().replace(/[:.]/g, '-');
-    const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: [], removed: [], lang, damaged: true, reason: e.message, moved_to: aside, moved_to_pretty: prettyPath(aside, P) };
-    if (!opts.yes) return Object.assign(base, { confirmed: false });
-    renameWithRetry(file, aside);
-    atomicWriteJson(file, { version: 1, settings: {} });
-    return Object.assign(base, { confirmed: true, bridges: [] });
-  }
-  const r = readRaw(file, lang, P);
-  const keys = r.present ? Object.keys(r.data.settings) : [];
-  const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: keys, lang };
-  if (!opts.yes) return Object.assign(base, { confirmed: false, removed: [] });
-  const bridges = keys.filter((k) => hasOwn(schema.settings, k)).map((k) => bridgeOf(k, schema, P, opts)).filter(Boolean);
-  for (const b of bridges) readBridge(b, lang, P); // fail closed before any write
-  if (keys.length) atomicWriteJson(file, Object.assign({}, r.data, { settings: {} }));
-  const now = bridges.length ? resolve(noFlags(opts)).settings : null;
-  return Object.assign(base, { confirmed: true, removed: keys, bridges: bridges.map((b) => applyBridge(b, now[b.key].value, schema, lang, P)) });
+  return onceLib.withLock(file, () => {
+    try { readConfigFile(file, schema, lockedIds(schema, opts).ids, lang, P, nowMsOf(opts)); } // full validation first
+    catch (e) {
+      if (!(e instanceof ConfigError) || e.code !== 'malformed') throw e;
+      const aside = file + '.damaged-' + new Date(nowMsOf(opts)).toISOString().replace(/[:.]/g, '-');
+      const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: [], removed: [], lang, damaged: true, reason: e.message, moved_to: aside, moved_to_pretty: prettyPath(aside, P) };
+      if (!opts.yes) return Object.assign(base, { confirmed: false });
+      renameWithRetry(file, aside);
+      atomicWriteJson(file, { version: 1, settings: {} });
+      return Object.assign(base, { confirmed: true, bridges: [] });
+    }
+    const r = readRaw(file, lang, P);
+    const keys = r.present ? Object.keys(r.data.settings) : [];
+    const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: keys, lang };
+    if (!opts.yes) return Object.assign(base, { confirmed: false, removed: [] });
+    const bridges = keys.filter((k) => hasOwn(schema.settings, k)).map((k) => bridgeOf(k, schema, P, opts)).filter(Boolean);
+    for (const b of bridges) readBridge(b, lang, P); // fail closed before any write
+    if (keys.length) atomicWriteJson(file, Object.assign({}, r.data, { settings: {} }));
+    const now = bridges.length ? resolve(noFlags(opts)).settings : null;
+    return Object.assign(base, { confirmed: true, removed: keys, bridges: bridges.map((b) => applyBridge(b, now[b.key].value, schema, lang, P)) });
+  }, lockOptsOf(opts));
 }
 
 // ---- bridges: legacy mirror files (see the header) ----
@@ -1068,8 +1215,8 @@ function parseSentence(sentence, opts) {
 }
 
 module.exports = {
-  resolve, get, safeGet, list, set, unset, reset, explain, diff, markSeen, parseValue,
-  ConfigError, validateSchema, parseSentence, normLang, safeValueOf,
+  resolve, get, safeGet, list, set, unset, reset, explain, diff, markSeen, parseValue, parseFlagValue,
+  ConfigError, validateSchema, parseSentence, normLang, safeValueOf, consumeOnce,
   detectLang: (opts) => detectLang(opts, pathsFor(opts)),
   ONCE_KEYS, ONCE_MS, FAILSAFE_FLAGGED,
 };

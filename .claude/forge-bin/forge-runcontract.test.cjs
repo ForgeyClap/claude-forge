@@ -24,6 +24,18 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runcontract-test-'));
 fs.mkdirSync(path.join(TMP, '.claude', 'config', 'orchestration'), { recursive: true });
 fs.copyFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_HARD_RULES.json'),
   path.join(TMP, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'));
+// A minimal REAL writer at TMP's canonical <root>/.claude/forge-dashboard/log-event.cjs path, so any
+// --log-event/logEvent:true call against TMP that does NOT pass an explicit opts.logEventPath override has
+// a genuinely working writer to succeed against (RC-PROOF-WRITE-SILENT, 2026-09-24: a failed write now
+// gates the CLI's exit code — a test proving "the flag is accepted" needs a writer that actually accepts).
+// PART 6 below overwrites this same path with its OWN capture-based writer for its own root-containment
+// assertions; both shapes are equivalent (append argv[2] to a capture file, implicit exit 0).
+fs.mkdirSync(path.join(TMP, '.claude', 'forge-dashboard'), { recursive: true });
+const DEFAULT_WRITER_CAPTURE = path.join(TMP, '.claude', 'forge-dashboard', 'captured-default-writer.jsonl');
+fs.writeFileSync(path.join(TMP, '.claude', 'forge-dashboard', 'log-event.cjs'), [
+  "const fs=require('fs');",
+  "fs.appendFileSync(" + JSON.stringify(DEFAULT_WRITER_CAPTURE) + ", process.argv[2] + '\\n');",
+].join('\n'), 'utf8');
 console.log('forge-runcontract offline tests (hermetic root=' + TMP + ')');
 
 function writeRun(runId, lines, extraFiles) {
@@ -91,15 +103,29 @@ t('web run without responsive evidence: ok:false (NOT DONE)', webMissing.ok === 
 t('web run without responsive evidence: names web-responsive-evidence in missing[]', webMissing.missing.includes('web-responsive-evidence'));
 
 // ---- web domain run WITH real responsive screenshot evidence (domain_aware path via forge-verify) ----
+// RC-DOMAIN-BYPASS (2026-09-24): web-responsive-evidence is now AUTHORITATIVE on a real "web" domain —
+// the claimed screenshot artifacts must genuinely EXIST under the run directory (forge-evidence.cjs's
+// artifactsOnDisk()), not merely be named in an event. The fixture writes the real files it claims.
 const webSatisfiedEvents = completeEvents.concat([
   ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/mobile-390.png' }),
   ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/tablet-768.png' }),
   ev({ event_type: 'browser_screenshot_captured', agent: 'UI Boss', screenshot_path: 'artifacts/desktop-1440.png' }),
 ]);
-writeRun('run-web-satisfied', webSatisfiedEvents, { 'final-report.md': '# Report\n' });
+const webSatisfiedDir = writeRun('run-web-satisfied', webSatisfiedEvents, { 'final-report.md': '# Report\n' });
+fs.mkdirSync(path.join(webSatisfiedDir, 'artifacts'), { recursive: true });
+for (const name of ['mobile-390.png', 'tablet-768.png', 'desktop-1440.png']) {
+  fs.writeFileSync(path.join(webSatisfiedDir, 'artifacts', name), 'fake-png-bytes-' + name);
+}
 const webSatisfied = RC.check({ run_id: 'run-web-satisfied', domain: 'website' }, { root: TMP });
 t('web run WITH real 3-breakpoint screenshots + zero-console-errors: ok:true', webSatisfied.ok === true);
 t('web run WITH real evidence: web-responsive-evidence is satisfied (domain_aware path)', webSatisfied.satisfied.includes('web-responsive-evidence'));
+
+// counterweight, RC-DOMAIN-BYPASS: the SAME event shape but the claimed screenshot files do NOT actually
+// exist on disk must now be REJECTED — the exact repro this finding proved ("one disproven/fabricated
+// browser_screenshot_captured satisfied responsive evidence").
+writeRun('run-web-fabricated', webSatisfiedEvents, { 'final-report.md': '# Report\n' }); // no artifacts/ dir written
+const webFabricated = RC.check({ run_id: 'run-web-fabricated', domain: 'website' }, { root: TMP });
+t('RC-DOMAIN-BYPASS: a "web" domain run whose claimed screenshots do not exist on disk is NOT satisfied', !webFabricated.satisfied.includes('web-responsive-evidence') && webFabricated.missing.includes('web-responsive-evidence'));
 
 // ---- tooling domain run (2026-07-22 — closes the real "no tooling domain in required-evidence.json" gap
 // the forge-2026-07-22-v9-selfaudit self-audit run surfaced honestly). Deliberately does NOT reuse
@@ -649,7 +675,27 @@ t('5m: the un-judgeable rule appears in NO verdict bucket (it was never judged, 
   const all = unknownTriggerRes.satisfied.concat(unknownTriggerRes.missing, unknownTriggerRes.warnings, unknownTriggerRes.overridden.map((o) => o.id));
   return !all.includes('from-the-future');
 })());
-t('5n: the OTHER rules in the same stale file are still evaluated normally (degrade, not abandon)', !!unknownTriggerRes && unknownTriggerRes.satisfied.includes('ordinary-rule') && unknownTriggerRes.ok === true);
+t('5n: the OTHER rules in the same stale file are still evaluated normally (degrade, not abandon)', !!unknownTriggerRes && unknownTriggerRes.satisfied.includes('ordinary-rule'));
+// RC-UNKNOWN-RULE-GREEN (2026-09-24, out-p5.md): "degrade, not abandon" was previously read as "never
+// affects ok" — but an un-judged BLOCKING obligation is exactly what "NOT DONE" means. from-the-future is
+// severity:"block", so an honest degrade must still refuse CONTRACT OK, distinctly from an ordinary missing
+// rule (namespaced unknown-rule:<id> in `missing`, never confused with a genuinely-evaluated-and-failed id).
+t('RC-UNKNOWN-RULE-GREEN: an unevaluated BLOCKING rule prevents CONTRACT OK', !!unknownTriggerRes && unknownTriggerRes.ok === false);
+t('RC-UNKNOWN-RULE-GREEN: it is reported as a distinctly-namespaced missing entry', !!unknownTriggerRes && unknownTriggerRes.missing.includes('unknown-rule:from-the-future'));
+
+// COUNTERWEIGHT: an unevaluated ADVISORY (severity:"warn") rule with unknown vocabulary must NOT flip ok —
+// only a BLOCKING obligation nobody judged makes a degrade dishonest to certify as done.
+const UNKNOWN_WARN_RULES_PATH = path.join(TMP, 'unknown-trigger-warn-rules.json');
+fs.writeFileSync(UNKNOWN_WARN_RULES_PATH, JSON.stringify({
+  version: 1,
+  rules: [
+    { id: 'from-the-future-warn', rule: 'an advisory rule using future vocabulary', trigger: 'phase:beta', check: { type: 'event-present', key: 'signal_future' }, severity: 'warn', override: 'n/a', source: 'test fixture' },
+    { id: 'ordinary-rule-2', rule: 'an ordinary rule in the same file', trigger: 'always', check: { type: 'event-present', key: 'signal_must' }, severity: 'block', override: 'owner_override rule:ordinary-rule-2', source: 'test fixture' },
+  ],
+}), 'utf8');
+const unknownWarnRes = RC.check({ run_id: 'fx-block-met-warn-missing' }, { root: TMP, rulesPath: UNKNOWN_WARN_RULES_PATH });
+t('RC-UNKNOWN-RULE-GREEN counterweight: an unevaluated ADVISORY rule does not flip ok', unknownWarnRes.ok === true && unknownWarnRes.satisfied.includes('ordinary-rule-2'));
+t('RC-UNKNOWN-RULE-GREEN counterweight: it is still visible in unevaluated[], never silent', unknownWarnRes.unevaluated.some((u) => u.id === 'from-the-future-warn'));
 
 // ---- (5o) COUNTERWEIGHT (green before AND after): tolerance is limited to UNKNOWN VOCABULARY. A
 // structurally broken trigger (missing / not a string / empty) is still a malformed config and still throws.
@@ -678,7 +724,9 @@ t('5q: CLI --complexity L4 is accepted and raises the resolved level', (() => {
   try { const j = JSON.parse(cliCxFlag.stdout); return j.complexity === 'L4' && cliCxFlag.status === 3; } catch { return false; }
 })());
 const cliUnknown = runCli('check', '--run', 'fx-block-met-warn-missing', '--root', TMP, '--rules', UNKNOWN_TRIGGER_RULES_PATH);
-t('5q: CLI on a stale rules file exits 0 and PRINTS the unevaluated-rule warning (honest, not silent, not a crash)', cliUnknown.status === 0 && /unevaluated|from-the-future/.test(cliUnknown.stdout + cliUnknown.stderr));
+// RC-UNKNOWN-RULE-GREEN: from-the-future is severity:"block", so this now exits 3 (not 0) — the CLI still
+// never CRASHES on the unknown trigger, and still PRINTS it loudly; it simply no longer claims done.
+t('5q: CLI on a stale rules file with an unevaluated BLOCKING rule exits 3 and PRINTS the unevaluated-rule warning (honest, not silent, not a crash)', cliUnknown.status === 3 && /unevaluated|from-the-future/.test(cliUnknown.stdout + cliUnknown.stderr));
 
 // ================================================================================================
 // PART 6 — ROOT CONTAINMENT of the gate proof event (2026-08-03). MEASURED BUG this closes: the
@@ -739,12 +787,92 @@ t('5q: CLI on a stale rules file exits 0 and PRINTS the unevaluated-rule warning
   t('6c: the verdict itself is unchanged by the missing writer', resC.ok === true);
   t('6c: and still nothing leaked into the executing install\'s forge-runs', realLineCount() === beforeC);
 
+  // RC-PROOF-WRITE-SILENT (2026-09-24, out-p5.md): a green CONTRACT OK with a REQUESTED but FAILED
+  // --log-event write used to exit 0 silently in both output modes. The CLI must now refuse to call that
+  // success — the requested audit proof genuinely does not exist.
+  const cliNoWriterText = runCli('check', '--run', 'r1', '--root', bareRoot, '--log-event');
+  t('RC-PROOF-WRITE-SILENT: a failed --log-event write makes the CLI exit nonzero even on an otherwise-green contract (text mode)', cliNoWriterText.status !== 0);
+  t('RC-PROOF-WRITE-SILENT: text mode NAMES the failed proof write, not silence', /PROOF NOT LOGGED/.test(cliNoWriterText.stdout));
+  const cliNoWriterJson = runCli('check', '--run', 'r1', '--root', bareRoot, '--log-event', '--json');
+  t('RC-PROOF-WRITE-SILENT: a failed --log-event write makes the CLI exit nonzero (json mode)', cliNoWriterJson.status !== 0);
+  t('RC-PROOF-WRITE-SILENT: json mode reports logged.ok:false', (() => {
+    try { const j = JSON.parse(cliNoWriterJson.stdout); return j.logged && j.logged.ok === false; } catch { return false; }
+  })());
+
   // (6d) an explicit opts.logEventPath still wins (the existing stub seam keeps working)
   const seamCapture = path.join(TMP, 'seam-capture.jsonl');
   const seamStub = path.join(TMP, 'seam-stub.cjs');
   fs.writeFileSync(seamStub, "require('fs').appendFileSync(" + JSON.stringify(seamCapture) + ", process.argv[2] + '\\n');", 'utf8');
   RC.check({ run_id: 'run-complete' }, { root: TMP, logEvent: true, logEventPath: seamStub });
   t('6d: an explicit logEventPath overrides root resolution (test seam preserved)', fs.existsSync(seamCapture) && rootCaptured().length === 2);
+}
+
+// ================================================================================================
+// PART 7 — RC-CLAIMS-AS-PROOF / RC-DOMAIN-BYPASS / RC-MANIFEST-STALE (2026-09-24, out-p5.md)
+// ================================================================================================
+
+// ---- RC-CLAIMS-AS-PROOF: the exact counterfeit-fixture repro — every claim disproven, must exit 3 ----
+{
+  const disprovenEvents = completeEvents.map((line) => {
+    const o = JSON.parse(line);
+    o._forge_verify = { proof_verified: false };
+    return ev(o);
+  });
+  writeRun('run-counterfeit', disprovenEvents, { 'final-report.md': '# Report\n', 'not-a-final-report.old': 'x' });
+  const counterfeit = RC.check({ run_id: 'run-counterfeit' }, { root: TMP });
+  t('RC-CLAIMS-AS-PROOF: seven disproven claim-events no longer satisfy their rules', counterfeit.ok === false);
+  t('RC-CLAIMS-AS-PROOF: none of the disproven event-present rules land in satisfied[]', ['memory-read', 'owner-prefs-loaded', 'research-done', 'dispatch-logged'].every((id) => !counterfeit.satisfied.includes(id)));
+  const cliCounterfeit = runCli('check', '--run', 'run-counterfeit', '--root', TMP);
+  t('RC-CLAIMS-AS-PROOF: the CLI exits 3 on the counterfeit fixture', cliCounterfeit.status === 3);
+}
+
+// ---- RC-DOMAIN-BYPASS: domain resolved from run.json when --domain is absent ----
+{
+  writeRun('run-declared-domain', completeEvents, { 'final-report.md': '# Report\n', 'run.json': JSON.stringify({ domain: 'website' }) });
+  const declaredNoParam = RC.check({ run_id: 'run-declared-domain' }, { root: TMP }); // no domain param at all
+  t('RC-DOMAIN-BYPASS: an omitted --domain resolves from run.json instead of null', declaredNoParam.domain === 'website' && declaredNoParam.domain_source === 'declared');
+  t('RC-DOMAIN-BYPASS: the resolved domain rule actually applies now (missing web-responsive-evidence)', declaredNoParam.missing.includes('web-responsive-evidence'));
+  // explicit param still wins, but a genuine conflict is reported rather than silently overwritten
+  const explicitOverride = RC.check({ run_id: 'run-declared-domain', domain: 'finance' }, { root: TMP });
+  t('RC-DOMAIN-BYPASS: an explicit --domain still wins over the declared one', explicitOverride.domain === 'finance');
+  t('RC-DOMAIN-BYPASS: the conflict is reported, not silently dropped', explicitOverride.domain_source === 'param-override' && explicitOverride.domain_declared === 'website' && explicitOverride.domain_overridden === true);
+  // no conflict: explicit param matches the declared domain
+  const matchingParam = RC.check({ run_id: 'run-declared-domain', domain: 'website' }, { root: TMP });
+  t('RC-DOMAIN-BYPASS: a matching explicit domain is reported as "param", not an override', matchingParam.domain_source === 'param' && matchingParam.domain_overridden === false);
+}
+
+// ---- RC-MANIFEST-STALE: an armed-but-unfinished manifest package invalidates evidence-satisfied/verify-checked ----
+{
+  const MANIFEST = require('./forge-manifest.cjs');
+  const runId = 'run-manifest-stale';
+  writeRun(runId, completeEvents, { 'final-report.md': '# Report\n' });
+  const before = RC.check({ run_id: runId }, { root: TMP });
+  t('RC-MANIFEST-STALE setup: without any manifest, the run is a genuine ok:true baseline', before.ok === true);
+
+  const armed = MANIFEST.arm({ run_id: runId, wps: [{ wp_id: 'wp-1', agent: 'Build Boss', narrowed_prompt: 'do the thing' }] }, { root: TMP });
+  t('RC-MANIFEST-STALE setup: arm() really wrote a manifest', armed.ok === true);
+  const after = RC.check({ run_id: runId }, { root: TMP });
+  t('RC-MANIFEST-STALE: an armed-but-never-finished package revokes evidence-satisfied', after.ok === false && after.missing.includes('evidence-satisfied'));
+  t('RC-MANIFEST-STALE: it also revokes verify-checked', after.missing.includes('verify-checked'));
+  t('RC-MANIFEST-STALE: the manifest-complete detail names the outstanding package', after.rule_details['manifest-complete'] && after.rule_details['manifest-complete'].outstanding.some((o) => o.wp_id === 'wp-1'));
+
+  // a real wp_completed event for that exact wp_id clears it
+  const finishedEvents = completeEvents.concat([ev({ event_type: 'wp_completed', agent: 'Build Boss', wp_id: 'wp-1' })]);
+  writeRun(runId, finishedEvents, { 'final-report.md': '# Report\n' });
+  const finished = RC.check({ run_id: runId }, { root: TMP });
+  t('RC-MANIFEST-STALE: a real wp_completed for the armed package restores evidence-satisfied/verify-checked', finished.ok === true);
+
+  // an owner-authenticated skip (not a self-attributed agent waiver) also clears it, without a completion event
+  const skippedLines = completeEvents.concat([ev(Object.assign(JSON.parse(ownerOverride('manifest-complete', 'wp-1 dropped after scope change, owner reviewed', 'owner')), { wp_id: 'wp-1' }))]);
+  writeRun(runId, skippedLines, { 'final-report.md': '# Report\n' });
+  const skipped = RC.check({ run_id: runId }, { root: TMP, ownerProfilePath: NO_OWNER_PROFILE });
+  t('RC-MANIFEST-STALE: an owner-authenticated, wp_id-bound skip also clears it', skipped.ok === true);
+
+  // an agent-attributed (non-owner) "skip" must NOT clear it — same fail-closed discipline as findOwnerOverride
+  const fakeSkipLines = completeEvents.concat([ev({ event_type: 'owner_override', rule: 'manifest-complete', wp_id: 'wp-1', reason: 'I decided this is fine', by: 'Build Boss' })]);
+  writeRun(runId, fakeSkipLines, { 'final-report.md': '# Report\n' });
+  const fakeSkip = RC.check({ run_id: runId }, { root: TMP, ownerProfilePath: NO_OWNER_PROFILE });
+  t('RC-MANIFEST-STALE: a non-owner-attributed "skip" does NOT clear the outstanding package', fakeSkip.ok === false && fakeSkip.missing.includes('evidence-satisfied'));
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

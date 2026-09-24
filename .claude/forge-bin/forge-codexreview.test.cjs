@@ -3,7 +3,7 @@
 /**
  * forge-codexreview.test.cjs — the independent code review runs on the model the OWNER pinned.
  *
- * OWNER DIRECTIVE, current: gpt-5.6-sol at reasoning effort `xhigh` (2026-08-04 pinned the model at
+ * OWNER DIRECTIVE, current (2026-09-24): gpt-6-astra at reasoning effort `xhigh` ("long thinking" = xhigh). History: gpt-5.6-sol at xhigh (2026-08-04 pinned the model at
  * effort `max`; on 2026-08-09 the owner adjusted the effort to `xhigh` — "kan je efforct naar extra
  * high doen inplaats max?" — validated live against the CLI with --strict-config).
  *
@@ -45,7 +45,7 @@ t('the single source of truth exists and is valid JSON', () => {
 t('the owner-pinned model and effort are exactly what was asked for', () => {
   const c = readCfg();
   assert.strictEqual(c.review.engine, 'codex');
-  assert.strictEqual(c.review.model, 'gpt-5.6-sol', 'the review model drifted from the owner directive');
+  assert.strictEqual(c.review.model, 'gpt-6-astra', 'the review model drifted from the owner directive (2026-09-24: gpt-6-astra, effort xhigh, long thinking = xhigh)');
   // The ONE place that holds the owner's literal pinned effort. Everything else in this suite derives
   // from c.review.reasoning_effort instead of restating it, so a future owner change is a one-line edit
   // here + the config — not a scavenger hunt through three hardcoded regexes (which is exactly how this
