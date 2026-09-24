@@ -11,9 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.2] - 2026-09-24
 
-Loop iteration 1 after the 2.7.1 release: a read-only Deep Learn scan of the whole project, a scout vetting of every
-skill and MCP server named in the 98-video beginner research, and the small fixes both surfaced. No feature removed,
-nothing enabled by default that was off before.
+Two things in one release. First, loop iteration 1 after 2.7.1: a read-only Deep Learn scan of the whole project, a
+scout vetting of every skill and MCP server named in the 98-video beginner research, and the small fixes both
+surfaced. Second, and larger: an independent Codex recheck (`gpt-6-astra`, reasoning effort xhigh, six read-only
+passes over everything since 2.4.0) returned 85 findings, and every one was fixed with a test, rejected with evidence
+or deferred with a written reason before this release went out — see "Security — after the Codex recheck" below. No
+feature removed, nothing enabled by default that was off before; several promises in the documentation were made
+more honest.
 
 ### Added
 
