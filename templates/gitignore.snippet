@@ -12,6 +12,9 @@
 # Per-install state written by the installer / forge-sync (records YOUR template path)
 .claude/FORGE_VERSION.json
 .claude/forge-sync-receipt.json
+# Owner approval files (usage guard): the owner's secret and the per-machine override grant — never commit them
+.claude/config/forge-owner-grant.txt
+.claude/config/forge-usage-guard-override-grant.json
 
 # Secrets — never commit real env files (placeholders live in .env.example)
 .env
