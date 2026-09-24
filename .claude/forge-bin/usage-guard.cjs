@@ -1214,7 +1214,10 @@ if (require.main === module) {
     // zichtbaar in het logbestand) — een supervisor-race of tweede starter kreeg dus "gestart" te horen
     // over een account dat onbewaakt bleef. Nu wachten we tot het pid-bestand ECHT het kind-pid draagt;
     // een ander pid, een dood kind of een timeout is een eerlijke weigering met exit != 0.
-    const hs = awaitChildClaim({ pidFile: PID_FILE, childPid: child.pid, timeoutMs: 10000, nonce: startNonce });
+    // FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: a slow runner (GitHub windows-latest, Node 18, measured 2026-09-24) can need
+    // more than 10 s before the detached child has written its claim; the default is unchanged for real use.
+    const claimTimeoutMs = Number(process.env.FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS) > 0 ? Number(process.env.FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS) : 10000;
+    const hs = awaitChildClaim({ pidFile: PID_FILE, childPid: child.pid, timeoutMs: claimTimeoutMs, nonce: startNonce });
     if (!hs.ok) {
       // r4 #16: een mislukte handshake mag geen levend, onbeheerd detached kind achterlaten. Dit pid komt
       // uit ONS eigen spawn-resultaat — exact-PID kill is precies wat de HARD MUST toestaat.

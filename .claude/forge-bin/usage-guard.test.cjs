@@ -947,6 +947,9 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
     FORGE_USAGE_PRESSURE_FILE: path.join(tmp, 'FORGE_USAGE_PRESSURE.json'),
     FORGE_USAGE_GUARD_JOURNAL: path.join(tmp, 'paused.jsonl'),
     FORGE_USAGE_GUARD_IDENTITY: path.join(tmp, 'claude-identity.json'), // deliberately absent
+    // a slow CI runner (windows-latest/Node 18) needed more than the 10 s default before the child claimed; the
+    // suite went red inside the doctor and green on the immediate re-run — timing, not logic
+    FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000',
   });
   // REGRESSION PROOF setup: snapshot the REAL home's pressure file BEFORE the isolated child ticks, so
   // the assertion at the bottom is real evidence, not a guess.
@@ -955,7 +958,7 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
   const realPressureMtimeBefore = realPressureExistedBefore ? fs.statSync(realPressureFile).mtimeMs : null;
 
   const res = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'usage-guard.cjs'), 'start', '--interval', '60'], {
-    encoding: 'utf8', timeout: 30000,
+    encoding: 'utf8', timeout: 60000,
     env: isolatedEnv,
     // het echte kind zal WEL claimen — dus voor de weiger-kant: bezet het slot vooraf met onszelf
   });
@@ -969,7 +972,7 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
   // vooraf bezet slot: schrijf ONS pid erin en start opnieuw — het kind weigert (already running-conflict)
   fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), script: path.join(__dirname, 'usage-guard.cjs') }));
   const res2 = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'usage-guard.cjs'), 'start', '--interval', '60'], {
-    encoding: 'utf8', timeout: 30000,
+    encoding: 'utf8', timeout: 60000,
     env: isolatedEnv,
   });
 
