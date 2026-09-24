@@ -41,7 +41,7 @@ now 18 agents / 22 skills: the plugin copies of the Forge skills and agents were
   `hard-gates.json`) whether the command is a recursive force-delete, a kill of processes by name, or a git command
   that discards uncommitted work. If so it exits 2: Claude Code blocks the call and shows a plain Dutch/English reason,
   and Claude has to ask the user. A delete whose every target is provably inside a scratch area (`_scratch/`, any
-  `node_modules/` or `dist/`, `.claude/forge-backups/*`, the system temp folder, …) passes.
+  `node_modules/` or `dist/`, `.claude/forge-backups/*`, the system temp folder for targets outside your project, …) passes.
 - **21 vendored public skills and 2 commands**, so a beginner never has to hunt for skills: 13 from obra/superpowers
   (MIT), `frontend-design` from anthropics/skills (Apache-2.0), 6 from mattpocock/skills (MIT: `grill-me`, `grilling`,
   `teach`, `wait-what`, `resolving-merge-conflicts`, `setup-pre-commit`) and `claude-md-improver` from
@@ -184,6 +184,10 @@ now 18 agents / 22 skills: the plugin copies of the Forge skills and agents were
   timestamped backup first, atomic write, running again is a no-op; an unreadable file is left alone with the
   recommended copy next to it). `install.sh`, `install.ps1` and `forge-sync install`/`sync-all` all use it; the
   fresh-install CI asserts a foreign hook and allow rule survive and the Forge entries arrive.
+- **A project that lives under the OS temp folder keeps its safety stop.** The evidence round's fresh-install test creates
+  its project under `%TEMP%`, and there the gate hook let every delete pass: its temp-folder pass-through counted the whole
+  project as scratch (15 of 141 hook tests red inside such a project). The temp-folder rule now applies only to targets
+  outside the project root; inside the project only the named scratch areas pass, and the project root itself never does.
 - **Progress heartbeats of finished work no longer count as open tasks.** `forge-verify.cjs` and the dashboard's
   `app.js` (mirrored) close an agent's `agent_progress` heartbeats when the same work package's `subagent_completed` or
   `subagent_failed` arrives, taking that completion's status (blockers stay visible); a `fix_completed` or

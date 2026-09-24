@@ -39,7 +39,7 @@ before intake — never re-derive this ordering elsewhere; point back to this fi
      is itself a provable delete and every target resolves (real paths, symlink-aware, no `..`, no shell
      variables, no globs, no braces or parentheses, no `cd`/`mv`/`ln`/`exec`/`env` words) inside a scratch
      area — `_scratch/`, `node_modules/`, `dist/`, strictly inside `.claude/forge-backups/`,
-     `.claude/forge-runs/**/gate-output/`, `command-center/.data/tmp/` or the OS temp dir — and `kill-by-name` /
+     `.claude/forge-runs/**/gate-output/`, `command-center/.data/tmp/`, or the OS temp dir for targets outside the project root — and `kill-by-name` /
      `git-destructive` never pass; the pass-through itself fails CLOSED on any internal error. Quoted DATA
      (heredoc bodies, `echo`/`printf` literals, log-event payloads, search patterns for grep/rg/Select-String/
      findstr/git grep) is not a command and is not gated, unless the same command later feeds it to an

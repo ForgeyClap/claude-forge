@@ -199,9 +199,16 @@ function resolveTarget(raw, ctx) {
 }
 
 /** areaOf(abs, ctx) -> { area, display } | null — the scratch area that contains abs, judged on real paths. */
+// eindtest fix (2026-09-24): a project that itself lives under the OS temp dir must NOT be swallowed by the
+// temp rule. ctx.protectedRoots = this file's project root + CLAUDE_PROJECT_DIR (else the payload cwd). A target
+// that equals or CONTAINS a protected root never passes; a target INSIDE one passes only via a named scratch
+// sub-area of ctx.root; the temp rule applies only to targets outside every protected root.
 function areaOf(abs, ctx) {
   const real = realish(abs);
-  const tmpRel = relInside(realish(ctx.tmp), real);
+  const protectedRoots = (ctx.protectedRoots || [ctx.root]).filter(Boolean).map((r) => realish(path.resolve(r)));
+  if (protectedRoots.some((r) => relInside(real, r) !== null)) return null; // the root itself or an ancestor of it
+  const insideProject = protectedRoots.some((r) => relInside(r, real) !== null);
+  const tmpRel = insideProject ? null : relInside(realish(ctx.tmp), real);
   const rootRel = relInside(realish(ctx.root), real);
   if (rootRel) {
     const s = rootRel.split(/[\\/]+/);
@@ -214,7 +221,7 @@ function areaOf(abs, ctx) {
     if (is(0, '.claude') && is(1, 'forge-runs') && s.slice(2).some((x) => sameName(x, 'gate-output'))) return { area: 'gate-output', display: show };
     if (is(0, 'command-center') && is(1, '.data') && is(2, 'tmp')) return { area: 'command-center/.data/tmp', display: show };
   }
-  if (tmpRel) return { area: 'tmpdir', display: '<tmp>/' + tmpRel.split(/[\\/]+/).join('/') }; // strictly inside only
+  if (tmpRel) return { area: 'tmpdir', display: '<tmp>/' + tmpRel.split(/[\\/]+/).join('/') }; // strictly inside, outside the project
   return null;
 }
 
@@ -251,7 +258,7 @@ function scratchPassThrough(command, ctx) {
 }
 
 const cap = (s) => (s.length > MAX_NOTICE_CHARS ? s.slice(0, MAX_NOTICE_CHARS - 1) + '…' : s);
-const passNotice = (targets) => cap('FORGE GATE: destructive delete allowed — all targets inside a scratch area (' + targets.join(', ') + ')');
+const passNotice = (targets) => cap('FORGE GATE: destructive delete allowed — all targets inside a project scratch area or in the OS temp dir outside the project (' + targets.join(', ') + ')');
 
 /** selfDisable(seen, raw) -> true when a forge-config call would switch the gate off (M3), except the one
  *  owner-approved `--once "<quote>"` shape run on its own (M4). `seen` is the data-stripped text. */
@@ -293,11 +300,14 @@ function evaluate(payload, command, opts) {
   if (!fired.length) return { block: false, gates: [], why: (result.gate ? 'no-command-gate (' + result.matched.join(', ') + ')' : 'no-gate') + note };
   let why = 'command-gate';
   if (fired.length === 1 && fired[0] === 'destructive-delete') {
+    const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+    const env = opts.env || process.env;
     const pass = scratchPassThrough(seen, {
       gate: gateModule,
       shell: payload.tool_name,
-      cwd: typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd(),
+      cwd,
       root: opts.projectRoot || PROJECT_ROOT,
+      protectedRoots: [opts.projectRoot || PROJECT_ROOT, env.CLAUDE_PROJECT_DIR || cwd],
       tmp: opts.tmpdir || os.tmpdir(),
       platform: opts.platform || process.platform,
     });

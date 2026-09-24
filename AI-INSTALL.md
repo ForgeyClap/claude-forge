@@ -128,7 +128,7 @@ Claude's reach:
    `git checkout -f` / `.` / `-- <path>`, `git restore <path>`, `git switch -f`, `git stash drop|clear`). If so it
    exits 2: Claude Code blocks the call and shows a plain Dutch/English reason, and the assistant must ask the
    user. A delete whose every target is provably inside a scratch area (`_scratch/`, `node_modules/`, `dist/`, the
-   system temp folder, …) passes. Quoted data — heredoc bodies, `echo` literals, log payloads, `grep` patterns —
+   system temp folder for targets outside the project, …) passes. Quoted data — heredoc bodies, `echo` literals, log payloads, `grep` patterns —
    is never mistaken for a command. When the hook cannot judge a call (its own error, an oversized payload) it
    exits 1: visible, not blocking, never a silent pass. It is the only hook that blocks instead of advising; it is
    ON by default. Only the user switches it off (`/forge config set gate-hook off`): the assistant's own attempt to

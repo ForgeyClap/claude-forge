@@ -339,7 +339,7 @@ for (const [tool, cmd, shown] of PASSES) {
     assert.ok(gate.classify(cmd).matched.includes('destructive-delete'), 'precondition: the gate must fire, else this proves nothing');
     const r = spawnHook(shellCall(tool, cmd));
     assert.strictEqual(r.status, 0, 'exit ' + r.status + ' stderr ' + r.stderr);
-    assert.ok(r.stderr.startsWith('FORGE GATE: destructive delete allowed — all targets inside a scratch area ('), r.stderr);
+    assert.ok(r.stderr.startsWith('FORGE GATE: destructive delete allowed — all targets inside a project scratch area or in the OS temp dir outside the project ('), r.stderr);
     assert.ok(r.stderr.includes(shown), 'expected the target list to show ' + shown + ': ' + r.stderr);
     assert.strictEqual(r.stderr.trim().split('\n').length, 1, 'exactly one line');
     assert.strictEqual(r.stdout, '');
@@ -436,6 +436,54 @@ t('a symlink/junction inside _scratch that points OUT is judged by its real targ
   if (!linked) { console.log('       (SKIP link half — this machine refused to create a junction/symlink)'); return; }
   const d = at('rm -rf ./_scratch/link/x');
   assert.strictEqual(d.block, true, 'a link out of _scratch must not pass: ' + d.why);
+});
+
+// ---------------------------------------------------------------------------
+// 4d) EINDTEST GAP (2026-09-24): a PROJECT that itself lives under the OS temp dir. Before the fix the temp rule
+// swallowed the whole project — every delete in it passed as "<tmp>/…/proj/src". Now the temp rule only applies
+// to targets OUTSIDE every protected root (this file's project root + CLAUDE_PROJECT_DIR, else the cwd), and a
+// target that equals or CONTAINS a protected root never passes. Spawned from a hook copied into the fixture, with
+// and without CLAUDE_PROJECT_DIR — exactly the fresh-install situation of the eindtest.
+// ---------------------------------------------------------------------------
+console.log('\n4d) a project under the OS temp dir is still protected — the temp rule only covers targets outside it');
+
+const TP_PARENT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gate-tmpproj-'));
+const TP = path.join(TP_PARENT, 'proj');
+const SIBLING = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gate-sibling-'));
+fs.mkdirSync(path.join(TP, '.claude', 'forge-bin'), { recursive: true });
+fs.mkdirSync(path.join(TP, '.claude', 'config', 'orchestration'), { recursive: true });
+for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-gate-data.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(TP, '.claude', 'forge-bin', f));
+fs.copyFileSync(gate.CONFIG_PATH, path.join(TP, '.claude', 'config', 'orchestration', 'hard-gates.json'));
+const fwd = (p) => p.replace(/\\/g, '/');
+function spawnInTmpProject(command, claudeProjectDir) {
+  const env = Object.assign({}, process.env, { FORGE_CONFIG_HOME: HOME, FORGE_PROJECT_ROOT: TP });
+  if (claudeProjectDir) env.CLAUDE_PROJECT_DIR = claudeProjectDir; else delete env.CLAUDE_PROJECT_DIR;
+  const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: TP, tool_input: { command } };
+  return spawnSync(process.execPath, [path.join(TP, '.claude', 'forge-bin', 'forge-gate-hook.cjs')],
+    { input: JSON.stringify(payload), encoding: 'utf8', env, cwd: TP, timeout: 15000 });
+}
+for (const cpd of [null, TP]) {
+  const how = cpd ? 'CLAUDE_PROJECT_DIR set' : 'no CLAUDE_PROJECT_DIR';
+  for (const cmd of ['rm -rf src', 'rm -rf .', 'rm -r ./src', 'rm -rf .claude', 'rm -rf ' + fwd(TP), 'rm -rf ' + fwd(TP_PARENT)]) {
+    t('tmp-located project (' + how + '): "' + cmd.replace(fwd(os.tmpdir()), '<tmp>') + '" is BLOCKED', () => {
+      const r = spawnInTmpProject(cmd, cpd);
+      assert.strictEqual(r.status, 2, 'exit ' + r.status + ' ' + r.stderr.split('\n')[0]);
+    });
+  }
+  for (const cmd of ['rm -rf ./_scratch/x', 'rm -r ./node_modules/.cache', 'rm -rf ' + fwd(path.join(SIBLING, 'x'))]) {
+    t('tmp-located project (' + how + '): "' + cmd.replace(fwd(os.tmpdir()), '<tmp>') + '" still PASSES', () => {
+      const r = spawnInTmpProject(cmd, cpd);
+      assert.strictEqual(r.status, 0, 'exit ' + r.status + ' ' + r.stderr);
+      assert.ok(r.stderr.startsWith('FORGE GATE: destructive delete allowed'), r.stderr);
+    });
+  }
+}
+t('module level: CLAUDE_PROJECT_DIR (else the cwd) is protected even when the hook lives elsewhere', () => {
+  const at = (command, env) => hook.decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: TP, tool_input: { command } },
+    { config: null, env: env || {} });
+  assert.strictEqual(at('rm -rf ' + fwd(path.join(TP, 'src'))).block, true, 'cwd-derived root must be protected');
+  assert.strictEqual(at('rm -rf ' + fwd(path.join(TP, 'src')), { CLAUDE_PROJECT_DIR: TP }).block, true, 'CLAUDE_PROJECT_DIR root must be protected');
+  assert.strictEqual(at('rm -rf ' + fwd(path.join(SIBLING, 'y'))).block, false, 'a sibling temp dir outside the project passes');
 });
 
 // ---------------------------------------------------------------------------
@@ -556,7 +604,7 @@ t('timing: best of 5 real spawns (block path, config resolved) under ' + BUDGET_
   assert.ok(times[0] < BUDGET_MS, 'fastest run took ' + times[0].toFixed(0) + ' ms (hard budget ' + BUDGET_MS + ' ms; override FORGE_GATE_HOOK_TIMING_MS on a slow runner)');
 });
 
-try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ }
+for (const d of [TMP, TP_PARENT, SIBLING]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ } }
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

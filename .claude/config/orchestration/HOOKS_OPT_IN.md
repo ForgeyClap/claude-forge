@@ -399,7 +399,24 @@ is now 62 of 90 legitimate cleanup commands after security H1; examples are `rm 
   - strictly inside `<root>/.claude/forge-backups/`;
   - `<root>/.claude/forge-runs/**/gate-output`;
   - `<root>/command-center/.data/tmp`;
-  - strictly inside `os.tmpdir()`.
+  - strictly inside the OS temp dir (`os.tmpdir()`), ONLY for targets outside the project root.
+
+  **Eindtest fix (2026-09-24).** A fresh install into a project that itself lived under `%TEMP%` passed EVERY
+  delete, e.g. "`<tmp>/…/proj/src`", because the temp rule swallowed the whole project. The protected roots are
+  now:
+  - this hook's own project root;
+  - `CLAUDE_PROJECT_DIR`, or the call's `cwd` when that variable is not set.
+
+  All are realpath-resolved, with these rules:
+  - A target that IS a protected root, or CONTAINS one (an ancestor folder), never passes.
+  - A target INSIDE a protected root passes only through the named scratch sub-areas above.
+  - The temp rule applies only to targets outside every protected root.
+
+  This is proven in `forge-gate-hook.test.cjs` section 4d, by a hook copied into a project made with
+  `fs.mkdtempSync(os.tmpdir())`. There, `rm -rf src`, `rm -rf .`, `rm -r ./src`, `rm -rf .claude`, the project
+  itself and its parent folder are blocked, while `rm -rf ./_scratch/x` and a sibling temp dir still pass. The
+  whole suite was also re-run from such a tmp-located copy: 160/160. The same run with the fix removed gives
+  132 passed, 28 failed.
 - It then passes with exit 0 and one stderr line naming the targets.
 
 **What still blocks, each tested in section 4b:**
@@ -418,7 +435,8 @@ is now 62 of 90 legitimate cleanup commands after security H1; examples are `rm 
 **Limits (honest):**
 - It reasons about the file system at the moment the hook runs.
 - `dist/` and `node_modules/` are trusted by NAME.
-- Anything inside the temp dir passes.
+- Anything inside the OS temp dir passes, but only outside the project root. That includes another tool's
+  temp files.
 - The Git Bash `/tmp` alias is not mapped, so it blocks (a safe false block).
 
 **Cost.** Measured by `forge-gate-hook.test.cjs`: a real spawned hook takes about 66–104 ms on this machine
