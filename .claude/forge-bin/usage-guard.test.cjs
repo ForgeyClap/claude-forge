@@ -981,6 +981,11 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
       try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } catch { }
     }
     if (G.pidAlive(realChildPid)) { try { process.kill(realChildPid, 'SIGKILL'); } catch { } }
+    // Linux (measured on the ubuntu CI runner): SIGTERM is handled gracefully and even after SIGKILL the pid stays
+    // visible for a moment (zombie until reaped), so the liveness check must WAIT for the exit rather than look once.
+    for (let i = 0; i < 50 && G.pidAlive(realChildPid); i++) {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } catch { }
+    }
   }
 
   const claimed = res.status === 0 && /claim geverifieerd/.test(res.stdout || '');

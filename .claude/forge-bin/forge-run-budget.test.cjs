@@ -365,8 +365,16 @@ t('the shipped config resolves through the real reader for the real wrapper', ()
 // ======================================================================================================
 // 7) the wrapper this cap exists for must actually pass it
 // ======================================================================================================
+// The unattended sweep wrapper is a MAINTAINER-ONLY tool: the public distribution deliberately does not ship it
+// (2026-09-24, security review — an unattended bypassPermissions sweep over YouTube content). Where the file is
+// absent these two wrapper checks have no subject; they are skipped with the reason instead of failing (measured:
+// the first CI run after the removal went red on exactly these two ENOENTs).
+const SWEEP_CMD = path.join(__dirname, 'maand-sweep.cmd');
+if (!fs.existsSync(SWEEP_CMD)) {
+  console.log('  SKIP maand-sweep.cmd is not part of this distribution (maintainer-only unattended wrapper) — its two cap-wiring checks are not applicable here');
+} else {
 t('maand-sweep.cmd resolves its cap through this tool and passes --max-budget-usd to claude', () => {
-  const cmd = fs.readFileSync(path.join(__dirname, 'maand-sweep.cmd'), 'utf8');
+  const cmd = fs.readFileSync(SWEEP_CMD, 'utf8');
   assert.ok(/forge-run-budget\.cjs/.test(cmd), 'the wrapper does not consult the budget resolver');
   assert.ok(/--max-budget-usd/.test(cmd), 'the wrapper does not pass the cap to claude');
   assert.ok(!/--max-budget-usd\s+\d/.test(cmd),
@@ -374,13 +382,14 @@ t('maand-sweep.cmd resolves its cap through this tool and passes --max-budget-us
 });
 
 t('maand-sweep.cmd refuses to start the run when no cap could be resolved', () => {
-  const cmd = fs.readFileSync(path.join(__dirname, 'maand-sweep.cmd'), 'utf8');
+  const cmd = fs.readFileSync(SWEEP_CMD, 'utf8');
   assert.ok(/if\s+not\s+defined\s+FORGE_RUN_CAP/i.test(cmd) || /if\s+"%FORGE_RUN_CAP%"\s*==\s*""/i.test(cmd),
     'the wrapper has no guard for an unresolved cap — an unattended run must never start uncapped');
   const guardIdx = cmd.search(/if\s+(not\s+defined\s+FORGE_RUN_CAP|"%FORGE_RUN_CAP%"\s*==\s*"")/i);
   const spawnIdx = cmd.search(/--max-budget-usd/);
   assert.ok(guardIdx > -1 && spawnIdx > -1 && guardIdx < spawnIdx, 'the guard must come BEFORE the claude invocation');
 });
+}
 
 t('the cap change touches ONLY unattended wrappers — no interactive entry point is capped', () => {
   // The owner's own interactive session must keep working exactly as before. The only files allowed to
