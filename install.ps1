@@ -298,6 +298,10 @@ function Write-ForgeVersionMarker {
 
 function Main {
   $projectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
+  # ONE home for every global path: the USERPROFILE/HOME environment (what Node's os.homedir() uses, so the
+  # installer and the tools agree). PowerShell's automatic $HOME may follow HOMEDRIVE/HOMEPATH instead of an
+  # overridden USERPROFILE, which is exactly the situation in a CI job that redirects the home.
+  $forgeHome = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { $HOME }
   $assumeYes  = [bool]$Yes -or ($env:FORGE_YES -eq '1')
   $isDryRun   = [bool]$DryRun
   $globalOnly = [bool]$GlobalOnly
@@ -320,17 +324,22 @@ function Main {
   #    write, including in -DryRun, and for -ProjectDir pointing at $HOME too.
   # ---------------------------------------------------------------------------
   if ($doProject) {
+    # The home to compare against is the one the REST of this installer (and Node's os.homedir()) uses: the
+    # USERPROFILE/HOME environment. PowerShell's automatic $HOME comes from HOMEDRIVE/HOMEPATH and does not
+    # follow an overridden USERPROFILE — measured on the GitHub windows runner, where the guard compared against
+    # the runner's real profile and therefore let -ProjectDir <empty home> through.
+    $guardHome = $forgeHome
     $resolvedProject = Resolve-ForgeFullPath $projectDir
-    $resolvedHome = Resolve-ForgeFullPath $HOME
+    $resolvedHome = Resolve-ForgeFullPath $guardHome
     if ($resolvedProject -ieq $resolvedHome) {
-      Write-ForgeError "the target project directory is your home directory ($HOME) -- refusing to install the project payload into `$HOME\.claude (that would replace your global settings.json). cd into your project folder, or pass -ProjectDir <dir>."
+      Write-ForgeError "the target project directory is your home directory ($guardHome) -- refusing to install the project payload into `$HOME\.claude (that would replace your global settings.json). cd into your project folder, or pass -ProjectDir <dir>."
       exit 1
     }
 
     # Same refusal when <project>\.claude would resolve to the same directory as the global ~\.claude
     # (e.g. a symlinked project dir) even though the project dir itself is not $HOME.
     $projectClaude = Join-Path $projectDir '.claude'
-    $homeClaude = Join-Path $HOME '.claude'
+    $homeClaude = Join-Path $guardHome '.claude'
     if ((Test-Path -LiteralPath $projectClaude -PathType Container) -and
         (Test-Path -LiteralPath $homeClaude -PathType Container)) {
       $resolvedProjectClaude = Resolve-ForgeFullPath (Resolve-Path -LiteralPath $projectClaude).Path
@@ -490,13 +499,13 @@ function Main {
     if ($doGlobal) {
       Write-ForgeLog ''
       Write-ForgeLog "Installing global core -> $HOME\.claude"
-      $globalOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir 'global-install\.claude') -DestDir (Join-Path $HOME '.claude') -IsDryRun $isDryRun
+      $globalOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir 'global-install\.claude') -DestDir (Join-Path $forgeHome '.claude') -IsDryRun $isDryRun
       # The CANONICAL TEMPLATE (external audit II-A, 2026-09-23). The forge-core skill sends every
       # "install Forge V2 into this project", the bare-folder auto-install and the "stay current" rule to
       # ~\.claude\forge\template\ -- and this installer never created it, so all three pointed at nothing
       # and `forge-sync status` compared each project with itself ("up to date" forever). The template is
       # the project payload plus the two root seeds, kept where the skill looks for it.
-      $templateDir = Join-Path $HOME '.claude\forge\template'
+      $templateDir = Join-Path $forgeHome '.claude\forge\template'
       Write-ForgeLog ''
       Write-ForgeLog "Installing canonical template -> $templateDir (used by forge-sync and the auto-installer)"
       $templateOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $templateDir '.claude') -IsDryRun $isDryRun

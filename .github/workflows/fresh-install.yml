@@ -229,6 +229,9 @@ jobs:
             exit 1
           }
           Write-Host "ok   installer refused -ProjectDir `$HOME (exit $status, no .claude\forge-bin written there)"
+          # The refusal (exit 1) is the EXPECTED outcome; GitHub's pwsh wrapper would otherwise fail the step on the
+          # installer's own $LASTEXITCODE (measured on e7367fa: guard fired, "ok" printed, step still red).
+          exit 0
 
       # settings-keep check (security #4, review #10): an existing project .claude/settings.json must
       # never be silently replaced — the payload version is written alongside as
