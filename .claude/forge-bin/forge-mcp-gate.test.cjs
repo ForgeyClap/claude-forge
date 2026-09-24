@@ -52,6 +52,87 @@ t('doctrine default: ui-boss/test-boss max_tier=2', realGrants.bosses['ui-boss']
 t('status() with real config: nothing is auto-active', G.status({}).every((s) => s.active === false));
 t('status() with real config: nothing is opted-in by default (no opt-in file shipped)', G.status({}).every((s) => s.opted_in === false));
 
+// ============================================================================================
+// WP-L3 (2026-09-24, dormant opt-in MCP registry entries) — n8n-mcp (czlonkowski/n8n-mcp, MIT) added as a
+// new tier-1 entry; playwright (microsoft/playwright-mcp, Apache-2.0) already existed at tier 2 and only
+// gained a clarified notes field. Both came out of the beginner-sweep scout vetting (wp-l2).
+// ============================================================================================
+{
+  const REQUIRED_SHAPE = (e) => !!e && typeof e.id === 'string' && typeof e.purpose === 'string'
+    && Number.isInteger(e.tier) && typeof e.network === 'string' && typeof e.credentials_needed === 'boolean'
+    && typeof e.install_hint === 'string' && typeof e.status === 'string' && typeof e.notes === 'string';
+
+  const n8nMcp = realRegistry.servers.find((s) => s.id === 'n8n-mcp');
+  t('registry has a new "n8n-mcp" entry (czlonkowski/n8n-mcp)', !!n8nMcp);
+  t('n8n-mcp entry matches the standard registry entry shape', REQUIRED_SHAPE(n8nMcp));
+  t('n8n-mcp is tier 1 (read-only docs/validation, matches the scout verdict)', n8nMcp && n8nMcp.tier === 1);
+  t('n8n-mcp needs no credentials (docs-only mode per its README)', n8nMcp && n8nMcp.credentials_needed === false);
+  t('n8n-mcp ships dormant (status not-installed)', n8nMcp && n8nMcp.status === 'not-installed');
+  t('n8n-mcp install_hint explicitly excludes the live N8N_API_URL/KEY escalation', n8nMcp && /N8N_API_URL/.test(n8nMcp.install_hint) && /higher-tier/.test(n8nMcp.install_hint));
+
+  const pw = realRegistry.servers.find((s) => s.id === 'playwright');
+  t('playwright entry (microsoft/playwright-mcp) still matches the standard shape', REQUIRED_SHAPE(pw));
+  t('playwright stays tier 2 (sandboxed browser QA, not bumped to a write-primitive)', pw && pw.tier === 2);
+  t('playwright notes route write-shaped browser actions through forge-actiongate.cjs, never assume the tier-2 grant covers them', pw && /forge-actiongate\.cjs/.test(pw.notes));
+
+  t('integration-boss is granted n8n-mcp within its existing max_tier (1, not raised)',
+    realGrants.bosses['integration-boss'].allow_servers.includes('n8n-mcp') && realGrants.bosses['integration-boss'].max_tier === 1);
+  t('build-boss (max_tier 0) is correctly NOT granted n8n-mcp (tier 1 exceeds its max_tier)',
+    !realGrants.bosses['build-boss'].allow_servers.includes('n8n-mcp') && realGrants.bosses['build-boss'].max_tier === 0);
+  t('no max_tier was raised for any Boss by this change (still the documented defaults)',
+    realGrants.bosses['build-boss'].max_tier === 0 && realGrants.bosses['integration-boss'].max_tier === 1
+    && realGrants.bosses['test-boss'].max_tier === 2 && realGrants.bosses['ui-boss'].max_tier === 2);
+
+  t('doctrine: every real registry entry is not-installed, except the two documented REAL-connected exceptions (each tier 3, never a standing grant)',
+    realRegistry.servers.every((s) => s.status === 'not-installed' || (s.status === 'connected' && s.tier === 3)));
+
+  t('n8n-mcp resolves as NOT installed/enabled via status() (dormant by default, no auto-opt-in)', (() => {
+    const s = G.status({}).find((x) => x.id === 'n8n-mcp');
+    return !!s && s.installed === false && s.opted_in === false && s.active === false;
+  })());
+}
+
+// ---- wp-l3: validateGrant() refuses n8n-mcp/playwright for a Boss not listed, or above its own tier ----
+{
+  const nRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-gate-wpl3-'));
+  const nRegistryPath = path.join(nRoot, 'mcp-registry.json');
+  const nGrantsPath = path.join(nRoot, 'mcp-grants.json');
+  const nOptInPath = path.join(nRoot, 'mcp-opt-in.json');
+  fs.writeFileSync(nRegistryPath, JSON.stringify({
+    servers: [
+      { id: 'n8n-mcp', purpose: 'n8n node docs + workflow validation', tier: 1, network: 'read', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: 'x' },
+      { id: 'playwright', purpose: 'browser QA drive', tier: 2, network: 'read-write', credentials_needed: false, install_hint: 'x', status: 'not-installed', notes: 'x' },
+    ],
+  }));
+  fs.writeFileSync(nGrantsPath, JSON.stringify({
+    bosses: {
+      'integration-boss': { max_tier: 1, allow_servers: ['n8n-mcp'], why: 'fixture' },
+      'build-boss': { max_tier: 0, allow_servers: [], why: 'fixture: not listed for n8n-mcp' },
+      'ui-boss': { max_tier: 2, allow_servers: ['playwright'], why: 'fixture' },
+      'test-boss': { max_tier: 0, allow_servers: ['playwright'], why: 'fixture: listed but BELOW playwright\'s own tier, to isolate the tier check from the allow-list check' },
+    },
+  }));
+  fs.writeFileSync(nOptInPath, JSON.stringify({ opted_in: ['n8n-mcp', 'playwright'] }));
+  const nOpts = () => ({ registryPath: nRegistryPath, grantsPath: nGrantsPath, optInPath: nOptInPath });
+
+  {
+    const r = G.validateGrant({ boss: 'integration-boss', server: 'n8n-mcp' }, nOpts());
+    t('n8n-mcp: integration-boss (listed, in-tier) IS allowed', r.allowed === true, r.reason);
+  }
+  {
+    const r = G.validateGrant({ boss: 'build-boss', server: 'n8n-mcp' }, nOpts());
+    t('n8n-mcp: a Boss NOT on its allow-list is refused ("not granted")', r.allowed === false && /not granted/.test(r.reason), r.reason);
+  }
+  {
+    const r = G.validateGrant({ boss: 'test-boss', server: 'playwright' }, nOpts());
+    t('playwright: a Boss listed but ABOVE its own max_tier is refused ("exceeds")', r.allowed === false && /exceeds/.test(r.reason), r.reason);
+  }
+  {
+    const r = G.validateGrant({ boss: 'ui-boss', server: 'playwright' }, nOpts());
+    t('playwright: a Boss within tier and on the allow-list IS allowed', r.allowed === true, r.reason);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // 2) Hermetic fixtures — isolated temp dir, never touches real project config.
 // ---------------------------------------------------------------------------------------------------------

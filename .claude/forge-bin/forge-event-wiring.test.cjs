@@ -389,6 +389,49 @@ try {
     assert.strictEqual(RC.isWorkEventType('config_changed'), true);
     assert.ok(!RC.NON_WORK_EVENT_TYPES.has('config_changed'));
   });
+
+  // =====================================================================================================
+  console.log('\n(f) review_started/review_completed TASK_PAIRS pairing (2026-09-24, loop wp-l1)');
+  // Real defect: a verify-boss run ended with 2 "open" review_started tasks although both matching
+  // review_completed events were logged — see forge-verify.test.cjs RULE 3 for the behavior-level proof.
+  // This section proves the two required registration places stay wired (3-place discipline).
+  // =====================================================================================================
+  t('forge-verify.cjs TASK_PAIRS pairs review_started with review_completed', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'forge-verify.cjs'), 'utf8');
+    const body = objectBody(src, 'TASK_PAIRS');
+    assert.ok(body, 'could not locate TASK_PAIRS in forge-verify.cjs');
+    assert.ok(/review_started:\s*\[[^\]]*'review_completed'[^\]]*\]/.test(body), 'review_started is not paired with review_completed in forge-verify.cjs');
+  });
+  t('app.js TASK_PAIRS mirrors forge-verify.cjs for review_started/review_completed', () => {
+    const body = objectBody(appSrc, 'TASK_PAIRS');
+    assert.ok(body, 'could not locate TASK_PAIRS in app.js');
+    assert.ok(/review_started:\s*\[[^\]]*'review_completed'[^\]]*\]/.test(body), 'app.js TASK_PAIRS does not pair review_started/review_completed');
+  });
+  t('review_started stays RUNNING and review_completed stays TERMINAL/done in forge-verify.cjs (pairing did not move their base classification)', () => {
+    assert.ok(verify.RUNNING_TYPES.has('review_started'), 'review_started should stay in RUNNING_TYPES');
+    assert.ok(verify.TERMINAL_TYPES.has('review_completed'), 'review_completed should stay in TERMINAL_TYPES');
+  });
+  t('app.js taskStatus() still puts review_completed in a done bucket and nowhere else (pairing did not move its base classification)', () => {
+    assert.deepStrictEqual(bucketHas('review_completed'), ['done'], 'buckets containing review_completed: ' + JSON.stringify(bucketHas('review_completed')));
+  });
+  t('forge-verify.cjs verifyRun() end-to-end: a review_completed with the SAME review_id closes its review_started', () => {
+    const tmpRunId = 'event-wiring-review-pair-' + process.pid + '-' + Date.now();
+    const tmpRunDir = path.join(CLAUDE, 'forge-runs', tmpRunId);
+    fs.mkdirSync(tmpRunDir, { recursive: true });
+    try {
+      fs.writeFileSync(path.join(tmpRunDir, 'events.jsonl'), [
+        JSON.stringify({ event_type: 'agent_started', agent: 'Review Boss' }),
+        JSON.stringify({ event_type: 'review_started', agent: 'Review Boss', review_id: 'ev-wiring-rv-1', task: 'review' }),
+        JSON.stringify({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'ev-wiring-rv-1', status: 'PASS' }),
+      ].join('\n') + '\n', 'utf8');
+      const result = verify.verifyRun(tmpRunDir, {});
+      const agent = result.agents.find((a) => a.agent === 'Review Boss');
+      assert.ok(agent, 'Review Boss not found in verifyRun() output');
+      assert.strictEqual(agent.tasksOpen.length, 0, 'review_started should have closed, tasksOpen: ' + JSON.stringify(agent.tasksOpen));
+    } finally {
+      try { fs.rmSync(tmpRunDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
+  });
 } finally {
   try { fs.rmSync(RUN_DIR, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }

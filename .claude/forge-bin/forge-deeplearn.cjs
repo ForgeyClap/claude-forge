@@ -81,6 +81,22 @@ function isTestPath(relPath) {
   return /\.(test|spec)\.[^./\\]+$/i.test(base);
 }
 
+// ---- secret-pattern triage (2026-09-24 loop wp-l1): a real-looking secret pattern hit inside a
+// test/fixture location or a documentation location is almost always a redaction-test fixture or a
+// docs sentence naming the regexes, not a live committed credential — forge-doctor.cjs's leak scan
+// (forge-secret-scrub.cjs) remains the authority on real committed secrets. This ONLY downgrades the
+// risk level/kind/note on the hit; it never changes what is matched or printed (still no raw text).
+const TEST_DIR_SEGMENTS = new Set(['test', 'tests', '__tests__', 'test-evidence', 'fixtures']);
+function isFixtureOrDocsLocation(relPath) {
+  const parts = String(relPath).split(/[\\/]+/).filter(Boolean);
+  const base = parts[parts.length - 1] || '';
+  if (parts.some((p) => TEST_DIR_SEGMENTS.has(p))) return true;
+  if (/\.(test|spec)\.[^./\\]+$/i.test(base)) return true;
+  if (parts.some((p) => p === 'docs')) return true;
+  if (/\.md$/i.test(base)) return true;
+  return false;
+}
+
 function categoryOf(relPath) {
   const parts = String(relPath).split(/[\\/]+/).filter(Boolean);
   const base = parts[parts.length - 1] || '';
@@ -221,7 +237,16 @@ function scanProject(root, opts) {
         for (const pat of SECRET_PATTERNS) {
           pat.re.lastIndex = 0;
           if (pat.re.test(text)) {
-            risks.push({ level: 'high', kind: 'secret-pattern', detail: 'secret-looking string detected', evidence: { file: relPosix, pattern_name: pat.name } });
+            if (isFixtureOrDocsLocation(relPosix)) {
+              risks.push({
+                level: 'med', kind: 'secret-pattern-fixture-looking',
+                detail: 'secret-looking string detected in a test fixture or documentation file',
+                evidence: { file: relPosix, pattern_name: pat.name },
+                note: "forge-doctor.cjs's leak scan (forge-secret-scrub.cjs) is the authority on real committed secrets — this looks like a test fixture or documentation reference, not a live credential.",
+              });
+            } else {
+              risks.push({ level: 'high', kind: 'secret-pattern', detail: 'secret-looking string detected', evidence: { file: relPosix, pattern_name: pat.name } });
+            }
           }
         }
       }
@@ -298,8 +323,9 @@ function printHuman(result) {
   lines.push('Risks (' + result.risks.length + '):');
   if (!result.risks.length) lines.push('  none found');
   for (const r of result.risks) {
-    if (r.kind === 'secret-pattern') {
-      lines.push('  ' + r.level.toUpperCase() + ' secret-pattern ' + r.evidence.pattern_name + ' in ' + r.evidence.file);
+    if (r.kind === 'secret-pattern' || r.kind === 'secret-pattern-fixture-looking') {
+      const suffix = r.kind === 'secret-pattern-fixture-looking' ? ' (fixture/docs-looking)' : '';
+      lines.push('  ' + r.level.toUpperCase() + ' ' + r.kind + ' ' + r.evidence.pattern_name + ' in ' + r.evidence.file + suffix);
     } else {
       const ev = r.evidence && Object.keys(r.evidence).length ? ' ' + JSON.stringify(r.evidence) : '';
       lines.push('  ' + r.level.toUpperCase() + ' ' + r.kind + ' — ' + r.detail + ev);
@@ -322,7 +348,7 @@ function logEvent(root, runId, eventType, extra) {
   return spawnSync(process.execPath, [logEventPath, runId, eventType, JSON.stringify(extra || {})], { encoding: 'utf8' });
 }
 
-module.exports = { scanProject, SECRET_PATTERNS, categoryOf, logEvent };
+module.exports = { scanProject, SECRET_PATTERNS, categoryOf, logEvent, isFixtureOrDocsLocation };
 
 // ---- CLI ----
 if (require.main === module) {
@@ -344,7 +370,11 @@ if (require.main === module) {
     }
 
     if (opts.run) {
-      const started = logEvent(root, opts.run, 'deep_learn_started', { agent: 'project-scan', note: 'deep learn scan started', path: root });
+      // 2026-09-24 (loop run): the scan is a TOOL run by the Lead, not an agent of its own. Logging it under the
+      // unregistered name 'project-scan' made forge-runcontract.cjs treat that name as an unknown WORKER and refuse
+      // every independent review of the run (fail-closed, correctly). Same fix as forge-manifest.cjs: agent = the
+      // orchestrator, the scanner is the role.
+      const started = logEvent(root, opts.run, 'deep_learn_started', { agent: 'orchestrator', role: 'project-scan', runtime: 'internal', note: 'deep learn scan started', path: root });
       if (started.status !== 0) console.error('forge-deeplearn: log-event (deep_learn_started) warning: ' + (started.stderr || '').trim());
     }
 
@@ -364,7 +394,7 @@ if (require.main === module) {
       const med = result.risks.filter((r) => r.level === 'med').length;
       const low = result.risks.filter((r) => r.level === 'low').length;
       const note = 'deep learn scan completed: ' + result.counts.totalFiles + ' files, risks high=' + high + ' med=' + med + ' low=' + low;
-      const completed = logEvent(root, opts.run, 'deep_learn_completed', { agent: 'project-scan', note });
+      const completed = logEvent(root, opts.run, 'deep_learn_completed', { agent: 'orchestrator', role: 'project-scan', runtime: 'internal', note });
       if (completed.status !== 0) console.error('forge-deeplearn: log-event (deep_learn_completed) warning: ' + (completed.stderr || '').trim());
     }
 

@@ -129,11 +129,15 @@
  *                   being guarded is silent growth: a number nobody sees is the state that let the skill
  *                   list get truncated on 31 July with no warning at all.
  *
- * BEGINNER SETUP (wp17, 2026-09-24) — six ADVISORY-ONLY checks under their own top-level key
- * `report.advisory.beginner_setup`, one printSummary line each (see beginnerSetup() for the contract):
- *   claude-md-size · path-tools · bypass-mode · wsl-mnt-c · claude-doctor · prompt-coach-present.
+ * BEGINNER SETUP (wp17, 2026-09-24; wp-l1 added settings-wired; wp-l4 added model-choice-hint) — eight
+ * ADVISORY-ONLY checks under their own top-level key `report.advisory.beginner_setup`, one printSummary line
+ * each (see beginnerSetup() for the contract): claude-md-size · path-tools · bypass-mode · wsl-mnt-c ·
+ * claude-doctor · prompt-coach-present · settings-wired · model-choice-hint.
  * They describe the MACHINE and the owner's preferences (a long CLAUDE.md, a missing `node`, a bypass default,
  * a WSL project under /mnt/c), never a defect in this project's code, so none can ever turn the doctor red.
+ * model-choice-hint is the one exception to "describes the machine": it is pure education (theme 5 of the
+ * beginner sweep, 52/98 videos — model choice, usage limits and cost had no beginner-facing surface at all),
+ * always `info`, never evaluating anything about this project or machine.
  *
  * V9-INTEGRATE ENFORCEMENT OVERRIDE PATH (2026-07-22): a promoted-to-ENFORCED check's failure is recoverable
  * without editing code — config/orchestration/FORGE_HARD_RULES.json's `doctor_check_overrides` array (see
@@ -1843,9 +1847,17 @@ function contextBudgetCheck(root) {
 // first-time user hits and a doctor can see (research: .claude/forge-research/beginner-sweep-2026-09-24/
 // web-track-a.md): A3 an over-long CLAUDE.md gets ignored · A32/B18 `claude`/`git`/`node` "not recognized" ·
 // a native Claude Code install needs no Node while every Forge tool is a .cjs file · A20/B9 bypassPermissions
-// as a default · B22 a WSL project under /mnt/c · A35 `claude doctor` exists and nobody knows it.
-// Contract of every check: {id, ok, level:'ok'|'info'|'warn'|'n-a', detail, ms, ...evidence}; ok is false
-// exactly when level is 'warn'. Each result passes through applyDoctorOverride() under its printed id, so an
+// as a default · B22 a WSL project under /mnt/c · A35 `claude doctor` exists and nobody knows it · (wp-l1,
+// loop iteration 1, 2026-09-24) settings-wired: is Forge's own hooks/deny payload actually merged into this
+// project's settings.json, via forge-settings-merge.cjs::checkSettingsMerge() · (wp-l4, loop iteration 4,
+// 2026-09-24) model-choice-hint: theme 5 of the same beginner sweep (52/98 videos — model choice, usage
+// limits & cost) had NO beginner-facing surface anywhere in Forge, only the owner's own global
+// TOKEN_EFFICIENCY_GLOBAL_POLICY.md, which a beginner never reads. One plain, paraphrased sentence, always
+// `info` (nothing here is evaluated, so it can never be `ok` or `warn`).
+// Contract of every check: {id, ok, level:'ok'|'info'|'warn'|'n-a'|'note', detail, ms, ...evidence}; ok is
+// false exactly when level is 'warn'. `note` is the same non-judgmental posture as `info` — used when a
+// check genuinely has nothing to compare against (see settingsWired() below) rather than a real pass/fail.
+// Each result passes through applyDoctorOverride() under its printed id, so an
 // owner can acknowledge a deliberate warn (a throwaway VM that really runs bypassPermissions) with the same
 // reasoned doctor_check_overrides entry the enforced checks use. Nothing here reads the user's home
 // directory: only the project root, the PATH it is handed, and the tools that PATH resolves to.
@@ -1995,7 +2007,7 @@ function bypassMode(root) {
   const bypass = files.filter((f) => f.defaultMode === 'bypassPermissions').map((f) => f.file);
   const unreadable = files.filter((f) => !f.readable).map((f) => f.file + ' (' + f.error + ')');
   const problems = [];
-  if (bypass.length) problems.push(bypass.join(', ') + ' sets permissions.defaultMode "bypassPermissions": every tool call runs without asking — keep that for a throwaway container or VM, not a real machine');
+  if (bypass.length) problems.push(bypass.join(', ') + ' sets permissions.defaultMode "bypassPermissions": every tool call runs without asking — keep that for a throwaway container or VM, not a real machine. Meer uitleg / more detail: .claude/skills/forge-prompt-coach/references/unsafe-advice.md');
   if (unreadable.length) problems.push('settings unreadable: ' + unreadable.join(', ') + ' — Claude Code cannot apply a settings file it cannot parse');
   if (problems.length) return beginnerResult('bypass-mode', 'warn', problems.join(' · '), { files });
   if (!files.length) return beginnerResult('bypass-mode', 'info', 'no project settings file — Claude Code asks before risky actions by default', { files });
@@ -2039,9 +2051,72 @@ function promptCoachPresent(root) {
   return beginnerResult('prompt-coach-present', 'warn', 'forge-intake is installed but .claude/skills/forge-prompt-coach/SKILL.md is missing — an incomplete install or sync', { intake, coach });
 }
 
-/** beginnerSetup(root, {env, platform, probeClaudeDoctor, claudeDoctorTimeoutMs, overrideMap}) ->
- *  {ok, checks:{claude_md_size, path_tools, bypass_mode, wsl_mnt_c, claude_doctor, prompt_coach_present}, ms}.
- *  env/platform default to this process — injectable so the tests can hand it a fake PATH or a Linux root. */
+/** settingsTemplatePath(opts) -> absolute path to a template settings.json, or null. Mirrors forge-sync.cjs's
+ *  OWN CLI template-resolution env var (FORGE_SYNC_TEMPLATE_DIR) — but deliberately WITHOUT that CLI's
+ *  "no env var -> try a global template under the user's home directory, else fall back to this project's
+ *  own .claude" steps: beginner_setup never reads the user's home directory (see the section header doc
+ *  comment above), and comparing a project's settings.json against itself would always trivially read
+ *  "up to date" and tell a beginner nothing real. opts.source (test/CLI injection) always wins; with neither
+ *  set, there is honestly no template to compare against (reported as `note`, never guessed). */
+function settingsTemplatePath(opts) {
+  const o = opts || {};
+  if (o.source) return o.source;
+  const envDir = process.env.FORGE_SYNC_TEMPLATE_DIR;
+  if (envDir) {
+    const p = path.join(path.resolve(envDir), 'settings.json');
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** settings-wired — wp-l1 (2026-09-24, loop iteration 1): forge-settings-merge.cjs::checkSettingsMerge()
+ *  (the pure, exported function — never a spawned CLI) against a genuine EXTERNAL template settings.json.
+ *  `ok` when every Forge hook + deny rule the template ships is already present in this project's own
+ *  settings.json; `warn` (never a hard failure — this stays advisory-only) when something from the template
+ *  is missing; `note` when there is no settings.json here yet, or no template could be found to compare
+ *  against (checkSettingsMerge() itself never writes anything either way). */
+function settingsWired(root, opts) {
+  const o = opts || {};
+  const target = path.join(claudeDir(root), 'settings.json');
+  if (!fs.existsSync(target)) {
+    return beginnerResult('settings-wired', 'note', 'no .claude/settings.json in this project yet — nothing to compare', { target, source: null });
+  }
+  const source = settingsTemplatePath(o);
+  if (!source) {
+    return beginnerResult('settings-wired', 'note', 'no template settings.json found to compare against (set FORGE_SYNC_TEMPLATE_DIR to a template .claude dir to enable this check) — cannot judge whether Forge hooks/deny rules are wired', { target, source: null });
+  }
+  let mergeTool;
+  try { mergeTool = require('./forge-settings-merge.cjs'); }
+  catch (e) { return beginnerResult('settings-wired', 'note', 'forge-settings-merge.cjs unavailable: ' + e.message, { target, source }); }
+  const r = mergeTool.checkSettingsMerge({ target, source });
+  if (r.status === 'usage-error' || r.status === 'missing') {
+    return beginnerResult('settings-wired', 'note', 'could not compare settings.json against the template: ' + r.message, { target, source });
+  }
+  if (r.ok) return beginnerResult('settings-wired', 'ok', 'every Forge hook and deny rule from the template is already wired into settings.json', { target, source });
+  return beginnerResult('settings-wired', 'warn', 'settings.json is missing ' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), ' + r.deny_added.length + ' deny rule(s) from the template — run forge-sync (or forge-settings-merge.cjs apply) to wire it in', { target, source, added: r.added, adjusted: r.adjusted, deny_added: r.deny_added });
+}
+
+/** model-choice-hint — wp-l4 (2026-09-24, loop iteration 4): a paraphrase of the owner's own
+ *  TOKEN_EFFICIENCY_GLOBAL_POLICY.md for a beginner who has never seen that file. Pure education, not an
+ *  evaluation of this project or machine, so it is always `info` — never `ok` (nothing passed) and never
+ *  `warn` (nothing failed). One plain sentence, no jargon, no imperative telling the reader to run a specific
+ *  command — it DESCRIBES that `/costs` and `/insights` exist rather than instructing "run /costs now".
+ *  English-only, like every other beginner_setup check here (none of them branch on language either) —
+ *  written in short, idiom-free sentences so it reads the same for a Dutch or English first-time user. */
+function modelChoiceHint() {
+  return beginnerResult('model-choice-hint', 'info',
+    'model choice affects quality and cost together: a balanced, Sonnet-class model already covers everyday '
+    + 'work well, a heavier model is worth reaching for only on genuinely high-risk work (security, '
+    + 'production, a hard bug), a usage guard steps in automatically before your usage limit is reached '
+    + 'instead of cutting a task off mid-way, and both `/costs` and `/insights` keep the amount already used '
+    + 'visible inside Claude Code.');
+}
+
+/** beginnerSetup(root, {env, platform, probeClaudeDoctor, claudeDoctorTimeoutMs, overrideMap, settingsSource}) ->
+ *  {ok, checks:{claude_md_size, path_tools, bypass_mode, wsl_mnt_c, claude_doctor, prompt_coach_present,
+ *  settings_wired, model_choice_hint}, ms}. env/platform default to this process — injectable so the tests
+ *  can hand it a fake PATH or a Linux root; settingsSource is the same test/CLI injection
+ *  settingsTemplatePath() honors. */
 function beginnerSetup(root, opts) {
   const o = opts || {};
   const env = o.env || process.env;
@@ -2057,6 +2132,8 @@ function beginnerSetup(root, opts) {
     wsl_mnt_c: safeCheck('wsl-mnt-c', () => wslMntC(root, { platform })),
     claude_doctor: safeCheck('claude-doctor', () => claudeDoctorProbe(root, { claudePath, probe: !!o.probeClaudeDoctor, env, timeoutMs: o.claudeDoctorTimeoutMs })),
     prompt_coach_present: safeCheck('prompt-coach-present', () => promptCoachPresent(root)),
+    settings_wired: safeCheck('settings-wired', () => settingsWired(root, { source: o.settingsSource })),
+    model_choice_hint: safeCheck('model-choice-hint', () => modelChoiceHint()),
   };
   const checks = {};
   for (const [key, res] of Object.entries(raw)) checks[key] = applyDoctorOverride(overrideMap, res.id, res);
@@ -2287,11 +2364,13 @@ function printSummary(rep) {
       : '  ✓ completeness (advisory): sync manifest complete · memory populated · mcp dormant/least-privilege · run contract satisfied · skill evals green' + skillHygieneCleanText);
   }
   // wp17 (2026-09-24): one line per beginner-setup check, ALWAYS printed (a beginner reads these for the info
-  // as much as for the warnings). ⚠ = warn, ℹ = info, ✓ = ok / not applicable — never a ✗, never in the verdict.
+  // as much as for the warnings). ⚠ = warn, ℹ = info/note, ✓ = ok / not applicable — never a ✗, never in the
+  // verdict. `note` (wp-l1, loop iteration 1: settings-wired) is the same non-judgmental ℹ treatment as
+  // `info` — "could not compare" is not a warning, it is a fact about what data was available.
   if (rep.advisory && rep.advisory.beginner_setup && rep.advisory.beginner_setup.checks) {
     for (const bc of Object.values(rep.advisory.beginner_setup.checks)) {
       const warn = bc.level === 'warn' && !bc.overridden;
-      const icon = warn ? '⚠' : (bc.level === 'info' ? 'ℹ' : '✓');
+      const icon = warn ? '⚠' : ((bc.level === 'info' || bc.level === 'note') ? 'ℹ' : '✓');
       out.push('  ' + icon + ' setup ' + bc.id + (warn ? ' (advisory, non-blocking): ' : ' (advisory): ') + (bc.level === 'n-a' ? 'n/a — ' : '') + bc.detail + overrideTag(bc));
       if (Array.isArray(bc.lines)) for (const l of bc.lines) out.push('      │ ' + l);
     }
@@ -2329,6 +2408,10 @@ module.exports = {
   beginnerSetup, claudeMdSize, pathTools, bypassMode, wslMntC, claudeDoctorProbe, promptCoachPresent,
   resolveOnPath, readDevTreeMarker, DEV_TREE_MARKER_REL, CLAUDE_MD_MAX_LINES, BEGINNER_PATH_TOOLS,
   TOOL_VERSION_TIMEOUT_MS, CLAUDE_DOCTOR_TIMEOUT_MS, CLAUDE_DOCTOR_MAX_LINES,
+  // wp-l1 (2026-09-24, loop iteration 1) — settings-wired beginner-setup check
+  settingsWired, settingsTemplatePath,
+  // wp-l4 (2026-09-24, loop iteration 4) — model-choice-hint beginner-setup check
+  modelChoiceHint,
 };
 
 // ---- CLI ----

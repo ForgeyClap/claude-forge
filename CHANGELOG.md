@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.7.2] - 2026-09-24
+
+Loop iteration 1 after the 2.7.1 release: a read-only Deep Learn scan of the whole project, a scout vetting of every
+skill and MCP server named in the 98-video beginner research, and the small fixes both surfaced. No feature removed,
+nothing enabled by default that was off before.
+
+### Added
+
+- **Dormant, opt-in MCP registry entries for beginners' favourites.** `n8n-mcp` (czlonkowski/n8n-mcp, MIT: n8n node
+  documentation and workflow validation for `forge-n8n`, read-only, no credentials in that mode) joins `context7`
+  (already registered) in `mcp-registry.json`, status `not-installed`; the existing `playwright` entry
+  (microsoft/playwright-mcp) gained a beginner-language note and the rule that any write-shaped browser action routes
+  through the hard gates. Grants stay least-privilege (Integration Boss → n8n-mcp within its existing tier 1; no
+  `max_tier` raised). Nothing is installed, started or connected — the owner opts in by name.
+- **Doctor beginner check `settings-wired`** (advisory, never red): confirms the five Forge hooks and the deny rules are
+  really present in the project's `.claude/settings.json` via `forge-settings-merge.cjs check`; an honest note when
+  there is no settings file or no template to compare against.
+- **Scout vetting of the beginner sweep** (`.claude/forge-research/beginner-sweep-2026-09-24/scout-vetting.md`): 13 new
+  verdicts in `FORGE_SCOUT_VETTING.json` (39 → 52) — Context7, Playwright MCP, n8n-mcp, Figma Dev Mode MCP approved as
+  reference/opt-in; Home Assistant and Sentry MCP reference-only (Sentry's licence is unasserted, so no code is
+  vendored); Caveman (source-available proxy that intercepts agent traffic), Taste-Skill and Ponytail (duplicate what
+  Forge already ships), Sand Castles, UiPath skills and Higgsfield (out of scope) hard-passed. Eight of the ten beginner
+  themes map to an existing Forge feature; the two gaps became this release's doctor checks and registry entries.
+- **Doctor beginner check `model-choice-hint`** (info only, never red): one plain sentence about model choice, usage
+  limits and cost — routine work on a balanced model, heavier models only for high-risk work, the usage guard pauses
+  before the limit, cost is visible with `/costs` and `/insights`. It never tells the user to run anything.
+- **Unsafe-advice register** (`forge-prompt-coach/references/unsafe-advice.md`, Dutch first, then English): eight tips
+  that circulate in beginner videos and that Forge will not adopt — skipping permission prompts, reflexively trusting a
+  publisher, blanket "always allow", unvetted token-compression proxies, hooks installed from a tutorial, and three more
+  from the sweep — each with why it is unsafe and what Forge does instead. The doctor's `bypass-mode` warning and the
+  prompt coach point to it.
+- **Command Center:** a NVIDIA health probe that exits in mock or no-key mode is now shown as `NOT CONFIGURED` instead
+  of `DISCONNECTED` (real network failures still show `DISCONNECTED`).
+
+### Fixed
+
+- **Deep Learn no longer alarms beginners with test fixtures.** `forge-deeplearn.cjs` reported 32 HIGH "secret-pattern"
+  risks on this very project; every one was a redaction test fixture or a documentation sentence listing the regex
+  names, while the doctor's leak scan over 1898 tracked files was clean. A hit under `test/`, `tests/`, `__tests__/`,
+  `test-evidence/`, `fixtures/`, `docs/`, `*.test.*`, `*.spec.*` or `*.md` is now reported as MED
+  `secret-pattern-fixture-looking` with a pointer to the leak scan as the authority; hits in real code stay HIGH. The
+  scanner also logs its own dashboard events as the orchestrator (role `project-scan`) instead of an unregistered agent
+  name, which the run contract had correctly refused as an unknown worker.
+- **A completed review no longer counts as an open task.** `forge-verify.cjs` and the dashboard (`app.js`, mirrored)
+  pair `review_started` with `review_completed` (same agent, same `review_id`; a FAIL verdict keeps it visibly open).
+- **Gateway tests are hermetic by default.** `models`, `routes-wp3` and `routes-wp6` no longer make a real NVIDIA
+  `GET /models` when a key is present; the live variant is behind `FORGE_GATEWAY_LIVE_NVIDIA=1`.
+
 ## [2.7.1] - 2026-09-24
 
 Patch release, minutes after 2.7.0: the release commit's CI was red on the GitHub runners while every local check was
@@ -623,7 +671,8 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.1...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.2...HEAD
+[2.7.2]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.4.0...v2.7.0
 [2.4.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.3.0...v2.4.0

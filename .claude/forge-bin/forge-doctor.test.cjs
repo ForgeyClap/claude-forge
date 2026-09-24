@@ -2167,6 +2167,7 @@ t('beginner bypass-mode: another defaultMode -> info, and it names the mode it s
 fs.writeFileSync(path.join(BS_BY, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }));
 const byWarn = D.bypassMode(BS_BY);
 t('beginner bypass-mode: bypassPermissions in settings.local.json -> warn naming that file', byWarn.level === 'warn' && byWarn.ok === false && /settings\.local\.json sets permissions\.defaultMode "bypassPermissions"/.test(byWarn.detail), JSON.stringify(byWarn));
+t('beginner bypass-mode: the warn ends with a pointer to the unsafe-advice reference (nl+en)', /skills\/forge-prompt-coach\/references\/unsafe-advice\.md/.test(byWarn.detail) && /Meer uitleg/.test(byWarn.detail) && /more detail/.test(byWarn.detail), byWarn.detail);
 const BS_BY_BAD = bsTmp('bypassbad');
 fs.mkdirSync(path.join(BS_BY_BAD, '.claude'), { recursive: true });
 fs.writeFileSync(path.join(BS_BY_BAD, '.claude', 'settings.json'), '{ "permissions": { "defaultMode": ');
@@ -2224,12 +2225,65 @@ const realHasCoach = fs.existsSync(path.join(REAL_SKILLS_DIR, 'forge-prompt-coac
 const realHasIntake = fs.existsSync(path.join(REAL_SKILLS_DIR, 'forge-intake', 'SKILL.md'));
 t('beginner prompt-coach-present: the real project is reported exactly as on disk (intake ' + realHasIntake + ', coach ' + realHasCoach + ' -> ' + pcReal.level + ')', pcReal.level === (!realHasIntake ? 'n-a' : (realHasCoach ? 'ok' : 'warn')), JSON.stringify(pcReal));
 
+// --- settings-wired (wp-l1, 2026-09-24, loop iteration 1) ---
+// A minimal template with 1 hook entry + 1 deny rule, and a target that starts as a byte-for-byte copy.
+const SW_TEMPLATE_SETTINGS = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 5 }] }] }, permissions: { deny: ['Bash(rm -rf /)'] } };
+function swWriteTemplate(dir, settings) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'settings.json');
+  fs.writeFileSync(p, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+  return p;
+}
+const BS_SW_NOFILE = bsTmp('sw-nofile');
+t('settings-wired: no .claude/settings.json at all -> note, ok:true (nothing to compare)', D.settingsWired(BS_SW_NOFILE, {}).level === 'note' && D.settingsWired(BS_SW_NOFILE, {}).ok === true, JSON.stringify(D.settingsWired(BS_SW_NOFILE, {})));
+
+const BS_SW_NOTEMPLATE = bsTmp('sw-notemplate');
+fs.mkdirSync(path.join(BS_SW_NOTEMPLATE, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(BS_SW_NOTEMPLATE, '.claude', 'settings.json'), JSON.stringify(SW_TEMPLATE_SETTINGS, null, 2) + '\n', 'utf8');
+const swNoTemplate = D.settingsWired(BS_SW_NOTEMPLATE, {});
+t('settings-wired: settings.json exists but no template given -> note, ok:true (cannot judge)', swNoTemplate.level === 'note' && swNoTemplate.ok === true && /no template settings\.json found/.test(swNoTemplate.detail), JSON.stringify(swNoTemplate));
+
+const BS_SW_PRESENT = bsTmp('sw-present');
+fs.mkdirSync(path.join(BS_SW_PRESENT, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(BS_SW_PRESENT, '.claude', 'settings.json'), JSON.stringify(SW_TEMPLATE_SETTINGS, null, 2) + '\n', 'utf8');
+const SW_TEMPLATE_DIR = bsTmp('sw-template');
+const swTemplatePath = swWriteTemplate(SW_TEMPLATE_DIR, SW_TEMPLATE_SETTINGS);
+const swPresent = D.settingsWired(BS_SW_PRESENT, { source: swTemplatePath });
+t('settings-wired: every template hook + deny rule already present -> ok', swPresent.level === 'ok' && swPresent.ok === true, JSON.stringify(swPresent));
+
+const BS_SW_MISSING_HOOK = bsTmp('sw-missinghook');
+fs.mkdirSync(path.join(BS_SW_MISSING_HOOK, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(BS_SW_MISSING_HOOK, '.claude', 'settings.json'), JSON.stringify({ hooks: {}, permissions: { deny: [] } }, null, 2) + '\n', 'utf8');
+const swMissingHook = D.settingsWired(BS_SW_MISSING_HOOK, { source: swTemplatePath });
+t('settings-wired: a missing hook + deny rule -> warn (never a hard failure)', swMissingHook.level === 'warn' && swMissingHook.ok === false && /missing 1 hook entry/.test(swMissingHook.detail) && /1 deny rule/.test(swMissingHook.detail), JSON.stringify(swMissingHook));
+
+t('settings-wired: settingsTemplatePath honors FORGE_SYNC_TEMPLATE_DIR when opts.source is absent', (() => {
+  const dir = path.dirname(swTemplatePath);
+  const prev = process.env.FORGE_SYNC_TEMPLATE_DIR;
+  process.env.FORGE_SYNC_TEMPLATE_DIR = dir;
+  try { return D.settingsTemplatePath({}) === swTemplatePath; }
+  finally { if (prev === undefined) delete process.env.FORGE_SYNC_TEMPLATE_DIR; else process.env.FORGE_SYNC_TEMPLATE_DIR = prev; }
+})());
+t('settings-wired: never reads the real home directory (no os.homedir() fallback)', D.settingsTemplatePath.toString().indexOf('homedir') === -1);
+
+// wired into beginnerSetup(): the source is threaded through via opts.settingsSource
+const bsWithSettings = D.beginnerSetup(BS_SW_PRESENT, { env: bsEnv(BS_SW_PRESENT), settingsSource: swTemplatePath });
+t('settings-wired: beginnerSetup() threads settingsSource through to the settings_wired check', bsWithSettings.checks.settings_wired.level === 'ok', JSON.stringify(bsWithSettings.checks.settings_wired));
+
+// --- model-choice-hint (wp-l4, 2026-09-24, loop iteration 4) ---
+const mch = D.modelChoiceHint();
+t('model-choice-hint: id, always info, ok true (pure education, nothing evaluated)', mch.id === 'model-choice-hint' && mch.level === 'info' && mch.ok === true, JSON.stringify(mch));
+t('model-choice-hint: mentions the balanced-model default and reserving a heavier model for high-risk work', /Sonnet-class/.test(mch.detail) && /high-risk/.test(mch.detail), mch.detail);
+t('model-choice-hint: mentions the usage guard pausing before the limit, and /costs + /insights for visibility', /usage limit/.test(mch.detail) && /`\/costs`/.test(mch.detail) && /`\/insights`/.test(mch.detail), mch.detail);
+t('model-choice-hint: no imperative "run this" telling the user what to type (a beginner is never told to run a command here)', !/\brun\b/i.test(mch.detail) && !/\bvoer .* uit\b/i.test(mch.detail) && !/\btype\b/i.test(mch.detail), mch.detail);
+t('model-choice-hint: contract shape matches every other beginner_setup check ({id, ok, level, detail})', typeof mch.id === 'string' && typeof mch.detail === 'string' && typeof mch.ok === 'boolean' && ['ok', 'info'].includes(mch.level), JSON.stringify(mch));
+
 // --- aggregate: shape, speed, override, and THE core guarantee (never flips the doctor verdict) ---
 const bsAgg = D.beginnerSetup(BS_ALL, { env: bsEnv(BS_ALL) });
-const BS_KEYS = ['claude_md_size', 'path_tools', 'bypass_mode', 'wsl_mnt_c', 'claude_doctor', 'prompt_coach_present'];
-t('beginner setup: exactly the six checks, each {id, ok, level, detail, ms}, ok false exactly when level is warn', Object.keys(bsAgg.checks).join(',') === BS_KEYS.join(',') && Object.values(bsAgg.checks).every((c) => typeof c.id === 'string' && typeof c.detail === 'string' && typeof c.ms === 'number' && ['ok', 'info', 'warn', 'n-a'].includes(c.level) && c.ok === (c.level !== 'warn')), JSON.stringify(bsAgg));
+const BS_KEYS = ['claude_md_size', 'path_tools', 'bypass_mode', 'wsl_mnt_c', 'claude_doctor', 'prompt_coach_present', 'settings_wired', 'model_choice_hint'];
+t('beginner setup: exactly the eight checks, each {id, ok, level, detail, ms}, ok false exactly when level is warn', Object.keys(bsAgg.checks).join(',') === BS_KEYS.join(',') && Object.values(bsAgg.checks).every((c) => typeof c.id === 'string' && typeof c.detail === 'string' && typeof c.ms === 'number' && ['ok', 'info', 'warn', 'n-a', 'note'].includes(c.level) && c.ok === (c.level !== 'warn')), JSON.stringify(bsAgg));
 t('beginner setup: the claude found by path-tools is the one the probe would run (not-run in a library call, but not "absent")', /library call/.test(bsAgg.checks.claude_doctor.detail), bsAgg.checks.claude_doctor.detail);
-t('beginner setup: every filesystem-only check stays under 300 ms', ['claude_md_size', 'bypass_mode', 'wsl_mnt_c', 'prompt_coach_present'].every((k) => bsAgg.checks[k].ms < 300), JSON.stringify(BS_KEYS.map((k) => k + '=' + bsAgg.checks[k].ms + 'ms')));
+t('beginner setup: every filesystem-only check stays under 300 ms', ['claude_md_size', 'bypass_mode', 'wsl_mnt_c', 'prompt_coach_present', 'settings_wired', 'model_choice_hint'].every((k) => bsAgg.checks[k].ms < 300), JSON.stringify(BS_KEYS.map((k) => k + '=' + bsAgg.checks[k].ms + 'ms')));
 const bsProbed = D.beginnerSetup(BS_ALL, { env: bsEnv(BS_ALL), probeClaudeDoctor: true });
 t('beginner setup: with probeClaudeDoctor the stub claude found on the fake PATH is really probed', bsProbed.checks.claude_doctor.ran === true && bsProbed.checks.claude_doctor.lines[0] === 'Claude Code doctor', JSON.stringify(bsProbed.checks.claude_doctor));
 

@@ -20,7 +20,7 @@
       "credentials_needed": false,
       "install_hint": "MCP host config: { command: 'npx', args: ['-y', '@playwright/mcp'] } — see https://github.com/microsoft/playwright-mcp",
       "status": "not-installed",
-      "notes": "Sandboxed action tier: it can click/type/screenshot a page it navigates to, but that is ephemeral browser state, not a project write-primitive."
+      "notes": "It drives a real browser to click, fill fields, and screenshot pages the static screenshot loop can't reach. Off by default like every entry here — nothing runs until the owner opts it in via /forge plus a real grant. Chosen as tier 2, not 3: doctrine's own tier-2 definition already covers navigate/click/type/screenshot as ephemeral, sandboxed browser state — never a project write-primitive. An action with a real external effect (submitting a live payment, publishing content, anything beyond this project's own QA session) is write-shaped and must be routed through forge-actiongate.cjs like every other tier-3 write; this tier-2 grant never covers that by itself."
     },
     {
       "id": "chrome-devtools",
@@ -101,6 +101,16 @@
       "install_hint": "global mcpServers in ~/.claude.json; requires OAuth authorization before its tools work",
       "status": "connected",
       "notes": "REAL, CONNECTED (global) on the owner machine, recorded 2026-08-04. Tier 3: it can create/activate workflows. Live activation stays owner-gated per the n8n governance; presence in this registry is NOT permission."
+    },
+    {
+      "id": "n8n-mcp",
+      "purpose": "n8n node documentation lookup + workflow validation (validate_node/validate_workflow) for forge-n8n — read-only reference, distinct from the 'n8n' entry above which is a live, credentialed connection.",
+      "tier": 1,
+      "network": "read",
+      "credentials_needed": false,
+      "install_hint": "MCP host config: { command: 'npx', args: ['n8n-mcp'], env: { MCP_MODE: 'stdio' } } (docs-only mode, verified via the project README 2026-09-24) — see https://github.com/czlonkowski/n8n-mcp. Do NOT add N8N_API_URL/N8N_API_KEY here: that upgrades it to a live n8n-management server (create/update real workflows), a separate, higher-tier capability this entry deliberately excludes.",
+      "status": "not-installed",
+      "notes": "It looks up real n8n node docs and validates a workflow's JSON before you build, so Claude stops guessing node fields. Off by default like every entry here — nothing runs until the owner opts it in via /forge plus a real grant. Pointing it at a live n8n instance (an API URL + key) is a different, write-capable tier and stays out of this entry."
     }
   ]
 }

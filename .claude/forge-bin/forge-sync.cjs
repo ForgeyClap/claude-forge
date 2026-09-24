@@ -520,6 +520,8 @@ const SYSTEM = [
   // in this list), so its SKILL.md + references need an explicit pin too.
   'skills/forge-prompt-coach/SKILL.md', 'skills/forge-prompt-coach/references/before-after.md',
   'skills/forge-prompt-coach/references/failure-modes.md', 'skills/forge-prompt-coach/references/HOW-TO-ASK.md',
+  // wp-l4 (2026-09-24, loop iteration 4) — the unsafe-advice register (video-said/why-unsafe/Forge-instead)
+  'skills/forge-prompt-coach/references/unsafe-advice.md',
 ];
 const SYSTEM_GLOB = [ // whole-dir system files by extension (kept fresh), minus the protected names below
   { dir: 'forge-bin', ext: ['.cjs', '.ps1', '.cmd', '.sh', '.md', '.bat'] },

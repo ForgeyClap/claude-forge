@@ -42,6 +42,14 @@ client side is deliberately **dormant by default** — a catalog and a validator
 Tiers and the full server catalog live in `config/orchestration/mcp-registry.json`. Every entry there
 starts (and stays, until opted in) at `"status": "not-installed"` — `"active"` in that file is forbidden.
 
+Two newer catalog entries (beginner-sweep vetting, 2026-09-24, both dormant/opt-in like everything else
+here): `n8n-mcp` (czlonkowski/n8n-mcp, MIT) is tier 1 — read-only n8n node docs + `validate_workflow` for
+forge-n8n, never a live n8n connection (that stays the separate, tier-3, owner-gated `n8n` entry).
+`playwright` (microsoft/playwright-mcp, Apache-2.0) stays tier 2 — navigate/click/type/screenshot in a
+sandboxed browser session is exactly the doctrine's tier-2 definition; an action with a real external
+effect (a live form submission, a publish, a payment) is write-shaped and must be routed through
+`forge-actiongate.cjs` like any other tier-3 write, never assumed covered by the tier-2 grant.
+
 ## Per-Boss least-privilege model
 Each of the 12 permanent Bosses (`config/agents/agent-registry.json`) has a **max tier** and an explicit
 **allow-list** of server ids in `config/orchestration/mcp-grants.json`. Both conditions are checked

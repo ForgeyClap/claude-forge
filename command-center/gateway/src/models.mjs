@@ -61,6 +61,19 @@ async function probeNvidiaHealthLive() {
       const off = parseNvidiaHealthOutput(err.stdout);
       if (off.state === 'OFF') return off;
     }
+    // wp-l4 (2026-09-24, loop iteration 4): MOCK MODE (no NVIDIA_API_KEY, or NVIDIA_SKIP_ENV_FILES with an
+    // empty key) is a genuine non-zero exit too — nvidia-provider.cjs's own CLI exits 1 whenever health()
+    // is not ok, mock mode included, unless --allow-mock is passed (this gateway never passes it), and exit
+    // 1 is shared with a REAL "NVIDIA FAIL" (key present, live call failed). Exit code alone cannot tell
+    // them apart, so this reads the CLI's own stdout marker line — the same discriminator
+    // parseNvidiaHealthOutput() already uses on the success path — and reports "no key configured" as NOT
+    // CONFIGURED, never DISCONNECTED (that state stays reserved for a real network/HTTP failure against a
+    // configured key). Checked before the generic fallback below so a mock-mode line is never swallowed
+    // into an opaque "probe failed" message.
+    if (err && err.stdout && /^NVIDIA MOCK MODE/im.test(String(err.stdout))) {
+      const mock = parseNvidiaHealthOutput(err.stdout);
+      if (mock.state === 'NOT CONFIGURED') return mock;
+    }
     // WP8-13 gap-closing round: a non-zero exit's err.message can embed the child's own stderr
     // verbatim (Node's child_process error formatting) — exactly where an unallowlisted
     // NVIDIA_API_KEY-bearing child is most likely to leak a real credential on failure.

@@ -274,6 +274,97 @@
       "reason": "Name collision with obra/superpowers: no license, 0 stars, created 2026-09-02, inflated install telemetry, same paid-CLI funnel pattern. Use the vendored obra/superpowers skills instead.",
       "source": "https://github.com/qu-skills/superpowers",
       "ts": "2026-09-24T02:33:51.771Z"
+    },
+    {
+      "capability": "context7-mcp (upstash/context7)",
+      "verdict": "approve",
+      "reason": "Reference/opt-in only (tier-1 read-only via forge-mcp-clients); MIT, 62381 stars, pushed 2026-09-24, VERIFIED_EXACT; reinforces ECC development-workflow guidance (library docs); owner must name it before live use; nothing vendored (wp-l2 beginner-sweep vetting 2026-09-24)",
+      "source": "https://github.com/upstash/context7",
+      "ts": "2026-09-24T08:53:32.831Z"
+    },
+    {
+      "capability": "playwright-mcp (microsoft/playwright-mcp)",
+      "verdict": "approve",
+      "reason": "Reference/opt-in only, tier-2/3 (acts on live pages; write-shaped actions through forge-actiongate); Apache-2.0, 37530 stars, pushed 2026-09-18, VERIFIED_EXACT; complements the screenshot loop, distinct from the hard-passed webapp-testing pattern (wp-l2)",
+      "source": "https://github.com/microsoft/playwright-mcp",
+      "ts": "2026-09-24T08:53:32.886Z"
+    },
+    {
+      "capability": "n8n-mcp (czlonkowski/n8n-mcp)",
+      "verdict": "approve",
+      "reason": "Reference/opt-in only via forge-mcp-clients for forge-n8n (node docs/validation, fewer hallucinated node configs); MIT, 22984 stars, pushed 2026-09-23, VERIFIED_EXACT (wp-l2)",
+      "source": "https://github.com/czlonkowski/n8n-mcp",
+      "ts": "2026-09-24T08:53:32.940Z"
+    },
+    {
+      "capability": "figma-dev-mode-mcp (official)",
+      "verdict": "approve",
+      "reason": "Reference/opt-in only; official remote-hosted service, nothing to vendor, registry entry when the owner opts in; complements forge-website/forge-figma; VERIFIED_EXACT via help.figma.com + figma/mcp-server-guide (wp-l2)",
+      "source": "https://github.com/figma/mcp-server-guide",
+      "ts": "2026-09-24T08:53:32.996Z"
+    },
+    {
+      "capability": "home-assistant-mcp (official + homeassistant-ai/ha-mcp)",
+      "verdict": "approve",
+      "reason": "Reference-only, OUT OF CURRENT SCOPE (no smart-home playbook); MIT, 4825 stars, pushed 2026-09-23, VERIFIED_EXACT; no action unless a future project needs it (wp-l2)",
+      "source": "https://github.com/homeassistant-ai/ha-mcp",
+      "ts": "2026-09-24T08:53:33.049Z"
+    },
+    {
+      "capability": "sentry-mcp (getsentry/sentry-mcp)",
+      "verdict": "approve",
+      "reason": "Reference-only as a remote-hosted service for projects already on Sentry; repo VERIFIED_EXACT (858 stars, pushed 2026-09-24) but licence spdx NOASSERTION -> no code vendoring until a human reads the LICENSE file (wp-l2)",
+      "source": "https://github.com/getsentry/sentry-mcp",
+      "ts": "2026-09-24T08:53:33.106Z"
+    },
+    {
+      "capability": "caveman (JuliusBrussee/caveman)",
+      "verdict": "hard-pass",
+      "reason": "Engine/proxy is BSL-1.1 (source-available) and intercepts and rewrites agent I/O (trust-boundary risk a beginner cannot audit); the MIT skill part duplicates the owner's existing minimal-mode policy in TOKEN_EFFICIENCY_GLOBAL_POLICY.md; 107615 stars, pushed 2026-09-24, VERIFIED_EXACT (wp-l2)",
+      "source": "https://github.com/JuliusBrussee/caveman",
+      "ts": "2026-09-24T08:53:33.170Z"
+    },
+    {
+      "capability": "taste-skill (Leonxlnx/taste-skill)",
+      "verdict": "hard-pass",
+      "reason": "Overlaps FRONTEND_WEBSITE_RULES anti-generic guardrails and the vendored frontend-design skill; NAME_COLLISION risk with several similarly named repos; MIT, 89714 stars, pushed 2026-09-23 (wp-l2)",
+      "source": "https://github.com/Leonxlnx/taste-skill",
+      "ts": "2026-09-24T08:53:33.225Z"
+    },
+    {
+      "capability": "ponytail (DietrichGebert/ponytail)",
+      "verdict": "hard-pass",
+      "reason": "Overlaps vendored grill-me/grilling and ECC YAGNI/KISS rules; MIT, 145227 stars, pushed 2026-09-14, VERIFIED_EXACT (wp-l2)",
+      "source": "https://github.com/DietrichGebert/ponytail",
+      "ts": "2026-09-24T08:53:33.279Z"
+    },
+    {
+      "capability": "sandcastles-mcp (sandcastles.ai)",
+      "verdict": "hard-pass",
+      "reason": "Proprietary paid SaaS (USD 399/mo API tier), no open licence, zero overlap with Forge project types, single-video mention (wp-l2)",
+      "source": "https://sandcastles.ai/mcp",
+      "ts": "2026-09-24T08:53:33.332Z"
+    },
+    {
+      "capability": "uipath-skills (uipath/skills)",
+      "verdict": "hard-pass",
+      "reason": "Real and safe official vendor repo but out of Forge domain scope (RPA); revisit only if an RPA project appears (wp-l2)",
+      "source": "https://github.com/uipath/skills",
+      "ts": "2026-09-24T08:53:33.385Z"
+    },
+    {
+      "capability": "higgsfield-mcp (higgsfield.ai)",
+      "verdict": "hard-pass",
+      "reason": "Commercial video-ad generation product; no Forge playbook; single-video mention (wp-l2)",
+      "source": "https://higgsfield.ai/mcp",
+      "ts": "2026-09-24T08:53:33.437Z"
+    },
+    {
+      "capability": "mcpservers.org (wong2/awesome-mcp-servers)",
+      "verdict": "approve",
+      "reason": "Discovery-source-only, same posture as skills.sh: uncurated community list, ranking is not a trust signal, every find still needs its own Scout verdict; direct fetch HTTP 403, confirmed via WebSearch (wp-l2)",
+      "source": "https://mcpservers.org",
+      "ts": "2026-09-24T08:53:33.493Z"
     }
   ]
 }

@@ -262,5 +262,60 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   t('RULE 2: exactly one advisory naming "no evidence"', r.advisories.length === 1 && /no evidence/.test(r.advisories[0]));
 }
 
+// ---------------------------------------------------------------------------------------------------
+// RULE 3 (2026-09-24, loop wp-l1) — review_started/review_completed TASK_PAIRS pair, mirrored from
+// forge-verify.cjs's verifyRun() into app.js's buildNodes() (same 3-place discipline the file headers
+// describe). Real defect: a verify-boss run ended with 2 "open" review_started tasks although both
+// matching review_completed events were logged.
+// ---------------------------------------------------------------------------------------------------
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Review Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Review Boss', event_type: 'review_started', review_id: 'rv-1', task: 'review wp1', timestamp: '2026-09-24T00:00:01Z' },
+    { agent: 'Review Boss', event_type: 'review_completed', review_id: 'rv-1', status: 'PASS', timestamp: '2026-09-24T00:00:02Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Review Boss');
+    ({ review: n.tasks.find((tk) => tk.event && tk.event.event_type === 'review_started'), taskCount: n.tasks.length });
+  `);
+  t('RULE 3: app.js closes a same-review_id review_started on review_completed', r.review && r.review.status === 'done');
+  t('RULE 3: the pair collapses into ONE task (not two)', r.taskCount === 1);
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Review Boss', event_type: 'review_started', review_id: 'rv-1', task: 'review wp1', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Review Boss', event_type: 'review_completed', review_id: 'rv-2', status: 'PASS', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Review Boss');
+    ({ review: n.tasks.find((tk) => tk.event && tk.event.event_type === 'review_started'), taskCount: n.tasks.length });
+  `);
+  t('RULE 3: app.js does NOT close a review_started when the completion names a DIFFERENT review_id', r.review && r.review.status !== 'done');
+  t('RULE 3: a mismatched review_id stays two separate tasks', r.taskCount === 2);
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Review Boss', event_type: 'review_started', review_id: 'rv-3', task: 'review wp3', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Review Boss', event_type: 'review_completed', review_id: 'rv-3', status: 'FAIL changes-required', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Review Boss');
+    ({ review: n.tasks.find((tk) => tk.event && tk.event.event_type === 'review_started') });
+  `);
+  t('RULE 3: a FAIL verdict resolves the paired task as failed, not done (blockers stay visible)', r.review && r.review.status === 'failed');
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

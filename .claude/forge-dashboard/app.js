@@ -170,6 +170,13 @@ const TASK_PAIRS = {
   // wp_failed are its real terminals (same shape as check_started -> check_passed/check_failed). Both sides
   // are non-BACKBONE, so this pairing really applies here. Mirrored in forge-verify.cjs TASK_PAIRS.
   wp_resumed: ['wp_completed', 'wp_failed'],
+  // 2026-09-24 (loop wp-l1) — real defect: a verify-boss run ended with 2 "open" review_started tasks even
+  // though both matching review_completed events were logged. review_started/review_completed is the same
+  // start/terminal shape as check_started/check_passed, except a review carries an OPTIONAL review_id that
+  // must be matched exactly when present on the terminal (see the review_id-aware openTask lookup in
+  // buildNodes() below) — a review_completed for a DIFFERENT review_id must never close the wrong
+  // review_started. Mirrored in forge-verify.cjs TASK_PAIRS.
+  review_started: ['review_completed'],
 };
 const TASK_PAIR_TERMINAL_TO_START = {};
 for (const startType of Object.keys(TASK_PAIRS)) for (const term of TASK_PAIRS[startType]) TASK_PAIR_TERMINAL_TO_START[term] = startType;
@@ -405,8 +412,17 @@ function buildNodes() {
       // Fix 1: a paired terminal event closes its agent's EARLIEST still-open task from the matching
       // *_started event (same task entry, status/ts/evIdx updated) instead of pushing a second entry.
       // A start with no terminal (or a terminal with no open start) is pushed/left as its own honest entry.
+      // review_started/review_completed refinement (2026-09-24, loop wp-l1) — mirrored 1:1 from
+      // forge-verify.cjs verifyRun(): when the terminal carries a review_id, only an open start-task with the
+      // SAME review_id may close; with no review_id on the terminal, fall back to the earliest open
+      // start-task that also has no review_id. Every other pair never sets review_id, so this is a no-op for
+      // them (unchanged behavior).
       const startType = TASK_PAIR_TERMINAL_TO_START[t];
-      const openTask = startType && n.tasks.find((tk) => !tk._closed && tk.event && tk.event.event_type === startType);
+      const openCandidates = startType ? n.tasks.filter((tk) => !tk._closed && tk.event && tk.event.event_type === startType) : [];
+      const reviewId = (typeof e.review_id === 'string' && e.review_id.trim()) || null;
+      const openTask = reviewId
+        ? openCandidates.find((tk) => (tk.event && tk.event.review_id) === reviewId) || null
+        : openCandidates.find((tk) => !(tk.event && tk.event.review_id)) || null;
       if (openTask) { openTask.status = nodeState(e); openTask.evIdx = idx; openTask.ts = e.timestamp; openTask._closed = true; }
       else {
         const task = { id: 't:' + idx, evIdx: idx, parent: key, status: nodeState(e), title: trunc(msg, 30), event: e, ts: e.timestamp };

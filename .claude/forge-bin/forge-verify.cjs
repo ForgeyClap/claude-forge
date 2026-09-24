@@ -245,6 +245,13 @@ const TASK_PAIRS = {
   // sides are non-BACKBONE, so this pairing genuinely applies (unlike e.g. rework_started, whose terminal IS
   // a BACKBONE event and is therefore intentionally a no-op in app.js). Mirrored in app.js TASK_PAIRS.
   wp_resumed: ['wp_completed', 'wp_failed'],
+  // 2026-09-24 (loop wp-l1) — real defect: a verify-boss run ended with 2 "open" review_started tasks even
+  // though both matching review_completed events were logged, and the Lead had to hand-close them with
+  // fix_completed + closes_event_id. review_started/review_completed is otherwise the same start/terminal
+  // shape as check_started/check_passed, except a review carries an OPTIONAL review_id that must be matched
+  // exactly when present on the terminal (see the review_id-aware openTask lookup below) — a review_completed
+  // for a DIFFERENT review_id must never close the wrong review_started. Mirrored in app.js TASK_PAIRS.
+  review_started: ['review_completed'],
 };
 const TASK_PAIR_TERMINAL_TO_START = {};
 for (const startType of Object.keys(TASK_PAIRS)) for (const term of TASK_PAIRS[startType]) TASK_PAIR_TERMINAL_TO_START[term] = startType;
@@ -409,8 +416,18 @@ function verifyRun(runDir, opts) {
     if (BACKBONE.has(t)) return; // structural milestone — not a task
     // Fix 1 pairing parity: a terminal event closes its agent's earliest still-open matching start-task
     // (same rule as app.js buildNodes) instead of counting as a second task.
+    // review_started/review_completed refinement (2026-09-24, loop wp-l1): when the terminal carries a
+    // review_id, only an open start-task with the SAME review_id may close (a mismatched or absent id on the
+    // candidate must NOT close — independent reviews stay independent). When the terminal carries no
+    // review_id, fall back to the plain same-agent match used by every other pair — the earliest open
+    // start-task that also has no review_id (a task that DOES carry one requires an explicit id match). Every
+    // other TASK_PAIRS entry never sets review_id, so this is a no-op for them (unchanged behavior).
     const startType = TASK_PAIR_TERMINAL_TO_START[t];
-    const openTask = startType && rec.tasks.find((tk) => !tk._closed && tk.event_type === startType);
+    const openCandidates = startType ? rec.tasks.filter((tk) => !tk._closed && tk.event_type === startType) : [];
+    const reviewId = (typeof e.review_id === 'string' && e.review_id.trim()) || null;
+    const openTask = reviewId
+      ? openCandidates.find((tk) => tk.review_id === reviewId) || null
+      : openCandidates.find((tk) => !tk.review_id) || null;
     if (openTask) { openTask.status = taskStatus(e); openTask.evIdx = evIdx; openTask._closed = true; }
     else {
       const task = {
@@ -418,6 +435,7 @@ function verifyRun(runDir, opts) {
         wp_id: (typeof e.wp_id === 'string' && e.wp_id.trim()) || null,
         role: (typeof e.role === 'string' && e.role.trim()) || null,
         event_id: (typeof e.event_id === 'string' && e.event_id) || null,
+        review_id: reviewId,
       };
       rec.tasks.push(task);
       if (task.event_id) eventIdToTask.set(task.event_id, task);

@@ -827,5 +827,67 @@ const realShapeAgent = realShape.agents.find((a) => a.agent === 'Build Boss');
 t('RULE 1+2 combined: the real-shape fixture now has ZERO open tasks', realShapeAgent.tasksOpen.length === 0);
 t('RULE 1+2 combined: mismatch is false once heartbeats + the blocked output genuinely close', realShapeAgent.mismatch === false);
 
+// =====================================================================================================
+// RULE 3 (2026-09-24, loop wp-l1): review_started/review_completed TASK_PAIRS pair — real defect: a
+// verify-boss run ended with 2 "open" review_started tasks although both review_completed events were
+// logged, and the Lead had to hand-close them with fix_completed + closes_event_id.
+// =====================================================================================================
+
+// ---- RULE 3a: a review_completed with the SAME review_id as the open review_started closes it ----
+const reviewSameIdDir = writeEvents('run-wp-l1-review-same-id', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-1', task: 'review wp1' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-1', status: 'PASS' }),
+]);
+const reviewSameId = V.verifyRun(reviewSameIdDir, {});
+const reviewSameIdAgent = reviewSameId.agents.find((a) => a.agent === 'Review Boss');
+t('RULE 3a: review_completed with the SAME review_id closes the review_started (0 open tasks)', reviewSameIdAgent.tasksOpen.length === 0);
+t('RULE 3a: the closed review task resolves done', reviewSameIdAgent.tasksDone === reviewSameIdAgent.tasksTotal && reviewSameIdAgent.tasksTotal > 0);
+
+// ---- RULE 3b: a review_completed with a DIFFERENT review_id does NOT close the open review_started ----
+const reviewDiffIdDir = writeEvents('run-wp-l1-review-diff-id', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-1', task: 'review wp1' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-2', status: 'PASS' }),
+]);
+const reviewDiffId = V.verifyRun(reviewDiffIdDir, {});
+const reviewDiffIdAgent = reviewDiffId.agents.find((a) => a.agent === 'Review Boss');
+t('RULE 3b: a DIFFERENT review_id does not close the open review_started (still open)', reviewDiffIdAgent.tasksOpen.some((tk) => tk.event_type === 'review_started'));
+t('RULE 3b: the mismatched review_completed becomes its own separate task', reviewDiffIdAgent.tasksTotal === 2);
+
+// ---- RULE 3c: no review_id on either side falls back to same-agent earliest-open matching (still pairs) ----
+const reviewNoIdDir = writeEvents('run-wp-l1-review-no-id', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', task: 'review wp2' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', status: 'PASS' }),
+]);
+const reviewNoId = V.verifyRun(reviewNoIdDir, {});
+const reviewNoIdAgent = reviewNoId.agents.find((a) => a.agent === 'Review Boss');
+t('RULE 3c: no review_id on either side still pairs via same-agent fallback (0 open tasks)', reviewNoIdAgent.tasksOpen.length === 0);
+
+// ---- RULE 3d: a FAIL/changes-required verdict closes the pairing but resolves FAILED, not done (still
+// counted as open/unresolved by tasksOpen — a failed review is never hidden as done) ----
+const reviewFailDir = writeEvents('run-wp-l1-review-fail', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-3', task: 'review wp3' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-3', status: 'FAIL changes-required' }),
+]);
+const reviewFail = V.verifyRun(reviewFailDir, {});
+const reviewFailAgent = reviewFail.agents.find((a) => a.agent === 'Review Boss');
+const reviewFailTask = reviewFailAgent.tasksOpen.find((tk) => tk.event_type === 'review_started');
+t('RULE 3d: a FAIL verdict resolves the paired task as failed, still counted open (not hidden as done)', !!reviewFailTask && reviewFailTask.status === 'failed');
+
+// ---- RULE 3e: two concurrent reviews by the same agent with different review_ids close independently ----
+const reviewConcurrentDir = writeEvents('run-wp-l1-review-concurrent', [
+  ev({ event_type: 'agent_started', agent: 'Review Boss' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-a', task: 'review A' }),
+  ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-b', task: 'review B' }),
+  ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-b', status: 'PASS' }),
+]);
+const reviewConcurrent = V.verifyRun(reviewConcurrentDir, {});
+const reviewConcurrentAgent = reviewConcurrent.agents.find((a) => a.agent === 'Review Boss');
+t('RULE 3e: closing rv-b leaves rv-a (a different review_id) genuinely open', reviewConcurrentAgent.tasksOpen.some((tk) => tk.event_type === 'review_started'));
+t('RULE 3e: exactly one review_started remains open (rv-a), rv-b closed', reviewConcurrentAgent.tasksOpen.filter((tk) => tk.event_type === 'review_started').length === 1);
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

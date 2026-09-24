@@ -12,7 +12,7 @@
     "skill-boss": { "max_tier": 0, "allow_servers": [], "why": "Registry/skill-bundle maintenance is local file work — no MCP grant needed." },
     "search-boss": { "max_tier": 1, "allow_servers": ["exa", "firecrawl", "context7"], "why": "Source-grounded research needs read-only web search/scrape/docs — never write access." },
     "build-boss": { "max_tier": 0, "allow_servers": ["serena-lsp"], "why": "Implementation gets local semantic code intelligence (LSP) only — remote/write tools stay out of the coding loop by default." },
-    "integration-boss": { "max_tier": 1, "allow_servers": ["context7"], "why": "API/integration work needs versioned third-party API docs — read-only." },
+    "integration-boss": { "max_tier": 1, "allow_servers": ["context7", "n8n-mcp"], "why": "API/integration work needs versioned third-party API docs, plus n8n node docs/workflow validation for forge-n8n builds — read-only, never a live n8n connection (that stays on the separate tier-3 'n8n' entry, owner-gated)." },
     "docs-boss": { "max_tier": 0, "allow_servers": [], "why": "No default MCP grant — documentation is authored from the repo's own real state." }
   }
 }

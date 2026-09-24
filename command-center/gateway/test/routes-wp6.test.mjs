@@ -18,10 +18,25 @@ const RUN_ID = 'forge-2026-07-26-command-center';
 let server;
 let port;
 
+// Hermetic-by-default (2026-09-24, loop wp-l1): the SECRET BOUNDARY test below hits /api/models too, which
+// runs the SAME real nvidia-provider.cjs health probe as models.test.mjs/routes-wp3.test.mjs (see either
+// file's own comment) — the server here runs IN-PROCESS, so a child spawned by its route handler inherits
+// THIS process's env. Force a hermetic child env for the whole file by default (no dotenv-file loading, no
+// key); set FORGE_GATEWAY_LIVE_NVIDIA=1 to opt into the real, live-network variant instead. Never changes
+// what any test here asserts about response shape.
+const LIVE_NVIDIA = process.env.FORGE_GATEWAY_LIVE_NVIDIA === '1';
+const HERMETIC_NVIDIA_ENV_NAMES = ['NVIDIA_API_KEY', 'NVIDIA_SKIP_ENV_FILES'];
+let savedNvidiaEnv = null;
+
 before(async () => {
   _resetProjectsCacheForTests();
   _resetToolsCacheForTests();
   _resetCapabilitiesCacheForTests();
+  if (!LIVE_NVIDIA) {
+    savedNvidiaEnv = Object.fromEntries(HERMETIC_NVIDIA_ENV_NAMES.map((k) => [k, process.env[k]]));
+    process.env.NVIDIA_API_KEY = '';
+    process.env.NVIDIA_SKIP_ENV_FILES = '1';
+  }
   server = createServer();
   await new Promise((resolve, reject) => {
     server.on('error', reject);
@@ -32,6 +47,7 @@ before(async () => {
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
+  if (savedNvidiaEnv) { for (const [k, v] of Object.entries(savedNvidiaEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
 });
 
 test('GET /api/tools returns the real forge-bin tool inventory', async () => {
@@ -46,11 +62,14 @@ test('GET /api/tools returns the real forge-bin tool inventory', async () => {
 // 2026-08-04 — de MCP-drift-fix registreerde toen de ECHT draaiende claude-flow en n8n (status
 // 'connected' = werkelijkheid, geen toestemming). De echte invariant is niet "alles not-installed"
 // maar "nooit pre-ACTIVATED": elke server is not-installed OF eerlijk connected, nooit activated.
-test('GET /api/mcp returns the real MCP registry (10 servers, none pre-activated)', async () => {
+// BIJGEWERKT (loop wp-l1/wp-l3, 2026-09-24): Integration Boss registreerde n8n-mcp als dormant tier-1
+// not-installed entry (wp-l3, .claude/forge-runs/forge-2026-09-24-loop-deeplearn/events.jsonl seq 12) —
+// het echte, settled register telt nu 11 servers, nog steeds nooit pre-activated.
+test('GET /api/mcp returns the real MCP registry (11 servers, none pre-activated)', async () => {
   const res = await request(port, '/api/mcp?project=' + encodeURIComponent(THIS_PROJECT_NAME));
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
-  assert.equal(res.json.servers_count, 10);
+  assert.equal(res.json.servers_count, 11);
   assert.ok(res.json.servers.some((s) => s.id === 'claude-flow' && s.status === 'connected'));
   assert.ok(res.json.servers.some((s) => s.id === 'n8n' && s.status === 'connected'));
   assert.ok(res.json.servers.every((s) => s.status === 'not-installed' || s.status === 'connected'), 'geen enkele server mag pre-activated zijn');

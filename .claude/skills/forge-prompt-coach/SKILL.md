@@ -226,4 +226,5 @@ bad-to-good examples are in `references/before-after.md`.
 - `references/failure-modes.md` — F1–F13 in full (NL + EN, reason for the recommended option, bank links)
 - `references/before-after.md` — the 10 bad-to-good pairs
 - `references/HOW-TO-ASK.md` — the beginner guide for the owner (NL, then EN)
+- `references/unsafe-advice.md` — tutorial tips that are actually unsafe, and Forge's safer equivalent (NL, then EN)
 - `.claude/forge-research/prompt-coaching-2026-09-24.md` — the evidence base and the full source list

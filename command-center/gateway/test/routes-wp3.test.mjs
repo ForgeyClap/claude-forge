@@ -32,8 +32,22 @@ let usageTempDir;
 const ABSENT_PRESSURE_PATH_INIT = () => path.join(usageTempDir, 'does-not-exist-pressure.json');
 const ABSENT_GUARD_PATH_INIT = () => path.join(usageTempDir, 'does-not-exist-guard.json');
 
+// Hermetic-by-default (2026-09-24, loop wp-l1): GET /api/models runs the SAME real nvidia-provider.cjs
+// health probe as models.test.mjs (see that file's own comment) — the server here runs IN-PROCESS, so a
+// child spawned by its route handler inherits THIS process's env. Force a hermetic child env for the
+// whole file by default (no dotenv-file loading, no key); set FORGE_GATEWAY_LIVE_NVIDIA=1 to opt into the
+// real, live-network variant instead. Never changes what the /api/models test asserts about response shape.
+const LIVE_NVIDIA = process.env.FORGE_GATEWAY_LIVE_NVIDIA === '1';
+const HERMETIC_NVIDIA_ENV_NAMES = ['NVIDIA_API_KEY', 'NVIDIA_SKIP_ENV_FILES'];
+let savedNvidiaEnv = null;
+
 before(async () => {
   _resetProjectsCacheForTests();
+  if (!LIVE_NVIDIA) {
+    savedNvidiaEnv = Object.fromEntries(HERMETIC_NVIDIA_ENV_NAMES.map((k) => [k, process.env[k]]));
+    process.env.NVIDIA_API_KEY = '';
+    process.env.NVIDIA_SKIP_ENV_FILES = '1';
+  }
   // fix-test-hygiene: GET /api/usage must not depend on whatever this machine's real
   // ~/.claude/FORGE_USAGE_PRESSURE.json happens to contain right now — point buildUsage() at an
   // isolated, test-owned fixture dir by default (a real-but-empty temp dir, both files initially
@@ -53,6 +67,7 @@ before(async () => {
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
   fs.rmSync(usageTempDir, { recursive: true, force: true });
+  if (savedNvidiaEnv) { for (const [k, v] of Object.entries(savedNvidiaEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
 });
 
 function requestStream(urlPath, { headers = {}, readMs = 500 } = {}) {
