@@ -19,7 +19,7 @@ Normally, Claude Code is **one assistant you chat with** — great at one thing 
 4. **checks its own work** with a real QA loop,
 5. and hands you a finished result **plus an honest report of what actually happened.**
 
-You are the client. The **Lead agent** is your project manager. The **Bosses** are the department heads. You never manage 18 agents yourself — you just say what you want.
+You are the client. The **Lead agent** is your project manager. The **Bosses** are the department heads. You never manage 19 agents yourself — you just say what you want.
 
 ```
 You:  /forge build me a landing page for my bakery
@@ -113,7 +113,7 @@ You don't hire them — Forge does, per task. See [AGENTS.md](../AGENTS.md) for 
 - **Boss** — the Lead / project manager. Owns the mission, decides the fix strategy.
 - **Head Chef** — turns the mission into exact work packages; prevents vague or duplicate work.
 - **12 permanent Bosses** — Build, Review, Test, UI, SEO, Search, Security, Integration, Docs, Skill (+ Boss + Head Chef).
-- **6 specialists** — Codex-reviewer, Data-scientist, Electron-pro, MCP-developer, ML-engineer, Payment-integration — pulled in only when a task needs them.
+- **7 specialists** — Codex-reviewer, Data-scientist, Electron-pro, MCP-developer, ML-engineer, Payment-integration, Verify-boss (the independent re-executor that re-runs a Boss's claimed checks from a cold read) — pulled in only when a task needs them. The LITE plugin carries the first six.
 
 **How big is the team?** Forge picks the smallest that fits:
 

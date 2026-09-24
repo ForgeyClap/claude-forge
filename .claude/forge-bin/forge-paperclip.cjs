@@ -127,27 +127,69 @@ function pidsOnPort(port) {
 // force=true is /F (hard kill) — last resort only, since hard-killing Postgres can leave a stale lock.
 function killTree(pid, force) { try { execSync('taskkill /PID ' + pid + ' /T' + (force ? ' /F' : ''), { stdio: 'ignore' }); return true; } catch { return false; } }
 const sleepMs = (ms) => { try { execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds ' + ms + '"', { stdio: 'ignore' }); } catch {} };
+// PC_HOME CONTAINMENT GUARD (F3, security fix 2026-09-24): a PID counts as OURS only when Win32_Process
+// reports an ExecutablePath or CommandLine that is actually under THIS runtime's PC_HOME. Before this
+// fix, freeEmbeddedPg() taskkilled ANY listener on ports 54329-54331 (a different local app, or a
+// DIFFERENT Paperclip project's own embedded Postgres, could bind the same drifted port) and
+// killEmbeddedPgByPath() force-killed EVERY postgres.exe whose path merely CONTAINED
+// "embedded-postgres" anywhere on disk (another project's own npm-installed embedded-postgres package
+// included) — i.e. it could kill an unrelated project's database. Unreadable process info is treated
+// as NOT ours; never kill on a guess.
+function processInfo(pid) {
+  try {
+    const out = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"ProcessId=' + pid + '\\" | Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress"', { encoding: 'utf8' });
+    const trimmed = out.trim();
+    if (!trimmed) return null;
+    const j = JSON.parse(trimmed);
+    return { exe: (j && j.ExecutablePath) || '', cmd: (j && j.CommandLine) || '' };
+  } catch { return null; }
+}
+function isUnderPcHome(exe, cmd) {
+  const norm = (s) => String(s || '').replace(/\\/g, '/').toLowerCase();
+  const pcHomeNorm = norm(PC_HOME);
+  return norm(exe).includes(pcHomeNorm) || norm(cmd).includes(pcHomeNorm);
+}
+// Filters a list of candidate PIDs (e.g. from pidsOnPort) down to the ones we can PROVE are ours —
+// never kill a port listener that is not ours, even if it happens to sit on "our" embedded-PG port.
+function ownedPids(pids) {
+  return pids.filter((p) => { const info = processInfo(p); return !!info && isUnderPcHome(info.exe, info.cmd); });
+}
 // Clear an ORPHANED embedded PG on the embedded port (NEVER 5432): graceful first, force only if it survives,
 // and only remove the postmaster.pid lock once nothing is listening (so we never strand a live cluster).
-// Kill ONLY the embedded Postgres bundled by npx paperclipai (executable path under
-// @embedded-postgres). NEVER matches the real system service (Program Files\PostgreSQL) — that
-// runs elsewhere and its path never contains "embedded-postgres". Path-based, so it clears a
-// stranded cluster even when the TCP table shows a stale owner and the port sweep misses it.
+// Kill ONLY the embedded Postgres bundled by npx paperclipai for THIS runtime: the process must both
+// (a) look like an embedded-postgres binary (executable path under @embedded-postgres) AND (b) be
+// contained under THIS runtime's PC_HOME. NEVER matches the real system service (Program
+// Files\PostgreSQL) — that path never contains "embedded-postgres" — and, since the PC_HOME fix, never
+// matches a DIFFERENT project's own embedded-postgres either. Path-based, so it clears a stranded
+// cluster even when the TCP table shows a stale owner and the port sweep misses it.
 function killEmbeddedPgByPath() {
   try {
-    execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'postgres.exe\'\\" | '
-      + 'Where-Object { $_.ExecutablePath -like \'*embedded-postgres*\' } | '
-      + 'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', { stdio: 'ignore' });
+    const out = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'postgres.exe\'\\" | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"', { encoding: 'utf8' });
+    const trimmed = out.trim();
+    if (!trimmed) return;
+    const parsed = JSON.parse(trimmed);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    for (const r of rows) {
+      if (!r || r.ProcessId == null) continue;
+      const exe = String(r.ExecutablePath || ''), cmd = String(r.CommandLine || '');
+      if (!/embedded-postgres/i.test(exe) && !/embedded-postgres/i.test(cmd)) continue; // not embedded-postgres at all
+      if (!isUnderPcHome(exe, cmd)) continue; // an embedded-postgres, but NOT ours — leave it running
+      try { execSync('taskkill /PID ' + r.ProcessId + ' /F', { stdio: 'ignore' }); } catch {}
+    }
   } catch {}
 }
 // Clear an ORPHANED embedded PG so a fresh runtime can start. Sweeps the embedded port AND the
 // next few ports it drifts to (54329..54331) when the first is held, plus a path-based kill, then
 // removes the stale postmaster.pid lock once nothing is listening (so we never strand a live cluster).
+// Every kill below is gated through ownedPids()/isUnderPcHome() (PC_HOME containment guard, F3): a
+// listener on "our" port that is proven NOT ours is left alone. A consequence, accepted deliberately:
+// if a genuinely unrelated process holds one of these ports, freeEmbeddedPg() can no longer force it
+// off — the port sweep's job was never to evict unrelated processes, only to reclaim OUR own orphans.
 const PC_DB_PORTS = [PC_DB_PORT, '54330', '54331'];
 function freeEmbeddedPg() {
   for (const port of PC_DB_PORTS) {
-    const pids = pidsOnPort(port);
-    if (pids.length) { pids.forEach((p) => killTree(p, false)); sleepMs(1200); pidsOnPort(port).forEach((p) => killTree(p, true)); }
+    const pids = ownedPids(pidsOnPort(port));
+    if (pids.length) { pids.forEach((p) => killTree(p, false)); sleepMs(1200); ownedPids(pidsOnPort(port)).forEach((p) => killTree(p, true)); }
   }
   killEmbeddedPgByPath();                                                          // path-based backstop
   sleepMs(800);
@@ -176,8 +218,15 @@ async function cmdUp() {
   if (!h) { console.error('BLOCKED: Paperclip did not become healthy within 120s — see ' + logFile); logEvent('paperclip_runtime_blocked', { agent: 'paperclip', role: 'control plane', status: 'failed', reason: 'health timeout', evidence: logFile }); return 1; }
   console.log('Paperclip UP at ' + BASE + ' (v' + h.version + ')');
   logEvent('paperclip_runtime_started', { agent: 'paperclip', role: 'control plane', status: 'done', note: 'Runtime started at ' + BASE + ' (v' + h.version + ', loopback, isolated home)', evidence: logFile });
-  // Auto-start the usage guard (95% pause / 0% resume, real endpoint) — single global instance (user decision 2026-07-03).
-  try { execSync('node "' + path.join(__dirname, 'usage-guard.cjs') + '" start', { stdio: 'inherit' }); } catch (e) { console.log('usage-guard start skipped: ' + e.message.split('\n')[0]); }
+  // F2 (2026-09-24 security fix, SUPERSEDES the 2026-07-03 "auto-start, single global instance"
+  // decision): the usage guard reads the account's real OAuth usage data and calls the live Anthropic
+  // usage endpoint — that requires explicit owner CONSENT, not a silent side effect of every successful
+  // `up`. Opt in with --with-usage-guard; default is off, and a skipped start says so.
+  if (args.includes('--with-usage-guard')) {
+    try { execSync('node "' + path.join(__dirname, 'usage-guard.cjs') + '" start', { stdio: 'inherit' }); } catch (e) { console.log('usage-guard start skipped: ' + e.message.split('\n')[0]); }
+  } else {
+    console.log('usage-guard NOT started (it reads your real OAuth usage token) — opt in with: node .claude/forge-bin/forge-paperclip.cjs up --with-usage-guard');
+  }
   return 0;
 }
 
@@ -474,9 +523,11 @@ async function cmdStop() {
 
 // Pure/safely-callable exports — directly behavior-testable without ever touching network, git, an
 // OS process, or a port (see forge-paperclip.test.cjs). Everything else in this file (cmdStatus..
-// cmdStop, wireAgent, ensureCatalogSkills, freeEmbeddedPg, pidsOnPort, killTree, sleepMs, api,
-// health, companyAgents, logEvent) stays CLI-internal and UNEXPORTED: each one performs real
-// network/OS-process/port work and is intentionally not part of the public surface.
+// cmdStop, wireAgent, ensureCatalogSkills, freeEmbeddedPg, killEmbeddedPgByPath, pidsOnPort, killTree,
+// sleepMs, processInfo, isUnderPcHome, ownedPids, api, health, companyAgents, logEvent) stays
+// CLI-internal and UNEXPORTED: each one performs real network/OS-process/port work (or, for the PC_HOME
+// containment helpers, real process introspection used only to decide what may be killed) and is
+// intentionally not part of the public surface.
 module.exports = {
   pcRole, pcAdapter, modelFor, skillsForRole,
   readBinding, writeBinding,

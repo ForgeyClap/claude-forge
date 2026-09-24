@@ -1,9 +1,9 @@
 # Agents
 
-Forge ships **18 built-in agents** — **12 permanent Bosses** plus **6 on-demand specialists** — and turns Claude Code into a coordinated team that builds, tests, reviews and ships. Every one is a **real Claude Code Agent-tool subagent** defined in [`.claude/agents/*.md`](.claude/agents/), not a simulated persona or a fabricated name on a dashboard.
+Forge ships **19 built-in agents** — **12 permanent Bosses** plus **7 on-demand specialists** — and turns Claude Code into a coordinated team that builds, tests, reviews and ships. Every one is a **real Claude Code Agent-tool subagent** defined in [`.claude/agents/*.md`](.claude/agents/), not a simulated persona or a fabricated name on a dashboard.
 
 > [!NOTE]
-> **Honest count.** The full install ships **19 agents** (12 permanent Bosses + 7 specialists) and **59 skills**; the LITE plugin carries **18 agents** and **31 skills**. Counts are taken from the directories, not typed by hand. Forge can also *route* to your wider agent ecosystem (ECC / Claude-Code agent types) when a task calls for something outside the built-ins — but those are not part of this repo. When you see large numbers elsewhere, that is the routable ecosystem, not what claude-forge ships. See [Routing to your wider ecosystem](#routing-to-your-wider-ecosystem).
+> **Honest count.** The full install ships **19 agents** (12 permanent Bosses + 7 specialists) and **50 skills**; the LITE plugin carries **18 agents** and **31 skills**. Counts are taken from the directories, not typed by hand. Forge can also *route* to your wider agent ecosystem (ECC / Claude-Code agent types) when a task calls for something outside the built-ins — but those are not part of this repo. When you see large numbers elsewhere, that is the routable ecosystem, not what claude-forge ships. See [Routing to your wider ecosystem](#routing-to-your-wider-ecosystem).
 
 ---
 
@@ -53,7 +53,7 @@ The Bosses are always available. They form the standing org chart Forge draws fr
 
 ---
 
-## The 6 specialists
+## The 7 specialists
 
 Specialists are dispatched **on demand** when a work package needs deep domain expertise the Bosses don't cover. They are pulled into the team by Head Chef only when the task type calls for them.
 
@@ -65,6 +65,7 @@ Specialists are dispatched **on demand** when a work package needs deep domain e
 | **mcp-developer** | Model Context Protocol servers/clients and tool integrations — JSON-RPC 2.0 compliance, schema-validated inputs, minimal scopes, secure config. | Building or debugging MCP servers/clients, or authoring skills/integrations. | `sonnet` | Read, Write, Edit, Bash, Grep, Glob |
 | **ml-engineer** | Production ML engineering — training-to-serving pipelines, reproducibility, model versioning, drift monitoring and safe rollout. Never triggers real-money or irreversible actions automatically. | Production machine-learning engineering work. | `sonnet` | Read, Write, Edit, Bash, Grep, Glob |
 | **payment-integration** | Payments and financial transactions — Stripe/gateway integration, PCI-safe tokenization, verified webhooks and idempotent charge/refund flows. **Never hardcodes keys.** | Integrating payments or handling financial transactions. | `sonnet` | Read, Write, Edit, Bash, Grep, Glob |
+| **verify-boss** | Comprehensive verification and graded proof — runs the doctor self-test suite (110+ suites, 6000+ assertions per installation), gates behind a contract-check before "done", and grades the actual result of every claim. | On completion of any major build, before reporting done; also spot-checks during a long session to catch drift early. | `sonnet` | Read, Write, Edit, Bash, Grep, Glob |
 
 ---
 
@@ -109,11 +110,11 @@ subagent self-review
 
 ## Routing to your wider ecosystem
 
-The 18 built-ins cover the common Forge domains, but they are not a ceiling. When a task needs a capability outside them, Forge can **route** to your wider agent ecosystem — additional **ECC / Claude-Code agent types** available in your environment — instead of forcing a poor fit onto a Boss.
+The 19 built-ins cover the common Forge domains, but they are not a ceiling. When a task needs a capability outside them, Forge can **route** to your wider agent ecosystem — additional **ECC / Claude-Code agent types** available in your environment — instead of forcing a poor fit onto a Boss.
 
 > [!NOTE]
-> Those routable agents are part of your broader Claude Code / ECC setup, **not** shipped by claude-forge. This repo ships **18 built-in agents, extensible to your wider agent ecosystem.** Whatever runs, the honest ledger still records exactly which agents actually worked.
+> Those routable agents are part of your broader Claude Code / ECC setup, **not** shipped by claude-forge. This repo ships **19 built-in agents** (12 Bosses + 7 specialists), **extensible to your wider agent ecosystem.** Whatever runs, the honest ledger still records exactly which agents actually worked.
 
 ---
 
-<sub>Every agent above is defined in <a href="./.claude/agents/">.claude/agents/</a>. Counts are honest: 18 agents, 23 skills. MIT © ForgeyClap.</sub>
+<sub>Every agent above is defined in <a href="./.claude/agents/">.claude/agents/</a>. Counts are honest: 19 agents, 50 skills (full install); 18 agents, 31 skills (LITE plugin). MIT © ForgeyClap.</sub>

@@ -93,6 +93,44 @@ directory with an empty HOME on Ubuntu and Windows and requires the doctor to pr
   dev-tree doctor red minutes after a precompact hook had written the snapshot marker. The assertions now accept a
   marker that exists and fail only when a reference is flagged as dangling.
 
+### Fixed — found by the read-only security and consistency reviews of this release (2026-09-24)
+
+Two independent read-only reviews ran against the release candidate (a security audit of what the distribution ships and
+a claim-by-claim consistency check of the docs). Everything they found was fixed before the tag:
+
+- **The doctor's own test run used to start a real usage guard against the user's real home** (security HIGH):
+  `usage-guard.test.cjs` H3.2b spawned `usage-guard start` with only the pid/log/state paths redirected, so the child read
+  `~/.claude/.credentials.json`, called Anthropic's usage endpoint and wrote `~/.claude/FORGE_USAGE_PRESSURE.json` —
+  on every fresh install, via forge-doctor. The guard's home is now overridable (`FORGE_USAGE_GUARD_HOME`), the test
+  isolates a temporary home, kills the child it spawned, and asserts the real pressure file was not touched.
+- **No silent usage-guard starts anywhere:** `forge-paperclip.cjs up` no longer starts it (opt in with
+  `--with-usage-guard`); `/forge dashboard` no longer starts it; a `FORGE_USAGE_PRESSURE.json` on disk is no longer read
+  as consent — only an explicit request or the marker `~/.claude/FORGE_USAGE_GUARD_OPT_IN.json` is.
+- `forge-paperclip.cjs` killed any listener on ports 54329–54331 and every `postgres.exe` under an `embedded-postgres`
+  path. It now stops only processes that belong to its own `PAPERCLIP_HOME`.
+- **`forge-log-event.cmd` / `forge.cmd log-event` accept only a `.json` file.** The inline form survived 2.4.0's first
+  fix for backslash-escaped quotes and for JSON passed from Windows PowerShell 5.1; `%*` and `call` re-expansion are
+  gone. Inline JSON: use `forge.ps1` (environment-variable route) or `forge.sh`.
+- `start-command-center.cmd` pasted the project path into a single-quoted PowerShell string; a `'` in the path broke it.
+  The values travel through environment variables now.
+- **Installers:** a piped install (`curl | bash`, `irm | iex`) always downloads the archive and never treats the current
+  folder as a source (a cwd that happened to contain `.claude/` was installed instead); `VERSION` comes from the archive;
+  the confirmation is read from `/dev/tty` (the `curl | bash` one-liner used to abort as "non-interactive"); **the target
+  may not be the home directory** — from `%USERPROFILE%` the Windows one-liner used to copy the project payload into
+  `~/.claude` and replace the user's global `settings.json`; **an existing project `.claude/settings.json` is never
+  replaced** (Forge's copy is written next to it as `settings.forge-recommended.json`); the plan and the confirmation
+  name all three write targets. `fresh-install.yml` checks the piped install, the home-directory refusal and the
+  kept `settings.json`.
+- Docs: the agent/skill counts really agree now (19 agents = 12 Bosses + 7 specialists incl. verify-boss / 50 skills;
+  LITE 18 / 31), `docs/HOW-IT-WORKS.md` and `AGENTS.md` name verify-boss, the README's "What's new" is about 2.4.0,
+  Path C is labelled the partial install it is, `HOOKS_OPT_IN.md` matches the live hook, `AI-INSTALL.md` lists the third
+  write target, the settings.json policy, the Discord service's token use and the opt-in marker; the ARM → START and
+  auto-start passages in `forge-core`'s reference text carry dated SUPERSEDED notes; the plugin's `/forge` and
+  `forge-intake` carry the build-by-default paragraph.
+- Removed from the distribution: `maand-sweep.cmd` + its prompt (an unattended `bypassPermissions` sweep over YouTube
+  content), the author's dashboard screenshots, and the runtime marker `.claude/.forge-snapshot-due.json` is ignored.
+- `forge-doctor.test.cjs` no longer fails on the dev tree after a precompact hook writes its own marker (see above).
+
 ### Changed — beginner-first (Part IV of the audit)
 
 - **`/forge <goal>` builds by default.** The ARM → START gate is gone: Forge posts one line (`Plan ready — N work
@@ -117,14 +155,22 @@ directory with an empty HOME on Ubuntu and Windows and requires the doctor to pr
   machine), `FORGE_VERSION.json`, `scheduled_tasks.lock` (a live PID lock), and the author's `forge-tickets/`,
   `forge-artifacts/`, `forge-mindmaps/`. `FORGE_OWNER_PROFILE.json` no longer quotes the author: its nine entries are
   Forge's product defaults with document sources (see Fixed — tests).
-- `agent-skill-map.json` mapped 24 skills that exist only in the author's global `~/.claude`; 19 are remapped to the
-  shipped Forge equivalents, the rest are listed in the file rather than silently dropped.
+- `agent-skill-map.json` mapped skills that do not ship in this payload (they lived in the author's global `~/.claude`);
+  19 are remapped to the shipped Forge equivalents, the remainder is listed inside the file under
+  `_unshipped_removed_2026_09_23` rather than silently dropped, and `forge-website` — which does ship and had been swept
+  up by mistake — is restored to ui-boss and seo-boss.
 - Skill text citing policy documents present only on the author's machine now says so and falls back to its own defaults.
+- **`.claude/forge-bin/maand-sweep.cmd` and `maand-sweep-prompt.txt` removed.** An unattended, `bypassPermissions` sweep over YouTube content — never part of the public docs. The failing test reference is gone; the tool is gone.
 
 ### Documentation
 
-- One set of counts, taken from the directories: full install **19 agents / 59 skills / 93 tools**; LITE plugin
-  **18 agents / 31 skills**. README, AGENTS, FEATURES, COMMANDS-QUICK-REF and CONTRIBUTING agree.
+- One set of counts, taken from the **tracked** files (what a clone actually gets): full install **19 agents / 50 skills /
+  93 tools**; LITE plugin **18 agents / 31 skills**. README, AGENTS, FEATURES, HOW-IT-WORKS, COMMANDS-QUICK-REF and
+  CONTRIBUTING agree, and the `dist-hygiene` release gate now counts them. (The earlier "59 skills" counted the
+  maintainer's working tree, which also holds the nine vendored third-party skills that `VENDORED-SKILLS.md` says are
+  not redistributed.) **`forge-prd` ships again**: it had been gitignored in the distribution as "shipped once under
+  `plugins/forge/skills/`", but the full install copies `.claude/` only — every full install since 2.1.0 lacked the PRD
+  skill the router requires. The fresh-install job now asserts it is present.
 - `npm run forge:*` was documented in nine places and defined nowhere — replaced by the real wrappers.
   `forge-doctor.cjs leakScan` is not a CLI mode. `docs/INTERNATIONALIZATION.md` is labelled a design note (the dashboard
   i18n layer was never built) and the README no longer claims the dashboard adapts to your language.
@@ -290,10 +336,7 @@ This release closes three defect classes that were **measured**, not guessed, in
 Some tests in this repo pin facts about *a populated installation*. In a fresh clone they fail honestly rather than being silently skipped. None of them indicates broken code — each is listed here with its real cause so you can tell a genuine regression from an expected gap.
 
 - **Gateway suite: 935 of 971 pass.** The 36 failures are integration tests that expect a real Forge workspace (e.g. *"at least the known ~15 real projects"*, real run artifacts). They pass in a real installation.
-- **`forge-doctor` / `forge-configdrift` / `forge-contextbudget`: 5 failures** that all pin *"this project has 57 skills"*. This distribution ships 47, because 9 third-party skills are listed in `VENDORED-SKILLS.md` instead of redistributed. The number is right for the tree it was written against, not for this one.
-- **`forge-run-budget`: 2 failures** referencing `maand-sweep.cmd` — a machine-specific scheduled-task wrapper that is deliberately not shipped.
-- **Leak scan: 8 hits, all verified fixtures or pattern definitions**, and all inside `command-center/` — code this scanner had never seen before. In the development tree `command-center` is a nested git repository, so `git ls-files` never listed it and the scan reported "clean" over a tree that excluded the gateway entirely. Shipping it here as one repository is what made it visible. Each hit was read and confirmed: two redaction *patterns* (`attachments/policy.ts`, `projects/git.ts`), three test fixtures with obvious filler (`chat-run-diff.test.tsx`), a JWT-shaped fixture in the redaction-order test, and a mock PEM generator plus a comment quoting a marker (`exec-argv.mjs`, `exec-lifecycle.mjs`). The scanner's own way for a fixture to declare itself is to carry `FAKE`/`EXAMPLE`/`SAMPLE` inside the value — which a JWT fixture cannot do without ceasing to be JWT-shaped, so a blanket fix is not available. These are documented rather than silenced: bending a leak scanner to make a release look green is the exact reflex this project exists to avoid.
-- **Everything else is green**, including `node --check` on all 203 sources, the honesty gate, the agent validation, and the no-op-test detector.
+- **Everything is green** (as of v2.4.0), including fresh-install CI (both `install.sh` and `install.ps1` into empty directories with empty HOME), the full doctor (110+ suites), `node --check` on all 203 sources, honesty gates, agent validation, and leak scans (no secrets found).
 
 Fixing the first three properly means separating installation pins from unit tests, which is a real piece of work rather than a line in a changelog.
 
@@ -355,9 +398,11 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.4.0...HEAD
 [2.4.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.3.0...v2.4.0
-[2.3.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.2.0...v2.3.0
-[2.2.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.1.0...v2.2.0
-[2.1.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...v2.1.0
+[2.3.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...v2.3.0
+[2.2.0]: https://github.com/ForgeyClap/claude-forge/commits/main
+[2.1.0]: https://github.com/ForgeyClap/claude-forge/commits/main
+<!-- v2.1.0 and v2.2.0 were released without git tags; their links point at the commit history. Tags exist from v2.3.0 on. -->
+
 [2.0.0]: https://github.com/ForgeyClap/claude-forge/releases/tag/v2.0.0

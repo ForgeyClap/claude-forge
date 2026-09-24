@@ -134,7 +134,7 @@ raw file body or credential.
 Manual (also always available, hook or no hook): `node .claude/forge-bin/forge-snapshot.cjs write --reason
 manual|phase` · `node .claude/forge-bin/forge-snapshot.cjs check --max-age-hours 24` · `/forge snapshot`.
 
-## 5. Tool-behaviour ledger — `forge-toolhook.cjs` (PostToolUse, **WIRED and live** — matcher `Write|Edit|MultiEdit|NotebookEdit|Bash` since 2026-09-23; the 2026-08-03 correction further down already said it was firing)
+## 5. Tool-behaviour ledger — `forge-toolhook.cjs` (PostToolUse, **WIRED and live** — matcher `Write|Edit|MultiEdit|NotebookEdit|Bash`, timeout 8000ms, since 2026-09-23; the 2026-08-03 correction further down already said it was firing)
 
 **The gap it closes, measured 2026-08-01 (not assumed):** across all 28 `events.jsonl` in this project —
 846 events — `file_read` appears **0** times and `command_run` **1** time. Both types are registered in
@@ -203,10 +203,22 @@ uncommittable. **No new `event_type` is introduced**, so the 3-place registratio
 > **To keep it:** narrow it with a `matcher` and decide a retention rule for `.claude/forge-runs/_toollog/`.
 > The count in this file's header ("3 real, live hooks") is therefore also wrong — it is **4**.
 
-**Originally documented as a proposal (see the correction above — it is now actually wired):**
+> **CORRECTION 2 (2026-09-24, WP7 audit-repair, security review LOW #11): the matcher/timeout claims above**
+> **are now outdated too.** `.claude/settings.json`'s real `PostToolUse` entry for `forge-toolhook.cjs` was
+> narrowed on 2026-09-23 to `"matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash"` with `"timeout": 8000` (see
+> that file's own `_matcher_doc`, added the same day, which records why: shipped without a matcher it fired
+> on every tool call of every agent — 461 in one audited session, ~56 ms each — and logged 320 paths outside
+> the project; the ledger exists to record what CHANGED, and reads are noise). So, as of 2026-09-23: the live
+> entry **does** carry a matcher, its timeout is **8000ms** (not 5000), and it fires only on a **Write, Edit,
+> MultiEdit, NotebookEdit or Bash** call — not on every tool call. The jsonc block right below is the
+> **original, historical proposal** (`"matcher": "*"`, `timeout: 5000`) from before either correction; it is
+> kept for its shape/rationale but no longer describes what actually runs.
+
+**Originally documented as a proposal (historical only — see both corrections above for what is actually live):**
 
 ```jsonc
-// .claude/settings.json  — documented proposal; the LIVE entry has no matcher (see correction above)
+// .claude/settings.json — HISTORICAL PROPOSAL, not the live config. The real entry (since 2026-09-23) uses
+// "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash" and "timeout": 8000 — see Correction 2 above.
 {
   "hooks": {
     "PostToolUse": [
@@ -221,11 +233,12 @@ uncommittable. **No new `event_type` is introduced**, so the 3-place registratio
 }
 ```
 
-**Why activation is a separate step (all three are real, none is a formality):**
-1. **It runs on every tool call of every agent in a LIVE session.** Measured cost is ~95–110 ms per call, of
-   which ~77 ms is bare Node process startup on this machine — i.e. the hook's own work is ~20–30 ms, but the
-   *process* is the tax and it is paid on every single call. That is a real latency decision about the
-   owner's own sessions, not a code-quality decision.
+**Why activation is a separate step (all three are real, none is a formality; the live matcher/timeout are per Correction 2 above):**
+1. **It runs on a Write, Edit, MultiEdit, NotebookEdit or Bash call in a LIVE session** (not every tool call —
+   see Correction 2). Measured cost is ~95–110 ms per matched call, of which ~77 ms is bare Node process
+   startup on this machine — i.e. the hook's own work is ~20–30 ms, but the *process* is the tax and it is
+   paid on every matched call. That is a real latency decision about the owner's own sessions, not a
+   code-quality decision.
 2. **It changes what is on disk about how the owner works.** Even though it stores behaviour and not
    content, a permanent per-session record of every file touched and every binary invoked is a
    privacy/retention choice that belongs to the owner. Bounded at ≤8 MB per session (4 MB rotation × 2
@@ -233,8 +246,8 @@ uncommittable. **No new `event_type` is introduced**, so the 3-place registratio
 3. **Governance requires it.** The global policy demands per-item owner approval before any hook is enabled
    — pinned purpose, reviewed command, documented disable procedure — and the project `CLAUDE.md` keeps the
    security posture light. This hook is advisory and never blocks (always exit 0, never `decision:"block"`,
-   never one byte of stdout, own 2500 ms failsafe under the 5000 ms budget), which makes it *eligible*, not
-   automatic.
+   never one byte of stdout, own 2500 ms failsafe under the live 8000 ms budget), which makes it *eligible*,
+   not automatic.
 
 Proven by `forge-toolhook.test.cjs` (42/42, real subprocesses): garbage stdin, binary/NUL stdin, empty
 stdin, hostile field types, an un-creatable log path, and an 8 MB payload all give **exit 0 with empty

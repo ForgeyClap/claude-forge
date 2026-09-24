@@ -1,9 +1,0 @@
-Maandelijkse Claude-nieuws-sweep (automatische taak, owner-besluit 2026-07-31). Werk volledig autonoom en alleen binnen dit project (de map waarin deze taak draait).
-
-1. Zoek de nieuwste informatie van de afgelopen maand met MEERDERE zoektermen: gebruik yt-dlp (staat op PATH) met "ytsearch15:claude code new features", "ytsearch15:claude code skills update", "ytsearch15:claude code commands", "ytsearch15:claude agent teams", en raadpleeg de officiële Claude Code release notes/changelog via webfetch of -search als beschikbaar.
-2. Filter op recent (upload afgelopen ~6 weken) en relevant (titel over Claude). Haal voor de beste 10-15 video's de ondertitels op (yt-dlp --skip-download --write-auto-subs) plus de beschrijving, en extraheer: nieuwe commands/flags/features, gewijzigd gedrag, en best practices — elk met bron (video-id of URL).
-3. Schrijf een compact eerlijk rapport naar .claude/forge-research/MAAND-SWEEP-<jjjj-mm>.md: wat is er NIEUW sinds vorige maand (vergelijk met het vorige MAAND-SWEEP-bestand als dat bestaat), welke concrete verbeterkandidaten dit oplevert voor het Forge-systeem (met bron en geschatte effort), en welke intentie→command-kaart-aanvullingen bewezen nuttig lijken. Verzin niets; geen bron = niet opnemen.
-4. Voeg evidence-backed lessen toe aan .claude/agent-memory/global/lessons.jsonl in de bestaande recordvorm (id/type/tags/text/evidence/ts/utility/uses — kijk naar een bestaand record voor de exacte vorm). Geen secrets, geen ongeverifieerde claims.
-5. Log een run-event: node .claude/forge-dashboard/log-event.cjs forge-maand-sweep-<jjjj-mm> run_completed met een evidence-veld (aantal video's, rapportpad).
-
-Raak verder niets aan: geen globale config, geen andere projecten, geen dashboards herstarten.

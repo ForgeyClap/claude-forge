@@ -93,7 +93,11 @@ const EXPECTED_EXPORT_KEYS = ['pcRole', 'pcAdapter', 'modelFor', 'skillsForRole'
 t('R2 the export surface is EXACTLY the documented pure/safe set (no accidental extra export, none missing)', JSON.stringify(Object.keys(pc).sort()) === JSON.stringify(EXPECTED_EXPORT_KEYS));
 const NEVER_EXPORTED = ['cmdStatus', 'cmdUp', 'cmdEnsure', 'cmdTicket', 'cmdPause', 'cmdResume', 'cmdStop',
   'wireAgent', 'ensureCatalogSkills', 'companyAgents', 'api', 'health', 'logEvent',
-  'pidsOnPort', 'killTree', 'sleepMs', 'freeEmbeddedPg', 'killEmbeddedPgByPath'];
+  'pidsOnPort', 'killTree', 'sleepMs', 'freeEmbeddedPg', 'killEmbeddedPgByPath',
+  // F3 (2026-09-24 security fix): the PC_HOME containment guard's own helpers — real process
+  // introspection (Win32_Process) used only to decide what freeEmbeddedPg()/killEmbeddedPgByPath()
+  // may kill. Not exported for the same reason as the functions above: real OS-process work.
+  'processInfo', 'isUnderPcHome', 'ownedPids'];
 t('R3 none of the network/git/process/port-touching internals are exported', NEVER_EXPORTED.every((k) => pc[k] === undefined));
 t('R4 every expected export is actually a function or a plain object (never accidentally undefined)', EXPECTED_EXPORT_KEYS.every((k) => pc[k] !== undefined && pc[k] !== null));
 
@@ -398,6 +402,37 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
   t('K6 process.exit is called exactly twice in the whole file', processExitOffsets.length === 2);
   t('K6 both process.exit calls occur AFTER the require.main guard opens (never as an unconditional top-level side effect)', processExitOffsets.every((i) => i > guardIdx));
   t('K6 CLAUDE_BIN is resolved lazily (a mutable `let`, reassigned only inside the require.main guard) — not an eager top-level `const` computed on every require()', /let CLAUDE_BIN = null;/.test(SOURCE_TEXT) && !/const CLAUDE_BIN = resolveClaudeBin\(\);\s*\/\/ durable standalone path \(guard #3\), now PATH-resolved/.test(SOURCE_TEXT));
+
+  // K7 — F2 (2026-09-24 security fix): cmdUp() must NOT auto-start the usage guard (it reads the real
+  // OAuth token) — starting it now requires the explicit --with-usage-guard flag, opt-in, never default.
+  const cmdUpStart = SOURCE_TEXT.indexOf('async function cmdUp');
+  const cmdUpEnd = SOURCE_TEXT.indexOf('async function cmdEnsure');
+  t('K7 cmdUp() function body was located in the real source', cmdUpStart > -1 && cmdUpEnd > cmdUpStart);
+  const cmdUpBody = SOURCE_TEXT.slice(cmdUpStart, cmdUpEnd);
+  t('K7 the usage-guard start is gated behind an explicit --with-usage-guard flag check', /args\.includes\('--with-usage-guard'\)/.test(cmdUpBody));
+  t('K7 the usage-guard start call itself sits inside that flag-check branch, not at cmdUp() top level', (() => {
+    const flagIdx = cmdUpBody.indexOf("args.includes('--with-usage-guard')");
+    const startCallIdx = cmdUpBody.indexOf("'usage-guard.cjs') + '\" start'");
+    return flagIdx > -1 && startCallIdx > flagIdx;
+  })());
+  t('K7 a non-opt-in up prints that the usage guard was NOT started and how to opt in', /usage-guard NOT started/.test(cmdUpBody) && /--with-usage-guard/.test(cmdUpBody));
+  t('K7 the fix documents the 2026-09-24 consent decision superseding the 2026-07-03 auto-start', /2026-09-24/.test(cmdUpBody) && /consent/i.test(cmdUpBody));
+
+  // K8 — F3 (2026-09-24 security fix): freeEmbeddedPg()/killEmbeddedPgByPath() must gate every kill
+  // through the PC_HOME containment guard (ownedPids/isUnderPcHome) — never a bare port or path sweep.
+  const freeStart = SOURCE_TEXT.indexOf('function freeEmbeddedPg');
+  const freeEnd = SOURCE_TEXT.indexOf('async function cmdUp');
+  t('K8 freeEmbeddedPg() function body was located in the real source', freeStart > -1 && freeEnd > freeStart);
+  const freeBody = SOURCE_TEXT.slice(freeStart, freeEnd);
+  t('K8 freeEmbeddedPg() filters port-based kill candidates through ownedPids(), never a raw pidsOnPort() kill', /ownedPids\(pidsOnPort\(/.test(freeBody));
+  const killPathStart = SOURCE_TEXT.indexOf('function killEmbeddedPgByPath');
+  t('K8 killEmbeddedPgByPath() body was located in the real source', killPathStart > -1 && killPathStart < freeStart);
+  const killPathBody = SOURCE_TEXT.slice(killPathStart, freeStart);
+  t('K8 killEmbeddedPgByPath() checks isUnderPcHome() before every taskkill', /isUnderPcHome\(exe, cmd\)/.test(killPathBody) && /taskkill \/PID/.test(killPathBody));
+  t('K8 the never-5432 rule is still documented', /NEVER 5432/.test(SOURCE_TEXT));
+  const pcDbPortsMatch = SOURCE_TEXT.match(/const PC_DB_PORTS = \[[^\]]*\];/);
+  t('K8 PC_DB_PORTS array literal was located in the real source', !!pcDbPortsMatch);
+  t('K8 PC_DB_PORTS never lists the real Postgres port 5432', !!pcDbPortsMatch && !/\b5432\b/.test(pcDbPortsMatch[0]));
 }
 
 // ===================================================================================

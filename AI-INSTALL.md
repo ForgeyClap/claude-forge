@@ -11,12 +11,13 @@ If you are a human reading this: you do not need this file. Run `install.sh` (ma
 
 ## 0. What you are installing
 
-Forge is a multi-agent build/review system for Claude Code. It installs **two** things:
+Forge is a multi-agent build/review system for Claude Code. It installs **three** things:
 
 | Target | What goes there | Why |
 |---|---|---|
-| `<project>/.claude/` | skills, agents, config, dashboard, `forge-bin/` tools | per-project: Forge works on *this* project |
+| `<project>/.claude/` | skills, agents, config, dashboard, `forge-bin/` tools (+ `CLAUDE.md` if absent, Forge lines in `.gitignore`) | per-project: Forge works on *this* project |
 | `~/.claude/` | the `forge-core` skill + `/forge` and `/setup-forge` commands | global: so `/forge` exists in every project |
+| `~/.claude/forge/template/` | a canonical copy of the project payload | global: `forge-sync status` compares each project against it and `/forge` installs Forge into a bare folder from it |
 
 It has **no runtime dependencies** — plain Node.js `.cjs` files. Nothing is downloaded at runtime,
 no package is installed, no service phones home.
@@ -63,17 +64,24 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir "C:\absolute\
 Useful flags — bash spells them `--dry-run` · `--project-only` · `--global-only`; PowerShell spells the
 same three `-DryRun` · `-ProjectOnly` · `-GlobalOnly`. `--dry-run` shows every write without making one.
 
-**`--global-only` has no verification step:** `forge-doctor.cjs` ships only in the project payload, so an
-install that skipped the project part cannot be checked by §3. Say that to the user instead of claiming
-it was verified.
+**`--global-only` has no verification step:** `forge-doctor.cjs` ships in the project payload and (since 2.4.0)
+in the canonical template `~/.claude/forge/template/.claude/forge-bin/`, but §3 needs a *project* to run
+against, so an install that skipped the project part cannot be checked by §3. Say that to the user instead of
+claiming it was verified.
 
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
-- A file that already exists and *differs* is **backed up with a timestamp** before being replaced.
+- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is kept untouched and Forge's version is written next to it as `settings.forge-recommended.json`.
 - An identical file is left untouched.
 - Your `CLAUDE.md` is **never overwritten** — it is only created when absent.
 - Your `.gitignore` only ever gets lines it does not already have.
-- Running it twice is safe and changes nothing the second time.
+- Running it twice is safe and changes nothing the second time (except `synced_at` timestamp in `FORGE_VERSION.json`).
+
+**Pipe-mode installer behaviour** (when invoked via `curl | bash` or `irm | iex`):
+- The installer always downloads the full archive (never uses the current folder as a source).
+- Confirmation is read from the terminal (`/dev/tty`) or skipped with `--yes` / `FORGE_YES=1` (for unattended runs).
+- **The installer refuses to run when the target is the home directory** — users must `cd` into their project folder or pass an explicit `--project` path. Installing the project payload into the home directory would replace your global `~/.claude/settings.json` — the guard exists for exactly that case.
+- Writes to three locations: `~/.claude` (global core), `~/.claude/forge/template` (canonical template), `<project>/.claude` (per-project payload, plus `CLAUDE.md` and `.gitignore` seeding).
 
 ---
 
@@ -82,17 +90,25 @@ it was verified.
 The project payload ships a `.claude/settings.json` with **four live Claude Code hooks**, all local,
 none phoning home:
 
-- three `PreCompact`/`SessionStart` hooks that snapshot and re-inject the mission across context
-  compaction (so a long session does not lose what it was doing);
-- one `PostToolUse` hook, matcher `Write|Edit|MultiEdit|NotebookEdit|Bash`, that appends the tool name and
-  target path of each *changing* tool call to `.claude/forge-runs/_toollog/<session>.jsonl` (gitignored).
-  Until v2.4.0 it had no matcher and fired on every tool call; it does not any more. To opt out, delete
-  that entry from `.claude/settings.json` — nothing else depends on it.
+1. **PreCompact (manual)** — snapshots the mission state before a manual context compaction
+2. **PreCompact (auto)** — snapshots the mission state before an automatic compaction
+3. **SessionStart** — re-injects the mission after compaction, so a long session does not lose what it was doing
+4. **PostToolUse** (matcher: `Write|Edit|MultiEdit|NotebookEdit|Bash`) — appends the tool name and target path of each *changing* tool call to `.claude/forge-runs/_toollog/<session>.jsonl` (gitignored)
 
-The **usage guard** (`usage-guard.cjs`) is *opt-in*. It is a machine-global background watcher that
+Each hook runs a small, fast Node command that fires locally only — nothing phones home. To opt out of any hook, delete its entry from `.claude/settings.json` — nothing else depends on them.
+
+The **usage guard** (`usage-guard.cjs`) is **opt-in only**. It is a machine-global background watcher that
 reads the Claude OAuth token from `~/.claude/.credentials.json` and polls Anthropic's own usage
-endpoint so a run can pause before the account's limit. `/forge` no longer starts it silently; it runs
-only when the user asks for usage protection. If you start it on their behalf, say so in one line.
+endpoint so a run can pause before the account's limit. Nothing starts it silently any more: not `/forge`, not
+`/forge dashboard`, not the Paperclip runtime (`forge-paperclip.cjs up` needs `--with-usage-guard`), and not the
+test suite the doctor runs (its test isolates a temporary home). It runs only when the user asks for usage
+protection in the session, or when the explicit opt-in marker `~/.claude/FORGE_USAGE_GUARD_OPT_IN.json` exists —
+a marker only such a request creates. If you start it on their behalf, say so plainly in one line
+(`node .claude/forge-bin/usage-guard.cjs stop` stops it).
+
+One more token reader, also opt-in: the Command Center's **Discord service** (`command-center/discord/`) reads the
+same `~/.claude/.credentials.json` to show subscription usage, and sends the token only to `api.anthropic.com`. It is
+never installed into a project and never starts on its own.
 
 ---
 

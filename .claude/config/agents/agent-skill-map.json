@@ -59,7 +59,7 @@
     "autoAttach": "At team-build time the Lead (Boss) reads this map + the project-type bundle and embeds the skill list in each subagent's prompt (skills load via the Skill tool inside the subagent). No manual per-project reconnection.",
     "honesty": "Entries marked (ECC agent)/(method)/(tools) are agents, procedures, or tools — not SKILL.md files; they are invoked as what they are. Never claim a skill loaded that didn't.",
     "_unshipped_removed_2026_09_23": {
-        "_doc": "External audit II-E: these were the AUTHOR's global skills (~/.claude/skills), not part of the distribution, so on a clean install every Boss dispatch tripped the unresolvable-core-skill fallback by design. Known equivalents were remapped to the shipped Forge skill; the rest are listed here so the intent is not lost. An owner who installs them globally may add them back.",
+        "_doc": "External audit II-E: these were skills not shipped in this payload (some exist only in an owner's global ~/.claude/skills, others were never Forge skills at all - see the 2026-09-24 correction below), so on a clean install every Boss dispatch tripped the unresolvable-core-skill fallback by design. Known equivalents were remapped to the shipped Forge skill; the rest are listed here so the intent is not lost. An owner who installs a missing one globally may add it back.",
         "removed": {
             "review-boss": [
                 "design-is"
@@ -76,7 +76,6 @@
             ],
             "seo-boss": [
                 "seo-specialist (ECC agent)",
-                "forge-website (SEO/perf sections)",
                 "performance-optimizer (ECC agent)"
             ],
             "security-boss": [
@@ -94,13 +93,13 @@
             ],
             "integration-boss": [
                 "n8n-mcp-tools-expert",
-                "claude-api",
-                "nvidia-provider (forge-bin/nvidia-provider.cjs)"
+                "claude-api"
             ],
             "docs-boss": [
                 "update-docs (ECC command)"
             ]
         },
-        "_refilled": "2026-09-23 (external audit, measured): after the unshipped skills were dropped, ui-boss, seo-boss and skill-boss were left with EMPTY core-skill lists and nvidia-provider.test (\"every registry agent has core skills\") went red on every fresh install. Refilled from skills that actually ship: ui-boss -> forge-website/forge-mobile/forge-verify, seo-boss -> forge-website/forge-scout/forge-verify, skill-boss -> forge-scout/forge-skill-testing/forge-router."
+        "_refilled": "2026-09-23 (external audit, measured): after the unshipped skills were dropped, ui-boss, seo-boss and skill-boss were left with EMPTY core-skill lists and nvidia-provider.test (\"every registry agent has core skills\") went red on every fresh install. Refilled from skills that actually ship: ui-boss -> forge-website/forge-mobile/forge-verify, seo-boss -> forge-website/forge-scout/forge-verify, skill-boss -> forge-scout/forge-skill-testing/forge-router.",
+        "_corrections_2026_09_24": "WP7 audit-repair, security review LOW #12: two entries in this historical block were wrong and are now fixed. (1) 'forge-website (SEO/perf sections)' is dropped from removed.seo-boss - forge-website DOES ship (.claude/skills/forge-website/SKILL.md exists) and was already restored into the live agents.ui-boss and agents.seo-boss core-skill lists above by the 2026-09-23 refill directly above; nothing further needed restoring. (2) 'nvidia-provider (forge-bin/nvidia-provider.cjs)' is dropped from removed.integration-boss - it is a forge-bin TOOL, not a Forge skill (no .claude/skills/nvidia-provider directory), so it never belonged in a skills-removed list; integration-boss still uses it as a tool, invoked as what it is, per this file's own honesty field."
     }
 }

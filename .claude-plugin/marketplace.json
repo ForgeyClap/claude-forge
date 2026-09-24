@@ -13,7 +13,7 @@
     {
       "name": "forge",
       "source": "./plugins/forge",
-      "description": "Multi-agent orchestrator: /forge:forge build command, forge-core skill, 18 Boss agents, curated skills, and the /forge:setup-forge onboarding wizard.",
+      "description": "Multi-agent orchestrator: /forge:forge build command, forge-core skill, 12 Boss agents + 6 specialists (18 agents), 31 curated skills, and the /forge:setup-forge onboarding wizard.",
       "author": {
         "name": "ForgeyClap"
       },

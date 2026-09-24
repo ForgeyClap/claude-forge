@@ -4,7 +4,7 @@
 
 # claude-forge
 
-Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **59 skills, 19 agents, one command: `/forge`.**
+Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **19 agents, 50 skills, one command: `/forge`.**
 
 [![Works with Claude Code](https://img.shields.io/badge/Works%20with-Claude%20Code-8A2BE2?style=for-the-badge)](https://claude.com/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -46,7 +46,7 @@ Inside Claude Code:
 /forge:setup-forge
 ```
 
-This gives you the commands, 18 agents and 31 curated skills (the plugin is the LITE bundle; see the table below). It runs read-only from the plugin cache — no dashboard and no key setup (see the [comparison table](#-plugin-vs-installer)).
+This gives you the commands, 18 agents and 31 curated skills (the LITE plugin is fully featured but smaller; see the comparison table below). It runs read-only from the plugin cache — no dashboard and no key setup.
 
 ### Path B — One-line installer *(full system)*
 
@@ -62,12 +62,14 @@ curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/instal
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.ps1 | iex"
 ```
 
-Then, inside your project, run `/setup-forge`. *(The `-ExecutionPolicy Bypass` prefix is required for `irm | iex`.)*
+**Run either one-liner from inside your project folder** (`cd my-project` first): the installer puts the project payload in the *current* folder and refuses to run in your home directory. Both prompt once for confirmation; for unattended runs set `FORGE_YES=1`. Then, inside your project, run `/setup-forge`. *(The `-ExecutionPolicy Bypass` prefix is required for `irm | iex`.)*
 
-### Path C — Manual copy *(no scripts)*
+### Path C — Manual copy *(no scripts — PARTIAL install)*
 
 <details>
-<summary>Clone and copy the payload yourself</summary>
+<summary>Clone and copy the payload yourself (you lose four things the installer does — read the note)</summary>
+
+> **What a manual copy does NOT give you:** the canonical template in `~/.claude/forge/template` (so `forge-sync status` reports "update check: NOT PERFORMED"), the `.claude/FORGE_VERSION.json` marker (so `installed=none`), the seeded project `CLAUDE.md`, and the Forge lines in `.gitignore`. Also note that `cp -r`/`Copy-Item -Recurse` into an *existing* `.claude` nests a `.claude/.claude`. Prefer Path B; use this only when scripts are not allowed.
 
 ```bash
 git clone https://github.com/ForgeyClap/claude-forge
@@ -88,14 +90,14 @@ Copy-Item -Recurse claude-forge\global-install\.claude\* $HOME\.claude\
 
 </details>
 
-Then run `/setup-forge` once, and you are ready.
+Then run `/setup-forge` once. With Path A or B you are ready; with Path C, expect the doctor to point at the four gaps above.
 
 **Bam — you are ready.** ✨
 
 ---
 
 > [!TIP]
-> **New to Forge?** You do **not** need to learn 59 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
+> **New to Forge?** You do **not** need to learn 50 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
 
 ---
 
@@ -103,14 +105,14 @@ Then run `/setup-forge` once, and you are ready.
 
 The plugin is **LITE**; the installer is **FULL**. This split is architectural, not a limitation we chose: a plugin lives in a read-only cache and cannot write your project or `~/.claude`.
 
-| | 🔌 **Plugin** | 🛠️ **Installer / Manual** |
+| | 🔌 **Plugin (LITE)** | 🛠️ **Installer (FULL)** |
 |---|---|---|
-| **What you get** | Commands + 18 agents + 31 curated skills | The full system: 19 agents, 59 skills, 93 tools |
+| **What you get** | Commands + 18 agents + 31 curated skills | Full system: 19 agents, 50 skills, 93 tools |
 | **Files written** | None (read-only cache) | `./.claude` + `~/.claude` core |
-| **Live dashboard** | No | ✅ Yes, localhost |
+| **Live dashboard** | No | ✅ Yes, localhost:4100 |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
 | **Commands** | Namespaced `/forge:forge` | Bare `/forge` |
-| **Best for** | Quick trial | Real projects |
+| **Best for** | Quick trial, prototyping | Real projects, long-term |
 
 ---
 
@@ -135,29 +137,34 @@ Honest and non-adversarial — only rows that actually ship.
 
 | | |
 |---|---|
-| 🤖 **18 built-in agents** | 12 permanent Bosses (boss, head-chef, build, review, test, UI, SEO, search, security, integration, docs, skill) + 6 specialists — see [AGENTS.md](AGENTS.md) |
-| 🧠 **59 skills** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md) |
-| 📊 **Command Center dashboard** | one localhost app (`:4100`) that auto-discovers your projects and shows *real* activity per project |
+| 🤖 **19 agents in the full install** | 12 permanent Bosses + 7 specialists — see [AGENTS.md](AGENTS.md). The LITE plugin carries 18 agents. |
+| 🧠 **50 skills (full), 31 (LITE)** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md). Nine third-party skills the maintainer uses in development (GSAP, humanizer) are deliberately **not** redistributed — see [.claude/skills/VENDORED-SKILLS.md](.claude/skills/VENDORED-SKILLS.md) for source and pinned commit. |
+| 📊 **Command Center dashboard** | one localhost app on `127.0.0.1:4100` that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |
 | 🪶 **Zero dependencies** | plain Node `.cjs` — no `npm install`, ever |
 
 > [!NOTE]
-> Forge **ships 19 agents** (12 permanent Bosses + 7 specialists; the LITE plugin carries 18) and drives them as real Claude Code Agent-tool subagents. It can also **route to your wider agent ecosystem** (any ECC / Claude Code agent types you have installed) when a task calls for it — but only these 18 come in the box, so that is the number we quote.
+> Forge ships **19 agents** in the full install (12 permanent Bosses + 7 specialists); the LITE plugin carries **18 agents** (all Bosses + 6 specialists, missing verify-boss). Both are driven as real Claude Code Agent-tool subagents. Forge can also **route to your wider agent ecosystem** (any ECC / Claude Code agent types you have installed) when a task calls for it — but only Forge's own agents are claimed as "shipped".
 
 ---
 
 ## 🆕 What's new — v2.4.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
 
 <details>
-<summary><b>The first public release of Forge V2</b> — click to expand</summary>
+<summary><b>Major release — measured on a clean machine</b> — click to expand</summary>
 
-- **One command, a whole team.** `/forge <task>` classifies the work and assembles the smallest right-sized team of the 18 agents.
-- **`/setup-forge` onboarding wizard** with a beginner-safe, gitignored-by-default API-key flow (temp file → you fill → Forge places it safely → temp deleted; values never committed or echoed).
-- **Ships four ways:** Claude Code plugin, one-line installer (`sh`/`ps1`), first-run wizard, or manual copy.
-- **Live per-project dashboard**, honest agent ledger, project memory — all **zero-dependency** Node.
-- **Speaks your language:** replies and reports follow the language you write in (English default). The dashboard UI itself is English-only today — a translated dashboard was documented before it was built and is not shipped.
-- **Hardened:** the key-flow was put through five adversarial break-swarm rounds; 31 real issues found and fixed, each mutation-verified. See [CHANGELOG.md](CHANGELOG.md).
+This release fixed 9 issues found in an independent deep audit of v2.3.0 on a blank Windows/Linux machine with an empty `~/.claude`. The audit run is now part of CI (`fresh-install.yml`), so this class of "works on the author's machine, fails elsewhere" cannot recur.
+
+- **`/setup-forge` engine restored.** The core was deleted in 2.1.0 but 35 references kept calling it; only fresh installs noticed. Restored and now part of the canonical payload so it cannot disappear again.
+- **Canonical template created on install.** Both installers now build `~/.claude/forge/template/` from the payload, so the "stay current" rule and `forge-sync status` have something to compare against.
+- **Hook matcher added.** The `PostToolUse` hook shipped without a matcher and fired on every tool call (461 in one audit session, 56 ms each). Now carries `Write|Edit|MultiEdit|NotebookEdit|Bash` and is disclosed in AI-INSTALL.md.
+- **Build by default.** `/forge <goal>` no longer waits at a plan gate — it posts one line and continues. Hard gates (deploy, production, credentials, outbound) still interrupt. Full interview is opt-in via `/forge interview`.
+- **Silent intake.** The 21–24-question questionnaire is auto-answered from the mission text, project scan, and saved setup. At most one clarifying question is asked instead of 20+.
+- **Payload-safe wrappers.** The `.cmd` / `.ps1` scripts handle JSON payloads safely and return the real exit code.
+- **CI job added:** fresh install into an empty directory with an empty HOME (Ubuntu + Windows, Node 18 + 22) with full doctor green.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete 2.4.0 audit results, measurements, and new test coverage.
 
 </details>
 

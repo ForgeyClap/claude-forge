@@ -68,6 +68,14 @@ function Write-ForgeError {
   Write-Host "ERROR: $Message" -ForegroundColor Red
 }
 
+# Normalizes an absolute path without requiring the directory to exist yet (GetFullPath resolves
+# relative to the current directory and normalizes '..'/'.' segments and trailing slashes). Used only
+# by the HOME-target guard below.
+function Resolve-ForgeFullPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
 # Copy $SourceFile to $DestFile in a merge-safe way.
 # - If dest does not exist: create parent dir, copy.
 # - If dest exists and is identical (hash match): no-op.
@@ -117,12 +125,65 @@ function Copy-ForgeFile {
   Write-ForgeLog "  wrote: $DestFile"
 }
 
+# Special-cased merge for <project>\.claude\settings.json (security #4, review #10): a user's own
+# settings.json carries their own permissions/hooks and must never be silently backed-up-and-replaced
+# like an ordinary payload file. A differing file is left completely untouched; the payload version is
+# written alongside as settings.forge-recommended.json so the user can merge what they want by hand.
+# Identical or missing files behave exactly like Copy-ForgeFile.
+function Copy-ForgeSettingsFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourceFile,
+    [Parameter(Mandatory = $true)][string]$DestFile,
+    [Parameter(Mandatory = $true)][bool]$IsDryRun
+  )
+
+  $destDir = Split-Path -Parent -Path $DestFile
+  $recommendedFile = Join-Path $destDir 'settings.forge-recommended.json'
+
+  if ($IsDryRun) {
+    if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
+      $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
+      $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
+      if ($srcHash -eq $dstHash) {
+        Write-ForgeLog "  [dry-run] unchanged: $DestFile"
+      } else {
+        Write-ForgeLog "  [dry-run] would keep your settings.json; would write: $recommendedFile"
+      }
+    } else {
+      Write-ForgeLog "  [dry-run] would create: $DestFile"
+    }
+    return
+  }
+
+  if (-not (Test-Path -LiteralPath $destDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+  }
+
+  if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
+    $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
+    $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
+    if ($srcHash -eq $dstHash) {
+      # identical, no-op
+      return
+    }
+    Copy-Item -LiteralPath $SourceFile -Destination $recommendedFile -Force
+    Write-ForgeLog "  kept your settings.json; Forge's hooks are in $recommendedFile -- merge what you want"
+    return
+  }
+
+  Copy-Item -LiteralPath $SourceFile -Destination $DestFile -Force
+  Write-ForgeLog "  wrote: $DestFile"
+}
+
 # Recursively merge-copy every file under $SourceDir into $DestDir.
+# -ProtectSettings routes <dir>\settings.json through Copy-ForgeSettingsFile instead of the generic
+# backup-then-overwrite path (used for the project payload only — see Copy-ForgeSettingsFile).
 function Copy-ForgeTree {
   param(
     [Parameter(Mandatory = $true)][string]$SourceDir,
     [Parameter(Mandatory = $true)][string]$DestDir,
-    [Parameter(Mandatory = $true)][bool]$IsDryRun
+    [Parameter(Mandatory = $true)][bool]$IsDryRun,
+    [bool]$ProtectSettings = $false
   )
 
   if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
@@ -134,7 +195,11 @@ function Copy-ForgeTree {
   foreach ($file in $files) {
     $rel = $file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')
     $dest = Join-Path -Path $DestDir -ChildPath $rel
-    Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+    if ($ProtectSettings -and $rel -eq 'settings.json') {
+      Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+    } else {
+      Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+    }
   }
 
   return $true
@@ -220,7 +285,7 @@ function Write-ForgeVersionMarker {
     synced_at     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     template      = (Join-Path $homeDir '.claude\forge\template\.claude')
     installed_by  = 'install.ps1'
-    _doc          = 'Written by the claude-forge installer. forge-sync status compares forge_version with the canonical template. Per-install state: keep it out of git (the installer ignores it for you).'
+    _doc          = 'forge_version is the release this installer wrote; forge-sync status prints it as installed= and detects drift by file hash against the canonical template.'
   }
   try {
     $json = ($marker | ConvertTo-Json -Depth 3)
@@ -244,11 +309,45 @@ function Main {
     exit 1
   }
 
-  # $PSScriptRoot is empty when the script runs via irm|iex (no script file on disk).
-  $scriptDir = $PSScriptRoot
-  if ([string]::IsNullOrEmpty($scriptDir)) {
-    $scriptDir = (Get-Location).Path
+  $doGlobal = -not $projectOnly
+  $doProject = -not $globalOnly
+
+  # ---------------------------------------------------------------------------
+  # 0. refuse a HOME target (review HIGH #3): a one-liner run from %USERPROFILE%
+  #    (e.g. the Windows install prompt) must never treat $HOME itself as the
+  #    "project" -- that would write the PROJECT payload into ~\.claude and
+  #    REPLACE the user's global settings.json. Checked before any download or
+  #    write, including in -DryRun, and for -ProjectDir pointing at $HOME too.
+  # ---------------------------------------------------------------------------
+  if ($doProject) {
+    $resolvedProject = Resolve-ForgeFullPath $projectDir
+    $resolvedHome = Resolve-ForgeFullPath $HOME
+    if ($resolvedProject -ieq $resolvedHome) {
+      Write-ForgeError "the target project directory is your home directory ($HOME) -- refusing to install the project payload into `$HOME\.claude (that would replace your global settings.json). cd into your project folder, or pass -ProjectDir <dir>."
+      exit 1
+    }
+
+    # Same refusal when <project>\.claude would resolve to the same directory as the global ~\.claude
+    # (e.g. a symlinked project dir) even though the project dir itself is not $HOME.
+    $projectClaude = Join-Path $projectDir '.claude'
+    $homeClaude = Join-Path $HOME '.claude'
+    if ((Test-Path -LiteralPath $projectClaude -PathType Container) -and
+        (Test-Path -LiteralPath $homeClaude -PathType Container)) {
+      $resolvedProjectClaude = Resolve-ForgeFullPath (Resolve-Path -LiteralPath $projectClaude).Path
+      $resolvedHomeClaude = Resolve-ForgeFullPath (Resolve-Path -LiteralPath $homeClaude).Path
+      if ($resolvedProjectClaude -ieq $resolvedHomeClaude) {
+        Write-ForgeError 'the target project''s .claude directory is the same as your global ~\.claude -- refusing to overwrite your global settings. Pass -ProjectDir <dir> pointing at an actual project folder.'
+        exit 1
+      }
+    }
   }
+
+  # $PSScriptRoot is empty when the script runs via irm|iex (no script file on disk). Pipe mode is
+  # detected explicitly and NEVER falls back to trusting the current directory (security #10, review
+  # #8): a cwd that happens to contain global-install\.claude + .claude would otherwise be installed
+  # instead of the official archive, and VERSION/SHA256SUMS would be read from that cwd too.
+  $pipeMode = [string]::IsNullOrEmpty($PSScriptRoot)
+  $scriptDir = if ($pipeMode) { '' } else { $PSScriptRoot }
 
   $tempDir = $null
   $sourceDir = ''
@@ -257,15 +356,23 @@ function Main {
     # -----------------------------------------------------------------------
     # 1. dual-source detection
     # -----------------------------------------------------------------------
-    $inPlaceGlobal = Join-Path $scriptDir 'global-install\.claude'
-    $inPlaceProject = Join-Path $scriptDir '.claude'
-
-    if ((Test-Path -LiteralPath $inPlaceGlobal -PathType Container) -and
-        (Test-Path -LiteralPath $inPlaceProject -PathType Container)) {
-      $sourceDir = $scriptDir
-      Write-ForgeLog "Running in place from: $sourceDir"
+    if ($pipeMode) {
+      Write-ForgeLog 'Running from a pipe (no script file on disk) -- installing from the downloaded archive.'
     } else {
-      Write-ForgeLog "Repo payload not found next to this script -- downloading $RepoOwner/$RepoName@$forgeRef ..."
+      $inPlaceGlobal = Join-Path $scriptDir 'global-install\.claude'
+      $inPlaceProject = Join-Path $scriptDir '.claude'
+
+      if ((Test-Path -LiteralPath $inPlaceGlobal -PathType Container) -and
+          (Test-Path -LiteralPath $inPlaceProject -PathType Container)) {
+        $sourceDir = $scriptDir
+        Write-ForgeLog "Running in place from: $sourceDir"
+      }
+    }
+
+    if (-not $sourceDir) {
+      if (-not $pipeMode) {
+        Write-ForgeLog "Repo payload not found next to this script -- downloading $RepoOwner/$RepoName@$forgeRef ..."
+      }
 
       if ($isDryRun) {
         Write-ForgeLog "  [dry-run] would download https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$forgeRef.zip"
@@ -284,18 +391,22 @@ function Main {
           exit 1
         }
 
-        $sumsPath = Join-Path $scriptDir 'SHA256SUMS'
-        if (Test-Path -LiteralPath $sumsPath -PathType Leaf) {
-          $sumsContent = Get-Content -LiteralPath $sumsPath -ErrorAction SilentlyContinue
-          $expectedLine = $sumsContent | Where-Object { $_ -match 'claude-forge\.zip' } | Select-Object -First 1
-          if ($expectedLine) {
-            $expected = ($expectedLine -split '\s+')[0]
-            $actual = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
-            if ($expected.ToLower() -ne $actual.ToLower()) {
-              Write-ForgeError "checksum mismatch for downloaded archive (expected $expected, got $actual)"
-              exit 1
+        # NOTE: skipped entirely in pipe mode -- there is no script-adjacent $scriptDir to trust for
+        # this lookup (Join-Path errors on an empty path, and a pipe install has no adjacent checkout).
+        if (-not $pipeMode) {
+          $sumsPath = Join-Path $scriptDir 'SHA256SUMS'
+          if (Test-Path -LiteralPath $sumsPath -PathType Leaf) {
+            $sumsContent = Get-Content -LiteralPath $sumsPath -ErrorAction SilentlyContinue
+            $expectedLine = $sumsContent | Where-Object { $_ -match 'claude-forge\.zip' } | Select-Object -First 1
+            if ($expectedLine) {
+              $expected = ($expectedLine -split '\s+')[0]
+              $actual = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+              if ($expected.ToLower() -ne $actual.ToLower()) {
+                Write-ForgeError "checksum mismatch for downloaded archive (expected $expected, got $actual)"
+                exit 1
+              }
+              Write-ForgeLog "  checksum verified"
             }
-            Write-ForgeLog "  checksum verified"
           }
         }
 
@@ -311,11 +422,18 @@ function Main {
       }
     }
 
-    $versionPath = Join-Path $scriptDir 'VERSION'
-    if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf) -and $sourceDir) {
-      $versionPath = Join-Path $sourceDir 'VERSION'
+    # $sourceDir is checked FIRST: when a download happened (pipe mode or a missing in-place payload),
+    # VERSION must come from what was actually downloaded, never from cwd/$scriptDir (review #8/#10).
+    # The $scriptDir fallback below only ever fires in -DryRun (no download occurred) and never in pipe
+    # mode, where $scriptDir is intentionally empty.
+    $versionPath = if ($sourceDir -and (Test-Path -LiteralPath (Join-Path $sourceDir 'VERSION') -PathType Leaf)) {
+      Join-Path $sourceDir 'VERSION'
+    } elseif ((-not $pipeMode) -and (Test-Path -LiteralPath (Join-Path $scriptDir 'VERSION') -PathType Leaf)) {
+      Join-Path $scriptDir 'VERSION'
+    } else {
+      ''
     }
-    $forgeVersion = if (Test-Path -LiteralPath $versionPath -PathType Leaf) {
+    $forgeVersion = if ($versionPath -and (Test-Path -LiteralPath $versionPath -PathType Leaf)) {
       (Get-Content -LiteralPath $versionPath -Raw -ErrorAction SilentlyContinue).Trim()
     } else {
       'unknown'
@@ -323,17 +441,16 @@ function Main {
     Write-ForgeLog "claude-forge version: $forgeVersion"
 
     # -------------------------------------------------------------------------
-    # 2. plan
+    # 2. plan ($doGlobal / $doProject were computed early, ahead of the HOME guard above)
     # -------------------------------------------------------------------------
-    $doGlobal = -not $projectOnly
-    $doProject = -not $globalOnly
-
     Write-ForgeLog ''
     Write-ForgeLog 'This will write files to:'
-    if ($doGlobal) { Write-ForgeLog "  - $HOME\.claude          (global core: forge-core skill, /forge, /setup-forge)" }
-    if ($doProject) { Write-ForgeLog "  - $projectDir\.claude   (per-project payload: skills, agents, dashboard, config)" }
+    if ($doGlobal) { Write-ForgeLog "  - $HOME\.claude                  (global core: forge-core skill, /forge, /setup-forge)" }
+    if ($doGlobal) { Write-ForgeLog "  - $HOME\.claude\forge\template   (canonical template: used by forge-sync and the auto-installer)" }
+    if ($doProject) { Write-ForgeLog "  - $projectDir\.claude           (per-project payload: skills, agents, dashboard, config)" }
+    if ($doProject) { Write-ForgeLog "  - $projectDir\CLAUDE.md         (only if missing) and $projectDir\.gitignore (Forge lines appended)" }
     Write-ForgeLog ''
-    Write-ForgeLog 'Existing files that differ will be backed up as <file>.forge-bak-<timestamp> before being overwritten.'
+    Write-ForgeLog 'Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced -- except .claude\settings.json, which is always kept: the payload version is written next to it as settings.forge-recommended.json instead.'
     Write-ForgeLog 'Identical files are left untouched. This installer never deletes your existing .claude tree.'
     Write-ForgeLog ''
 
@@ -342,6 +459,10 @@ function Main {
     }
 
     if (-not $assumeYes -and -not $isDryRun) {
+      # [Environment]::UserInteractive stays TRUE under `irm ... | iex`: iex evaluates the fetched
+      # script text inside the CURRENT PowerShell host process -- unlike `curl | bash`, no child
+      # process's stdin is replaced by the pipe, so Read-Host still reads from the real console
+      # (review HIGH #2). FORGE_YES=1 / -Yes remain the non-interactive opt-out (see the param block).
       if ([Environment]::UserInteractive) {
         $reply = Read-Host 'Proceed? [y/N]'
         if ($reply -notmatch '^(y|Y|yes|YES)$') {
@@ -398,7 +519,7 @@ function Main {
       if (-not (Test-Path -LiteralPath $projectDir -PathType Container)) {
         New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
       }
-      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun
+      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true
       # Seed the two project-root files Forge documents but the payload copy never delivered.
       # Added 2026-08-13 after a real fresh-install measurement: without them three suites
       # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and the

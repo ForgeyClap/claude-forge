@@ -84,7 +84,7 @@ jobs:
         run: |
           set -e
           p="$FORGE_TEST_PROJECT"; h="$FORGE_TEST_HOME"
-          for f in "$p/CLAUDE.md" "$p/.gitignore" "$p/.claude/forge-bin/forge-doctor.cjs" "$p/.claude/forge-bin/forge-setup.cjs" "$p/.claude/settings.json" \
+          for f in "$p/CLAUDE.md" "$p/.gitignore" "$p/.claude/forge-bin/forge-doctor.cjs" "$p/.claude/forge-bin/forge-setup.cjs" "$p/.claude/settings.json" "$p/.claude/skills/forge-prd/SKILL.md" \
                    "$h/.claude/skills/forge-core/SKILL.md" "$h/.claude/forge/template/.claude/forge-bin/forge-sync.cjs" "$h/.claude/forge/template/CLAUDE.md"; do
             if [ -f "$f" ]; then echo "ok   $f"; else echo "::error::missing after install: $f"; exit 1; fi
           done
@@ -165,3 +165,110 @@ jobs:
           want="installed=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/VERSION")"
           echo "$out" | grep -qF "$want" || { echo "::error::forge-sync status does not report $want (FORGE_VERSION.json missing or stale)"; exit 1; }
           echo "ok   $want"
+
+      # Pipe-mode smoke (review HIGH #2/#8, security #10): `curl | bash` must ALWAYS install from the
+      # downloaded archive, never from whatever happens to already be in the piped-into directory. This
+      # fetches install.sh straight from raw.githubusercontent.com exactly like the documented one-liner
+      # — no local checkout of the script is used, so BASH_SOURCE is genuinely empty here, unlike every
+      # other step in this job which runs `bash install.sh` from the checked-out repo.
+      # NOTE: raw.githubusercontent.com/.../main/install.sh is the commit under test only once this fix
+      # has actually been merged to main (a `push` trigger runs after that merge lands; a `pull_request`
+      # run fetches whatever is on main right now, which may still be the pre-fix installer). That gap is
+      # accepted — a pre-merge version mismatch here is a known limitation of testing a true "no script on
+      # disk" pipe install from a still-unmerged branch, not a regression in this branch's install.sh.
+      - name: Piped install smoke (curl | bash) into a fresh project (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/piped-project"
+          cd "$RUNNER_TEMP/piped-project"
+          curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.sh | FORGE_YES=1 bash
+          [ -f ".claude/forge-bin/forge-doctor.cjs" ] || { echo "::error::piped install did not deliver .claude/forge-bin/forge-doctor.cjs"; exit 1; }
+          [ -f ".claude/FORGE_VERSION.json" ] || { echo "::error::piped install did not write .claude/FORGE_VERSION.json"; exit 1; }
+          want="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/VERSION")"
+          got="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".claude/FORGE_VERSION.json","utf8")).forge_version)')"
+          [ "$got" = "$want" ] || { echo "::error::piped install reported version $got, expected $want (see the NOTE above on raw-main lag before merge)"; exit 1; }
+          echo "ok   piped install delivered forge-doctor.cjs + FORGE_VERSION.json ($got)"
+
+      # HOME-guard check (review HIGH #3): the installer must refuse to write the PROJECT payload into
+      # $HOME itself — a one-liner run from the home directory (e.g. the Windows %USERPROFILE% prompt)
+      # must never replace the user's global settings.json. Non-zero exit AND no project payload written
+      # into the empty HOME's .claude is the contract; forge-bin only ever ships in the project payload,
+      # never in the global core, so its absence there proves the project install never ran.
+      - name: HOME-guard refuses --project pointing at $HOME (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set +e   # non-zero exit here is the expected, asserted outcome — must not abort the script
+          bash install.sh --project "$FORGE_TEST_HOME" --yes
+          status=$?
+          set -e
+          [ "$status" -ne 0 ] || { echo "::error::installer accepted --project \$HOME instead of refusing it"; exit 1; }
+          [ ! -d "$FORGE_TEST_HOME/.claude/forge-bin" ] || { echo "::error::installer wrote the project payload into \$HOME/.claude despite the HOME guard"; exit 1; }
+          echo "ok   installer refused --project \$HOME (exit $status, no .claude/forge-bin written there)"
+
+      - name: HOME-guard refuses -ProjectDir pointing at $HOME (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir "$env:FORGE_TEST_HOME" -Yes
+          $status = $LASTEXITCODE
+          if ($status -eq 0) {
+            Write-Host '::error::installer accepted -ProjectDir $HOME instead of refusing it'
+            exit 1
+          }
+          $leaked = Join-Path $env:FORGE_TEST_HOME '.claude\forge-bin'
+          if (Test-Path -LiteralPath $leaked -PathType Container) {
+            Write-Host '::error::installer wrote the project payload into $HOME\.claude despite the HOME guard'
+            exit 1
+          }
+          Write-Host "ok   installer refused -ProjectDir `$HOME (exit $status, no .claude\forge-bin written there)"
+
+      # settings-keep check (security #4, review #10): an existing project .claude/settings.json must
+      # never be silently replaced — the payload version is written alongside as
+      # settings.forge-recommended.json instead, and the user's own file is kept byte-for-byte.
+      - name: settings.json is kept, not replaced (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          proj="$RUNNER_TEMP/settings-keep-project"
+          mkdir -p "$proj/.claude"
+          printf '%s' '{"permissions":{"deny":["Bash(rm -rf *)"]}}' > "$proj/.claude/settings.json"
+          cp "$proj/.claude/settings.json" "$RUNNER_TEMP/settings-keep-expected.json"
+          bash install.sh --project "$proj" --yes >/dev/null
+          cmp -s "$proj/.claude/settings.json" "$RUNNER_TEMP/settings-keep-expected.json" || { echo "::error::settings.json was modified by the installer — it must be kept byte-for-byte"; exit 1; }
+          [ -f "$proj/.claude/settings.forge-recommended.json" ] || { echo "::error::settings.forge-recommended.json was not written alongside the kept settings.json"; exit 1; }
+          echo "ok   settings.json kept byte-for-byte; settings.forge-recommended.json present"
+
+      - name: settings.json is kept, not replaced (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'settings-keep-project'
+          New-Item -ItemType Directory -Force (Join-Path $proj '.claude') | Out-Null
+          $settingsPath = Join-Path $proj '.claude\settings.json'
+          Set-Content -LiteralPath $settingsPath -Value '{"permissions":{"deny":["Bash(rm -rf *)"]}}' -NoNewline -Encoding utf8
+          $before = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
+          $after = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
+          if ($before -ne $after) {
+            Write-Host '::error::settings.json was modified by the installer -- it must be kept byte-for-byte'
+            exit 1
+          }
+          $recommended = Join-Path $proj '.claude\settings.forge-recommended.json'
+          if (-not (Test-Path -LiteralPath $recommended -PathType Leaf)) {
+            Write-Host '::error::settings.forge-recommended.json was not written alongside the kept settings.json'
+            exit 1
+          }
+          Write-Host 'ok   settings.json kept byte-for-byte; settings.forge-recommended.json present'

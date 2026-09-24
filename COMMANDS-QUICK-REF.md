@@ -4,7 +4,7 @@
 
 Every slash command, sub-flow, dashboard control, natural-language trigger, and zero-dependency terminal tool — in one scannable page.
 
-**2 slash commands · 19 agents · 59 skills · 93 zero-dep `.cjs` tools (full install; the LITE plugin has 18 agents and 31 skills).**
+**2 slash commands · 19 agents · 50 skills · 93 zero-dep `.cjs` tools (full install; the LITE plugin has 18 agents and 31 skills).**
 
 </div>
 

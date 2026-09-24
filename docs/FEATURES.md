@@ -3,7 +3,7 @@
 The complete catalog behind the one-line pitch. **claude-forge** turns Claude Code into a coordinated team that **builds, automates, reviews and ships** — with a live per-project dashboard, honest reporting, and zero runtime dependencies.
 
 > [!NOTE]
-> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists) and **59 skills** (31 in the LITE plugin). That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present — but only 18 agents and 23 skills ship here, and nothing else is ever claimed as "shipped".
+> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists) and **50 skills**; the LITE plugin carries **18 agents** and **31 skills**. That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present, but Forge itself ships only these numbers — nothing else is ever claimed as "shipped".
 
 > [!TIP]
 > You do **not** need to read this whole page to use Forge. Run `/setup-forge` once, then say `/forge <what you want>`. This reference is for when you want to know *exactly* what is under the hood.
@@ -16,7 +16,7 @@ The complete catalog behind the one-line pitch. **claude-forge** turns Claude Co
 
 - [Orchestration & routing](#orchestration--routing)
 - [Domain playbooks](#domain-playbooks)
-- [The 12 Bosses + 6 specialists](#the-12-bosses--6-specialists)
+- [The 12 Bosses + 7 specialists](#the-12-bosses--7-specialists)
 - [Verification, honesty & reporting](#verification-honesty--reporting-skills)
 - [Priming, visualization & cross-project](#priming-visualization--cross-project-skills)
 - [Craft skills](#craft-skills)
@@ -85,9 +85,9 @@ Seven domain playbooks encode the "how" for each kind of work. The router loads 
 
 ---
 
-## The 12 Bosses + 6 specialists
+## The 12 Bosses + 7 specialists
 
-Forge ships **18 built-in agents** in `.claude/agents/*.md`. Full role detail lives in [AGENTS.md](../AGENTS.md); this is the at-a-glance map.
+Forge ships **19 built-in agents** in `.claude/agents/*.md` (LITE plugin: 18). Full role detail lives in [AGENTS.md](../AGENTS.md); this is the at-a-glance map.
 
 ### The 12 permanent Bosses
 
@@ -106,7 +106,7 @@ Forge ships **18 built-in agents** in `.claude/agents/*.md`. Full role detail li
 | **docs-boss** | haiku | Docs, setup instructions, architecture notes, env-var guides, final reports in plain language |
 | **skill-boss** | haiku | Global skills manager — maintains the skill registry, attaches skill bundles to agents, reports missing skills with a safe fallback |
 
-### The 6 specialists
+### The 7 specialists
 
 | Specialist | Model | When it's used |
 |---|---|---|
@@ -116,6 +116,7 @@ Forge ships **18 built-in agents** in `.claude/agents/*.md`. Full role detail li
 | **mcp-developer** | sonnet | Building/debugging MCP servers & clients — JSON-RPC 2.0 compliance, schema-validated inputs, minimal scopes |
 | **ml-engineer** | sonnet | Production ML engineering — training-to-serving pipelines, versioning, drift monitoring, safe rollout |
 | **payment-integration** | sonnet | Payments & financial transactions — Stripe/gateway integration, PCI-safe tokenization, verified webhooks, idempotent charge/refund flows |
+| **verify-boss** | sonnet | Comprehensive verification and graded proof — runs the doctor self-test suite (110+ suites, 6000+ assertions), gates behind a contract-check before "done", and grades the result. |
 
 > [!TIP]
 > Models are tiered for cost: routine work runs on Sonnet/Haiku and only high-stakes roles (Lead, review, security) default to Opus. The tiering is configurable in `.claude/FORGE_MODEL_ROUTING.json`, and the **actual** model used is logged in the agent ledger — never faked.

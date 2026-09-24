@@ -922,36 +922,78 @@ test('H3.2 awaitChildClaim: claim door het kind = ok; vreemd levend pid = weiger
 test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft een eerlijke non-zero start', () => {
   // integratie via de ECHTE CLI in een geisoleerde HOME: het "kind" is een decoy dat nooit het
   // pid-bestand claimt — de OUDE start printte dan toch "started"; de nieuwe weigert.
+  //
+  // F1 SECURITY FIX (2026-09-24): dit spawnt de ECHTE `start` -> een gedetacheerde `watch` -> een echte
+  // eerste tick(). Zonder isolatie las die tick het ECHTE ~/.claude/.credentials.json OAuth-token, riep
+  // de LIVE api.anthropic.com aan en overschreef het ECHTE ~/.claude/FORGE_USAGE_PRESSURE.json — dus elke
+  // verplichte doctor-testrun deed dit stilletjes op een verse install. HOME/USERPROFILE/
+  // FORGE_USAGE_GUARD_HOME/FORGE_USAGE_PRESSURE_FILE/FORGE_USAGE_GUARD_JOURNAL/FORGE_USAGE_GUARD_IDENTITY
+  // wijzen nu ALLEMAAL naar een geisoleerde temp-`.claude`-map zonder credentials.json: readToken() gooit
+  // dan AL VOOR elke fetch ("no OAuth token in …") — dus geen netwerkcall — en tick() degradeert daarna
+  // eerlijk via zijn bestaande fail-safe pad ("CHECK FAILED (no action taken — fail-safe)"). Er bestaat
+  // geen --dry-run voor de fetch zelf (alleen voor de pause/resume-actie erna), dus isolatie van
+  // CRED_FILE is de enige manier om deze test zonder netwerkcall te laten lopen.
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-hs2-'));
+  const isolatedHome = path.join(tmp, '.claude');
+  fs.mkdirSync(isolatedHome, { recursive: true });
   const pidFile = path.join(tmp, 'guard.pid');
-  const r = execFileSync ? null : null; // (execFileSync al geimporteerd bovenin de suite)
+  const isolatedEnv = Object.assign({}, process.env, {
+    HOME: tmp,
+    USERPROFILE: tmp,
+    FORGE_USAGE_GUARD_HOME: isolatedHome,
+    FORGE_USAGE_GUARD_PID: pidFile,
+    FORGE_USAGE_GUARD_LOG: path.join(tmp, 'guard.log'),
+    FORGE_USAGE_GUARD_STATE: path.join(tmp, 'state.json'),
+    FORGE_USAGE_PRESSURE_FILE: path.join(tmp, 'FORGE_USAGE_PRESSURE.json'),
+    FORGE_USAGE_GUARD_JOURNAL: path.join(tmp, 'paused.jsonl'),
+    FORGE_USAGE_GUARD_IDENTITY: path.join(tmp, 'claude-identity.json'), // deliberately absent
+  });
+  // REGRESSION PROOF setup: snapshot the REAL home's pressure file BEFORE the isolated child ticks, so
+  // the assertion at the bottom is real evidence, not a guess.
+  const realPressureFile = path.join(os.homedir(), '.claude', 'FORGE_USAGE_PRESSURE.json');
+  const realPressureExistedBefore = fs.existsSync(realPressureFile);
+  const realPressureMtimeBefore = realPressureExistedBefore ? fs.statSync(realPressureFile).mtimeMs : null;
+
   const res = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'usage-guard.cjs'), 'start', '--interval', '60'], {
     encoding: 'utf8', timeout: 30000,
-    env: Object.assign({}, process.env, {
-      FORGE_USAGE_GUARD_PID: pidFile,
-      FORGE_USAGE_GUARD_LOG: path.join(tmp, 'guard.log'),
-      FORGE_USAGE_GUARD_STATE: path.join(tmp, 'state.json'),
-      // het echte kind zal WEL claimen — dus voor de weiger-kant: bezet het slot vooraf met onszelf
-    }),
+    env: isolatedEnv,
+    // het echte kind zal WEL claimen — dus voor de weiger-kant: bezet het slot vooraf met onszelf
   });
+  // Het echte kind claimde het geisoleerde pid-bestand — lees ZIJN pid NU, VOOR het slot hieronder
+  // bewust wordt overschreven om een bezet-slot-weigering te simuleren. Dit las voorheen PAS na die
+  // overschrijving, dus las het de EIGEN testpid terug en werd het echte kind nooit gedood (het bleef
+  // ~60s doortikken) — precies het lek dat deze fix dichtzet.
+  let realChildPid = null;
+  try { const rec = JSON.parse(fs.readFileSync(pidFile, 'utf8')); if (rec && rec.pid) realChildPid = rec.pid; } catch { }
+
   // vooraf bezet slot: schrijf ONS pid erin en start opnieuw — het kind weigert (already running-conflict)
   fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), script: path.join(__dirname, 'usage-guard.cjs') }));
   const res2 = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'usage-guard.cjs'), 'start', '--interval', '60'], {
     encoding: 'utf8', timeout: 30000,
-    env: Object.assign({}, process.env, {
-      FORGE_USAGE_GUARD_PID: pidFile,
-      FORGE_USAGE_GUARD_LOG: path.join(tmp, 'guard.log'),
-      FORGE_USAGE_GUARD_STATE: path.join(tmp, 'state.json'),
-    }),
+    env: isolatedEnv,
   });
-  // ruim een eventueel door res gestart echt kind op via zijn eigen stop (alleen ons geisoleerde pid-bestand)
-  try {
-    const rec = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
-    if (rec.pid && rec.pid !== process.pid) { try { process.kill(rec.pid); } catch { } }
-  } catch { }
+
+  // Cleanup: kill EXACTLY the real child pid captured above (never re-read from the now-overwritten
+  // pid file), then verify it is actually gone rather than assuming the kill worked.
+  if (realChildPid) {
+    try { process.kill(realChildPid); } catch { }
+    for (let i = 0; i < 30 && G.pidAlive(realChildPid); i++) {
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } catch { }
+    }
+    if (G.pidAlive(realChildPid)) { try { process.kill(realChildPid, 'SIGKILL'); } catch { } }
+  }
+
   const claimed = res.status === 0 && /claim geverifieerd/.test(res.stdout || '');
   assert.ok(claimed, 'een echte start hoort pas "started" te melden NA een geverifieerde claim: ' + (res.stdout || '') + (res.stderr || ''));
   assert.ok(res2.status !== 0 || /already running/.test(res2.stdout || ''), 'een bezet slot hoort een eerlijke weigering of already-running te geven: status=' + res2.status + ' out=' + (res2.stdout || '').slice(0, 120));
+  if (realChildPid) assert.ok(!G.pidAlive(realChildPid), 'het echte gedetacheerde kind (pid ' + realChildPid + ') moet dood zijn na cleanup — geen wees-watcher achterlaten');
+
+  // REGRESSION PROOF (F1): het ECHTE ~/.claude/FORGE_USAGE_PRESSURE.json moet volledig onaangeroerd
+  // blijven — dit is het echte, dragende bewijs dat de isolatie hierboven end-to-end werkte.
+  const realPressureExistedAfter = fs.existsSync(realPressureFile);
+  const realPressureMtimeAfter = realPressureExistedAfter ? fs.statSync(realPressureFile).mtimeMs : null;
+  assert.strictEqual(realPressureExistedAfter, realPressureExistedBefore, 'het ECHTE ~/.claude/FORGE_USAGE_PRESSURE.json mag niet van bestaan-status wisselen door een geisoleerde testrun');
+  assert.strictEqual(realPressureMtimeAfter, realPressureMtimeBefore, 'het ECHTE ~/.claude/FORGE_USAGE_PRESSURE.json mag niet herschreven worden door een geisoleerde testrun');
 });
 
 test('H3.3 logrotatie: een log boven de grens roteert naar .1 en verliest de recente regels niet', () => {

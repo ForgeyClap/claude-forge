@@ -41,6 +41,16 @@ forge_have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Resolves $1 to an absolute, symlink-resolved path when the directory exists; otherwise returns the
+# raw value with a trailing slash stripped. Used only for the HOME-target guard below — never fails.
+forge_resolve_dir() {
+  if [ -d "$1" ]; then
+    (cd -- "$1" >/dev/null 2>&1 && pwd -P)
+  else
+    printf '%s\n' "${1%/}"
+  fi
+}
+
 # Seed the project-root files Forge needs but the .claude payload does not carry:
 #   CLAUDE.md   — created ONLY when absent (your own file is never touched)
 #   .gitignore  — missing Forge lines appended; existing lines left alone
@@ -106,7 +116,7 @@ forge_write_version_marker() {
   fi
   vm_now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
   vm_template="$HOME/.claude/forge/template/.claude"
-  printf '{\n  "forge_version": "%s",\n  "synced_at": "%s",\n  "template": "%s",\n  "installed_by": "install.sh",\n  "_doc": "Written by the claude-forge installer. forge-sync status compares forge_version with the canonical template. Per-install state: keep it out of git (the installer ignores it for you)."\n}\n' \
+  printf '{\n  "forge_version": "%s",\n  "synced_at": "%s",\n  "template": "%s",\n  "installed_by": "install.sh",\n  "_doc": "forge_version is the release this installer wrote; `forge-sync status` prints it as installed= and detects drift by file hash against the canonical template."\n}\n' \
     "$FORGE_VERSION" "$vm_now" "$vm_template" > "$vm_file" || {
     forge_err "could not write $vm_file (forge-sync status will report installed=none)"
     return 0
@@ -187,11 +197,66 @@ forge_copy_file() {
   return 0
 }
 
+# Special-cased merge for <project>/.claude/settings.json (security #4, review #10): a user's own
+# settings.json carries their own permissions/hooks and must never be silently backed-up-and-replaced
+# like an ordinary payload file. A differing file is left completely untouched; the payload version is
+# written alongside as settings.forge-recommended.json so the user can merge what they want by hand.
+# Identical or missing files behave exactly like forge_copy_file.
+forge_copy_settings_file() {
+  local src_file="$1"
+  local dst_file="$2"
+  local dst_dir rec_file
+
+  dst_dir=$(dirname -- "$dst_file")
+  rec_file="$dst_dir/settings.forge-recommended.json"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    if [ -f "$dst_file" ]; then
+      if cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
+        forge_log "  [dry-run] unchanged: $dst_file"
+      else
+        forge_log "  [dry-run] would keep your settings.json; would write: $rec_file"
+      fi
+    else
+      forge_log "  [dry-run] would create: $dst_file"
+    fi
+    return 0
+  fi
+
+  if ! mkdir -p -- "$dst_dir"; then
+    forge_err "failed to create directory: $dst_dir"
+    return 1
+  fi
+
+  if [ -f "$dst_file" ]; then
+    if cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
+      # identical, no-op
+      return 0
+    fi
+    if ! cp -- "$src_file" "$rec_file"; then
+      forge_err "failed to write: $rec_file"
+      return 1
+    fi
+    forge_log "  kept your settings.json; Forge's hooks are in $rec_file — merge what you want"
+    return 0
+  fi
+
+  if ! cp -- "$src_file" "$dst_file"; then
+    forge_err "failed to copy: $src_file -> $dst_file"
+    return 1
+  fi
+  forge_log "  wrote: $dst_file"
+  return 0
+}
+
 # Recursively merge-copy every file under $1 (source dir) into $2 (dest dir).
+# $3 = "1" routes <dir>/settings.json through forge_copy_settings_file instead of the generic
+# backup-then-overwrite path (used for the project payload only — see forge_copy_settings_file).
 # Returns 1 if ANY file failed to copy, 0 only if every file genuinely succeeded.
 forge_copy_tree() {
   local src_dir="$1"
   local dst_dir="$2"
+  local protect_settings="${3:-0}"
   local file rel status=0
 
   if [ ! -d "$src_dir" ]; then
@@ -208,7 +273,11 @@ forge_copy_tree() {
   # actually survives to the `return "$status"` at the end of this function.
   while IFS= read -r -d '' file; do
     rel="${file#"$src_dir"/}"
-    if ! forge_copy_file "$file" "$dst_dir/$rel"; then
+    if [ "$protect_settings" = "1" ] && [ "$rel" = "settings.json" ]; then
+      if ! forge_copy_settings_file "$file" "$dst_dir/$rel"; then
+        status=1
+      fi
+    elif ! forge_copy_file "$file" "$dst_dir/$rel"; then
       status=1
     fi
   done < <(find "$src_dir" -type f -print0)
@@ -270,7 +339,49 @@ main() {
 
   export DRY_RUN
 
-  SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd -P)
+  DO_GLOBAL="1"
+  DO_PROJECT="1"
+  [ "$GLOBAL_ONLY" = "1" ] && DO_PROJECT="0"
+  [ "$PROJECT_ONLY" = "1" ] && DO_GLOBAL="0"
+
+  # -------------------------------------------------------------------------
+  # 0. refuse a HOME target (review HIGH #3): a one-liner run from $HOME (e.g.
+  #    the Windows %USERPROFILE% prompt) must never treat $HOME itself as the
+  #    "project" — that would write the PROJECT payload into ~/.claude and
+  #    replace the user's global settings.json. Checked before any download or
+  #    write, including in --dry-run, and for --project pointing at $HOME too.
+  # -------------------------------------------------------------------------
+  if [ "$DO_PROJECT" = "1" ]; then
+    HOME_RESOLVED=$(forge_resolve_dir "$HOME")
+    PROJECT_RESOLVED=$(forge_resolve_dir "$PROJECT_DIR")
+    if [ -n "$HOME_RESOLVED" ] && [ "$PROJECT_RESOLVED" = "$HOME_RESOLVED" ]; then
+      forge_err "the target project directory is your home directory ($HOME) — refusing to install the project payload into \$HOME/.claude (that would replace your global settings.json). cd into your project folder, or pass --project <dir>."
+      exit 1
+    fi
+
+    # Same refusal when <project>/.claude would resolve to the same directory as the global
+    # ~/.claude (e.g. a symlinked project dir) even though the project dir itself is not $HOME.
+    if [ -d "$PROJECT_DIR/.claude" ] && [ -d "$HOME/.claude" ]; then
+      PROJECT_CLAUDE_RESOLVED=$(forge_resolve_dir "$PROJECT_DIR/.claude")
+      HOME_CLAUDE_RESOLVED=$(forge_resolve_dir "$HOME/.claude")
+      if [ -n "$PROJECT_CLAUDE_RESOLVED" ] && [ "$PROJECT_CLAUDE_RESOLVED" = "$HOME_CLAUDE_RESOLVED" ]; then
+        forge_err "<project>/.claude resolves to your global ~/.claude — refusing to overwrite your global settings. Pass --project <dir> pointing at an actual project folder."
+        exit 1
+      fi
+    fi
+  fi
+
+  # $BASH_SOURCE is empty when the script runs via curl|bash (no script file on disk). Pipe mode is
+  # detected explicitly and NEVER falls back to trusting the current directory (security #10, review
+  # #8): a cwd that happens to contain global-install/.claude + .claude would otherwise be installed
+  # instead of the official archive, and VERSION/SHA256SUMS would be read from that cwd too.
+  PIPE_MODE="0"
+  if [ -z "${BASH_SOURCE[0]:-}" ]; then
+    PIPE_MODE="1"
+    SCRIPT_DIR=""
+  else
+    SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)
+  fi
 
   TMP_DIR=""
   cleanup() {
@@ -284,11 +395,15 @@ main() {
   # 1. dual-source detection
   # -------------------------------------------------------------------------
   SOURCE_DIR=""
-  if [ -d "$SCRIPT_DIR/global-install/.claude" ] && [ -d "$SCRIPT_DIR/.claude" ]; then
+  if [ "$PIPE_MODE" != "1" ] && [ -d "$SCRIPT_DIR/global-install/.claude" ] && [ -d "$SCRIPT_DIR/.claude" ]; then
     SOURCE_DIR="$SCRIPT_DIR"
     forge_log "Running in place from: $SOURCE_DIR"
   else
-    forge_log "Repo payload not found next to this script — downloading ${REPO_OWNER}/${REPO_NAME}@${FORGE_REF} ..."
+    if [ "$PIPE_MODE" = "1" ]; then
+      forge_log "Running from a pipe (no script file on disk) — installing from the downloaded archive."
+    else
+      forge_log "Repo payload not found next to this script — downloading ${REPO_OWNER}/${REPO_NAME}@${FORGE_REF} ..."
+    fi
 
     if [ "$DRY_RUN" = "1" ]; then
       forge_log "  [dry-run] would download https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${FORGE_REF}.tar.gz"
@@ -309,7 +424,8 @@ main() {
 
       # NOTE: SHA256SUMS is only present on tagged release archives. When it is absent (e.g. a plain
       # git clone) the download is simply not hash-verified — that is stated, never silently skipped.
-      if [ -f "$SCRIPT_DIR/SHA256SUMS" ] && forge_have_cmd sha256sum; then
+      # Skipped entirely in pipe mode: there is no script-adjacent SCRIPT_DIR to trust for this lookup.
+      if [ "$PIPE_MODE" != "1" ] && [ -f "$SCRIPT_DIR/SHA256SUMS" ] && forge_have_cmd sha256sum; then
         expected=$(grep "claude-forge.tar.gz" "$SCRIPT_DIR/SHA256SUMS" 2>/dev/null | awk '{print $1}' || true)
         if [ -n "$expected" ]; then
           actual=$(sha256sum "$archive_path" | awk '{print $1}')
@@ -333,29 +449,30 @@ main() {
     fi
   fi
 
-  if [ -f "$SCRIPT_DIR/VERSION" ]; then
-    FORGE_VERSION=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")
-  elif [ -n "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/VERSION" ]; then
+  # SOURCE_DIR is checked FIRST: when a download happened (pipe mode or a missing in-place payload),
+  # VERSION must come from what was actually downloaded, never from cwd/SCRIPT_DIR (review #8/#10).
+  # The SCRIPT_DIR fallback below only ever fires in dry-run (no download occurred) and never in pipe
+  # mode, where SCRIPT_DIR is intentionally empty.
+  if [ -n "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/VERSION" ]; then
     FORGE_VERSION=$(cat "$SOURCE_DIR/VERSION" 2>/dev/null || echo "unknown")
+  elif [ "$PIPE_MODE" != "1" ] && [ -f "$SCRIPT_DIR/VERSION" ]; then
+    FORGE_VERSION=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")
   else
     FORGE_VERSION="unknown"
   fi
   forge_log "claude-forge version: $FORGE_VERSION"
 
   # -------------------------------------------------------------------------
-  # 2. plan
+  # 2. plan (DO_GLOBAL / DO_PROJECT were computed early, ahead of the HOME guard above)
   # -------------------------------------------------------------------------
-  DO_GLOBAL="1"
-  DO_PROJECT="1"
-  [ "$GLOBAL_ONLY" = "1" ] && DO_PROJECT="0"
-  [ "$PROJECT_ONLY" = "1" ] && DO_GLOBAL="0"
-
   forge_log ""
   forge_log "This will write files to:"
-  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude          (global core: forge-core skill, /forge, /setup-forge)"
-  [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/.claude   (per-project payload: skills, agents, dashboard, config)"
+  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude                  (global core: forge-core skill, /forge, /setup-forge)"
+  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude/forge/template   (canonical template: used by forge-sync and the auto-installer)"
+  [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/.claude           (per-project payload: skills, agents, dashboard, config)"
+  [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/CLAUDE.md         (only if missing) and $PROJECT_DIR/.gitignore (Forge lines appended)"
   forge_log ""
-  forge_log "Existing files that differ will be backed up as <file>.forge-bak-<timestamp> before being overwritten."
+  forge_log "Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced — except .claude/settings.json, which is always kept: the payload version is written next to it as settings.forge-recommended.json instead."
   forge_log "Identical files are left untouched. This installer never deletes your existing .claude tree."
   forge_log ""
 
@@ -371,6 +488,19 @@ main() {
         y|Y|yes|YES) : ;;
         *) forge_log "Aborted."; exit 0 ;;
       esac
+    elif [ -r /dev/tty ]; then
+      # stdin is a pipe (curl|bash) but a real terminal is still attached at /dev/tty — read the
+      # confirmation from there instead of failing a perfectly interactive pipe install (review HIGH #2).
+      printf 'Proceed? [y/N] '
+      if read -r reply < /dev/tty; then
+        case "$reply" in
+          y|Y|yes|YES) : ;;
+          *) forge_log "Aborted."; exit 0 ;;
+        esac
+      else
+        forge_err "could not read a confirmation from /dev/tty — aborting to avoid unattended writes (use --yes or FORGE_YES=1)"
+        exit 1
+      fi
     else
       forge_err "non-interactive shell and no --yes/-y or FORGE_YES=1 given — aborting to avoid unattended writes"
       exit 1
@@ -422,7 +552,7 @@ main() {
     forge_log ""
     forge_log "Installing project payload -> $PROJECT_DIR/.claude"
     mkdir -p -- "$PROJECT_DIR"
-    if forge_copy_tree "$SOURCE_DIR/.claude" "$PROJECT_DIR/.claude"; then
+    if forge_copy_tree "$SOURCE_DIR/.claude" "$PROJECT_DIR/.claude" "1"; then
       PROJECT_OK="1"
     else
       PROJECT_OK="0"

@@ -20,7 +20,7 @@ setlocal
 rem PROJECTROOT UIT EIGEN LOCATIE (fix 2026-08-03, zelfde reden als maand-sweep.cmd): dit bestand leeft
 rem in <project>\.claude\forge-bin\, dus de root is twee mappen omhoog. De oude hardgecodeerde
 rem owner-machine-cd pinde ELKE kopie (template-sync, ander project, publieke repo) op een pad dat daar
-rem fout of onbestaand is — en lekte de gebruikersnaam naar de repo.
+rem fout of onbestaand is - en lekte de gebruikersnaam naar de repo.
 for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
 set "NODE=C:\Program Files\nodejs\node.exe"
 if not exist "%NODE%" set "NODE=node"
@@ -32,6 +32,15 @@ rem handles, waardoor cmd.exe bleef wachten en dit script alsnog niet terugkeerd
 rem dat het moest oplossen. Nodig is het ook niet: supervisor.mjs schrijft zijn EIGEN log
 rem (command-center\gateway\gateway-runtime.log, append) en degradeert eerlijk naar console-logging als
 rem dat bestand niet beschikbaar is. Zonder redirect keert Start-Process meteen terug.
-powershell -NoProfile -NonInteractive -Command "Start-Process -FilePath '%NODE%' -ArgumentList 'command-center\gateway\supervisor.mjs' -WorkingDirectory '%ROOT%' -WindowStyle Hidden"
+rem
+rem AUDIT 2026-09-24 (security review LOW #6): NODE en ROOT gingen voorheen als kaal geplakte tekst een
+rem SINGLE-QUOTED PowerShell-string in ('%NODE%' / '%ROOT%'). Een aanhalingsteken in het projectpad
+rem brak die string open, en een gemanipuleerde mapnaam kon zo PowerShell-code laten uitvoeren. Beide
+rem waarden gaan nu via omgevingsvariabelen naar PowerShell; $env:FORGE_CC_NODE / $env:FORGE_CC_ROOT
+rem worden als los token uitgelezen, dus spaties EN aanhalingstekens in het pad blijven veilig zonder
+rem dat ze ooit als PowerShell-scripttekst worden herlezen.
+set "FORGE_CC_NODE=%NODE%"
+set "FORGE_CC_ROOT=%ROOT%"
+powershell -NoProfile -NonInteractive -Command "Start-Process -FilePath $env:FORGE_CC_NODE -ArgumentList 'command-center\gateway\supervisor.mjs' -WorkingDirectory $env:FORGE_CC_ROOT -WindowStyle Hidden"
 set "RC=%ERRORLEVEL%"
 endlocal & exit /b %RC%

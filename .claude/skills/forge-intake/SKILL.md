@@ -1,6 +1,6 @@
 ---
 name: forge-intake
-description: Prompt Master intake — captures the real goal via one clarifying-question list before building. Use at the START of any /forge build/create/automate task — intake, requirements, scope, PRD.
+description: Prompt Master intake: capture the real goal before building. Silent by default (Lead answers, max one owner question); full list on /forge interview. Use at the START of any /forge build task.
 ---
 
 # forge-intake — Prompt Master intake + dispatch shaping
@@ -12,18 +12,18 @@ genuine correction (an owner fix, a false assumption caught, a preference stated
 
 Two standing behaviours the owner requested (2026-07-13): **Prompt Master is always on.**
 
-## 1. INTAKE — ask before building (every build task; trivial tasks skip)
+## 1. INTAKE — answer before building (every build task; trivial tasks skip; SILENT by default since 2026-09-23)
 
 At the START of any `/forge` task that BUILDS/creates/automates a real deliverable (L2+), before writing work packages, run the intake so the project's goal is captured. Skip only truly trivial turns (a status question, a one-line fix, "what does X do").
 
 1. **Detect the project type** with `forge-router` (website · ecommerce · fullstack · electron · n8n · integration · rag · voice · prediction · scraping · dashboard · or a new/mixed type).
-2. **Generate the question list** — the owner chose ONE big list:
+2. **Generate the question list** (the Lead answers it — the owner is not shown the list unless they ran `/forge interview`):
    ```
    node .claude/forge-bin/forge-intake.cjs --type <slug> --task "<one-line task>" --run <run_id>
    ```
    It reads the subagent-brainstormed bank at `.claude/config/intake/question-bank.json` (universal questions first, then type-specific; required before recommended). Use `--json` if you want to map it to an ask-tool; use `--tier required` for a quick essential round on small builds.
 3. **For a NEW / mixed / unusual project type** (no matching `byType` slug): dispatch ONE subagent to brainstorm 6-10 extra high-value questions for that specific project, save them as a JSON array, and merge with `--extra <file.json>`. (This is the "Prompt Master creates questions with subagent help" path.) Optionally propose adding the new type to the bank.
-4. **Present the list to the owner** as ONE consolidated list (the numbered output, or batched `AskUserQuestion` rounds of ≤4 if you prefer buttons — the tool's `options` map straight onto choices). Let the owner answer per number or pick options; every question is skippable.
+4. **Answer the list yourself** from the mission text, the project scan, `.claude/.forge-setup.json` and `FORGE_PROJECT_PROFILE.md`; record the answers in the PRD under *Assumptions (auto-filled)*. Ask the owner **at most one** question, only when two existing targets are equally plausible. Presenting the list as ONE consolidated set (or batched `AskUserQuestion` rounds of ≤4) is the `/forge interview` opt-in — external audit 2026-09-23: the default flow used to show 21–24 questions per build. Let the owner answer per number or pick options; every question is skippable.
 5. **Record the answers** into the run: they become the basis for `forge-prd` (PRD → tickets) and are quoted in the Boss dispatch prompts. A material answer the owner corrects can also be persisted via `forge-reflect` as an owner-correction lesson.
 
 HONESTY: never build on assumed answers — if the owner skips a *required* question, state the assumption you're proceeding with. The intake sharpens the goal; it does not replace owner approval gates.

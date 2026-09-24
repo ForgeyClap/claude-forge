@@ -58,24 +58,17 @@ if exist "%CC_GW%" (
 )
 goto end
 :logevent
-REM Usage: forge.cmd log-event RUN_ID EVENT_TYPE payload.json     (recommended: any .json path)
-REM        forge.cmd log-event RUN_ID EVENT_TYPE JSON_TOKEN       (inline, cmd doubled-quote escape only)
-REM Why a file: the previous form forwarded the JSON as argv tokens, which cmd re-tokenises. Equals
-REM signs, semicolons and commas inside the payload became spaces, and an ampersand inside a value
-REM executed the rest of the line as a command (both reproduced by the external audit of 2026-09-23
-REM against the shipped wrapper). Putting the payload in an environment variable does NOT help:
-REM cmd toggles its quote state on every embedded quote, so an ampersand inside a JSON value can still
-REM land in an unquoted stretch. The only payload cmd can never mangle is a file it never parses, so a
-REM 4th argument whose extension is .json is passed to node with the file option and read there.
-REM Inline JSON still works for simple payloads without ampersands, using the doubled-quote escape.
-REM The extension check below never expands the payload itself into a command line.
-REM goto-labels, not parenthesised blocks: cmd expands the 4th argument at parse time of a whole block,
-REM so a JSON token with doubled quotes inside a block breaks the parser (syntax of the command is
-REM incorrect). On a plain line it is forwarded as one token, exactly as the original wrapper did.
+REM Usage: forge.cmd log-event RUN_ID EVENT_TYPE payload.json - the .cmd wrapper accepts ONLY a .json path.
+REM Audit 2026-09-24 (security review LOW #5): inline JSON is refused here on purpose. A backslash-escaped
+REM quote, or JSON pasted from Windows PowerShell 5.1 (which does not escape embedded quotes), can flip
+REM cmd's quote state so an ampersand inside a value runs the rest of the line as a command, and call
+REM re-expands percent-variables found inside the payload too. A file cmd never parses is the only form
+REM it cannot mangle, so a 4th argument is required and must end in .json; anything else is a usage error.
+REM For an inline JSON string instead of a file, use forge.ps1 or forge.sh - see forge-bin README.md.
 if "%~4"=="" goto logevent_noarg
 if /I "%~x4"==".json" goto logevent_file
-"%NODE_CMD%" "%DASH%\log-event.cjs" %2 %3 %4
-goto end
+echo Usage: forge.cmd log-event RUN_ID EVENT_TYPE payload.json - only a .json file is accepted here; for inline JSON use forge.ps1 or forge.sh.
+exit /b 2
 :logevent_file
 "%NODE_CMD%" "%DASH%\log-event.cjs" %2 %3 --file %4
 goto end

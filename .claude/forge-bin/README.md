@@ -14,7 +14,7 @@ On Windows, prefer the **`.cmd`** wrappers — PowerShell often blocks `.ps1` by
 | Status | `.claude\forge-bin\forge-status.cmd` | `.\.claude\forge-bin\forge-status.ps1` | `bash .claude/forge-bin/forge-status.sh` |
 | Recent runs | `.claude\forge-bin\forge-runs.cmd` | `.\.claude\forge-bin\forge-runs.ps1` | `bash .claude/forge-bin/forge-runs.sh` |
 | Latest report | `.claude\forge-bin\forge-open-report.cmd` | `.\.claude\forge-bin\forge-open-report.ps1` | `bash .claude/forge-bin/forge-open-report.sh` |
-| Log an event | `.claude\forge-bin\forge-log-event.cmd <run_id> <type> payload.json` — a `.json` file is the safe form (cmd never parses it); inline JSON works only with cmd's `""` escape and no `&` | `.\.claude\forge-bin\forge-log-event.ps1 <run_id> <type> '<json>'` | `bash .claude/forge-bin/forge-log-event.sh <run_id> <type> '<json>'` |
+| Log an event | `.claude\forge-bin\forge-log-event.cmd <run_id> <type> payload.json` — the `.cmd` form accepts ONLY a `.json` file path (cmd never parses it); inline JSON is refused (exit 2) — use `.ps1`/`.sh` for inline JSON | `.\.claude\forge-bin\forge-log-event.ps1 <run_id> <type> '<json>'` | `bash .claude/forge-bin/forge-log-event.sh <run_id> <type> '<json>'` |
 | Dispatcher | `.claude\forge-bin\forge.cmd <cmd>` | `.\.claude\forge-bin\forge.ps1 <cmd>` | `bash .claude/forge-bin/forge.sh <cmd>` |
 
 Dispatcher commands: `dashboard` / `start` · `status` · `runs` · `open-report` · `health` · `assign-only` · `log-event <run_id> <type> <payload>` · `resume <run_id>` · `learn` · `legacy-dashboard` (explicit only — see below).

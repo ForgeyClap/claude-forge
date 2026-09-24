@@ -48,6 +48,15 @@
  * "nvidia_shift_at":<n>,"pause_at":<n>,"updated_at":"<iso>"} — always written (even when usage data is
  * missing/unreadable, as level "unknown") so a reader never sees a stale flag. `status` additionally
  * prints a one-line `pressure: ...` summary. Real week% only — never fabricated.
+ *
+ * TEST/ISOLATION SEAM (F1, security fix 2026-09-24): `FORGE_USAGE_GUARD_HOME` overrides the `.claude`
+ * home dir this whole file derives CRED_FILE / STATE_FILE / PRESSURE_FILE / PID_FILE / LOG_FILE /
+ * PAUSED_JOURNAL and (via `FORGE_USAGE_GUARD_IDENTITY`) IDENTITY_FILE from. Unset, behaviour is
+ * byte-identical to before: the real `~/.claude`. A mandatory doctor test run that spawns
+ * `usage-guard.cjs start` MUST set this (and the individual FORGE_USAGE_GUARD_* / FORGE_USAGE_PRESSURE_FILE
+ * vars it needs) to a temp directory — otherwise the child's first tick reads the REAL OAuth token from
+ * `~/.claude/.credentials.json`, calls the live Anthropic usage endpoint, and overwrites the REAL
+ * `~/.claude/FORGE_USAGE_PRESSURE.json`, even though no credentials were ever configured for the test.
  */
 const fs = require('fs');
 const os = require('os');
@@ -55,7 +64,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync, execSync } = require('child_process');
 
-const HOME = path.join(os.homedir(), '.claude');
+const HOME = process.env.FORGE_USAGE_GUARD_HOME || path.join(os.homedir(), '.claude');
 const CRED_FILE = path.join(HOME, '.credentials.json');
 const STATE_FILE = process.env.FORGE_USAGE_GUARD_STATE || argv('state', path.join(HOME, 'FORGE_USAGE_GUARD_STATE.json'));
 const PRESSURE_FILE = process.env.FORGE_USAGE_PRESSURE_FILE || path.join(HOME, 'FORGE_USAGE_PRESSURE.json');
@@ -282,7 +291,11 @@ function writePressureFile(weekPct, nvidiaShiftAt, pauseAt) {
 // the pressure signal and the credits override were all being made on the wrong account's data.
 // Identity is a SHORT SHA-256 FINGERPRINT, never the raw uuid/email/token: state files are read by
 // dashboards, synced between projects and (sanitized) published, so no raw identifier may land in one.
-const IDENTITY_FILE = path.join(os.homedir(), '.claude.json'); // Claude Code's own profile store
+// F1 (2026-09-24): follows the same test/isolation seam as HOME above — an explicit override wins,
+// else it derives from HOME's parent so an isolated HOME (FORGE_USAGE_GUARD_HOME) also isolates this
+// file; unset, path.dirname(path.join(os.homedir(), '.claude')) === os.homedir(), so default behaviour
+// is unchanged.
+const IDENTITY_FILE = process.env.FORGE_USAGE_GUARD_IDENTITY || path.join(path.dirname(HOME), '.claude.json'); // Claude Code's own profile store
 function fingerprintAccount(oauthAccount) {
   const a = oauthAccount || {};
   const uuid = typeof a.accountUuid === 'string' ? a.accountUuid.trim() : '';

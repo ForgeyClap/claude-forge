@@ -1130,8 +1130,10 @@ If any earlier rule appears to justify skipping these, that reading is WRONG. Sc
 ## 2. BARE-FOLDER RULE — auto-install before work
 If the active project has no Forge install (`.claude/forge-dashboard/` missing), the Lead must FIRST install the project-local Forge (minimum: forge-dashboard + forge-bin incl. forge-paperclip.cjs + memory scaffolds + FORGE_ECC_MODE/SESSION_STATE from `~/.claude/forge/template/`), then proceed. "The folder was empty" is never a reason to run without dashboard/Paperclip.
 
-## 3. ARM → START GATE (default flow)
-At `gebruik forge <mission>` the Lead runs the FULL SETUP but does NOT implement yet:
+## 3. ARM → START GATE (default flow) — SUPERSEDED
+**2026-09-23: This gate is no longer the default; see "Build by default" below.** The ARM flow remains available for testing/review flows, but `/forge <task>` now posts a plan and continues immediately instead of waiting.
+
+Historical (2026-07-02): At `gebruik forge <mission>` the Lead runs the FULL SETUP but does NOT implement yet:
 1. goal intake (2–4 clarifying questions if needed) → confirmed goal
 2. install check (rule 2) → dashboard up → run_id created → `run.json` status **"armed"**
 3. project CLAUDE.md + Mission Blueprint/plan + work packages + task board
@@ -1280,7 +1282,7 @@ END OF USAGE GUARD ADD-ON.
 
 **§2 Paperclip = separate opt-in plugin.** Only on an explicit user request ("gebruik paperclip", "start paperclip", "/forge paperclip <goal>") run the existing bridge flow (`forge-paperclip.cjs up|ensure|ticket|pause|resume|stop`). All existing Paperclip rules (model tiers on agents, pause-not-stop, template-first fixes, honest logging into the Forge dashboard) apply unchanged WHEN it is used.
 
-**§3 Usage guard is independent of Paperclip.** The usage guard (95% pause / 0% resume + in-chat messages) keeps working without Paperclip: the Forge dashboard start and the ARM gate now start it (`usage-guard.cjs start`). When Paperclip is not running the guard simply has no agents to pause — the in-chat pause/resume messages and the subagent-spawn deny still protect the quota.
+**§3 Usage guard is independent of Paperclip (OPT-IN ONLY).** **SUPERSEDED 2026-09-23:** The usage guard no longer auto-starts silently. It is opt-in only and is started only when the user explicitly requests usage protection. When used, the guard (95% pause / 0% resume + in-chat messages) works without Paperclip: on request the Forge dashboard start (`/forge dashboard`) and an explicit `/forge --usage-protect` flag invoke it (`usage-guard.cjs start`). When Paperclip is not running the guard simply has no agents to pause — the in-chat pause/resume messages and the subagent-spawn deny still protect the quota when active.
 
 END OF PAPERCLIP OPT-IN ADD-ON.
 

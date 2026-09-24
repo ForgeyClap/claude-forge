@@ -1,18 +1,18 @@
 ---
 name: forge-intake
-description: "Prompt Master intake for Forge. Use at the START of any /forge BUILD/create/automate task to capture the project's real goal before building — presents the owner ONE clarifying-question list (subagent-brainstormed, project-type-aware), then feeds the answers into the PRD and Boss dispatch prompts. Also governs that every Boss dispatch is Prompt Master-shaped and lint-checked. Keywords: intake, requirements, clarify, goal, scope, questions, kickoff, brief, PRD."
+description: "Prompt Master intake: capture the real goal before building. Silent by default (Lead answers, max one owner question); full list on /forge interview. Use at the START of any /forge build task."
 ---
 
 # forge-intake — Prompt Master intake + dispatch shaping
 
 Two standing behaviours the owner requested (2026-07-13): **Prompt Master is always on.**
 
-## 1. INTAKE — ask before building (every build task; trivial tasks skip)
+## 1. INTAKE — answer before building (every build task; trivial tasks skip; SILENT by default since 2026-09-23 — the Lead answers the list itself, records the answers as *Assumptions (auto-filled)* and asks the owner at most ONE question; presenting the list is the `/forge interview` opt-in)
 
 At the START of any `/forge` task that BUILDS/creates/automates a real deliverable (L2+), before writing work packages, run the intake so the project's goal is captured. Skip only truly trivial turns (a status question, a one-line fix, "what does X do").
 
 1. **Detect the project type** with `forge-router` (website · ecommerce · fullstack · electron · n8n · integration · rag · voice · prediction · scraping · dashboard · or a new/mixed type).
-2. **Generate the question list** — the owner chose ONE big list:
+2. **Generate the question list** (for the Lead to answer; shown to the owner only on `/forge interview`):
    ```
    node .claude/forge-bin/forge-intake.cjs --type <slug> --task "<one-line task>" --run <run_id>
    ```

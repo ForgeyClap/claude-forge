@@ -58,10 +58,13 @@ NVIDIA Build and NIM Model Mapping for Permanent Forge Agent Roles.pdf
 .claude/forge-sync-receipt.json
 .claude/forge-backups/
 
-# Skills that this distribution deliberately does NOT ship under .claude/skills/ (see
-# .claude/skills/VENDORED-SKILLS.md): the vendored third-party ones, plus skills that are shipped once
-# under plugins/forge/skills/ instead. A `forge-sync install` into this clone copies them in from the
-# maintainer's tree; ignoring them here keeps that from silently re-adding a second copy (2026-08-04).
+# Vendored third-party skills that this distribution deliberately does NOT ship under .claude/skills/ (see
+# .claude/skills/VENDORED-SKILLS.md for source + pinned commit). A `forge-sync install` into this clone copies
+# them in from the maintainer's tree; ignoring them here keeps that from silently re-adding them (2026-08-04).
+# 2026-09-24: forge-prd was wrongly listed here ("shipped once under plugins/forge/skills/") — the FULL install copies
+# .claude/ only, so every full install lacked the PRD skill the router requires. It ships again.
 .claude/skills/gsap/
 .claude/skills/humanizer/
-.claude/skills/forge-prd/
+
+# runtime marker written by the precompact hook and consumed by SessionStart (holds a local transcript path)
+.claude/.forge-snapshot-due.json

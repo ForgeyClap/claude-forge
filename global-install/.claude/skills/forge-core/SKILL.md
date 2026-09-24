@@ -114,7 +114,7 @@ When the user writes **"install Forge V2 into this project"** (or clearly asks t
 
 **New-project defaults:** ECC **Normal Mode ON**, ECC **Full Test Mode OFF**, **Forge Session Mode OFF** (until `/forge`/"gebruik Forge" starts it), project isolation ON, no heavy security gates, no global unblock, no global config changes. New projects work **ECC-based + Lead-Agent-studio by default** — they just never get broad test/unblock mode automatically.
 
-**Do NOT install:** any hooks, `.claude/settings.json` security config, AgentShield, `secrets-guard`, `prod-deploy-guard`, any mandatory security/production gate, or any **global unblock / ECC Full Test Mode**. **Never** touch files outside `<project>` or modify global Claude/ECC folders during an install.
+**Do NOT install:** AgentShield, `secrets-guard`, `prod-deploy-guard`, any mandatory security/production gate, any hook beyond the four the payload's `.claude/settings.json` already carries (two PreCompact snapshots, one SessionStart re-inject, one PostToolUse tool-log with matcher `Write|Edit|MultiEdit|NotebookEdit|Bash` — all local, disclosed in AI-INSTALL §2b, none of them a security gate), or any **global unblock / ECC Full Test Mode**. An existing project `settings.json` is never replaced (the installer writes Forge's copy next to it as `settings.forge-recommended.json`). **Never** touch files outside `<project>` or modify global Claude/ECC folders during an install.
 
 After install, the project-local `/forge` + `forge-*` skills + dashboard take over for that project.
 
