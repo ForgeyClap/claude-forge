@@ -51,19 +51,74 @@
  * value derived from a bearer credential is ever persisted or logged) — so this uses NON-secret FILE
  * METADATA instead: `opts.credentialGeneration` is a caller-supplied mtime+size stamp of the credentials
  * file (usage-guard.cjs's `credentialGeneration()`), and `record.credentialGeneration` is the SAME stamp
- * captured by `override-on` at grant time. When the two differ — the credential file has changed since the
- * grant was issued or last confirmed — the grant is NOT honoured (`rejected:'credential-generation-
- * unconfirmed'`, fail toward pausing) unless the caller's `opts.confirmedGeneration` already equals the
- * current stamp, meaning a LATER tick already re-read the profile, found it still matching this grant's
- * account label, and recorded that specific generation as confirmed (usage-guard.cjs's tick() does this
- * bookkeeping in state.json's per-account cache — the grant file itself is never touched by this, keeping
- * "only override-on/override-off ever write the grant" true). HONEST LIMITATION (documented, not hidden):
- * this is a non-secret, best-effort signal, not a cryptographic proof of identity — a profile file that
- * NEVER updates (permanently stale) still gets "confirmed" after exactly one grace tick once the SAME new
- * generation is observed twice in a row while the label still matches, because there is no non-secret signal
- * left to distinguish that from a legitimate one-time confirmation. What this closes is the MEASURED
- * defect — zero pauses forever — not a permanent guarantee against an indefinitely-stale profile.
+ * captured by `override-on` at grant time.
+ *
+ * FINAL POLICY (2026-09-24, Codex p13 out-p13 finding N10, wave 8 — REPLACES the wave-7 "grace tick"):
+ * wave 7's rule was "the SAME new generation observed twice in a row (once unconfirmed, once again
+ * unchanged) is promoted to confirmed" — Codex proved this is not evidence of anything: repeating an
+ * unauthenticated observation of the SAME metadata never distinguishes a legitimate one-time refresh from a
+ * permanently-stale profile parked on the wrong account (`N10_stale_profile_low_then_high`: usage 10% then
+ * 100% then 100% produced ZERO pauses from the second tick on). That promotion path is gone. A grant whose
+ * stamped `credentialGeneration` no longer matches the CURRENT one is honoured again in exactly two ways,
+ * never a third:
+ *   (a) MEMORY PROOF — this exact watcher PROCESS already confirmed some earlier generation for this same
+ *       account, and `opts.credentialFp` (the bearer credential's own fingerprint — sha256 of the refresh
+ *       token, computed by usage-guard.cjs's `fetchUsage()`/`readCredentialFp()` and held ONLY in that
+ *       process's memory for this one comparison) is IDENTICAL to the fingerprint this module recorded in
+ *       memory at the tick that confirmation happened. This is exactly what an ordinary OAuth access-token
+ *       refresh looks like: the credentials FILE is rewritten (new mtime/size = new "generation"), but the
+ *       refresh token inside it — and therefore its fingerprint — is unchanged. Proof, not repetition.
+ *   (b) FRESH OWNER AUTHORIZATION — the owner reruns `override-on`, which stamps the grant's own
+ *       `credentialGeneration` to whatever is CURRENT at that moment. The very next tick then sees
+ *       `record.credentialGeneration === opts.credentialGeneration` directly (the trivial-match branch
+ *       below) and never even reaches the memory-proof check.
+ * The memory-proof baseline (`credentialProofByAccount`, a plain in-process `Map`, module-level, defined
+ * below) is established the FIRST time an account's generation is seen to equal the grant's own stamp
+ * (either right after a fresh override-on, or — for an already-running watcher — the first ordinary tick
+ * after the grant was issued) and is advanced forward on every SUBSEQUENT proof-confirmed generation change.
+ * It is NEVER written to disk, NEVER logged, and NEVER returned to a caller — see GUARD-TOKEN-FINGERPRINT
+ * above. A WATCHER RESTART starts a brand-new process with an empty Map: no prior confirmation survives a
+ * restart, so a generation that has already drifted away from the grant's own stamp by the time the watcher
+ * comes back up requires fresh owner authorization again, exactly like a genuine rotation would (this also
+ * closes Codex's M5-B note that a persisted "confirmed" flag would let a restart "preserve confirmation
+ * rather than establish fresh identity" — there is no persisted flag left to preserve).
+ *
+ * Two further gaps the wave-7 code left open are also closed here: a CURRENT credential-file stamp that
+ * cannot be read at all (`opts.credentialGeneration` absent/falsy — e.g. `.credentials.json` briefly
+ * unreadable) used to silently skip the whole check and read as active; it is now an explicit refusal
+ * (`rejected:'credential-generation-unavailable'`) — an unverifiable current state must never default to
+ * "assume it still matches". A LEGACY grant written before this field existed at all
+ * (`record.credentialGeneration` absent) used to be treated as exempt from the check entirely and read as
+ * active; it is now also an explicit refusal (`rejected:'credential-generation-missing'`) — a plain,
+ * one-time `override-on` re-stamps it and re-arms the grant with the current field.
+ *
+ * HONEST LIMITATION (documented, not hidden): this is still a non-secret, best-effort signal, not a
+ * cryptographic proof of account identity — a credential's own refresh-token fingerprint is a real bearer
+ * secret's derivative and is trustworthy evidence that "the same login session is still in control", but it
+ * says nothing about whether Anthropic's own token-refresh flow ever ROTATES the refresh token itself on an
+ * ordinary refresh (UNKNOWN to this codebase, not verified against live behaviour) — if it does, an entirely
+ * ordinary refresh would be indistinguishable from a real account switch and would correctly, if
+ * conservatively, require the owner to run `override-on` again more often than strictly necessary. That is
+ * the safe direction for this trade-off to fail in.
  */
+// credentialProofByAccount (2026-09-24, Codex p13 wave 8) — IN-PROCESS-ONLY memory of the last credential
+// fingerprint this watcher process itself observed at the tick it confirmed a given account's generation.
+// Keyed by the OPAQUE local account label (never a raw fingerprint/uuid), never persisted to disk, never
+// logged, never returned from resolveOwnerOverride() to any caller. Lost on every process restart BY
+// DESIGN — see the FINAL POLICY note above for why that is the correct, safe behaviour, not a bug.
+let credentialProofByAccount = new Map();
+/** __resetCredentialProofForTests() -> void. Test-only seam (mirrors this module's sibling
+ *  __setOwnerGrantRootForTests convention in usage-guard.cjs): clears the in-memory Map above, simulating a
+ *  watcher restart so a test can prove "no prior confirmation survives a restart" deterministically instead
+ *  of needing a real second OS process for every such scenario. Production code never calls this. */
+function __resetCredentialProofForTests() { credentialProofByAccount = new Map(); }
+/** rememberCredentialProof(accountLabel, generation, fp) -> void. Only ever stores a REAL, non-empty
+ *  fingerprint — a tick where the credential file could not be read at all (fp null/absent) leaves whatever
+ *  baseline already existed untouched rather than overwriting known-good evidence with "nothing". Pure
+ *  side effect on the module-level Map only; never throws. */
+function rememberCredentialProof(accountLabel, generation, fp) {
+  if (typeof fp === 'string' && fp) credentialProofByAccount.set(accountLabel, { generation, credentialFp: fp });
+}
 const guardGrant = require('./forge-ownergrant.cjs');
 const guardRedact = require('./usage-guard-redact.cjs');
 
@@ -73,18 +128,18 @@ const guardRedact = require('./usage-guard-redact.cjs');
  *  override-on/verifyForcedWatchGrant to (its module-level `TRUSTED_OWNERGRANT_ROOT` — never an
  *  environment-selected root; see that file's own N06 history for why). `opts.accountLabel` (N10,
  *  2026-09-24) is the CURRENT opaque local identity label the caller is deciding for; a grant is honoured
- *  ONLY when this exactly matches the grant's own `accountLabel`. `opts.credentialGeneration` /
- *  `opts.confirmedGeneration` (N10 residual, 2026-09-24 — see the file header) are the current credential
- *  FILE's mtime+size stamp and the last-confirmed one for this account respectively; both are optional and a
- *  missing/non-string value simply skips this extra check (old-style grants written before this field
- *  existed, or a caller that cannot supply one, keep the pre-existing account-binding behaviour). `rejected`
- *  is `null` when there is simply no active grant at all (absent/expired/invalid-expiry — the ordinary,
- *  unremarkable case), or one of `'unknown-identity'` | `'label-less-grant'` | `'foreign-account'` |
- *  `'credential-generation-unconfirmed'` when a real, otherwise-active grant was refused specifically because
- *  it could not be verified against the current account — callers may use this to log a more specific reason
- *  (the account labels and generation stamps themselves are non-secret and safe to log; never a
- *  fingerprint/uuid/token). `currentGeneration` is set only on a `'credential-generation-unconfirmed'`
- *  rejection, so the caller can record it as "seen, pending confirmation" for next tick. Never throws. */
+ *  ONLY when this exactly matches the grant's own `accountLabel`. `opts.credentialGeneration` (N10 residual,
+ *  2026-09-24) is the current credential FILE's mtime+size stamp; `opts.credentialFp` (wave 8, 2026-09-24 —
+ *  see the file header's FINAL POLICY note) is the current bearer credential's own fingerprint, kept ONLY in
+ *  the caller's memory and used here SOLELY for the in-process memory-proof comparison — never persisted,
+ *  never logged, never present anywhere in this function's return value. `rejected` is `null` when there is
+ *  simply no active grant at all (absent/expired/invalid-expiry — the ordinary, unremarkable case), or one of
+ *  `'unknown-identity'` | `'label-less-grant'` | `'foreign-account'` | `'credential-generation-missing'` |
+ *  `'credential-generation-unavailable'` | `'credential-generation-unconfirmed'` when a real, otherwise-active
+ *  grant was refused specifically because it could not be verified against the current account/credential —
+ *  callers may use this to log a more specific reason (account labels and generation stamps are non-secret
+ *  and safe to log; a fingerprint/uuid/token never is). `currentGeneration` is set only on a
+ *  `'credential-generation-unconfirmed'` rejection. Never throws. */
 function resolveOwnerOverride(opts) {
   const o = opts || {};
   const record = guardGrant.readOverrideGrant(o);
@@ -93,15 +148,29 @@ function resolveOwnerOverride(opts) {
   if (!current) return { active: false, record, rejected: 'unknown-identity' };
   if (typeof record.accountLabel !== 'string' || !record.accountLabel) return { active: false, record, rejected: 'label-less-grant' };
   if (record.accountLabel !== current) return { active: false, record, rejected: 'foreign-account' };
-  // N10 residual: the profile-derived label matched, but the credential FILE may have changed since this
-  // grant was issued/last confirmed — see the file header for the full rationale and its honest limitation.
-  const curGen = typeof o.credentialGeneration === 'string' && o.credentialGeneration ? o.credentialGeneration : null;
+  // N10 residual / wave 8: the profile-derived label matched, but the credential FILE's own generation must
+  // ALSO be verifiable and match (directly, or via in-memory proof) — see the file header's FINAL POLICY.
   const grantGen = typeof record.credentialGeneration === 'string' && record.credentialGeneration ? record.credentialGeneration : null;
-  const confirmedGen = typeof o.confirmedGeneration === 'string' && o.confirmedGeneration ? o.confirmedGeneration : null;
-  if (grantGen && curGen && grantGen !== curGen && confirmedGen !== curGen) {
-    return { active: false, record, rejected: 'credential-generation-unconfirmed', currentGeneration: curGen };
+  if (!grantGen) return { active: false, record, rejected: 'credential-generation-missing' };
+  const curGen = typeof o.credentialGeneration === 'string' && o.credentialGeneration ? o.credentialGeneration : null;
+  if (!curGen) return { active: false, record, rejected: 'credential-generation-unavailable' };
+  const curFp = typeof o.credentialFp === 'string' && o.credentialFp ? o.credentialFp : null;
+  if (grantGen === curGen) {
+    // trivial match — nothing has changed since the grant was issued/last re-stamped by override-on. This
+    // is also the ONLY place a fresh owner authorization (b) ever takes effect: override-on always stamps
+    // the CURRENT generation, so its very next tick lands here directly, never through the proof check below.
+    rememberCredentialProof(current, curGen, curFp);
+    return { active: true, record };
   }
-  return { active: true, record };
+  // The generation changed since the grant was issued/last confirmed. Honoured again ONLY via memory proof
+  // (a) — see the file header. No proof, or no baseline at all (first-ever mismatch this process has seen
+  // for this account — including right after a restart), fails toward pausing.
+  const baseline = credentialProofByAccount.get(current);
+  if (baseline && curFp && baseline.credentialFp === curFp) {
+    rememberCredentialProof(current, curGen, curFp);
+    return { active: true, record };
+  }
+  return { active: false, record, rejected: 'credential-generation-unconfirmed', currentGeneration: curGen };
 }
 
 /** cachedOverrideFrom(record) -> the object usage-guard.cjs should write into state.ownerOverride to keep
@@ -195,4 +264,7 @@ function describeOverrideLockOutcome(kind, onLock, ctx) {
   return { line: 'usage-guard OVERRIDE ' + (onLock.value.had ? 'CLEARED' : 'was not set') + ' — normal plan-limit guard re-armed', partial: false };
 }
 
-module.exports = { resolveOwnerOverride, cachedOverrideFrom, resolveGrantUntil, describeOverrideLockOutcome };
+module.exports = {
+  resolveOwnerOverride, cachedOverrideFrom, resolveGrantUntil, describeOverrideLockOutcome,
+  __resetCredentialProofForTests,
+};

@@ -591,15 +591,18 @@ cannot be undone with an allow rule, because deny always wins. Every Forge build
 - **Reading a secret through the shell** (`cat .env`, `Get-Content .env`). Deny rules govern Claude's Read
   tool, not the commands a shell runs. The gate hook does not treat a read as a destructive command either.
 - Unlisted names such as `.env.staging2` or any other variant not in the 29-rule list above.
-- **Path anchoring (Codex p12 M5-B, 2026-09-24 — documented, not changed).** Every rule here uses the `./path`
-  form, which Claude Code resolves against the CURRENT WORKING DIRECTORY; the `/path` form would resolve against the
-  settings source (the project). The two coincide whenever Claude is started in the project root — and project
-  settings, hooks included, are only loaded from the current working directory's `.claude/` anyway, so a session
-  started elsewhere loads none of these 29 rules rather than mis-anchored ones. Changing one rule to `/path` while
-  the other 28 stay `./` would buy nothing and break the fixture parity; the owner-approval secret is therefore
-  guarded by three layers that do not depend on anchoring: it is gitignored (source, installer snippet and the
-  distribution's own `.gitignore`), the gate hook never reads it, and `forge-ownergrant.cjs` reads it only from the
-  fixed trusted project root (`TRUSTED_OWNERGRANT_ROOT`), never from an environment-selected path.
+- **Path anchoring, and what each control really does (Codex p12 M5-B, refined after p13, 2026-09-24).** Every rule
+  here uses the `./path` form, which Claude Code resolves against the CURRENT WORKING DIRECTORY; the `/path` form would
+  resolve against the settings source. Project settings — this deny list and the hooks — are only loaded from the
+  current working directory's `.claude/`, so the Read denial applies ONLY in a correctly configured session started
+  in the project root; in any other session (another cwd, an `--add-dir` directory, a different tool) it does not
+  apply at all, and changing one rule to `/path` would not change that — the 29 rules stay consistent. The other
+  controls are named for what they do, because none of them is a confidentiality guarantee against another tool: the
+  `.gitignore` entries (source, installer snippet, distribution) prevent ACCIDENTAL STAGING of the secret and the grant
+  record — they stop nothing from reading them; `forge-ownergrant.cjs` reads the secret only from the fixed trusted
+  project root (`TRUSTED_OWNERGRANT_ROOT`), which prevents REDIRECTING the reader to another file — it denies no read
+  by other code; the gate hook never reads the secret, which bounds that hook only. The real boundary is the local
+  user account's filesystem permissions (the trusted-local-writer model written down for the unsigned grant).
 
 **No `_doc` key inside `permissions`.** Claude Code is proven to tolerate an unknown key on a hook-matcher
 object: the existing `_matcher_doc` is there and the ledger keeps recording. It is not proven to tolerate one

@@ -930,12 +930,15 @@ test('V15: a genuinely GRANTED, unexpired override still suppresses pausing at 1
     // N10 (2026-09-24): the grant is now bound to an account label — write one MATCHING the identity this
     // tick measures under, and a real future `until` (N12: a missing expiry is INVALID, never "unlimited").
     'const until = new Date(Date.now()+3600000).toISOString();',
-    'require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ').writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "test grant", accountLabel: "v15-on-account" }, { projectRoot: grantRoot });',
+    // wave 8: a grant now needs a matching credentialGeneration stamp on both sides to be honoured at all
+    // (see usage-guard-override.cjs's own header) — this test is about the ACCOUNT-BINDING positive case,
+    // so the generation stamp is trivially equal here (nothing rotated), never the thing under test.
+    'require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ').writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "test grant", accountLabel: "v15-on-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
     'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "ok", ownerOverride: { active: true, at: new Date().toISOString(), reason: "test grant" } }));',
     '(async () => {',
     '  const ident = { fp: "v15-on-account", source: "account-uuid" };',
     '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
-    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null });',
+    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => "G0" });',
     '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
     '  process.stdout.write(JSON.stringify({ st }));',
     '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
@@ -978,13 +981,14 @@ test('V15 (FOURTH recheck, mirror case): a valid, unexpired grant keeps the over
     'G.__setOwnerGrantRootForTests(grantRoot);',
     // N10/N12 (2026-09-24): bound to a matching account label, with a real future `until`.
     'const until = new Date(Date.now()+3600000).toISOString();',
-    'require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ').writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "granted, cache lost", accountLabel: "v15-nocache-account" }, { projectRoot: grantRoot });',
+    // wave 8: matching credentialGeneration stamp on both sides — see the identical note on the test above.
+    'require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ').writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "granted, cache lost", accountLabel: "v15-nocache-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
     // the CACHE shows nothing at all (as if a stale writer, or a crash, wiped it) — the grant alone must decide.
     'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "ok" }));',
     '(async () => {',
     '  const ident = { fp: "v15-nocache-account", source: "account-uuid" };',
     '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
-    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null });',
+    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => "G0" });',
     '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
     '  process.stdout.write(JSON.stringify({ st }));',
     '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
@@ -1049,15 +1053,14 @@ test('N10: an otherwise-valid grant is refused when the current identity is UNKN
   assert.strictEqual(out.st.mode, 'paused', 'an unknown/unverifiable current identity must never be able to consume someone else\'s grant: ' + JSON.stringify(out.st));
 });
 
-// ---- N10 residual (2026-09-24, Codex p12 wave 7 finding N10) — STALE PROFILE, ROTATED CREDENTIAL, proven
-// END-TO-END through tick(): Codex's exact `N10_stale_profile_stable_new_credential` reproduction had the
-// profile-derived identity NEVER change (always reports the SAME account the grant was issued for) while the
-// credential FILE's own generation (mtime+size) changes underneath it — the MEASURED DEFECT was ZERO pauses
-// forever. This proves the fix's one-tick grace window: the FIRST tick after the generation changes is NOT
-// suppressed (a real pause fires — closing "zero pauses"), and the SECOND tick (same new generation observed
-// again, identity still matching) is confirmed and honoured again (see usage-guard-override.cjs's own header
-// for the honestly-documented limitation of this non-secret, metadata-only signal). ----
-test('N10 residual: a stable (never-changing) profile identity plus a credential-file generation change causes ONE real pause, then re-honours the override once the new generation is confirmed on a second tick', () => {
+// ---- N10 residual / WAVE 8 (2026-09-24, Codex p12 wave 7 finding N10; Codex p13 out-p13 finding N10),
+// proven END-TO-END through tick(). Codex's `N10_stale_profile_low_then_high` measured that the wave-7
+// "same generation observed twice = confirmed" rule promoted a stale profile's mismatch to "confirmed"
+// without any independent evidence (zero pauses from tick two on). The FINAL policy (see
+// usage-guard-override.cjs's own header): honoured again ONLY via (a) an in-process memory proof that the
+// same bearer credential fingerprint was present when this account was last confirmed, or (b) a fresh
+// override-on. ----
+test('N10 wave-8 (end-to-end via tick()): REPEATING the identical mismatched generation on a second tick — Codex\'s exact measured defect — still does NOT re-honour the grant; the agent stays paused on every tick until the owner acts', () => {
   const out = runV15OverrideProbe([
     "'use strict';",
     ...V15_PROBE_FETCH_MOCK,
@@ -1071,20 +1074,199 @@ test('N10 residual: a stable (never-changing) profile identity plus a credential
     'const ident = { fp: "n10gen-account", source: "account-uuid" };', // the SAME identity every single tick — a permanently stale profile
     'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
     '(async () => {',
-    // tick 1: the credential FILE has already rotated to generation G1 (the profile has not caught up) —
-    // this must NOT be silently honoured; a real pause must fire (the measured defect was zero pauses ever).
-    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => "G1" });',
+    // tick 1: the credential FILE has already rotated to generation G1 (the profile has not caught up), and
+    // this is the FIRST tick this process has ever seen for this account — no memory proof exists yet.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-repeat", readCredentialGeneration: () => "G1" });',
     '  const stAfterTick1 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
-    // tick 2: the SAME generation G1 observed again, identity still matching — now confirmed and honoured.
-    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => "G1" });',
+    // tick 2: the SAME generation G1, and the SAME credentialFp, observed AGAIN — repetition alone must not
+    // promote anything (there was never a PRIOR confirmed baseline to prove it against).
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-repeat", readCredentialGeneration: () => "G1" });',
     '  const stAfterTick2 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
     '  process.stdout.write(JSON.stringify({ stAfterTick1, stAfterTick2 }));',
     '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
   ]);
   assert.ok(!out.uncaught, JSON.stringify(out));
   assert.strictEqual(out.stAfterTick1.mode, 'paused', 'a credential that rotated since the grant was issued, while the profile stayed stale, must NOT silently suppress a real pause forever (the measured defect was ZERO pauses): ' + JSON.stringify(out.stAfterTick1));
-  assert.strictEqual(out.stAfterTick2.mode, 'ok', 'once the SAME new generation is confirmed on a second tick (identity still matching), the override must be honoured again: ' + JSON.stringify(out.stAfterTick2));
+  assert.strictEqual(out.stAfterTick2.mode, 'paused', 'observing the identical (still-mismatched) generation a second time is NOT evidence of anything by itself — this is the exact vulnerability Codex measured: ' + JSON.stringify(out.stAfterTick2));
+  assert.ok(!JSON.stringify(out).includes('fp-repeat'), 'the bearer-derived fingerprint must never reach the state file: ' + JSON.stringify(out));
+});
+test('N10 wave-8 (end-to-end via tick()): an ORDINARY access-token refresh (credentials file rewritten, SAME credentialFp) is honoured on the very tick it is observed — no pause at all — once this account has already been confirmed once by this watcher process', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10-refresh-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n10-refresh-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n10-refresh-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    // tick 1: trivial match (G0 == grant's own stamp) — establishes the in-memory baseline for this account.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-stable", readCredentialGeneration: () => "G0" });',
+    '  const stAfterTick1 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    // tick 2: the FILE changed (G0 -> G1, an ordinary refresh rewriting mtime/size) but the refresh token
+    // itself — and therefore its fingerprint — is UNCHANGED. Must be honoured immediately, no pause.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-stable", readCredentialGeneration: () => "G1" });',
+    '  const stAfterTick2 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ stAfterTick1, stAfterTick2 }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.stAfterTick1.mode, 'ok', JSON.stringify(out.stAfterTick1));
+  assert.strictEqual(out.stAfterTick2.mode, 'ok', 'an ordinary refresh that keeps the same bearer credential must never cause even a brief pause: ' + JSON.stringify(out.stAfterTick2));
   assert.strictEqual(out.stAfterTick2.ownerOverride && out.stAfterTick2.ownerOverride.active, true, JSON.stringify(out.stAfterTick2));
+  assert.ok(!JSON.stringify(out).includes('fp-stable'), 'the bearer-derived fingerprint must never reach the state file: ' + JSON.stringify(out));
+});
+test('N10 wave-8 (end-to-end via tick()): a credential ROTATION (a DIFFERENT credentialFp than the last confirmed one) is NOT honoured — a real pause fires and it stays paused until the owner reruns override-on', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10-rotate-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n10-rotate-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n10-rotate-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-old", readCredentialGeneration: () => "G0" });',
+    '  const stAfterTick1 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-new", readCredentialGeneration: () => "G1" });',
+    '  const stAfterTick2 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ stAfterTick1, stAfterTick2 }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.stAfterTick1.mode, 'ok', JSON.stringify(out.stAfterTick1));
+  assert.strictEqual(out.stAfterTick2.mode, 'paused', 'a genuinely different bearer credential must never be assumed to be the same one: ' + JSON.stringify(out.stAfterTick2));
+  assert.ok(!JSON.stringify(out).includes('fp-old') && !JSON.stringify(out).includes('fp-new'), 'neither fingerprint may ever reach the state file: ' + JSON.stringify(out));
+});
+test('N10 wave-8: a watcher RESTART (a brand-new OS process) loses the in-memory proof — even the identical credentialFp cannot be honoured, because only the process that actually observed it can vouch for it; override-on must be rerun', () => {
+  const grantRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n10-restart-grant-'));
+  const stateFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n10-restart-state-')), 'state.json');
+  require('./forge-ownergrant.cjs').writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now() + 3600000).toISOString(), reason: 'granted under G0', accountLabel: 'n10-restart-account', credentialGeneration: 'G0' }, { projectRoot: grantRoot });
+  const extraEnv = { FORGE_USAGE_GUARD_STATE: stateFile };
+  const script = (gen, fp) => [
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'G.__setOwnerGrantRootForTests(' + JSON.stringify(grantRoot) + ');',
+    'const ident = { fp: "n10-restart-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => ' + JSON.stringify(fp) + ', readCredentialGeneration: () => ' + JSON.stringify(gen) + ' });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ];
+  // "watcher run 1": trivial match (G0 == grant's own stamp) — establishes ITS OWN in-memory baseline.
+  const outA = runV15OverrideProbe(script('G0', 'fp-orig'), extraEnv);
+  assert.ok(!outA.uncaught, JSON.stringify(outA));
+  assert.strictEqual(outA.st.mode, 'ok', JSON.stringify(outA));
+  // "watcher run 2" (a brand-new, separate OS process — every runV15OverrideProbe call already is one): the
+  // generation has drifted to G1, and the credentialFp is IDENTICAL to run 1's — but this process never
+  // observed that itself, so it has nothing to prove it with.
+  const outB = runV15OverrideProbe(script('G1', 'fp-orig'), extraEnv);
+  assert.ok(!outB.uncaught, JSON.stringify(outB));
+  assert.strictEqual(outB.st.mode, 'paused', 'a fresh process must never inherit a PRIOR process\'s in-memory confirmation: ' + JSON.stringify(outB));
+});
+test('N10 wave-8 (end-to-end via tick()): a LEGACY grant with no credentialGeneration stamp at all is NOT honoured — a real pause fires even though the account label matches exactly; a one-time override-on re-arms it', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10-legacy-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "legacy, no stamp", accountLabel: "n10-legacy-account" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n10-legacy-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-legacy", readCredentialGeneration: () => "G1" });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'paused', 'a grant written before the credentialGeneration field existed must never be silently treated as verified: ' + JSON.stringify(out.st));
+});
+test('N10 wave-8 (end-to-end via tick()): the CURRENT credential file being unreadable (readCredentialGeneration returns null) is NOT honoured — a real pause fires even though the grant carries a valid stamp', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10-unreadable-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n10-unreadable-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n10-unreadable-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => null });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'paused', 'an unverifiable current credential must never default to "assume it still matches": ' + JSON.stringify(out.st));
+});
+
+// ---- N17 (2026-09-24, Codex p13 out-p13 finding N17, regression on N16) — a legitimately re-honoured
+// override (owner reran override-on after a real, guard-owned pause) must actually RESUME the paused
+// Paperclip agent(s) through the existing resume path, not just flip state.json's `mode` back to 'ok' while
+// leaving them stuck. Codex's `N16_refresh_pause_not_resumed_after_confirmation_or_usage_reset`: one pause,
+// zero resumes, agent still paused, state reporting 'ok'. ----
+function n17FetchMock() {
+  return [
+    'let pauseCalls = 0, resumeCalls = 0;',
+    'global.fetch = async (url, init) => {',
+    '  const u = String(url); const m = (init && init.method) || "GET";',
+    '  if (/\\/api\\/companies$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "c1", name: "Co" }] };',
+    '  if (/\\/api\\/companies\\/c1\\/agents$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "a1", name: "Agent1", status: "running" }] };',
+    '  if (/\\/api\\/agents\\/a1\\/pause$/.test(u) && m === "POST") { pauseCalls++; return { ok: true, status: 200, json: async () => ({}) }; }',
+    '  if (/\\/api\\/agents\\/a1\\/resume$/.test(u) && m === "POST") { resumeCalls++; return { ok: true, status: 200, json: async () => ({}) }; }',
+    '  return { ok: true, status: 200, json: async () => ({}) };',
+    '};',
+  ];
+}
+test('N17: an override that becomes honoured again after a real guard-owned pause actually RESUMES the paused agent (through the existing resume path) instead of leaving it stuck while state reports ok', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...n17FetchMock(),
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n17-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n17-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n17-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    // tick 1: the credential generation has already drifted (G0 -> G1) with no prior in-memory confirmation
+    // — NOT honoured, falls through, real 100% usage pauses agent a1 for real.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-n17", readCredentialGeneration: () => "G1" });',
+    '  const stAfterPause = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    // the owner reruns override-on (simulated directly here): re-stamp the grant to the CURRENT generation.
+    '  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "re-authorized", accountLabel: "n17-account", credentialGeneration: "G1" }, { projectRoot: grantRoot });',
+    // tick 2: trivial match now (G1 == G1) — override is honoured again; must ALSO resume the guard-owned pause.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => "fp-n17", readCredentialGeneration: () => "G1" });',
+    '  const stAfterReconcile = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ stAfterPause, stAfterReconcile, pauseCalls, resumeCalls }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.stAfterPause.mode, 'paused', JSON.stringify(out.stAfterPause));
+  assert.strictEqual(out.pauseCalls, 1, 'the real Paperclip pause API must have been called exactly once: ' + JSON.stringify(out));
+  assert.strictEqual(out.stAfterReconcile.mode, 'ok', JSON.stringify(out.stAfterReconcile));
+  assert.strictEqual(out.resumeCalls, 1, 'a legitimately re-honoured override must actually resume the guard-owned pause through the real API — this is exactly what Codex\'s N17 finding measured as missing (zero resumes): ' + JSON.stringify(out));
+  assert.ok(!Array.isArray(out.stAfterReconcile.pausedAgents) || out.stAfterReconcile.pausedAgents.length === 0, 'the state must no longer list the agent as paused once it has genuinely been resumed: ' + JSON.stringify(out.stAfterReconcile));
+  assert.ok(!JSON.stringify(out).includes('fp-n17'), 'the bearer-derived fingerprint must never reach the state file: ' + JSON.stringify(out));
 });
 
 test('#13 accountStamp maakt de expliciete stempel; zonder identiteit blijft de write ongewijzigd', () => {
@@ -2139,8 +2321,10 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
   });
 
   // ---- Finding 5 (2026-09-24, Codex p12 wave 7): an explicit --until beyond the 30-day maximum is clamped
-  // down, and override-on says so on stdout/stderr rather than silently granting an unbounded window. ----
-  t5('Finding 5: override-on with a --until far beyond 30 days is CLAMPED to the maximum, and prints a clamp note', () => {
+  // down, and override-on says so on stdout — Finding 3 (2026-09-24, Codex p13 out-p13): this is an
+  // informational notice about a SUCCESSFUL grant, never an error, so it must land on stdout (console.log),
+  // not stderr — the prior placement contradicted this file's own documented claim. ----
+  t5('Finding 5: override-on with a --until far beyond 30 days is CLAMPED to the maximum, and prints a clamp note on STDOUT (never stderr)', () => {
     const identityFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-clamp-identity-')), '.claude.json');
     fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'clamp-account-uuid', organizationUuid: 'clamp-org' } }));
     const farFuture = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
@@ -2151,6 +2335,9 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     const text = out.logs.map((l) => l.m).join('\n');
     assert.match(text, /clamped/i, 'must tell the owner the requested --until was clamped: ' + text);
     assert.ok(!text.includes(farFuture), 'must not have granted the unbounded window verbatim: ' + text);
+    const clampLine = out.logs.find((l) => /clamped/i.test(l.m));
+    assert.ok(clampLine, 'the clamp note must actually be present in the captured logs: ' + JSON.stringify(out));
+    assert.strictEqual(clampLine.level, 'log', 'Finding 3: the clamp note is an informational notice about a SUCCESSFUL grant, not an error — it must print via console.log (stdout), never console.error (stderr): ' + JSON.stringify(out));
   });
 
   // ---- U01 (2026-09-24, Codex p12 wave 7): a NON-fencing exception thrown by POST-MUTATION bookkeeping (a

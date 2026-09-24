@@ -818,6 +818,121 @@ t('M2 (documented gap, unchanged by N09): a clustered flag and an option between
   }
 });
 
+// ---------------------------------------------------------------------------
+// N15-R (codex-recheck 2026-09-24, wave 8 / wp-n1 — the ATTRIBUTION half of wave 7's own fix left open). Every
+// positive below was dynamically verified: silent on HEAD (post-wave-7, `git show HEAD:.claude/forge-bin/
+// forge-gate-quotes.cjs`), firing on this fix — a genuine NEW protection wave 7 never had, not a restoration of
+// wave-7 behaviour. Cross-checked once more, read-only, against the pre-wave-6 classifier (`git show
+// 1bc7026:...`): every one of (a)/(b)/(d)/(e)/(f)/N16/the heredoc-claim ALSO fired there — but pre-wave-6 had NO
+// attribution step at all (a bare "-c anywhere + a shell name anywhere" match, the exact over-broad bug N09
+// itself later fixed), so it fired on N16's and the heredoc-claim's benign shapes too. This fix is the first
+// version, across the whole history checked, that fires on the real positives AND stays silent on the benign
+// ones at the same time — see the work-package report for the full base-vs-fixed transcript.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave8) N15-R — wrapper "--"/value-options/leftover-option attribution, backtick parity, closeDepth, nested backtick-in-double-quotes');
+
+const N15R_END_OF_OPTIONS = ['sudo -- bash -c "$x"', 'env -- bash -c "$x"', 'command -- bash -c "$x"'];
+for (const cmd of N15R_END_OF_OPTIONS) {
+  t('N15-R (a) a wrapper\'s "--" end-of-options terminator must not stay the apparent executable: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  });
+}
+
+const N15R_VALUE_OPTS = [
+  'sudo -h bash -c "$x"', 'sudo -p "pwd" bash -c "$x"', 'sudo -C 5 bash -c "$x"', 'sudo -D /tmp bash -c "$x"',
+  'sudo -R /tmp bash -c "$x"', 'sudo -U root bash -c "$x"', 'env -u FOO -C /tmp bash -c "$x"',
+  'env --unset=FOO bash -c "$x"', 'env --chdir=/tmp bash -c "$x"', 'timeout -s KILL 5 bash -c "$x"',
+  'timeout --signal=KILL 5 bash -c "$x"', 'timeout --kill-after=5 5 bash -c "$x"', 'nice --adjustment=5 bash -c "$x"',
+  'stdbuf -i 0 bash -c "$x"', 'time -f "%e" bash -c "$x"', 'doas -u root bash -c "$x"', 'doas -C /etc/doas.conf bash -c "$x"',
+];
+for (const cmd of N15R_VALUE_OPTS) {
+  t('N15-R (b) a completed per-wrapper value-option table must not misread the value as the leading word: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  });
+}
+
+t('N15-R (c) safety net: a leftover, unrecognised option token must never be read as a resolvable non-shell word', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -Z bash -c "$x"'), true, 'an unforeseen option must fail toward association, not silence');
+});
+
+t('N16 (regression, false blocking): an ordinary hyphenated program that merely BEGINS with a wrapper name is unaffected', () => {
+  const silent = [
+    'env-runner $CONFIG -c "$x"', 'sudo-wrapper $CONFIG -c "$x"', 'time-tracker $LOGVAR -c "$x"',
+    'time-tracker -c "$HOME/log"', 'command-runner -c "$x"', 'nice-cli -c "$x"', 'timeout-tool -c "$x"',
+  ];
+  for (const cmd of silent) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a hyphenated look-alike program must stay silent: ' + cmd);
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'classify() unexpectedly fired: ' + cmd);
+  }
+  // counterfactual: the genuine wrappers (a real whitespace boundary after the wrapper word) still fire
+  for (const cmd of ['sudo -u root bash -c "$x"', 'env -i bash -c "$x"', 'timeout 5 bash -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'a genuine wrapper must still associate: ' + cmd);
+  }
+});
+
+t('N15-R (d) backtick parity: a CLOSING backtick right before the flag is not a fresh statement boundary', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash `echo` -c "$x"'), true, 'the leading "bash" must still resolve past the closed `echo` substitution');
+  assert.ok(gate.classify('bash `echo` -c "$x"').matched.includes('opaque-exec'));
+  // counterfactual: the existing single, non-nested backtick-encloses-pos shape (wave 7) must still resolve
+  assert.strictEqual(quotes.cArgLiveAfterFlag('echo `bash -c "$x"`'), true, 'the still-open enclosing backtick must still resolve to "bash"');
+});
+
+t('N15-R (e) a separator inside an already-CLOSED substitution must not end the backward scan', () => {
+  for (const cmd of ['bash $(echo a; echo b) -c "$x"', 'bash $(true && false) -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the leading "bash" must resolve past the closed substitution: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+t('N15-R (f) a backtick substitution inside double quotes gets the same nested scanning as $(...)', () => {
+  const cmds = ['echo "`bash -c \\"$x\\"`"', 'x="`bash -c \\"$y\\"`"'];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the -c hidden inside the backtick must not be read as outer quoted data: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // counterfactual: an ordinary commit message with an unrelated backtick + -c mention stays silent
+  assert.deepStrictEqual(
+    gate.classify('git commit -m "see `docs/readme.md` for -c usage details on $HOME"').matched, [],
+    'an unrelated backtick elsewhere in ordinary prose must not make a later -c mention live');
+});
+
+// ---------------------------------------------------------------------------
+// Heredoc-claim (codex-recheck 2026-09-24, wave 8 / wp-n1) — REAL and reproduced dynamically, narrowing the
+// wave-7 "checked, NOT reproducible" claim above to exactly the context it was tested in (a heredoc NOT nested
+// inside a command substitution). Nested inside one, boundedParenEnd's own paren count used to walk INTO the
+// heredoc body (a surplus "(" there made it read UNBALANCED), poisoning the whole scan as unterminated and, via
+// cArgLiveAfterFlag's "cannot bound it -> fire" rule, making a completely unrelated LATER -c (an ordinary
+// `wc -c "$file"`, no shell involved at all) fire opaque-exec.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave8-b) Heredoc-claim — a heredoc nested inside a command substitution no longer over-blocks an unrelated later -c');
+
+t('Heredoc-claim: a heredoc body\'s stray "(" nested inside $(...) no longer poisons the whole scan', () => {
+  const cases = [
+    "x=$(cat <<'EOF'\nnote (unbalanced\nEOF\n)",
+    'x=$(cat <<EOF\nnote (unbalanced\nEOF\n)',
+    "x=$(git commit -F- <<'EOF'\nfix(parser): drop the unmatched (\nEOF\n)",
+  ];
+  for (const c of cases) {
+    assert.strictEqual(quotes.scanQuotes(c).unterminated, false, 'a heredoc nested inside a substitution with a stray "(" must resolve: ' + JSON.stringify(c));
+  }
+});
+
+t('Heredoc-claim: an unrelated later -c (an ordinary "wc -c" with no shell involved) stays silent once the heredoc-in-substitution resolves', () => {
+  const cmd = "x=$(cat <<'EOF'\nnote (unbalanced\nEOF\n); wc -c \"$file\"";
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'wc -c is not a shell invocation and must stay silent: ' + cmd);
+  assert.deepStrictEqual(gate.classify(cmd).matched, [], 'classify() unexpectedly fired: ' + cmd);
+});
+
+t('Heredoc-claim counterfactual: V05 wave 2\'s adversarial fake-heredoc-in-a-single-quote fixture still resolves correctly (no regression from the new heredoc/quote-awareness in boundedParenEnd)', () => {
+  const text = "echo \"$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)\"";
+  const mask = quotes.scanQuotes(text);
+  assert.strictEqual(mask.unterminated, false);
+  const catLineIdx = text.indexOf('cat <<EOF');
+  assert.ok(mask.inside(catLineIdx + 3), 'the fake heredoc marker must still be reported INSIDE the nested single quote');
+});
+
 console.log('\n2c-wave6-b) N13 — scanQuotes() is iterative and bounded: no RangeError, no throw, ever');
 
 t('N13: a 9.9 kB, 3300-level-deep nested $(...) construct returns a decision within 1.5s, never throws', () => {

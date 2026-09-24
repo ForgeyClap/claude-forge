@@ -240,9 +240,11 @@ evidence or deferred with a reason before this release went out. The code fixes:
   at-most-once authorization, not guaranteed execution (a crash after the consuming rename burns the approval without
   running the command — the safe direction), and only simulated Windows rename errors are tested. Secrets: the
   distribution's own `.gitignore` now carries the two approval-file exclusions the installer snippet already added, and
-  the deny rule's `./` form is documented as resolving against the current working directory like the other 28 rules
-  (project settings are only loaded from that directory's `.claude/`, so the secret is guarded by gitignore, the fixed
-  trusted root in `forge-ownergrant.cjs` and the hook, not by anchoring). Usage guard: the override grant now also
+  the deny rule's `./` form is documented as resolving against the current working directory like the other 28 rules:
+  project settings are only loaded from that directory's `.claude/`, so the Read denial applies only in a correctly
+  configured session started in the project root. The other controls are named for what they do — the ignore entries
+  prevent accidental staging, the fixed reader root prevents redirecting the reader, the hook simply never reads the
+  file; none of them denies another tool's read. The boundary is the local user account's filesystem permissions. Usage guard: the override grant now also
   carries a NON-SECRET credential generation (the credential file's modification time and size, never its contents); on a
   tick whose credential generation differs from the grant's, the override is not honoured until the account profile has
   been re-read after that change and still matches, so a profile that lags behind a completed account switch can no
@@ -257,6 +259,38 @@ evidence or deferred with a reason before this release went out. The code fixes:
   multi-account credential rotation was exercised only with synthetic fixture files; the grant record stays a plain
   unsigned JSON file under the trusted-local-writer model. Named, unfixed gaps unchanged: a clustered `-xc`, an option
   between `-c` and its argument, PowerShell's `-C`/`-Command`.
+- **Eighth pass (Codex's eighth verification returned 2 highs — the residual account binding and further attribution gaps
+  it could only reason about statically because its own sandbox refused scratch files — plus five mediums).** Gate hook:
+  a wrapper's end-of-options terminator (`--`) is part of the wrapper grammar; the value-taking option table was
+  completed against the GNU/BSD manuals (`sudo -u/-g/-C/-D/-R/-T/-U`, `env -u/-C/-S`, `timeout -s/-k` and its duration,
+  `nice -n`, `stdbuf -i/-o/-e`, `exec -a`, `time -f`, `doas -u/-C`); and as the safety net for any option grammar not
+  foreseen, an apparent executable that is still an option after stripping counts as UNRESOLVABLE — the argument is read
+  and a live one stops, so a leftover option can never silence an interpreter call. A wrapper is recognised only as a
+  whole token, so a hyphenated program that merely begins with a wrapper name (`time-tracker`, `env-check`) is never
+  parsed as one (the sixth-pass grammar could block such a program by mistake). Statement boundaries pair backticks by
+  parity instead of taking the nearest one, ignore separators inside an already-closed substitution, and treat a backtick
+  substitution inside double quotes as code exactly like `$( )`. The heredoc-inside-a-substitution concern was real after
+  all: a lone parenthesis in heredoc data inside `$( )` left the mask unresolved and blocked an ordinary command — the
+  bounded parenthesis scan now skips heredoc bodies and quoted spans first (the second-pass adversarial fixture with a
+  fake heredoc inside a single-quoted literal still fires). Every restored shape was shown to fire on the pre-sixth-pass
+  classifier and on the fixed one; the hyphenated-program and nested-heredoc cases were wrong on both earlier versions
+  and are new corrections. Named residuals: `sudo -r`/`-t` are not in the value table (a leftover role or type WORD, not
+  an option, would misattribute — the safety net does not catch it); the M2 grammar gaps (a clustered `-xc`, an option
+  between `-c` and its argument, PowerShell's `-C`/`-Command`) are unchanged. Usage guard: the seventh pass re-confirmed a
+  changed credential generation as soon as the account profile still matched — but that profile is exactly what lags
+  behind a completed switch, so repeated metadata was promoting itself. Now a changed generation is honoured again only
+  when the bearer credential is PROVEN unchanged in memory (the fingerprint the usage fetch already computes is held in
+  the watcher process since the last confirmation and compared, never written anywhere — an ordinary access-token
+  refresh keeps the override with no owner action) or when the owner runs `override-on` again; a matching profile label
+  alone never promotes, a watcher restart requires fresh authorization, and a grant without a generation stamp or a
+  credential file whose stamp cannot be read is not honoured. **Upgrade note:** an override granted before this
+  release carries no generation stamp and is no longer honoured — run `override-on` once more. When the override is
+  honoured again the guard first resumes the agents it paused itself and only then reports ok (the previous pass could
+  leave an agent paused while the state read ok). The 30-day clamp notice prints on standard output, as documented.
+  **Known limitations, written down:** whether Anthropic's OAuth refresh ever rotates the refresh token is unknown to
+  this codebase — a rotation reads as a credential change and suspends the override until the owner re-approves (the
+  safe direction); live multi-account rotation is exercised only with synthetic fixtures; the grant record remains a
+  plain unsigned JSON file under the trusted-local-writer model.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every

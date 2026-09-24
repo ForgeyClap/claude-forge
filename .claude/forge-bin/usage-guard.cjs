@@ -877,7 +877,10 @@ async function runOverrideOn() {
   // (2026-09-24): 30 days is now a MAXIMUM, not merely a default — an explicit later --until is clamped down.
   const untilResolved = guardOverride.resolveGrantUntil(rawUntil);
   const until = untilResolved.until;
-  if (untilResolved.clamped) console.error('note: --until was later than the 30-day maximum a single override may cover — clamped to ' + until + ' (renew by running override-on again when it is close to expiring)');
+  // Finding 3 (2026-09-24, Codex p13 out-p13): this is an informational notice about a SUCCESSFUL grant, not
+  // an error — it belongs on stdout, not stderr (the prior console.error placement contradicted this file's
+  // own documented claim that the clamp note prints on stdout).
+  if (untilResolved.clamped) console.log('note: --until was later than the 30-day maximum a single override may cover — clamped to ' + until + ' (renew by running override-on again when it is close to expiring)');
   const reason = argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn');
   // N10: bind the authoritative grant to the account it is being granted FOR — an unbound (project-wide)
   // grant used to survive an account switch and suppress a DIFFERENT account's protection (see
@@ -1170,24 +1173,12 @@ function fmtReset(iso) {
 function accountStamp(ident) {
   return ident && ident.fp ? { account: { fp: ident.fp, source: ident.source, stampedAt: new Date().toISOString() } } : {};
 }
-/** carryAccountGenerationBookkeeping(stamp, curAccount) -> `stamp` (accountStamp()'s own `{account:{...}}`
- *  shape, or `{}`) with N10-residual credential-generation bookkeeping (2026-09-24, Codex p12 wave 7)
- *  carried forward from `curAccount` when it belongs to the SAME account. doPause()/doResume() build a
- *  BRAND-NEW, minimal `account` object via accountStamp() on every write (fp/source/stampedAt only) — a
- *  plain full-object replacement, same as writeState()'s usual convention. Left unmodified, this silently
- *  WIPED `pendingCredentialGeneration`/`confirmedCredentialGeneration` on every single pause/resume,
- *  defeating the one-tick grace window this bookkeeping exists for (see usage-guard-override.cjs's own
- *  header): a pause landing exactly between the "seen once, unconfirmed" and "seen again, confirmed" ticks
- *  reset the count back to zero every time a real pause fired — which is precisely the tick sequence the
- *  fix is meant to protect. Pure, never throws. */
-function carryAccountGenerationBookkeeping(stamp, curAccount) {
-  if (!stamp || !stamp.account) return stamp;
-  if (!curAccount || curAccount.fp !== stamp.account.fp) return stamp;
-  const account = Object.assign({}, stamp.account);
-  if (typeof curAccount.pendingCredentialGeneration === 'string') account.pendingCredentialGeneration = curAccount.pendingCredentialGeneration;
-  if (typeof curAccount.confirmedCredentialGeneration === 'string') account.confirmedCredentialGeneration = curAccount.confirmedCredentialGeneration;
-  return { account };
-}
+// NOTE (2026-09-24, Codex p13 wave 8): a prior "carryAccountGenerationBookkeeping" helper used to preserve
+// two STATE-PERSISTED fields (`pendingCredentialGeneration`/`confirmedCredentialGeneration`) across
+// doPause()/doResume()'s full-object account-field replacement. That disk-based bookkeeping is gone — the
+// N10-residual confirmation now lives ONLY in usage-guard-override.cjs's in-process memory (never
+// persisted; see its own header's FINAL POLICY note) — so doPause()/doResume() go back to the plain
+// accountStamp(ident) every write, same as everywhere else in this file.
 /** withStateLock(fn) -> await fn()'s result, having serialized it against every other state-writing
  *  transaction via an exclusive lock on STATE_FILE + '.lock' (GUARD-STATE-RACE, 2026-09-24; FAIL-CLOSED
  *  fix, Codex recheck wp-f4 V15, 2026-09-24 — see usage-guard-state.cjs's own header for the full V15
@@ -1322,7 +1313,7 @@ async function doPause(u, crossed, ident, opts) {
     try {
     writeState({
       mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, resumeAt: RESUME_AT,
-      ...carryAccountGenerationBookkeeping(accountStamp(ident), cur.account),
+      ...accountStamp(ident),
       // NEVER silently drop the owner's paid-credits override / last credit snapshot on a pause — the hook
       // reads ownerOverride to keep working; a fresh object without it defeated that (an accounting desktop app flapping).
       ...(cur.ownerOverride ? { ownerOverride: cur.ownerOverride } : {}),
@@ -1397,11 +1388,16 @@ async function doResume(u, st, ident, opts) {
       const fresh = readState();
       const next = Object.assign({}, st, {
         mode: 'paused', pausedAgents: failed, resumePending: true,
-        ...carryAccountGenerationBookkeeping(accountStamp(ident), fresh.account),
+        ...accountStamp(ident),
         lastCheckAt: new Date().toISOString(),
         lastError: 'resume gedeeltelijk: ' + ok + '/' + byId.size + ' agents hervat — ' + failed.length + ' faalden; volgende tick probeert opnieuw',
       });
       if (fresh.ownerOverride) next.ownerOverride = fresh.ownerOverride; else delete next.ownerOverride;
+      // N17 (2026-09-24, Codex p13 wave 8): preserve the owner's paid-credits snapshot across a resume too —
+      // this write is now also reachable from tick()'s override-reconciliation path (see the override-active
+      // branch above), which had just written a fresh `credits` snapshot moments before calling doResume();
+      // dropping it here would silently wipe it the instant a resume round hits even one failure.
+      if (fresh.credits) next.credits = fresh.credits; else delete next.credits;
       if (fence && !fence()) return { fenced: true };
       try { writeState(next, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
       return { fenced: false };
@@ -1417,8 +1413,12 @@ async function doResume(u, st, ident, opts) {
     try {
     writeState({
       mode: 'ok', percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
-      ...carryAccountGenerationBookkeeping(accountStamp(ident), fresh.account),
+      ...accountStamp(ident),
       ...(fresh.ownerOverride ? { ownerOverride: fresh.ownerOverride } : {}), // survive the reset (credits mode is orthogonal)
+      // N17 (2026-09-24, Codex p13 wave 8): survive the reset too — see the identical comment on the
+      // partial-failure write above for why this matters now that doResume() is reachable from the
+      // override-reconciliation path.
+      ...(fresh.credits ? { credits: fresh.credits } : {}),
       lastResumeAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(), resumedAgents: ok, pendingCheckup: true,
       resumeNotice: '✅ USAGE GUARD — usage gereset (sessie ' + u.session.pct + '% · week ' + u.week.pct + '%). GA VERDER met waar je mee bezig was. '
         + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
@@ -1528,64 +1528,51 @@ async function tick(deps, opts) {
   // DIFFERENT account, a label-less legacy grant, or an unverifiable/unknown current identity can never
   // suppress pausing for this account.
   //
-  // N10 RESIDUAL (2026-09-24, Codex p12 wave 7 finding N10) — STALE PROFILE, ROTATED CREDENTIAL: the
-  // account-label check alone trusts Claude Code's own profile file, which Codex proved can lag behind an
-  // already-rotated credentials file (`N10_stale_profile_stable_new_credential` — see
-  // usage-guard-override.cjs's own header for the full rationale, the hard-rule constraint that shaped this
-  // design, and its honestly-documented limitation). `curCredGen` is this tick's non-secret credential-file
-  // generation stamp (mtime+size only, never content — `credentialGeneration()`). `st.account`'s own
-  // `confirmedCredentialGeneration`/`pendingCredentialGeneration` fields implement a one-tick grace window
-  // (a generation seen once, unconfirmed, that is seen AGAIN unchanged on a later tick is promoted to
-  // confirmed) — persisted in STATE ONLY, never in the grant file, so "only override-on/override-off ever
-  // write the grant" stays true.
+  // N10 RESIDUAL / WAVE 8 (2026-09-24, Codex p12 wave 7 finding N10; Codex p13 out-p13 finding N10) — STALE
+  // PROFILE, ROTATED CREDENTIAL: the account-label check alone trusts Claude Code's own profile file, which
+  // Codex proved can lag behind an already-rotated credentials file. FINAL POLICY (wave 8 — see
+  // usage-guard-override.cjs's own header for the full rationale, the GUARD-TOKEN-FINGERPRINT constraint
+  // that shaped this design, and its honestly-documented limitation): a grant whose stamped
+  // `credentialGeneration` no longer matches the CURRENT credential file's generation is honoured again in
+  // exactly two ways — (a) an IN-PROCESS-ONLY memory proof that the same bearer credential (fingerprint,
+  // never persisted/logged) was present the last time this account's generation was confirmed by THIS
+  // watcher process (an ordinary access-token refresh: the file changes, the refresh token does not), or
+  // (b) the owner reruns `override-on`, which re-stamps the grant to the CURRENT generation outright. The
+  // wave-7 "the same new generation observed twice in a row is promoted to confirmed" rule is GONE — Codex
+  // proved repetition alone is not evidence (`N10_stale_profile_low_then_high`: zero pauses from tick two).
+  // Nothing about this decision is persisted in state.json any more; `credNow` (this tick's bearer-credential
+  // fingerprint, already read above for the mid-check-rotation gate) is passed straight through to the
+  // resolver's in-memory-only proof — never written to disk, never logged, never returned by the resolver.
   const curCredGen = D.readCredentialGeneration ? D.readCredentialGeneration() : null;
-  const acct0 = st.account || {};
-  const priorConfirmedGen = typeof acct0.confirmedCredentialGeneration === 'string' ? acct0.confirmedCredentialGeneration : null;
-  const priorPendingGen = typeof acct0.pendingCredentialGeneration === 'string' ? acct0.pendingCredentialGeneration : null;
-  const effectiveConfirmedGen = (curCredGen && priorPendingGen === curCredGen) ? curCredGen : priorConfirmedGen;
   const overrideNow = guardOverride.resolveOwnerOverride({
     projectRoot: TRUSTED_OWNERGRANT_ROOT, accountLabel: ident.fp,
-    credentialGeneration: curCredGen, confirmedGeneration: effectiveConfirmedGen,
+    credentialGeneration: curCredGen, credentialFp: credNow,
   });
-  // bookkeeping write — only when the grant's OWN stamped generation actually differs from this tick's (the
-  // only scenario where it is decision-relevant); an absent/foreign/expired grant costs nothing extra here.
-  const grantGenForBookkeeping = (overrideNow.record && typeof overrideNow.record.credentialGeneration === 'string') ? overrideNow.record.credentialGeneration : null;
-  if (curCredGen && grantGenForBookkeeping && curCredGen !== grantGenForBookkeeping
-      && overrideNow.record.accountLabel === ident.fp) {
-    // GENSTAMP-FP (2026-09-24): always stamp fp/source alongside the generation field via accountStamp(ident)
-    // — never blindly spread whatever `fresh.account`/`st.account` already is. On the very FIRST tick ever
-    // (nothing yet persisted to disk with an account field at all) a bare `Object.assign({}, fresh.account,
-    // {...})` would have written a generation field with NO fp — carryAccountGenerationBookkeeping()'s own
-    // fp-match guard (used by doPause()/doResume()) would then have silently DROPPED it again on the very
-    // next pause/resume write in the same tick, defeating the whole one-tick grace window before it could
-    // ever be observed.
-    if (effectiveConfirmedGen === curCredGen && priorConfirmedGen !== curCredGen) {
-      await withLockedState(D, (fresh) => {
-        const base = accountStamp(ident).account || fresh.account || {};
-        fresh.account = Object.assign({}, base, { confirmedCredentialGeneration: curCredGen });
-      }, 'OVERRIDE credential-generation confirmed write');
-      const base2 = accountStamp(ident).account || st.account || {};
-      st.account = Object.assign({}, base2, { confirmedCredentialGeneration: curCredGen });
-    } else if (priorPendingGen !== curCredGen) {
-      await withLockedState(D, (fresh) => {
-        const base = accountStamp(ident).account || fresh.account || {};
-        fresh.account = Object.assign({}, base, { pendingCredentialGeneration: curCredGen });
-      }, 'OVERRIDE credential-generation pending write');
-      const base2 = accountStamp(ident).account || st.account || {};
-      st.account = Object.assign({}, base2, { pendingCredentialGeneration: curCredGen });
-    }
-  }
   if (overrideNow.active) {
     const c = u.credits;
     if (!creditsExhausted(c)) {
+      // N17 (2026-09-24, Codex p13 wave 8 finding N17/N16 regression): captured BEFORE the write below — a
+      // legitimately re-honoured override (owner reran override-on, or the memory-proof match fired) must
+      // never leave GUARD-OWNED agents stuck paused while state now reports 'ok'. Codex's reproduction: one
+      // pause, zero resumes, agent still paused, state 'ok' — because this branch used to return right after
+      // the plain cache write, before any resume/reconciliation ever ran.
+      const wasPaused = st.mode === 'paused';
       await withLockedState(D, (fresh) => {
         fresh.mode = 'ok'; fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.credits = c;
         fresh.lastCheckAt = new Date().toISOString(); delete fresh.lastError;
         // the cache is REBUILT from the fresh grant record every tick, never carried forward as-is.
         fresh.ownerOverride = guardOverride.cachedOverrideFrom(overrideNow.record);
       }, 'OVERRIDE active write');
+      if (wasPaused) {
+        // N17: reconcile through the SAME resume path/retry semantics an ordinary usage-reset resume uses —
+        // `st` still carries the pausedAgents list from BEFORE this tick's override decision (doResume()
+        // itself re-reads ownerOverride/credits FRESH from disk, so it preserves what was just written above,
+        // and its own failed-resume retry/resumePending bookkeeping applies exactly as it already does
+        // elsewhere in this file).
+        await D.doResume(u, st, ident, { signal: tickOpts.signal });
+      }
       const low = Number.isFinite(c.remaining) && Number.isFinite(c.limit) && c.limit > 0 && (c.remaining / c.limit) <= 0.1;
-      D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : ''));
+      D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : '') + (wasPaused ? ' · reconciled guard-owned pause(s) back to running' : ''));
       return;
     }
     // N12 (2026-09-24, Security Boss addendum reconfirmed) — MEASURED DEFECT (`V15-credits-exhaustion-
@@ -1604,14 +1591,33 @@ async function tick(deps, opts) {
     delete st.ownerOverride; // keep this run's in-memory decision consistent with the write just attempted
     // fall through to the normal pause/resume logic below (pauses if still over the plan limit)
   } else if (overrideNow.rejected === 'credential-generation-unconfirmed') {
-    // N10 residual: the profile-derived label matched the grant's account, but the credential FILE has
-    // changed since the grant was issued/last confirmed — fail toward pausing THIS tick; a later tick that
-    // observes the SAME generation again (identity still matching) promotes it to confirmed (see the
-    // bookkeeping above and usage-guard-override.cjs's own header for the honestly-documented limitation).
-    D.log('OVERRIDE NOT honoured — identity unconfirmed after a credential change (grant account '
-      + (overrideNow.record.accountLabel || '(none)') + ' — waiting for a second confirming read before trusting it again) — falling through to the normal guard for this account');
+    // N10 residual / wave 8: the profile-derived label matched the grant's account, but the credential FILE
+    // has changed since the grant was issued/last confirmed, and this process holds no in-memory proof the
+    // same bearer credential is still in control — fail toward pausing THIS tick. Re-run override-on to
+    // re-arm it, or wait for an ordinary token refresh to self-prove (same fingerprint) once this account has
+    // been confirmed at least once by this watcher process (see usage-guard-override.cjs's own header).
+    D.log('OVERRIDE NOT honoured — credential changed and could not be proven the same in memory (grant account '
+      + (overrideNow.record.accountLabel || '(none)') + ') — run override-on again to re-arm it, or this resolves on its own once the same credential is observed again — falling through to the normal guard for this account');
     if (st.ownerOverride) {
       await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write (credential generation unconfirmed)');
+      delete st.ownerOverride;
+    }
+  } else if (overrideNow.rejected === 'credential-generation-missing') {
+    // wave 8: a grant written before the credentialGeneration field existed carries no stamp at all — never
+    // silently treated as verified. A one-time override-on re-arms it with a fresh stamp.
+    D.log('OVERRIDE NOT honoured — this grant was written before credential-generation stamping existed (no stamp on record, grant account '
+      + (overrideNow.record.accountLabel || '(none)') + ') — run override-on once more to re-arm it with a fresh stamp — falling through to the normal guard for this account');
+    if (st.ownerOverride) {
+      await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write (credential generation missing)');
+      delete st.ownerOverride;
+    }
+  } else if (overrideNow.rejected === 'credential-generation-unavailable') {
+    // wave 8: this tick could not read the CURRENT credential file's own generation at all — an unverifiable
+    // current state must never default to "assume it still matches".
+    D.log('OVERRIDE NOT honoured — the current credentials file could not be read to verify this grant\'s stamp (grant account '
+      + (overrideNow.record.accountLabel || '(none)') + ') — falling through to the normal guard for this account');
+    if (st.ownerOverride) {
+      await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write (credential generation unavailable)');
       delete st.ownerOverride;
     }
   } else if (overrideNow.rejected) {

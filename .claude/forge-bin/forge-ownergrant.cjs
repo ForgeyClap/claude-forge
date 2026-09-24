@@ -133,6 +133,17 @@ function overrideGrantFilePath(opts) {
  *  function only ever reports whatever generation the file records; it does not itself compare it to
  *  anything.
  *
+ *  FINAL POLICY (2026-09-24, Codex p13 out-p13 finding N10, wave 8 — quotable summary; the full rationale
+ *  lives in usage-guard-override.cjs's own header, never duplicated here): once this stamp no longer matches
+ *  the CURRENT credential file, the grant is honoured again ONLY via (a) an in-process-only proof that the
+ *  SAME bearer credential was present when this account was last confirmed by that watcher process, or (b) a
+ *  fresh `override-on`, which re-stamps this very field to the current generation outright. Neither the
+ *  proof nor anything derived from the bearer credential is EVER written into this file, or any other file —
+ *  this field alone is what persists, and it is non-secret metadata only. A watcher RESTART starts a brand
+ *  new process with no memory of any prior proof, so a generation that has already drifted away from this
+ *  stamp by the time the watcher comes back up requires a fresh `override-on`, exactly like a genuine account
+ *  rotation would.
+ *
  *  EXPIRY SEMANTICS (N12, 2026-09-24 — Security Boss addendum reconfirmed): a PRESENT-BUT-UNPARSEABLE
  *  `until` (a non-empty string `Date.parse` cannot make sense of — a corrupted file, a hand-edit typo) reads
  *  as INVALID (`invalid:'unparseable-expiry'`), never as "unlimited" — silently treating corruption as

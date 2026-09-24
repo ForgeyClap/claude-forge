@@ -127,21 +127,83 @@ function scanQuotes(text) {
   let work = 0;
   const WORK_CAP = Math.max(50000, n * 30);
 
-  /** boundedParenEnd(at, end) -> {balanced, end}. The naive, quote-blind balanced-paren count this file has
-   *  always used to find a `$(...)` substitution's own end — unchanged in BEHAVIOUR from the pre-fix
-   *  skipSubstitution (it still does not lex the substitution's own quoting while counting). What changed for
-   *  N13: it is bounded to the CURRENT frame's own `end` (never past it, so a substitution inside a nested
-   *  substitution's own inner range cannot read past that range) and metered against the SAME shared `work`
-   *  budget every other step below spends from. */
+  /** boundedParenEnd(at, end) -> {balanced, end}. The balanced-paren count this file has always used to find a
+   *  `$(...)` substitution's own end. What changed for N13: it is bounded to the CURRENT frame's own `end`
+   *  (never past it, so a substitution inside a nested substitution's own inner range cannot read past that
+   *  range) and metered against the SAME shared `work` budget every other step below spends from.
+   *
+   *  Heredoc-claim (codex-recheck 2026-09-24, wave 8 / wp-n1 — REAL, reproduced dynamically). This count used to
+   *  be fully quote-blind AND walk INTO a heredoc's own literal body character-by-character, so a surplus `(`
+   *  there raised `depth` with no matching `)` ever coming (the real closing `)` of the substitution sits right
+   *  after the heredoc's closing delimiter line, not inside its body): `x=$(cat <<'EOF'` + a body line containing
+   *  a lone `(` + `EOF` + `)` read as UNBALANCED, poisoning the WHOLE scan as `unterminated` — which, via
+   *  cArgLiveAfterFlag's own "cannot bound it -> fire" rule, made an entirely unrelated LATER `-c`
+   *  (`wc -c "$file"`) fire opaque-exec on a completely benign command. Fixed by mirroring the main scan loop's
+   *  own heredoc-marker recognition exactly: an UNRESOLVED marker (no closing delimiter line found before `end`)
+   *  is not treated as a heredoc at all and falls through to plain character-by-character counting (the same
+   *  fail-safe the main loop already uses); a RESOLVED one skips straight to the first character of its own
+   *  closing delimiter line, so no character inside the body — parenthesis or otherwise — is ever individually
+   *  counted.
+   *
+   *  A LIGHTWEIGHT quote tracker (single `'`.../`'`  is fully literal; double `"`...`"` allows a `\` escape,
+   *  matching this file's own existing double-quote convention) had to be added alongside that heredoc fix, not
+   *  as a separate improvement but because the two are the SAME bug from opposite directions: without it, the
+   *  heredoc-marker recognition above cannot tell a REAL heredoc operator in command position from a FAKE
+   *  `<<EOF`...`EOF` pair sitting entirely inside a single-quoted literal (an existing, already-covered
+   *  adversarial shape — V05 wave 2, `echo "$(echo '$(` + a fake nested heredoc + `rm -rf ./src` + a REAL `EOF`
+   *  line further down + `)'` + `)"` ), and would otherwise skip straight past a `)` the literal quote's own
+   *  content still owed to the naive paren count, breaking that already-fixed adversarial case. Skipping
+   *  entire quoted spans (parens inside them included) is also strictly MORE correct than the prior "count every
+   *  `(`/`)` regardless of quoting" behaviour, not merely a workaround: a `(` sitting inside a real quote was
+   *  never a substitution boundary to bash either. Correct for a single, non-nested quote per span, the same
+   *  simplification already accepted elsewhere in this file (see statementStart's own backtick-parity comment). */
   function boundedParenEnd(at, end) {
     let depth = 1;
     let j = at + 2;
+    let quoteChar = null;
     for (; j < end && depth > 0; j++) {
       if (++work > WORK_CAP) return { balanced: false, end };
+      if (quoteChar) {
+        if (quoteChar === '"' && text[j] === '\\' && j + 1 < end) { j++; continue; }
+        if (text[j] === quoteChar) quoteChar = null;
+        continue;
+      }
+      if (text[j] === "'" || text[j] === '"') { quoteChar = text[j]; continue; }
+      if (text[j] === '<' && text[j + 1] === '<') {
+        MARKER_AT_RE.lastIndex = j;
+        const hm = MARKER_AT_RE.exec(text);
+        if (hm) {
+          const nl = text.indexOf('\n', j + hm[0].length);
+          if (nl !== -1 && nl < end) {
+            const delim = hm[2] || hm[3] || hm[4];
+            const body = findHeredocDelim(text, nl + 1, hm[1], delim, end);
+            work += (body ? body.delimStart : end) - (nl + 1);
+            if (work > WORK_CAP) return { balanced: false, end };
+            if (body && body.delimStart > nl + 1) { j = body.delimStart - 1; continue; } // skip the body only
+          }
+        }
+      }
       if (text[j] === '(') depth++;
       else if (text[j] === ')') depth--;
     }
     return { balanced: depth === 0, end: j };
+  }
+
+  /** findBacktickEnd(at, end) -> the index of the matching (unescaped) closing backtick starting the search at
+   *  `at + 1`, or -1 if none exists before `end` (N15-R (f), codex-recheck 2026-09-24, wave 8 / wp-n1). Bash
+   *  backticks do not nest, so the first backtick not immediately preceded by a backslash-escape closes the
+   *  span — mirrors the SAME "any backslash consumes itself plus the next character" rule this frame's own
+   *  backtickInDq handling applies while scanning that content (see the header comment on the `` ` `` push
+   *  below), so the two stay in lock-step about where the span actually ends. */
+  function findBacktickEnd(at, end) {
+    let j = at + 1;
+    while (j < end) {
+      if (++work > WORK_CAP) return -1;
+      if (text[j] === '\\' && j + 1 < end) { j += 2; continue; }
+      if (text[j] === '`') return j;
+      j++;
+    }
+    return -1;
   }
 
   // N13 root fix: an explicit LIFO stack of pending "scan this [start,end) range" frames, each in ORIGINAL
@@ -161,6 +223,17 @@ function scanQuotes(text) {
           continue;
         }
         const ch = text[f.i];
+        // N15-R (f) (codex-recheck 2026-09-24, wave 8 / wp-n1): a frame pushed for a backtick found INSIDE a
+        // double-quoted span (see the `` ` `` push in the quote-body loop below) carries `backtickInDq: true`
+        // because ITS OWN text was written using one extra layer of backslash-escaping — per the GNU Bash manual
+        // ("If the substitution appears within double quotes... embedded double quotes must be escaped" for the
+        // backtick form specifically, unlike `$(...)`), `\"`/`` \` ``/`\$`/`\\` inside it are literal characters
+        // the OUTER double quote's own parsing already un-escapes before handing the text to the subshell, not
+        // fresh structure at THIS level. Consuming any backslash + the next character together here (never
+        // opening a real quote/substitution on the escaped character) keeps that one layer from being
+        // mis-parsed as real syntax, while a later BARE (non-escaped) `"`, `$(`, or backtick still opens a
+        // genuine nested context scanned with ordinary, single-escape rules.
+        if (f.backtickInDq && ch === '\\' && f.i + 1 < f.end) { marks[f.i] = true; marks[f.i + 1] = true; f.i += 2; continue; }
         // Security Boss over-blocking review (codex-recheck 2026-09-24, wave 7 / wp-m1) — checked, REAL: an
         // unquoted `#` at the start of a shell WORD (start of text, or right after whitespace/`;`/`&`/`|`/`(`/
         // newline) begins a bash COMMENT to the end of the line; everything in it is inert and must never be
@@ -235,6 +308,25 @@ function scanQuotes(text) {
         continue scan;
       }
       if (f.quoteChar === '"' && text[f.j] === '\\') { marks[f.j] = true; if (f.j + 1 < f.end) marks[f.j + 1] = true; f.j += 2; continue; }
+      // N15-R (f) (codex-recheck 2026-09-24, wave 8 / wp-n1 — REAL, reproduced dynamically): an UNESCAPED
+      // backtick inside a double-quoted span used to be treated as ordinary quoted DATA (marked "inside" like
+      // any other character of the outer string), never as its own executable substitution context — the way
+      // `$(...)` already gets. That let `-c "$x"` hidden inside `echo "` + backtick + `bash -c \"$x\"` + backtick
+      // + `"` read as "-c sitting inside quoted data (a commit message)" and skip entirely, exactly the class of
+      // bug this classifier exists to catch (GNU Bash manual, "Command Substitution": backtick and `$(...)` both
+      // have executable semantics). Pushing a fresh frame for the span between backticks — `backtickInDq: true`,
+      // see the escape handling above in the outside-quote loop — leaves the ordinary characters inside it
+      // (including a real "bash"/"-c") un-marked, so they are evaluated on their own terms instead of being
+      // silenced as this outer string's own data.
+      if (f.quoteChar === '"' && text[f.j] === '`') {
+        const endTick = findBacktickEnd(f.j, f.end);
+        if (endTick === -1) { unterminated = true; break scan; } // no matching close before `end` -> cannot bound it
+        const innerStart = f.j + 1;
+        const innerEnd = endTick;
+        f.j = endTick + 1;
+        stack.push({ start: innerStart, end: innerEnd, skipTo: new Map(), i: innerStart, j: innerStart, inQuote: false, quoteChar: null, spanStart: 0, backtickInDq: true });
+        continue scan;
+      }
       if (text[f.j] === f.quoteChar) {
         marks[f.j] = true;
         if (stack.length === 1) spans.push({ start: f.spanStart, end: f.j + 1, kind: f.quoteChar === "'" ? 'single' : 'double' });
@@ -406,15 +498,40 @@ const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s*/;
 // stdbuf joined sudo/time/nohup/exec/command/builtin/env), and the wrapper WORD's own capture group lets
 // stripWrapperOptions() below know which wrapper's option grammar to apply — wave 6 stripped the word but not
 // its options, so `sudo -u root bash -c "$x"` resolved its leading word to "-u" and was rejected outright.
-const WRAPPER_RE = /^(?:\S*[\\/])?(sudo|time|nohup|exec|command|builtin|env|doas|nice|timeout|stdbuf)\b\s*/i;
+// N16 (codex-recheck 2026-09-24, wave 8 / wp-n1 — a REGRESSION false-blocking bug wave 7 introduced): `\b` after
+// the wrapper alternation is a WORD/NON-WORD transition, not "end of this token" — a hyphen is a non-word
+// character, so `\bsudo\b` already matches at the boundary between "sudo" and "-wrapper" in `sudo-wrapper`,
+// treating an ordinary hyphenated PROGRAM NAME that merely starts with a wrapper's name as if it were that
+// wrapper. stripWrapperOptions() then eats the program's own name-suffix as if it were an option (`sudo-wrapper`
+// -> strip "sudo", then "-wrapper" matches the generic single-flag option grammar and is stripped too), which can
+// leave an ordinary POSITIONAL ARGUMENT (`env-runner $CONFIG -c "$x"` -> "$CONFIG" is left looking like the
+// leading word) misread as an unresolvable ("dynamic") interpreter and firing on a completely unrelated program.
+// The wrapper token must be COMPLETE: it only counts as a wrapper name when the very next character is
+// whitespace or the end of the string, never a bare word-boundary.
+const WRAPPER_RE = /^(?:\S*[\\/])?(sudo|time|nohup|exec|command|builtin|env|doas|nice|timeout|stdbuf)(?=\s|$)\s*/i;
 const OPENER_RE = /^(?:[{(!]\s*|(?:then|do|else|elif|while|until|for|if|try|catch|finally)\b\s*)/i;
 
+// WRAPPER_END_OPTS_RE — N15-R (a) (codex-recheck 2026-09-24, wave 8 / wp-n1): POSIX "end of options" — once a
+// wrapper's own argument list reaches a standalone `--`, every remaining token is positional even if it LOOKS
+// like an option, and nothing after it is ever consumed as one of the wrapper's own flags again
+// (`sudo -- bash -c "$x"`, `env -- bash -c "$x"`, `command -- bash -c "$x"`) — so it is stripped once and then
+// stops the option-stripping loop outright, letting the real interpreter word resolve normally right after it.
+const WRAPPER_END_OPTS_RE = /^--(?:\s+|$)/;
+
 // WRAPPER_VALUE_OPTS — per-wrapper short options that consume the NEXT token as their own value (real getopt
-// semantics: `sudo -u user`/`-g group`, `env -u NAME`/`-C dir`, `exec -a name`, `nice -n adjustment`). Any other
-// wrapper option (`env -i`, `command -p`, `time -p`, a glued `stdbuf -oL`) is a flag with no separate value —
-// deliberately NOT generalised across all wrappers: `command -p`/`time -p` take no value at all, so treating
-// EVERY wrapper's own `-p` as value-taking would wrongly swallow the real interpreter word right after it.
-const WRAPPER_VALUE_OPTS = { sudo: 'ug', env: 'uC', exec: 'a', nice: 'n' };
+// semantics, checked against the GNU/BSD manuals: `sudo -u user`/`-g group`/`-p prompt`/`-C num`/`-D dir`/
+// `-R dir`/`-T timeout`/`-U user`; `env -u NAME`/`-C dir`/`-S string`; `exec -a name`; `nice -n adjustment`;
+// `timeout -s signal`/`-k duration`; `stdbuf -i mode`/`-o mode`/`-e mode`; `time -f format`; `doas -u user`/
+// `-C config`). `sudo -h` is deliberately EXCLUDED — real GNU sudo's `-h` is `--help`, a no-value flag; treating
+// it as value-taking would swallow the real interpreter word right after it (`sudo -h bash -c "$x"` already
+// resolves correctly through the generic no-value flag strip below, proven by a dedicated regression test).
+// Any other wrapper option (`env -i`, `command -p`, `time -p`, a glued `stdbuf -oL`) is a flag with no separate
+// value — deliberately NOT generalised across all wrappers: `command -p`/`time -p` take no value at all, so
+// treating EVERY wrapper's own `-p` as value-taking would wrongly swallow the real interpreter word right after
+// it. A long option's own glued `=value` form (`env --unset=FOO`, `env --chdir=/tmp`, `timeout --signal=KILL`,
+// `timeout --kill-after=5`, `nice --adjustment=5`) never needs a table entry at all — WRAPPER_OPT_RE's own
+// optional `(?:=\S+)?` already consumes the whole `--name=value` token as one piece.
+const WRAPPER_VALUE_OPTS = { sudo: 'ugpCDRTU', env: 'uCS', exec: 'a', nice: 'n', timeout: 'sk', stdbuf: 'ioe', time: 'f', doas: 'uC' };
 // NUMERIC_ARG_WRAPPERS — the two wrappers whose OWN bare positional argument is a number (`timeout 5`, and
 // `nice`'s fallback form without `-n`), consulted only after the value/generic option steps below have already
 // had a chance to consume a `-n`-style flag first.
@@ -424,16 +541,20 @@ const WRAPPER_OPT_RE = /^--?[A-Za-z][\w-]*(?:=\S+)?\s*/;
 const WRAPPER_NUMERIC_RE = /^\d+\s*/;
 
 /** stripWrapperOptions(s, wrapperName) -> `s` with the wrapper's OWN leading option tokens stripped (N15,
- *  codex-recheck 2026-09-24, wave 7 / wp-m1). Tries, in order, each iteration (bounded to 8 — real invocations
- *  never carry more than a handful): a value-taking short option FOR THIS WRAPPER plus its following token
- *  (`-u root `); any other single flag token, short or long, with or without a glued `=value` (`-i `, `-oL `,
- *  `--foo=bar `); and, only for timeout/nice, a bare leading number (`5 `) once no more flags match. Stops the
- *  instant none of the three apply — the next token is the real command. */
+ *  codex-recheck 2026-09-24, wave 7 / wp-m1; extended wave 8 / wp-n1 for N15-R (a)). Tries, in order, each
+ *  iteration (bounded to 8 — real invocations never carry more than a handful): the POSIX end-of-options `--`
+ *  terminator, which stops the loop outright once seen (N15-R a — nothing after it is ever an option again, even
+ *  if it looks like one); a value-taking short option FOR THIS WRAPPER plus its following token (`-u root `); any
+ *  other single flag token, short or long, with or without a glued `=value` (`-i `, `-oL `, `--foo=bar `); and,
+ *  only for timeout/nice, a bare leading number (`5 `) once no more flags match. Stops the instant none of these
+ *  apply — the next token is the real command. */
 function stripWrapperOptions(s, wrapperName) {
   const valueOpts = WRAPPER_VALUE_OPTS[String(wrapperName || '').toLowerCase()] || '';
   const numeric = NUMERIC_ARG_WRAPPERS.has(String(wrapperName || '').toLowerCase());
   let out = s;
   for (let i = 0; i < 8; i++) {
+    const endOpts = WRAPPER_END_OPTS_RE.exec(out);
+    if (endOpts) { out = out.slice(endOpts[0].length); break; } // N15-R (a): "--" ends option parsing for good
     let m = WRAPPER_OPT_VALUE_RE.exec(out);
     if (m && valueOpts.includes(m[1])) { out = out.slice(m[0].length); continue; }
     m = WRAPPER_OPT_RE.exec(out);
@@ -453,13 +574,27 @@ function stripWrapperOptions(s, wrapperName) {
  *  way to see that its own leading word is unresolvable). A `)` seen while scanning backward means everything
  *  between it and `pos` sits inside one CLOSED parenthesised span that finished entirely BEFORE `pos` — its
  *  matching `(` does not enclose `pos` and is not a boundary, so scanning continues past both; only a `(` with
- *  no unmatched `)` still owed truly encloses `pos`. A backtick has no distinct open/close character, so the
- *  NEAREST unquoted one is treated as the boundary — correct for a single, non-nested `` `...` `` span, the only
- *  shape these gates need. Respecting the shared quote mask throughout is the N04 lesson reapplied: none of
- *  `;`/`(`/`)`/backtick sitting inside quoted DATA may ever look like a fresh boundary. */
+ *  no unmatched `)` still owed truly encloses `pos`. Respecting the shared quote mask throughout is the N04
+ *  lesson reapplied: none of `;`/`(`/`)`/backtick sitting inside quoted DATA may ever look like a fresh boundary.
+ *
+ *  N15-R (codex-recheck 2026-09-24, wave 8 / wp-n1 — two further REGRESSIONS wave 7's own first backtick/paren
+ *  fix introduced). (e): a `;`/`&`/`|`/newline seen while `closeDepth > 0` (i.e. still inside an ALREADY-CLOSED,
+ *  from `pos`'s perspective, parenthesised span scanned backward) used to end the scan immediately regardless of
+ *  `closeDepth` — `bash $(echo a; echo b) -c "$x"` and `bash $(true && false) -c "$x"` lost "bash" entirely
+ *  because the `;`/`&&` INSIDE the substitution's own un-marked text (scanQuotes does not mark ordinary
+ *  characters inside a `$(...)` frame as "inside") looked like a real boundary before the matching `(` was ever
+ *  reached. Both `` ` ``/boundary checks below are now gated on `closeDepth === 0`.
+ *  (d): a backtick has no distinct open/close character, so treating the NEAREST unquoted one as an opening
+ *  boundary is wrong whenever it is actually the CLOSING half of a pair that finished entirely before `pos`
+ *  (`` bash `echo` -c "$x" `` lost "bash" because the closing tick of `` `echo` `` was mistaken for an opener).
+ *  `btPending` tracks PARITY instead: an EVEN count of unquoted backticks seen so far means the next one starts a
+ *  fresh, still-open (from `pos`'s view) candidate span; an ODD count means it PAIRS WITH that candidate, closing
+ *  a span that sits entirely before `pos` and clearing the candidate. Correct for a single, non-nested
+ *  `` `...` `` span, the only shape these gates need. */
 function statementStart(s, mask, pos) {
   let i = pos - 1;
   let closeDepth = 0;
+  let btPending = -1; // -1 = even backtick parity so far (no pending candidate); >=0 = an odd, still-open backtick
   while (i >= 0) {
     if (!mask.inside(i)) {
       const ch = s[i];
@@ -468,11 +603,20 @@ function statementStart(s, mask, pos) {
         if (closeDepth > 0) { closeDepth--; i--; continue; }
         return i + 1;
       }
-      if (ch === '`') return i + 1;
-      if (STATEMENT_BOUNDARY_RE.test(ch)) return i + 1;
+      if (closeDepth === 0) {
+        if (ch === '`') {
+          btPending = btPending === -1 ? i : -1;
+          i--; continue;
+        }
+        if (STATEMENT_BOUNDARY_RE.test(ch)) {
+          if (btPending !== -1) return btPending + 1; // an unmatched, still-open backtick candidate encloses pos
+          return i + 1;
+        }
+      }
     }
     i--;
   }
+  if (btPending !== -1) return btPending + 1;
   return 0;
 }
 
@@ -487,7 +631,15 @@ function statementStart(s, mask, pos) {
  *  will actually run, so — this file's own "cannot bound it -> fire" principle, already applied to an
  *  unresolved quote mask elsewhere — the caller treats it as an interpreter for the ASSOCIATION test alone; it
  *  still only fires once the `-c` argument itself turns out live, so a static `"$SHELL" -c "echo hi"` stays
- *  silent exactly like a known `bash -c "echo hi"` does. */
+ *  silent exactly like a known `bash -c "echo hi"` does.
+ *
+ *  N15-R (c) SAFETY NET (codex-recheck 2026-09-24, wave 8 / wp-n1): the real fix for any wrapper option grammar
+ *  this file did not foresee. If, after every env-assignment/wrapper-prefix/opener strip has already run, the
+ *  resolved bare word STILL starts with `-` (a leftover, unconsumed option token — `--` included), that is itself
+ *  proof the real command word was never reached, never a program genuinely named "-something" — it is treated
+ *  exactly like any other unresolvable interpreter (this file's own "cannot bound it -> fire" principle), so a
+ *  future missing entry in WRAPPER_VALUE_OPTS/WRAPPER_OPT_RE fails toward association rather than silently
+ *  handing a stray option's own value to SHELL_WORD_RE as if it were the leading word. */
 function readInterpreterWord(s) {
   const c = s[0];
   if (c === '"' || c === "'") {
@@ -499,7 +651,9 @@ function readInterpreterWord(s) {
     }
   }
   if (/^(?:\$\(|\$\{|\$[A-Za-z_]|`)/.test(s)) return { word: null, dynamic: true };
-  return { word: readBareWord(s, 0), dynamic: false };
+  const word = readBareWord(s, 0);
+  if (word !== '' && word[0] === '-') return { word: null, dynamic: true }; // N15-R (c)
+  return { word, dynamic: false };
 }
 
 /** statementCommandWord(stmt) -> { word, dynamic } — the leading command word of a statement's own text (see
