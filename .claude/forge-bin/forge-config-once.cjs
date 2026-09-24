@@ -72,6 +72,27 @@
  *       success the caller could mistake for real ownership — if the token write fails for any reason after
  *       the exclusive create already succeeded; the half-written file is removed on a best-effort basis so
  *       it is never left behind as a lock nobody can identify by token.
+ *
+ *   V09 THIRD fix (Codex recheck 2026-09-24, out-p9 — "a stale holder releases after B has acquired; its
+ *   rename temporarily removes B's live lock; injecting C's acquisition at that point succeeds; restoration
+ *   encounters C's lock and discards B's captured lock; B and C can now run concurrently. A short writeSync
+ *   return also counts as success: a three-byte token was accepted and left an unreleasable lock."):
+ *     - RELEASE no longer renames first and verifies second. It now reads the lock's CURRENT holder IN
+ *       PLACE (readLockInPlace: one open, one fstat, one read, on the SAME fd — never a rename) and compares
+ *       that token to its own BEFORE touching the file at all. A mismatch means this call is no longer the
+ *       owner (already reclaimed by someone else) and returns immediately — the file is never renamed, so
+ *       a live, different holder's lock is never vacated even for an instant. Only when the in-place read
+ *       confirms real ownership does release perform the steal-verify-restore-if-wrong sequence, and only to
+ *       close the now-tiny remaining gap between that read and the rename (a genuine reclaimer landing in a
+ *       single-syscall window) — not as its primary ownership check.
+ *     - RESTORATION FAILURE no longer discards the captured lock. If `fs.linkSync` fails because a THIRD
+ *       lock has already taken the name back, the old code still unconditionally deleted the private copy —
+ *       silently destroying a still-live lock nobody else could reach. The captured copy is now left on disk
+ *       exactly as stolen, and the caller is told the restoration failed, so the current operation fails
+ *       honestly instead of quietly discarding someone else's lock.
+ *     - TOKEN WRITES must return their FULL byte length. `fs.writeSync` can legitimately write fewer bytes
+ *       than asked without throwing; the old code treated any non-throwing call as success. A short write is
+ *       now treated exactly like a thrown write error: acquisition fails and the half-written file is removed.
  */
 const fs = require('fs');
 const path = require('path');
@@ -126,6 +147,25 @@ function randomToken() {
   return process.pid + ':' + crypto.randomBytes(8).toString('hex');
 }
 
+/** readLockInPlace(lockPath) -> { mtimeMs, token } (the CURRENT holder's identity) | null (does not exist or
+ *  unreadable) — inspects `lockPath` WITHOUT renaming or removing anything: one `open`, one `fstat`, one
+ *  `read`, all against the SAME file descriptor (never two separate opens, which would itself leave a gap
+ *  between them). This is the ownership/staleness check every caller MUST perform before ever attempting to
+ *  rename/unlink a lock (V09 out-p9): renaming first and verifying second can vacate a lock that turns out to
+ *  belong to a live, different holder, wide enough for a concurrent acquirer to walk in during that instant. */
+function readLockInPlace(lockPath) {
+  let fd;
+  try { fd = fs.openSync(lockPath, 'r'); }
+  catch { return null; } // gone, or unreadable — nothing to inspect, never guess
+  try {
+    const st = fs.fstatSync(fd);
+    const buf = Buffer.alloc(st.size);
+    fs.readSync(fd, buf, 0, st.size, 0);
+    return { mtimeMs: st.mtimeMs, token: buf.toString('utf8') };
+  } catch { return null; }
+  finally { try { fs.closeSync(fd); } catch { /* already closed, or a platform quirk */ } }
+}
+
 /** stealLockFile(lockPath, privatePath) -> boolean — atomically removes whatever CURRENTLY sits at
  *  `lockPath` by renaming it to `privatePath` (a name only this call knows about). Returns false (nothing
  *  to do, never throws) when `lockPath` does not currently exist — already released or already reclaimed by
@@ -139,23 +179,31 @@ function stealLockFile(lockPath, privatePath) {
   catch { return false; }
 }
 
-/** restoreStolenLock(privatePath, lockPath) — puts a wrongly-stolen lock back, best-effort, WITHOUT ever
- *  destroying a third lock that may have appeared at `lockPath` in the meantime. `fs.linkSync` is used (not
- *  `fs.renameSync`) because link fails with EEXIST when `lockPath` is already occupied again — an
- *  unconditional rename-back would silently clobber that newer, legitimate lock instead. Always cleans up
- *  the private copy afterward, whichever branch is taken. */
+/** restoreStolenLock(privatePath, lockPath) -> boolean (true = restored to `lockPath` under its original
+ *  name; false = restoration FAILED — a third lock already occupies `lockPath`) — puts a wrongly-stolen lock
+ *  back WITHOUT ever destroying a third lock that may have appeared at `lockPath` in the meantime. `fs.linkSync`
+ *  is used (not `fs.renameSync`) because link fails with EEXIST when `lockPath` is already occupied again — an
+ *  unconditional rename-back would silently clobber that newer, legitimate lock instead. V09 out-p9: when
+ *  restoration itself fails, the private copy is now left EXACTLY as stolen rather than discarded — the old
+ *  code unconditionally unlinked it on this branch too, silently destroying a still-live lock nobody else
+ *  could reach ("restoration encounters C's lock and discards B's captured lock"). The caller must treat a
+ *  `false` return as a real, honest failure of the current operation — never as a quiet no-op. */
 function restoreStolenLock(privatePath, lockPath) {
   try { fs.linkSync(privatePath, lockPath); }
-  catch { /* lockPath already holds ANOTHER (newer) lock — our stolen copy is superseded, just discard it */ }
-  try { fs.unlinkSync(privatePath); } catch { /* best effort */ }
+  catch { return false; } // lockPath already holds ANOTHER (newer) lock — preserve the captured copy, fail honestly
+  try { fs.unlinkSync(privatePath); } catch { /* best effort — the name-restore already succeeded */ }
+  return true;
 }
 
 /** createOwnedLock(lockPath, token) -> true (freshly created and durably holds exactly `token`) | false
  *  (EEXIST — genuine contention, `lockPath` is untouched). Any OTHER failure — including the token WRITE
  *  itself failing after the exclusive 'wx' create already succeeded (V09 out-p8: "injected token-write EIO
- *  was swallowed... left a lock its release could not identify") — is never swallowed: the half-written file
- *  is removed on a best-effort basis and the error is re-thrown, so acquisition FAILS outright rather than
- *  the caller entering its critical section believing it holds a lock nobody can actually identify. */
+ *  was swallowed... left a lock its release could not identify"), OR the write returning FEWER bytes than
+ *  `token` without throwing at all (V09 out-p9: "a short writeSync return also counts as success: a
+ *  three-byte token was accepted and subsequently left an unreleasable lock" — nobody else's token compare
+ *  could ever match a partial token again) — is never swallowed: the half-written file is removed on a
+ *  best-effort basis and the error is re-thrown, so acquisition FAILS outright rather than the caller
+ *  entering its critical section believing it holds a lock nobody can actually identify. */
 function createOwnedLock(lockPath, token) {
   let fd;
   try {
@@ -165,8 +213,10 @@ function createOwnedLock(lockPath, token) {
     throw e; // a failed exclusive create for any other reason must fail acquisition, never retry silently
   }
   let wrote = false;
-  try { fs.writeSync(fd, token); wrote = true; }
-  catch { /* handled below — never silently treated as a successful acquisition */ }
+  try {
+    const expectedLen = Buffer.byteLength(token, 'utf8');
+    wrote = fs.writeSync(fd, token) === expectedLen; // the FULL token, not merely a non-throwing call
+  } catch { /* handled below — never silently treated as a successful acquisition */ }
   try { fs.closeSync(fd); } catch { /* already closed by the runtime on a prior error, or platform quirk */ }
   if (!wrote) {
     try { fs.unlinkSync(lockPath); } catch { /* best effort — a future stale sweep still clears an orphan */ }
@@ -195,7 +245,10 @@ function tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken)
   catch { readOk = false; } // cannot verify what was stolen — never claim ownership of the unknown, and never
   // leave it un-identifiable either: restore it below exactly like a genuine mismatch would be.
   if (!readOk || st.mtimeMs !== expectedMtimeMs || tok !== expectedToken) {
-    restoreStolenLock(privatePath, lockPath); // stole a DIFFERENT (very likely fresher, live) lock — put it back
+    // Stole a DIFFERENT (very likely fresher, live) lock — put it back. If a THIRD lock has since taken
+    // the name, restoration fails and the captured copy is preserved on disk rather than discarded (V09
+    // out-p9); either way this call did not win the reclaim, so it fails honestly.
+    restoreStolenLock(privatePath, lockPath);
     return false;
   }
   try { fs.unlinkSync(privatePath); } catch { /* best effort — lockPath (now empty) is what matters from here */ }
@@ -221,11 +274,11 @@ function acquireLock(file, opts) {
     // to propagate straight out of acquireLock and FAIL the whole acquisition, never be retried silently.
     const created = createOwnedLock(lockPath, token);
     if (created) return { path: lockPath, token };
-    // EEXIST: genuine contention — inspect for staleness, maybe reclaim.
-    let st = null, curToken = null;
-    try { st = fs.statSync(lockPath); curToken = fs.readFileSync(lockPath, 'utf8'); }
-    catch { /* the lock vanished (or became unreadable) between the failed create and this inspection — retry below */ }
-    if (st && Date.now() - st.mtimeMs > staleMs && tryReclaimStaleLock(lockPath, curToken, st.mtimeMs, token)) {
+    // EEXIST: genuine contention — inspect for staleness, maybe reclaim. readLockInPlace never renames or
+    // removes anything (V09 out-p9): it only ever looks, on the SAME fd it opened, so a live holder is
+    // never disturbed just because someone else is checking whether it is stale yet.
+    const seen = readLockInPlace(lockPath); // null = vanished (or became unreadable) between the failed create and this inspection — retry below
+    if (seen && Date.now() - seen.mtimeMs > staleMs && tryReclaimStaleLock(lockPath, seen.token, seen.mtimeMs, token)) {
       return { path: lockPath, token };
     }
     if (Date.now() >= deadline) {
@@ -237,24 +290,35 @@ function acquireLock(file, opts) {
   }
 }
 
-/** releaseLock(lock) — never throws. V09 out-p8: releasing is the SAME steal-verify-restore-if-wrong
- *  sequence as reclaiming, for the identical reason — a plain "read then unlink" leaves a gap between the
- *  read and the unlink for a concurrent reclaimer's fresh replacement to land in, which an unconditional
- *  unlink would then destroy. Atomically steals whatever currently sits at `lock.path`; a match with this
- *  holder's own token is a normal, correct release (the stolen copy is simply discarded); a mismatch means
- *  this holder had ALREADY been reclaimed out from under it, so the stolen (someone else's live) lock is
- *  restored untouched rather than being dropped on the floor. */
+/** releaseLock(lock) -> boolean (true = this call's own lock was genuinely released; false = nothing of
+ *  ours was there — never throws). V09 out-p9: release no longer renames FIRST and verifies second. The old
+ *  sequence stole whatever currently sat at `lock.path` unconditionally, so a stale holder's release could
+ *  vacate a LIVE, different holder's lock for the instant between the rename and the restore — long enough
+ *  for a concurrent acquirer to walk in and start its own critical section ("Its rename temporarily removes
+ *  B's live lock. Injecting C's acquisition at that point succeeds"). Ownership is now verified IN PLACE
+ *  (readLockInPlace — one open, one fstat, one read; no rename) BEFORE the file is ever touched: a mismatch
+ *  means this call is no longer the owner, and it returns immediately without renaming anything at all. Only
+ *  once the in-place read confirms real ownership does release perform the same steal-verify-restore-if-wrong
+ *  sequence as reclaim, and only to close the now-tiny remaining gap between that read and the rename itself
+ *  (a genuine reclaimer landing in a single-syscall window) — never as the primary ownership check. */
 function releaseLock(lock) {
-  if (!lock || !lock.path) return; // defensive: never throw on release
+  if (!lock || !lock.path) return false; // defensive: never throw on release
+  const seen = readLockInPlace(lock.path);
+  if (!seen || seen.token !== lock.token) return false; // not ours (already gone or reclaimed) — untouched, never renamed
   const privatePath = lock.path + '.release.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
-  if (!stealLockFile(lock.path, privatePath)) return; // already gone — nothing safe to do
+  if (!stealLockFile(lock.path, privatePath)) return false; // vanished between our in-place read and this rename
   let tok = null;
   try { tok = fs.readFileSync(privatePath, 'utf8'); } catch { /* unreadable — treated as "not ours" below */ }
   if (tok === lock.token) {
     try { fs.unlinkSync(privatePath); } catch { /* best effort */ }
-    return; // correctly released
+    return true; // correctly released
   }
-  restoreStolenLock(privatePath, lock.path); // someone else's live replacement — never destroy it
+  // A reclaimer landed in the single-syscall gap between our in-place read and this rename — the rename
+  // captured THEIR live lock, not ours. Put it back (or, if a third lock has since taken the name,
+  // restoration fails and the captured copy is preserved rather than discarded — V09 out-p9). Either way
+  // this call's OWN lock was already gone before we ever touched the file, so this release did nothing.
+  restoreStolenLock(privatePath, lock.path);
+  return false;
 }
 
 /** withLock(file, fn, opts) -> fn()'s return value, run while holding file's lock. Always releases, even

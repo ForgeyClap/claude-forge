@@ -251,6 +251,111 @@ t('V09.2: a token write that fails AFTER the exclusive create succeeds FAILS acq
   assert.strictEqual(fs.existsSync(lockPath), false, 'the caller never enters the transaction with an orphan lock — the failed create is cleaned up');
 });
 
+// ---------------------------------------------------------------------------------------------------
+console.log('\n8) V09 THIRD Codex recheck (out-p9): "a stale holder releases after B has acquired; its rename');
+console.log('   temporarily removes B\'s live lock; injecting C\'s acquisition at that point succeeds; restoration');
+console.log('   encounters C\'s lock and discards B\'s captured lock. A short writeSync return also counts as');
+console.log('   success: a three-byte token was accepted and left an unreleasable lock."');
+
+t('V09.3: release must verify ownership IN PLACE before ever renaming — it must never vacate a live, different holder\'s lock, not even for an instant', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  // A is a stale/slow holder whose OWN lock object still remembers its original token.
+  const lockA = once.acquireLock(file, { staleMs: 60000 });
+  // B has genuinely reclaimed/replaced the lock — lockPath now holds a DIFFERENT, live token, with a
+  // fresh mtime (B's lock is NOT stale). A never learns this; it only knows its own stale `lockA`.
+  const lockB = { path: lockPath, token: once.randomToken() };
+  fs.writeFileSync(lockPath, lockB.token);
+
+  const origRename = fs.renameSync;
+  let renameHit = false;
+  let concurrentResult = null;
+  // Fs-seam injection: the instant A's release renames (steals) whatever sits at lockPath — the exact
+  // point Codex measured the vacated window — try to acquire the SAME lock as a concurrent third party
+  // (C). A pre-fix release reaches this rename unconditionally; a fixed release must never call it at all
+  // for a lock it does not own, so this hook must never fire.
+  fs.renameSync = function (src, dest) {
+    const r = origRename.apply(fs, arguments);
+    if (!renameHit && src === lockA.path) {
+      renameHit = true;
+      try {
+        const c = once.acquireLock(file, { staleMs: 60000, timeoutMs: 0, pollMs: 5 });
+        concurrentResult = 'acquired';
+        once.releaseLock(c); // clean up C's lock immediately so it does not linger past this probe
+      } catch (e) {
+        concurrentResult = (e && e.code) || 'error';
+      }
+    }
+    return r;
+  };
+  try {
+    once.releaseLock(lockA);
+  } finally {
+    fs.renameSync = origRename;
+  }
+
+  assert.strictEqual(renameHit, false, 'a release for a lock this call does not own must never call rename at all — the in-place ownership check must catch it first');
+  assert.strictEqual(concurrentResult, null, 'no concurrent acquisition should even be attempted, since a fixed release never vacates lockPath in the first place; got: ' + concurrentResult);
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), lockB.token, 'B\'s lock is fully intact — A\'s mismatched release must not have touched it at all');
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
+});
+
+t('V09.3: a restoration failure (a third lock already occupies the name) preserves the captured lock on disk instead of discarding it, and the reclaim still fails honestly', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  fs.writeFileSync(lockPath, 'live-token-that-will-be-wrongly-captured');
+  const st = fs.statSync(lockPath);
+  const origLinkSync = fs.linkSync;
+  fs.linkSync = function () {
+    const err = new Error('simulated EEXIST — a third lock already occupies this name');
+    err.code = 'EEXIST';
+    throw err;
+  };
+  let ok;
+  try {
+    // A deliberately WRONG expected token forces the post-steal verification to detect a mismatch (as if
+    // a different, live holder appeared since an earlier snapshot) and fall into the restoration branch.
+    ok = once.tryReclaimStaleLock(lockPath, 'this-is-not-what-is-actually-there', st.mtimeMs, once.randomToken());
+  } finally {
+    fs.linkSync = origLinkSync;
+  }
+  assert.strictEqual(ok, false, 'a mismatched reclaim whose restoration also fails must still report failure honestly, never success');
+  assert.strictEqual(fs.existsSync(lockPath), false, 'lockPath itself was genuinely vacated by the steal, and restoration could not put it back (simulated third lock)');
+  const dir = path.dirname(lockPath);
+  const preserved = fs.readdirSync(dir).filter((f) => f.includes('.reclaim.'));
+  assert.strictEqual(preserved.length, 1, 'the captured (stolen) lock content must be PRESERVED on disk, never discarded, when restoration fails: found ' + preserved.join(','));
+  assert.strictEqual(fs.readFileSync(path.join(dir, preserved[0]), 'utf8'), 'live-token-that-will-be-wrongly-captured', 'the preserved file must still hold the exact captured content, untouched');
+});
+
+t('V09.3: a SHORT writeSync (returns fewer bytes than the token, no exception) must fail acquisition — a partial token is never accepted', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const origWriteSync = fs.writeSync;
+  let sawShortWrite = false;
+  fs.writeSync = function (fd, data) {
+    if (typeof data === 'string' && data.includes(process.pid + ':')) {
+      // this is the lock-token write — simulate a genuine short write: only 3 of the real bytes actually
+      // land on disk, and writeSync truthfully reports that smaller count without throwing at all.
+      sawShortWrite = true;
+      return origWriteSync.call(fs, fd, data.slice(0, 3));
+    }
+    return origWriteSync.apply(fs, arguments);
+  };
+  let threw = null;
+  try {
+    once.acquireLock(file);
+  } catch (e) {
+    threw = e;
+  } finally {
+    fs.writeSync = origWriteSync;
+  }
+  assert.ok(sawShortWrite, 'the simulated short write must actually have been exercised');
+  assert.ok(threw, 'acquireLock must FAIL when writeSync returns fewer bytes than the token — a 3-byte token must never be accepted');
+  assert.strictEqual(fs.existsSync(lockPath), false, 'the partial lock must be removed, never left behind as an unreleasable lock');
+});
+
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

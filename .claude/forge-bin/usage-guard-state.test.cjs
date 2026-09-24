@@ -125,22 +125,24 @@ t5('V15: full withStateLock schedule — A holds > stale interval and stays ACTI
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('V15: a failed stale-lock reclaim (injected EACCES on the reclaim write) falls through to the ordinary bounded deadline — never a tight immediate-retry loop', async () => {
+t5('V15: a failed stale-lock reclaim (injected EACCES on the reclaim capture) falls through to the ordinary bounded deadline — never a tight immediate-retry loop', async () => {
   const { dir, lockPath } = tmpLock();
   try {
     fs.writeFileSync(lockPath, 'stale-token');
     const old = new Date(Date.now() - 5000);
     fs.utimesSync(lockPath, old, old);
-    const origWriteFileSync = fs.writeFileSync;
+    // V15 (third recheck): reclamation's ONE mutation is now `fs.renameSync(lockPath, <.capture. path>)`
+    // (captureLock), not a write-a-temp-file-then-rename pair — inject the failure at that exact call.
+    const origRenameSync = fs.renameSync;
     let reclaimAttempts = 0;
-    fs.writeFileSync = function (p, ...rest) {
-      if (typeof p === 'string' && p.includes('.reclaim.')) { reclaimAttempts++; const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; }
-      return origWriteFileSync.call(fs, p, ...rest);
+    fs.renameSync = function (src, dest, ...rest) {
+      if (typeof dest === 'string' && dest.includes('.capture.')) { reclaimAttempts++; const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; }
+      return origRenameSync.call(fs, src, dest, ...rest);
     };
     const started = Date.now();
     let r;
     try { r = await S.withStateLock(lockPath, () => 'unreachable', { staleMs: 50, timeoutMs: 200 }); }
-    finally { fs.writeFileSync = origWriteFileSync; }
+    finally { fs.renameSync = origRenameSync; }
     const elapsed = Date.now() - started;
     assert.strictEqual(r.ok, false, JSON.stringify(r));
     assert.strictEqual(r.reason, 'lock-timeout');
@@ -164,6 +166,135 @@ t5('V15: release only unlinks a lock whose content still matches this holder\'s 
     midRun();
     await holder;
     assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), 'someone-elses-token', 'release must never remove a lock that no longer carries this holder\'s own token');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- V15, THIRD Codex recheck (2026-09-24): capture-first reclaim/release + fenced publication ----
+const G = require('./usage-guard.cjs');
+
+t5('V15 (third recheck): a stale claimant can never replace a NEWER holder — reclaim only succeeds against the EXACT token/mtime just inspected, and loses the lock completely intact when it does not', () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    fs.writeFileSync(lockPath, 'ORIGINAL');
+    const old = new Date(Date.now() - 120000);
+    fs.utimesSync(lockPath, old, old);
+    const staleSt = fs.statSync(lockPath);
+    const expectedToken = S.readLockToken(lockPath);
+    const expectedMtimeMs = staleSt.mtimeMs;
+    // B reclaims for real FIRST (wins the race).
+    assert.strictEqual(S.tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, 'TOKEN_B'), true, 'B must win the stale reclaim');
+    // A now tries to reclaim using the SAME (now stale) snapshot it captured before B acted — this is
+    // Codex's exact "A passes its stale check and pauses; B reclaims ... A resumes" schedule, applied
+    // directly to the reclaim primitive itself.
+    assert.strictEqual(S.tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, 'TOKEN_A'), false, 'A must lose — B is now the newer holder');
+    assert.strictEqual(S.readLockToken(lockPath), 'TOKEN_B', 'B\'s lock must be completely intact — A must never have touched it');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('V15 (third recheck): a heartbeat-refreshed lock (same token, newer mtime) cannot be reclaimed even against a stale mtime snapshot, and is restored byte-for-byte intact on a failed attempt', () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    fs.writeFileSync(lockPath, 'LIVE_TOKEN');
+    const old = new Date(Date.now() - 120000);
+    const staleSnapshotMtimeMs = old.getTime();
+    fs.utimesSync(lockPath, old, old);
+    // simulate the live holder's heartbeat ticking (same token, fresh mtime) AFTER a waiter already
+    // captured an old mtime snapshot but BEFORE that waiter acts on it.
+    const now = new Date();
+    fs.utimesSync(lockPath, now, now);
+    assert.strictEqual(S.tryReclaimStaleLock(lockPath, 'LIVE_TOKEN', staleSnapshotMtimeMs, 'INTRUDER'), false);
+    assert.strictEqual(S.readLockToken(lockPath), 'LIVE_TOKEN', 'the live holder\'s lock must survive completely untouched');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('V15 (third recheck): release is also capture-based — a lock already reclaimed by someone else DURING our own transaction is restored untouched, never silently discarded', async () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    const r = await S.withStateLock(lockPath, async () => {
+      // simulate: while we are "mid-transaction", a second holder's real reclaim completes (direct fs
+      // mutation, exactly what tryReclaimStaleLock leaves behind on the disk).
+      fs.writeFileSync(lockPath, 'RECLAIMED_BY_OTHER');
+      return 'done';
+    }, { staleMs: 100000, timeoutMs: 200 });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), 'RECLAIMED_BY_OTHER', 'a lock reclaimed out from under us during our own transaction must survive OUR release untouched');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('V15 (third recheck): a token-write failure during acquisition REFUSES outright — fn() is never invoked with an always-false fence, and no empty lock is left behind', async () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    const realOpenSync = fs.openSync;
+    const realWriteSync = fs.writeSync;
+    let trackedFd = null;
+    fs.openSync = function (p, ...rest) {
+      const fd = realOpenSync.call(fs, p, ...rest);
+      if (p === lockPath) trackedFd = fd;
+      return fd;
+    };
+    fs.writeSync = function (fd, ...rest) {
+      if (fd === trackedFd) { const e = new Error('EIO simulated'); e.code = 'EIO'; throw e; }
+      return realWriteSync.call(fs, fd, ...rest);
+    };
+    let fnCalled = false;
+    let r;
+    try { r = await S.withStateLock(lockPath, () => { fnCalled = true; return 'should-not-run'; }, {}); }
+    finally { fs.openSync = realOpenSync; fs.writeSync = realWriteSync; }
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(r.reason, 'lock-write-failed');
+    assert.strictEqual(fnCalled, false, 'fn() must never be invoked after a failed token write');
+    assert.strictEqual(fs.existsSync(lockPath), false, 'no empty/ownerless lock file may be left behind');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('V15 (third recheck): a fence() check that passed EARLIER in a callback must not let a write land AFTER the lock changed hands — writeStateTo re-verifies the fence in the SAME critical step as the rename', async () => {
+  const { dir, lockPath } = tmpLock();
+  const statePath = path.join(dir, 'state.json');
+  try {
+    fs.writeFileSync(statePath, JSON.stringify({ ownerOverride: { active: true } }));
+    const r = await S.withStateLock(lockPath, (fence) => {
+      assert.strictEqual(fence(), true, 'sanity: our own token is on disk at the start of the callback');
+      // simulate a completed competing reclaim landing AFTER this callback's own (correctly passing)
+      // fence() check but BEFORE the actual disk publish — exactly the residual gap Codex's probe exploited.
+      fs.writeFileSync(lockPath, 'someone-elses-token');
+      let threw = null;
+      try { G.writeStateTo(statePath, { ownerOverride: undefined }, fence); } catch (e) { threw = e; }
+      return { code: threw && threw.code };
+    }, { staleMs: 100000, timeoutMs: 200 });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(r.value.code, 'EFENCED', 'writeStateTo must refuse to publish once the fence no longer matches, even though the callback\'s OWN earlier fence() check had passed');
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.strictEqual(persisted.ownerOverride && persisted.ownerOverride.active, true, 'the override must survive — the fenced write must never have landed');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('V15 (third recheck): Codex\'s two-reclaimer schedule through the REAL publication path — a stale holder A can never resurrect an override that a legitimate reclaimer B already cleared', () => {
+  const { dir, lockPath } = tmpLock();
+  const statePath = path.join(dir, 'state.json');
+  try {
+    fs.writeFileSync(statePath, JSON.stringify({ ownerOverride: { active: true } }));
+    const tokenA = S.randomToken();
+    fs.writeFileSync(lockPath, tokenA);
+    const past = new Date(Date.now() - 120000);
+    fs.utimesSync(lockPath, past, past);
+    const fenceA = () => S.readLockToken(lockPath) === tokenA;
+    // B reclaims (the real function) and PUBLISHES a real "override cleared" write, exactly like a genuine
+    // concurrent override-off/account-switch would.
+    const tokenB = S.randomToken();
+    const staleSt = fs.statSync(lockPath);
+    const reclaimedByB = S.tryReclaimStaleLock(lockPath, S.readLockToken(lockPath), staleSt.mtimeMs, tokenB);
+    assert.strictEqual(reclaimedByB, true, 'B must win the stale reclaim');
+    const fenceB = () => S.readLockToken(lockPath) === tokenB;
+    G.writeStateTo(statePath, {}, fenceB); // B clears the override (fresh object without it)
+    assert.strictEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).ownerOverride, undefined, 'sanity: B really cleared it');
+    // A, unaware it has already been reclaimed, now tries to publish its OWN (stale) pre-clear snapshot —
+    // Codex's exact probe: "A resumes and replaces B's live lock and clears the override". A's write must
+    // be refused, and A must never have been able to steal B's lock back either.
+    let threw = null;
+    try { G.writeStateTo(statePath, { ownerOverride: { active: true } }, fenceA); } catch (e) { threw = e; }
+    assert.strictEqual(threw && threw.code, 'EFENCED', 'A\'s write must be refused — A no longer holds the lock');
+    assert.strictEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).ownerOverride, undefined, 'B\'s clear must survive — A must never resurrect it');
+    assert.strictEqual(S.readLockToken(lockPath), tokenB, 'B\'s lock must still be intact — A never replaced it');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

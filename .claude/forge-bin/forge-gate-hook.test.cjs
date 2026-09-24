@@ -1040,6 +1040,11 @@ const DATA_CASES = [
   ['(7) UNQUOTED heredoc with $(rm -rf x) in the body', 'Bash', 'cat > f.txt <<EOF\nhello $(rm -rf x)\nEOF', 2],
   ['(8) tee file <<\'EOF\' body with kill-by-name text', 'Bash', "tee notes.md <<'EOF'\nStop-Process -Name node\ntaskkill /IM node.exe\nEOF", 0],
   ['git commit -m "$(cat <<\'EOF\' ...)" (the Claude Code commit form)', 'Bash', "git commit -m \"$(cat <<'EOF'\nfix: document that git reset --hard is gated\nEOF\n)\"", 0],
+  // N05 (codex-recheck 2026-09-24, third independent pass) — the SAME legitimate commit-heredoc form, but the
+  // body now contains an ordinary apostrophe. Before the fix this apostrophe was read as opening a real single
+  // quote that never closed, poisoning quoteMask() as unterminated and blocking an everyday commit message.
+  ['N05: the same commit-heredoc form with an apostrophe in its body still passes', 'Bash',
+    "git commit -m \"$(cat <<'EOF'\ndon't document that git reset --hard is gated\nEOF\n)\"", 0],
   ['commit heredoc whose substitution pipes into bash', 'Bash', "git commit -m \"$(cat <<'EOF'\nrm -rf ./src\nEOF\n| bash)\"", 2],
   ['cat <<\'EOF\' | bash (a piped writer)', 'Bash', "cat <<'EOF' | bash\nrm -rf ./src\nEOF", 2],
   ['a writer heredoc that writes a SCRIPT file (.sh)', 'Bash', "cat > cleanup.sh <<'EOF'\nrm -rf ./src\nEOF", 2],
@@ -1171,6 +1176,63 @@ t('V05 wave 2: the same fixture replayed through the real spawned hook is BLOCKE
   const r = spawnHook(bash(text));
   assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
   assert.ok(r.stderr.startsWith('FORGE GATE (destructive-delete'), r.stderr.split('\n')[0]);
+});
+
+// ---------------------------------------------------------------------------
+// N05 (codex-recheck 2026-09-24, third independent pass) — quoteMask() must skip an established LITERAL
+// heredoc body before scanning it for quote characters, so an ordinary apostrophe (or unbalanced quote/paren)
+// inside real heredoc data is never read as shell syntax, while every fake/unresolved/adversarial heredoc
+// shape from V05/wave 2 above (none of which have a genuinely matching delimiter line reachable from outside
+// an already-open quote) is completely unaffected.
+// ---------------------------------------------------------------------------
+console.log('\n4c-quad) N05 — quoteMask() treats a real heredoc BODY as opaque literal data, apostrophes included');
+
+t('N05: quoteMask() resolves (not unterminated) when a real heredoc body contains an apostrophe', () => {
+  const text = "git commit -m \"$(cat <<'EOF'\ndon't document that git reset --hard is gated\nEOF\n)\"";
+  const mask = data.quoteMask(text);
+  assert.strictEqual(mask.unterminated, false, 'the apostrophe inside the literal heredoc body must not open a real quote');
+});
+
+t('N05: stripHeredocs() still strips the real heredoc region when its body contains an apostrophe', () => {
+  const text = "git commit -m \"$(cat <<'EOF'\ndon't document that git reset --hard is gated\nEOF\n)\"";
+  const r = data.stripHeredocs(text);
+  assert.strictEqual(r.unstripped, false, 'a real, resolvable heredoc must not be treated as unstripped');
+  assert.strictEqual(r.regions, 1);
+  assert.ok(!r.text.includes("don't document"), 'the literal body itself must be gone: ' + r.text);
+});
+
+t('N05: stripInertData() strips the apostrophe-bearing commit heredoc and the hook stays silent end to end', () => {
+  const text = "git commit -m \"$(cat <<'EOF'\ndon't document that git reset --hard is gated\nEOF\n)\"";
+  const r = data.stripInertData(text, 'Bash');
+  assert.strictEqual(r.regions, 1);
+  assert.ok(!r.text.includes("don't document"), r.text);
+});
+
+t('N05 counterfactual: a heredoc marker with NO matching delimiter line still fails closed (apostrophe or not)', () => {
+  // No real "EOF" line ever appears (only "NOTEOF"), so findHeredocDelim() cannot resolve a body: this must
+  // behave EXACTLY as it did before N05 — quoteMask() still treats the apostrophe as an ordinary quote-open
+  // attempt, and stripHeredocs() still refuses to strip anything (fail toward "strip nothing", never a bypass).
+  const text = "cat <<'EOF'\ndon't ever close this heredoc\nNOTEOF\nrm -rf ./src";
+  const r = data.stripHeredocs(text);
+  assert.strictEqual(r.unstripped, true, 'an unresolved heredoc marker must still refuse to strip anything');
+  assert.strictEqual(r.regions, 0);
+});
+
+t('N05: findHeredocDelim() locates the exact delimiter line, honours the dash tab-strip rule, and returns null when absent', () => {
+  const plain = "cat <<'EOF'\nbody line\nEOF\nrest";
+  const bodyStart = plain.indexOf('\n') + 1;
+  const hit = data.findHeredocDelim(plain, bodyStart, '', 'EOF');
+  assert.ok(hit, 'a genuinely present delimiter line must resolve');
+  assert.strictEqual(plain.slice(hit.delimStart, hit.delimEnd), 'EOF');
+
+  const dashed = "cat <<-'EOF'\nbody line\n\t\tEOF\nrest";
+  const dashedBodyStart = dashed.indexOf('\n') + 1;
+  const dashedHit = data.findHeredocDelim(dashed, dashedBodyStart, '-', 'EOF');
+  assert.ok(dashedHit, 'a tab-indented delimiter line must resolve under the dash rule');
+  assert.strictEqual(dashed.slice(dashedHit.delimStart, dashedHit.delimEnd), '\t\tEOF');
+
+  const missing = "cat <<'EOF'\nbody line\nNOTEOF";
+  assert.strictEqual(data.findHeredocDelim(missing, missing.indexOf('\n') + 1, '', 'EOF'), null, 'no matching line -> null, never a guess');
 });
 
 // ---------------------------------------------------------------------------

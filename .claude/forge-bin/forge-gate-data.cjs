@@ -48,6 +48,11 @@ const LAYOUT = new Set(['mv', 'move', 'move-item', 'mi', 'ln', 'mklink', 'cp', '
 const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'ag', 'select-string', 'sls', 'findstr']);
 const SCRIPT_EXT_RE = /\.(sh|bash|zsh|ps1|psm1|cmd|bat|js|cjs|mjs|ts|py|rb|pl|php)$/i;
 const MARKER_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_]\w*))/g;
+// N05 (codex-recheck 2026-09-24, third independent pass): the STICKY twin of MARKER_RE, used only by
+// quoteMask() below to recognise a heredoc marker exactly AT the scanner's current position (never searching
+// ahead) so it can skip the marker's own literal BODY before treating an apostrophe/quote/paren inside it as
+// shell syntax — see quoteMask()'s own header for the full "why".
+const MARKER_AT_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_]\w*))/y;
 // C02: `^\s*` admits leading indentation before the writer; the `between` group now also accepts a fully
 // single- or double-quoted destination token (not just the bare, quote-free character set it used to).
 const WRITER_HEAD_RE = /^\s*(?:[^'"`$()#\n]*?(?:&&|\|\||;)\s*)?(cat|tee|printf|echo)\b((?:[\w\s.\-/\\:=+>@,]|'[^'\n]*'|"[^"\n]*")*?)(?<!<)<<(?!<)-?\s*(?:'[^'\n]+'|"[^"\n]+"|[A-Za-z_]\w*)((?:\s*\d?>>?\s*(?:'[^'\n]*'|"[^"\n]*"|[\w.\-/\\:@+]+))*)\s*$/;
@@ -107,6 +112,26 @@ function mergeNestedSubstitution(text, at, marks) {
   return { end: sub.end, unterminated: !sub.balanced || inner.unterminated };
 }
 
+/** findHeredocDelim(text, bodyStart, dash, delim) -> { delimStart, delimEnd } | null. N05 (codex-recheck
+ *  2026-09-24, third independent pass): locates the line (scanning forward from `bodyStart`, exactly like
+ *  stripHeredocs()'s own line-by-line search) whose content equals `delim` — leading tabs stripped first when
+ *  `dash` is truthy, the SAME rule stripHeredocs() itself uses, so the two never disagree on where a body
+ *  ends. Returns the matching delimiter line's own character offsets, or null when the text ends with no such
+ *  line — the caller must then treat this as an unresolved shape and fall back to ordinary character-by-
+ *  character scanning (quoteMask's pre-N05 behaviour), never invent a body boundary it cannot prove. */
+function findHeredocDelim(text, bodyStart, dash, delim) {
+  let pos = bodyStart;
+  while (pos <= text.length) {
+    const nl = text.indexOf('\n', pos);
+    const lineEnd = nl === -1 ? text.length : nl;
+    const line = text.slice(pos, lineEnd);
+    if ((dash ? line.replace(/^\t+/, '') : line) === delim) return { delimStart: pos, delimEnd: lineEnd };
+    if (nl === -1) return null;
+    pos = nl + 1;
+  }
+  return null;
+}
+
 /** quoteMask(text) -> { inside(pos), unterminated } — a BASH-ONLY, whole-text (never per-line) scan of `'`/`"`
  *  runs, so a heredoc operator that only LOOKS like one while sitting inside an already-open multi-line quote
  *  is never mistaken for a real one (codex-recheck S01). Backslash escaping is honoured only inside double
@@ -122,13 +147,39 @@ function mergeNestedSubstitution(text, at, marks) {
  *  it. Inside a single quote every character up to the literal closing `'` is now marked one at a time — no
  *  substitution, no backslash escaping, exactly like a real shell. An unterminated quote poisons everything
  *  from its opening character to the end of the text; `unterminated` tells the caller to refuse the whole
- *  heredoc pass. */
+ *  heredoc pass.
+ *  LITERAL HEREDOC BODIES (N05, codex-recheck 2026-09-24, third independent pass — a new false-positive
+ *  regression): a heredoc body is bash's own opaque data — none of its characters are ever read as shell
+ *  quote syntax, quoted delimiter or not. This scanner used to have no concept of a heredoc body at all, so
+ *  an ordinary apostrophe inside one (`git commit -m "$(cat <<'EOF'\ndon't document that git reset --hard is
+ *  gated\nEOF\n)"`) was read as OPENING a real single quote that then never closed, poisoning the whole scan
+ *  as `unterminated` and blocking a benign commit message. Recognising a marker ONLY at the point the main
+ *  loop is not already inside some other quote/substitution (exactly the position a real heredoc redirect can
+ *  occur at) and, when a matching delimiter line genuinely exists (findHeredocDelim), jumping straight from
+ *  the body's first character to the delimiter line without inspecting anything in between fixes this without
+ *  a blanket exemption: an ADVERSARIAL fake marker — one with NO matching delimiter line, or one sitting
+ *  inside an already-open quote's own per-character scan (V05a/V05b/wave-2 above, which never reach this
+ *  check at all) — is completely unaffected and still resolved exactly as before. */
 function quoteMask(text) {
   const marks = new Array(text.length + 1).fill(false);
   let unterminated = false;
   let i = 0;
+  const skipTo = new Map(); // N05: literal heredoc body start -> its own delimiter line's start, THIS scan only
   while (i < text.length) {
+    if (skipTo.has(i)) { i = skipTo.get(i); continue; }
     const ch = text[i];
+    if (ch === '<' && text[i + 1] === '<') {
+      MARKER_AT_RE.lastIndex = i;
+      const hm = MARKER_AT_RE.exec(text);
+      if (hm) {
+        const delim = hm[2] || hm[3] || hm[4];
+        const nl = text.indexOf('\n', i + hm[0].length);
+        if (nl !== -1) {
+          const body = findHeredocDelim(text, nl + 1, hm[1], delim);
+          if (body) skipTo.set(nl + 1, body.delimStart);
+        }
+      }
+    }
     if (ch === '$' && text[i + 1] === '(') {
       // V05 wave 2: a substitution reached OUTSIDE any quote is still its own lexical context — recurse into
       // it (mergeNestedSubstitution) rather than merely skipping its raw text, so a fake heredoc nested inside
@@ -361,4 +412,8 @@ function stripInertData(command, shell) {
   }
 }
 
-module.exports = { stripInertData, stripHeredocs, scanWords, literalDataSpans, laterRisk, quoteMask, gitSubcommand, INTERPRETER_RE, LAYOUT, SEARCH };
+module.exports = {
+  stripInertData, stripHeredocs, scanWords, literalDataSpans, laterRisk, quoteMask, gitSubcommand,
+  findHeredocDelim, // N05 (codex-recheck 2026-09-24, third pass) — exported for direct unit testing
+  INTERPRETER_RE, LAYOUT, SEARCH,
+};

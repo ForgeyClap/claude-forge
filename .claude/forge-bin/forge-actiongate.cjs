@@ -261,9 +261,19 @@ function isExcusedSegment(m, segment) {
   return excusedSegments(m.except).has(String(segment));
 }
 
+// hasLiveCArg()/cArgHasLiveMarker() (N02, codex-recheck 2026-09-24, third pass) live in the sibling
+// forge-actiongate-position.cjs (kept there for the same reason as the rest of that file — staying under the
+// 500-line budget here); re-exported below unchanged. See that file's own header for the full "why".
+const { hasLiveCArg } = POSITION;
+
+/** COMMAND_EXTRA_FIRE — per-gate-id extra JS predicates a command-kind gate ALSO fires on, beyond its JSON
+ *  regex (exactly one entry, N02 above). Always OR'd alongside `match.pattern`, never a replacement for it —
+ *  removing an entry here can only ever narrow a gate's coverage back toward the regex alone. */
+const COMMAND_EXTRA_FIRE = { 'opaque-exec': hasLiveCArg };
+
 /** testCommandGate(gate, text) -> boolean — true when gate.match.pattern_line matches the WHOLE text, or
- *  when ANY single command segment of `text` matches gate.match.pattern and is NOT excused by
- *  gate.match.except (see the COMMAND gate note in the header).
+ *  when ANY single command segment of `text` matches gate.match.pattern (or the gate's own extra predicate,
+ *  see COMMAND_EXTRA_FIRE) and is NOT excused by gate.match.except (see the COMMAND gate note in the header).
  *  The except valve is consulted ONLY for a segment the splitter marked `intact`. An amputated segment —
  *  one the split cut mid-argument — is judged on its pattern match alone, because the string it appears to
  *  be is not the command that will run. That guard is what stops `rm -rf node_modules$(echo /../.claude)`
@@ -275,10 +285,14 @@ function testCommandGate(gate, text) {
   if (m.kind !== 'command') return false;
   const flags = m.flags || 'i';
   if (m.pattern_line && new RegExp(m.pattern_line, flags).test(String(text))) return true;
-  if (!m.pattern) return false;
-  const re = new RegExp(m.pattern, flags);
+  const extra = COMMAND_EXTRA_FIRE[gate.id];
+  if (!m.pattern && !extra) return false;
+  const re = m.pattern ? new RegExp(m.pattern, flags) : null;
   for (const entry of splitCommandsDetailed(text)) {
-    if (!commandPositionCandidates(entry).some((c) => re.test(c))) continue;
+    const cands = commandPositionCandidates(entry);
+    const patternHit = re ? cands.some((c) => re.test(c)) : false;
+    const extraHit = extra ? cands.some((c) => extra(c)) : false;
+    if (!patternHit && !extraHit) continue;
     if (entry.intact && isExcusedSegment(m, entry.segment)) continue;
     return true;
   }
@@ -298,10 +312,12 @@ function testCommandGateRaw(gate, text) {
   if (m.kind !== 'command') return false;
   const flags = m.flags || 'i';
   if (m.pattern_line && new RegExp(m.pattern_line, flags).test(String(text))) return true;
-  if (!m.pattern) return false;
-  const re = new RegExp(m.pattern, flags);
+  const extra = COMMAND_EXTRA_FIRE[gate.id];
+  if (!m.pattern && !extra) return false;
+  const re = m.pattern ? new RegExp(m.pattern, flags) : null;
   for (const entry of splitCommandsDetailed(text)) {
-    if (commandPositionCandidates(entry).some((c) => re.test(c))) return true;
+    const cands = commandPositionCandidates(entry);
+    if ((re && cands.some((c) => re.test(c))) || (extra && cands.some((c) => extra(c)))) return true;
   }
   return false;
 }
@@ -388,6 +404,10 @@ const KNOWN_GATES = ['deploy', 'git-push', 'spend', 'dns-change', 'prod-activate
 
 module.exports = {
   classify, listGates, loadGates, isPathEscape, testTextGate, testCommandGate, testCommandGateRaw, splitCommands, normalizeInput,
+  // N02 (codex-recheck 2026-09-24, third pass) — the -c argument's genuine two-layer escape read (re-exported
+  // from forge-actiongate-position.cjs, see hasLiveCArg above); COMMAND_EXTRA_FIRE exported so a caller/test
+  // can see exactly which gate ids have an extra JS predicate beyond their JSON regex.
+  hasLiveCArg, COMMAND_EXTRA_FIRE,
   // the whole except valve, exported so the INVARIANT test can assert the valve itself and not merely the
   // gate's verdict: excusedSegments() IS the allow-list, isExcusedSegment() IS the membership test.
   excusedSegments, isExcusedSegment,

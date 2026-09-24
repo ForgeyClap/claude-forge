@@ -58,6 +58,33 @@
  *     - RELEASE: unlinks the lock file ONLY when its current content still matches the exact token this
  *       holder wrote when it acquired (closes gap 2 above) — a lock this holder no longer actually owns is
  *       left completely alone, so the new holder's lock survives untouched.
+ *
+ * OWNERSHIP TRANSFER IS NOW ONE ATOMIC MUTATION, NOT VERIFY-THEN-ACT (V15, THIRD Codex recheck, 2026-09-24):
+ * the second recheck's fix above still had a verify-then-write gap in `tryReclaimStaleLock` — it re-checked
+ * the stale entry's token/mtime, then performed TWO SEPARATE later syscalls (write a temp file, rename it
+ * over the lock) to actually claim it. Codex proved this remains exploitable: a reclaimer that "passes its
+ * stale check and pauses" (a real OS scheduling gap, or a slow synchronous transform) can still complete its
+ * write-then-rename AFTER a second, legitimate holder has already taken over and published a real state
+ * change — silently resurrecting whatever that legitimate holder had just cleared (Codex's exact
+ * reproduction: an owner-cleared override came back the moment the stale holder's delayed write finally
+ * landed). The fix (mirrors this project's own forge-config-once.cjs V09 lock's proven "capture, then act on
+ * what you actually captured" shape — see `captureLock`/`restoreCapturedLock` below): the ONE mutation that
+ * decides who owns the lock is now `fs.renameSync(lockPath, <private capture path>)` — an atomic OS-level
+ * rename that only ONE caller can ever win for the same source path at the same instant. Everything after
+ * that (comparing the captured content to what was expected, claiming the now-vacant slot with an exclusive
+ * `wx` create, or giving mismatched content back via `fs.linkSync`) operates on content this caller has
+ * SOLE, already-confirmed possession of — there is no longer a window between "verify" and "act" for another
+ * caller to exploit, because the verify step no longer exists as a separate operation from the claim.
+ * RELEASE uses the exact same capture primitive (never a bare "read-then-unlink", which has an identical
+ * verify-then-act gap): a lock captured with THIS holder's own token is left vacant (the intended outcome of
+ * a release); a lock captured with anyone else's content is restored via `fs.linkSync`, never silently
+ * dropped, and never put back with a plain `renameSync` (which could clobber a third lock that appeared at
+ * the path in the meantime).
+ *
+ * A FAILED token write during ACQUISITION (the temp-free `fs.writeSync(fd, myToken)` right after `openSync`)
+ * now REFUSES the whole acquisition outright (`{ok:false, reason:'lock-write-failed'}`) instead of silently
+ * proceeding into `fn()` with a fence that can only ever report `false` and leaving an empty, ownerless lock
+ * file behind for the next waiter to trip over.
  */
 const fs = require('fs');
 const crypto = require('crypto');
@@ -76,26 +103,61 @@ function readLockToken(lockPath) {
   try { return fs.readFileSync(lockPath, 'utf8'); } catch { return null; }
 }
 
+/** captureLock(lockPath) -> { captured:true, content, mtimeMs, capturePath } | { captured:false }.
+ *  THE single atomic ownership-transfer primitive (V15, third Codex recheck, 2026-09-24), shared by both
+ *  `tryReclaimStaleLock` and `withStateLock`'s own release step below. An `fs.renameSync` of the lock's OWN
+ *  CURRENT name to a private per-caller path is the ONE mutation — the OS guarantees exactly one caller's
+ *  rename can ever succeed against the same source path at the same instant, so whatever content this call
+ *  reads back afterward is provably content NOBODY ELSE captured too. A caller that decides it was not
+ *  entitled to touch that content can always give it back via `restoreCapturedLock`. Never throws. */
+function captureLock(lockPath) {
+  const capturePath = lockPath + '.capture.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
+  try { fs.renameSync(lockPath, capturePath); }
+  catch { return { captured: false }; } // gone, or another caller's rename already won the source path
+  let content = null, mtimeMs = null;
+  try { content = fs.readFileSync(capturePath, 'utf8'); } catch { /* unreadable — treated as a mismatch below */ }
+  try { mtimeMs = fs.statSync(capturePath).mtimeMs; } catch { /* leave null — also treated as a mismatch */ }
+  return { captured: true, content, mtimeMs, capturePath };
+}
+/** restoreCapturedLock(capturePath, lockPath) -> best-effort put-back for content a caller captured but
+ *  turned out not to be entitled to touch (it was not the exact stale entry expected, or it belonged to a
+ *  holder other than the one releasing). Uses `fs.linkSync` — NEVER `fs.renameSync` — so a third lock that
+ *  appeared at `lockPath` in the meantime (a genuinely fresh acquirer's own exclusive create) is never
+ *  clobbered; on EEXIST the captured content is simply discarded, since whatever is at `lockPath` now is the
+ *  legitimate current holder. Always cleans up the private capture file. Never throws. */
+function restoreCapturedLock(capturePath, lockPath) {
+  try { fs.linkSync(capturePath, lockPath); } catch { /* something newer already lives at lockPath — leave it */ }
+  try { fs.unlinkSync(capturePath); } catch { /* best effort */ }
+}
 /** tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken) -> boolean (true = this call now
- *  holds the lock). Re-verifies, immediately before acting, that the lock at `lockPath` is STILL the exact
- *  stale entry inspected a moment ago (same mtime AND same token) — never reclaims based on a snapshot that
- *  might already be gone or replaced. Writes `newToken` to a private temp path and replaces the lock via
- *  `fs.renameSync` (atomic on every platform Node supports), then reads the result back: if a concurrent
- *  reclaimer's write landed instead, this call correctly reports it does not hold the lock. A failed
- *  write/rename (e.g. injected EACCES/EPERM) returns false — the CALLER is responsible for falling through
- *  to the ordinary bounded backoff, never retrying this function in a tight loop. */
+ *  holds the lock). V15 (third Codex recheck, 2026-09-24): reclamation is now CAPTURE-FIRST, never
+ *  verify-then-write — `captureLock` performs the ONE mutation before anything is inspected, so there is no
+ *  window between "confirm this is still the stale entry" and "claim it" for a concurrent writer to exploit.
+ *  If the captured content does not EXACTLY match the stale entry this caller inspected a moment ago (a live
+ *  holder's heartbeat ticked, or a different reclaimer already won it), the content is restored untouched
+ *  and this call reports it does not hold the lock — it never assumes ownership it cannot prove. Only once
+ *  the captured content is confirmed to be the precise stale entry does this call claim the now-vacant slot
+ *  with an EXCLUSIVE `wx` create (never a blind overwrite), so a genuinely fresh acquirer that slips into the
+ *  vacancy first is detected as a lost race, not silently clobbered. A failed capture/claim (e.g. injected
+ *  EACCES/EPERM) returns false — the CALLER is responsible for falling through to the ordinary bounded
+ *  backoff, never retrying this function in a tight loop. */
 function tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken) {
-  let freshSt;
-  try { freshSt = fs.statSync(lockPath); } catch { return false; } // gone: someone else already reclaimed/released it
-  const freshToken = readLockToken(lockPath);
-  if (freshSt.mtimeMs !== expectedMtimeMs || freshToken !== expectedToken) return false; // no longer the SAME stale lock
-  const tmp = lockPath + '.reclaim.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
-  try {
-    fs.writeFileSync(tmp, newToken);
-    fs.renameSync(tmp, lockPath); // atomic replace — a concurrent reclaimer's rename may still win the race
-  } catch {
-    try { fs.unlinkSync(tmp); } catch { /* best effort — the temp file was never created or is already gone */ }
+  const cap = captureLock(lockPath);
+  if (!cap.captured) return false; // someone else's capture (reclaim or release) already won the source path
+  const stillTheExactStaleEntry = cap.content === expectedToken && cap.mtimeMs === expectedMtimeMs;
+  if (!stillTheExactStaleEntry) {
+    // not the entry we verified a moment ago — give it back rather than deciding based on stale information.
+    restoreCapturedLock(cap.capturePath, lockPath);
     return false;
+  }
+  // it really was the stale entry, and it is now off the shared path where nobody else could have captured
+  // the same content too — discard our private copy and claim the now-vacant slot exclusively.
+  try { fs.unlinkSync(cap.capturePath); } catch { /* best effort */ }
+  try {
+    const fd = fs.openSync(lockPath, 'wx');
+    try { fs.writeSync(fd, newToken); } finally { fs.closeSync(fd); }
+  } catch {
+    return false; // a fresh acquirer's own exclusive create won the now-vacant slot first — not an error
   }
   return readLockToken(lockPath) === newToken;
 }
@@ -113,8 +175,17 @@ async function withStateLock(lockPath, fn, opts) {
   for (;;) {
     try {
       const fd = fs.openSync(lockPath, 'wx');
-      try { fs.writeSync(fd, myToken); } catch { /* best effort — the lock's mere existence is what matters most */ }
+      let tokenWritten = true;
+      try { fs.writeSync(fd, myToken); } catch { tokenWritten = false; }
       fs.closeSync(fd);
+      if (!tokenWritten) {
+        // V15 (third Codex recheck, 2026-09-24): a failed token write must REFUSE this acquisition outright
+        // — never invoke fn() with a fence() that can only ever report false, and never leave a broken,
+        // ownerless empty lock file behind for the next waiter to trip over (previously: swallowed, then
+        // proceeded to hold what looked like a lock nobody could ever prove they own).
+        try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
+        return { ok: false, reason: 'lock-write-failed' };
+      }
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') return { ok: false, reason: 'lock-error: ' + e.message };
@@ -159,10 +230,27 @@ async function withStateLock(lockPath, fn, opts) {
     return { ok: true, value };
   } finally {
     clearInterval(heartbeat);
-    // release ONLY when our token still matches (V15, second recheck) — never unlink "whatever is at this
-    // path now"; a lock this holder no longer actually owns is left completely alone.
-    try { if (readLockToken(lockPath) === myToken) fs.unlinkSync(lockPath); } catch { /* already gone/replaced */ }
+    // RELEASE (V15, THIRD Codex recheck, 2026-09-24): capture-based, matching tryReclaimStaleLock's own
+    // atomicity — never a bare "read token, then unlink" (those are two separate syscalls; a reclaim could
+    // land in the gap between them, and an unconditional unlink would then delete the NEW holder's fresh
+    // lock instead of "whatever we no longer own"). `captureLock` is the one mutation; what happens next
+    // depends only on content this call has sole, already-confirmed possession of.
+    const cap = captureLock(lockPath);
+    if (cap.captured) {
+      if (cap.content === myToken) {
+        // genuinely ours — releasing is SUPPOSED to leave this vacant; nothing further to do.
+        try { fs.unlinkSync(cap.capturePath); } catch { /* best effort */ }
+      } else {
+        // already reclaimed by someone else before we got here (e.g. this holder was itself stale for a
+        // moment) — give their lock back untouched rather than silently discarding it.
+        restoreCapturedLock(cap.capturePath, lockPath);
+      }
+    }
+    // cap.captured === false: already gone/released by someone else — nothing left for us to release.
   }
 }
 
-module.exports = { withStateLock, DEFAULT_WAIT_MS, DEFAULT_STALE_MS, randomToken, tryReclaimStaleLock, readLockToken };
+module.exports = {
+  withStateLock, DEFAULT_WAIT_MS, DEFAULT_STALE_MS, randomToken, tryReclaimStaleLock, readLockToken,
+  captureLock, restoreCapturedLock,
+};

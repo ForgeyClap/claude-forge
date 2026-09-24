@@ -357,6 +357,47 @@ for (const cmd of V06_SILENT) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// N02 (codex-recheck 2026-09-24, THIRD independent pass) — REGRESSION: the wave-2 fix's blanket "an escaped
+// $/backtick is always inert" exemption was itself a live bypass. Inside a DOUBLE-quoted `-c` argument, a
+// backslash before `$`/backtick is stripped by the OUTER shell only — the INNER `-c` interpreter still
+// receives and executes the resulting bare `$x` / `$(...)`. hasLiveCArg() replaces the regex lookbehind with
+// a real two-layer read (outer double quotes, then the escaped marker's own inner single-quote protection).
+// ---------------------------------------------------------------------------
+console.log('\n2c-n02) opaque-exec -c argument — a genuine two-layer escape read, not a blanket exemption');
+
+const N02_FIRE = [
+  '/bin/bash -c "\\$x"', 'bash -c "\\$(cat payload.txt)"', 'sh -c "\\$SCRIPT"',
+  'pwsh -c "\\$cmd"', 'powershell -c "\\`whoami\\`"',
+];
+for (const cmd of N02_FIRE) {
+  t('N02 must FIRE opaque-exec (escaped for the OUTER shell only, still live at the inner -c shell): "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'matched: ' + JSON.stringify(r.matched));
+  });
+}
+
+const N02_SILENT = [
+  // the wave-1 fixture this fix must not reopen: the escaped $ sits inside the ARGUMENT's own single quotes,
+  // so the inner -c shell reads it as real single-quoting and never expands it.
+  'bash -c "printf \'\\$(word)\'"',
+  'sh -c "echo hello"', // fully literal, no $/backtick at all
+];
+for (const cmd of N02_SILENT) {
+  t('N02 counterfactual must stay SILENT: "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(!r.matched.includes('opaque-exec'), 'unexpectedly matched opaque-exec: ' + cmd);
+  });
+}
+
+t('N02: hasLiveCArg() direct unit — escaped marker outside single quotes is live, inside single quotes is not', () => {
+  assert.strictEqual(gate.hasLiveCArg('/bin/bash -c "\\$x"'), true);
+  assert.strictEqual(gate.hasLiveCArg('bash -c "printf \'\\$(word)\'"'), false);
+  assert.strictEqual(gate.hasLiveCArg('bash -c "$(cat payload.txt)"'), true, 'unescaped $ is always live');
+  assert.strictEqual(gate.hasLiveCArg('sh -c "echo hello"'), false, 'no $/backtick at all -> not live');
+  assert.strictEqual(gate.hasLiveCArg('node script.js'), false, 'no sh/bash/pwsh/powershell -c shape at all');
+});
+
 t('V06: stripCommandOpeners() strips only recognised leading openers, iteratively, and is a no-op otherwise', () => {
   assert.strictEqual(gate.stripCommandOpeners('{ eval "$x"; }'), 'eval "$x"; }');
   assert.strictEqual(gate.stripCommandOpeners('then { eval "$x"'), 'eval "$x"');
@@ -377,6 +418,7 @@ t('forge-actiongate.cjs re-exports forge-actiongate-position.cjs\'s functions UN
   assert.strictEqual(gate.commandPositionCandidates, position.commandPositionCandidates);
   assert.strictEqual(gate.laterBranchStarts, position.laterBranchStarts);
   assert.strictEqual(gate.AMPUTATING_SEPARATORS, position.AMPUTATING_SEPARATORS);
+  assert.strictEqual(gate.hasLiveCArg, position.hasLiveCArg, 'N02 hasLiveCArg is re-exported, not copied');
 });
 
 t('V06 wave 2: laterBranchStarts() finds every later else/elseif/catch/finally, never the segment\'s own first token', () => {
@@ -384,6 +426,40 @@ t('V06 wave 2: laterBranchStarts() finds every later else/elseif/catch/finally, 
   assert.ok(starts.some((s) => s.startsWith('else {')), JSON.stringify(starts));
   assert.strictEqual(gate.laterBranchStarts('else { iex $cmd }').length, 0, 'a match AT position 0 is not a "later" start');
   assert.strictEqual(gate.laterBranchStarts('npm run build').length, 0, 'no branch keyword at all -> no starts');
+});
+
+// ---------------------------------------------------------------------------
+// N04 (codex-recheck 2026-09-24, third independent pass) — REGRESSION: laterBranchStarts() matched
+// else/elseif/catch/finally as plain WORDS anywhere in the segment, including inside quoted DATA — a file name
+// argument or an output string that merely CONTAINS one of those words got promoted to a fake command-position
+// candidate and could then match another gate's pattern (e.g. opaque-exec's eval/iex alternative).
+// ---------------------------------------------------------------------------
+console.log('\n2c-n04) laterBranchStarts() ignores a branch keyword sitting inside quoted data');
+
+const N04_SILENT = [
+  'node docs.cjs "else eval report"',
+  'Write-Host "catch iex is an alias"',
+  "echo 'finally done, catch you later'",
+];
+for (const cmd of N04_SILENT) {
+  t('N04 must stay SILENT (branch keyword is inside quoted data): "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(!r.matched.includes('opaque-exec'), 'unexpectedly matched opaque-exec: ' + JSON.stringify(r.matched));
+  });
+}
+
+t('N04: laterBranchStarts() finds no start when the only else/catch/finally word is inside quotes', () => {
+  assert.strictEqual(position.laterBranchStarts('node docs.cjs "else eval report"').length, 0);
+  assert.strictEqual(position.laterBranchStarts('Write-Host "catch iex is an alias"').length, 0);
+});
+
+t('N04 counterfactual: the wave-2 real branch positives (no quoting around the keyword) still fire', () => {
+  for (const cmd of ['if ($false) { Write-Output ok } else { iex $cmd }',
+    'if ($false) { Write-Output ok } elseif ($true) { iex $cmd }',
+    'try { Write-Output ok } catch { iex $cmd }', 'try { Write-Output ok } finally { iex $cmd }']) {
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), cmd + ' -> matched: ' + JSON.stringify(r.matched));
+  }
 });
 
 t('V06: commandPositionCandidates() widens without ever mutating entry.segment (the shared split contract)', () => {

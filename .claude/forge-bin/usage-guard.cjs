@@ -486,15 +486,25 @@ function readState() {
   }
   return parsed;
 }
-/** writeStateTo(file, s) — THE single choke point for every state write (audit finding 2026-08-03).
+/** writeStateTo(file, s, fence) — THE single choke point for every state write (audit finding 2026-08-03).
  *  doPause()/doResume() deliberately build a FRESH state object so a stale pause cannot survive, carrying
  *  only ownerOverride/credits forward by hand. The account stamp was not on that hand-written carry list,
  *  so every pause/resume erased it and the next tick mistook a REAL account switch for a first stamp —
  *  the account gate died exactly when it mattered. Carrying it here (unless the writer explicitly sets a
  *  new one, which is what a genuine switch does) makes that impossible to forget at any future call site.
  *  Every write also stamps a heartbeat: a watcher that stopped ticking is then visible in the state
- *  itself, not only in a PID that outlives the work it was supposed to be doing. */
-function writeStateTo(file, s) {
+ *  itself, not only in a PID that outlives the work it was supposed to be doing.
+ *  FENCE-AT-PUBLISH (V15, THIRD Codex recheck, 2026-09-24): `fence`, when given, is a zero-arg function
+ *  (usage-guard-state.cjs's own lock fence) re-checked IMMEDIATELY BEFORE the rename that actually publishes
+ *  this write — not only by the caller, earlier, before the account-carry read/JSON.stringify/temp-file
+ *  write above. Codex proved those are separate operations with a real (if narrow) window between them: a
+ *  caller whose EARLIER fence() check passed could still have lost the lock by the time this function
+ *  finally renamed its temp file into place, and the write landed anyway. Re-checking here, as the LAST
+ *  synchronous step before the one mutation that makes the write visible, closes that gap to the practical
+ *  minimum. On a failed re-check this throws an Error with `.code === 'EFENCED'` (never lets the rename
+ *  happen) — callers that pass `fence` MUST treat that as a refusal exactly like a lock-timeout, never a
+ *  hard failure to propagate as a fatal error. */
+function writeStateTo(file, s, fence) {
   const next = Object.assign({}, s);
   if (!next.account) {
     try {
@@ -512,15 +522,21 @@ function writeStateTo(file, s) {
   const tmp = file + '.' + process.pid + '.' + Math.random().toString(36).slice(2, 8) + '.tmp';
   try {
     fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
+    if (typeof fence === 'function' && !fence()) {
+      const err = new Error('state publish refused: lock fence no longer matches immediately before rename');
+      err.code = 'EFENCED';
+      throw err;
+    }
     fs.renameSync(tmp, file);
   } catch (e) {
     try { fs.unlinkSync(tmp); } catch { /* nothing to clean up */ }
-    // A failed atomic write must not silently leave the caller believing the state was persisted.
+    // A failed atomic write (or a fenced refusal) must not silently leave the caller believing the state
+    // was persisted.
     throw e;
   }
   return next;
 }
-function writeState(s) { return writeStateTo(STATE_FILE, s); }
+function writeState(s, fence) { return writeStateTo(STATE_FILE, s, fence); }
 
 // ---- NVIDIA-shift soft threshold — pure, advisory-only classification (never fabricates a %) ----
 function computePressureLevel(weekPct, nvidiaShiftAt) {
@@ -787,17 +803,34 @@ function guardNetworkAllowed(opts) {
       : 'usage-guard staat uit — geen aanroep naar het meetpunt of Paperclip (aanzetten: /forge config set usage-guard aan; eenmalig toch meten: --force) / usage guard is switched off — no request to the usage endpoint or Paperclip (turn it back on: /forge config set usage-guard aan; measure once anyway: --force)',
   };
 }
-// FORGE_USAGE_GUARD_OWNERGRANT_ROOT (V18, second Codex recheck, 2026-09-24): a test/isolation seam ONLY —
-// mirrors this project's FORGE_USAGE_GUARD_STATE/_IDENTITY convention. Unset, this resolves to the exact
-// same real project root override-on already used before this fix (unchanged production behaviour).
-const OWNERGRANT_PROJECT_ROOT = process.env.FORGE_USAGE_GUARD_OWNERGRANT_ROOT || path.resolve(__dirname, '..', '..');
+// TRUSTED_OWNERGRANT_ROOT (N06, third Codex recheck, 2026-09-24 — REPLACES the second recheck's
+// FORGE_USAGE_GUARD_OWNERGRANT_ROOT environment variable, which was itself the vulnerability): production
+// authorisation for `override-on` and continuous forced watching (`start --force` / `watch --force`) is now
+// anchored SOLELY to this real project root — never to anything an environment variable can select. Codex's
+// exact reproduction: a caller sets FORGE_USAGE_GUARD_OWNERGRANT_ROOT to point at a scratch directory
+// containing a caller-chosen "grant" file, and the SAME process that is asking for permission gets to decide
+// which directory's secret authorises it — exactly the "verified against a value I just chose" failure mode
+// forge-ownergrant.cjs's own file header already names as the reason an env var is never accepted for the
+// secret ITSELF. The root selection had quietly reopened the identical hole one layer up. `let`, never
+// re-derived from `process.env` anywhere below, and never read by any `argv()`/CLI-flag path either — a real
+// `node usage-guard.cjs ...` invocation can NEVER change it, no matter what is in its environment or
+// arguments.
+let TRUSTED_OWNERGRANT_ROOT = path.resolve(__dirname, '..', '..');
+/** __setOwnerGrantRootForTests(root) — a MODULE-LEVEL SEAM, reachable ONLY by code that `require()`s this
+ *  file directly and calls this exported function in the SAME process (this project's own `spawnGuardProbe`/
+ *  probe-script convention). The `require.main === module` CLI dispatch below never calls this — a real CLI
+ *  invocation has no flag, env var or other input that reaches it, so it cannot be used to redirect
+ *  production authorisation. Passing a falsy/non-string value resets to the real trusted root. */
+function __setOwnerGrantRootForTests(root) {
+  TRUSTED_OWNERGRANT_ROOT = (typeof root === 'string' && root) ? root : path.resolve(__dirname, '..', '..');
+}
 /** verifyForcedWatchGrant(token) -> { ok, reason } — V18 exception (3): the SAME verified owner-
  *  authorisation check override-on uses (forge-ownergrant.cjs), reused here so continuous forced watching
  *  (`start --force` / `watch --force`, never `--once`) is gated identically to any other CONSEQUENTIAL,
  *  SUSTAINED bypass of the owner's off switch. Never throws. */
 function verifyForcedWatchGrant(token) {
   const og = require('./forge-ownergrant.cjs');
-  return og.verifyOwnerGrant({ token, projectRoot: OWNERGRANT_PROJECT_ROOT });
+  return og.verifyOwnerGrant({ token, projectRoot: TRUSTED_OWNERGRANT_ROOT });
 }
 function readToken() {
   let raw;
@@ -939,7 +972,16 @@ async function pc(method, p, body, opts) {
     const r = await fetch(PC_BASE + p, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal });
     let j = null; try { j = await r.json(); } catch {}
     return { status: r.status, json: j };
-  } catch (e) { return { status: 0, json: null, err: String(e.message) }; }
+  } catch (e) {
+    // V29 (third Codex recheck, 2026-09-24): a request that was CANCELLED mid-flight (the combined signal
+    // aborted while the fetch was in progress — o.signal.aborted flips to true DURING the await above, not
+    // only before it, which is the pre-check a few lines up) is not a completed API failure — it is
+    // unfinished work. Without `aborted:true` here, the caller could not tell "this agent's pause/resume
+    // genuinely failed" from "shutdown cut this one off mid-request", and treated both identically as a
+    // resolved miss (Codex's exact finding: the interrupted agent was lost, never retried).
+    const wasAborted = !!(o.signal && o.signal.aborted) || (e && (e.name === 'AbortError' || /abort/i.test(String(e.message))));
+    return { status: 0, json: null, err: String(e.message), ...(wasAborted ? { aborted: true } : {}) };
+  }
 }
 /** allAgents(opts) -> opts.signal threads through to every pc() call (V29) and stops enumerating further
  *  companies/agents the moment shutdown begins — "no subsequent operation after shutdown began" applies to
@@ -1014,7 +1056,9 @@ async function withLockedState(D, transform, label) {
     const result = transform(fresh);
     const next = result !== undefined ? result : fresh;
     if (fence && !fence()) return { __fenced: true };
-    D.writeState(next);
+    // V15 (third recheck): `fence` is forwarded into the write itself — see writeStateTo's own doc comment
+    // for why the EARLIER check on the line above is not, by itself, sufficient.
+    try { D.writeState(next, fence); } catch (e) { if (e && e.code === 'EFENCED') return { __fenced: true }; throw e; }
     return { __fenced: false, next };
   });
   if (r.ok && r.value && r.value.__fenced) {
@@ -1057,6 +1101,17 @@ async function doPause(u, crossed, ident, opts) {
     if (r.status >= 200 && r.status < 300) {
       paused.push({ id: a.id, name: a.name, company: a.company });
       journalAppend({ agentId: a.id, name: a.name, company: a.company, action: 'paused', pauseId, accountFp: (ident && ident.fp) || null, resolved: false });
+    } else if (r.aborted) {
+      // V29 (THIRD Codex recheck, 2026-09-24): a cancellation DURING this agent's own in-flight request is
+      // NOT a completed API failure — it is unfinished pause work. The pre-loop-iteration check above only
+      // ever catches shutdown that began BEFORE a request was issued; this is the case Codex's probe
+      // exploited (abort the ONLY agent's in-flight pause request — the old code fell into the `else`
+      // branch below, journalled it as a RESOLVED miss, and lost it forever). Leave the earlier
+      // 'pause-intent' journal entry UNRESOLVED (never append a 'pause-failed' close for it) and fold this
+      // agent — and everything after it — into `pending` so the very next tick retries it.
+      stopIndex = idx;
+      log('PAUSE aborted mid-request (shutdown) for ' + a.id + ' — ' + (toPause.length - idx) + ' agent(s) (including this one) left unpaused for the next tick');
+      break;
     } else {
       // de pause-API faalde: de intent afsluiten — er is niets te compenseren voor deze agent (a resolved
       // MISS, not unfinished work — a retry loop on a genuinely failing agent would spin forever).
@@ -1094,6 +1149,7 @@ async function doPause(u, crossed, ident, opts) {
       return Array.from(map.values());
     })();
     if (fence && !fence()) return { fenced: true };
+    try {
     writeState({
       mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, resumeAt: RESUME_AT,
       ...accountStamp(ident),
@@ -1118,7 +1174,8 @@ async function doPause(u, crossed, ident, opts) {
         + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
         + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
         + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).'),
-    });
+    }, fence); // V15 (third recheck): forwarded so the actual publish re-verifies, not only the check above
+    } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
     return { fenced: false };
   });
   // V15: a lock refusal never wrote unlocked — say so plainly. The agents ABOVE were already paused via
@@ -1176,7 +1233,7 @@ async function doResume(u, st, ident, opts) {
       });
       if (fresh.ownerOverride) next.ownerOverride = fresh.ownerOverride; else delete next.ownerOverride;
       if (fence && !fence()) return { fenced: true };
-      writeState(next);
+      try { writeState(next, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
       return { fenced: false };
     });
     if (!partialLock.ok) log('state-lock: RESUME PARTIAL state write skipped (' + partialLock.reason + ') — the next tick still retries the unresolved agents via the journal');
@@ -1187,6 +1244,7 @@ async function doResume(u, st, ident, opts) {
   const resumeLock = await withStateLock((fence) => {
     const fresh = readState();
     if (fence && !fence()) return { fenced: true };
+    try {
     writeState({
       mode: 'ok', percents: { session: u.session.pct, week: u.week.pct }, resets: { session: u.session.resetsAt, week: u.week.resetsAt },
       ...accountStamp(ident),
@@ -1196,7 +1254,8 @@ async function doResume(u, st, ident, opts) {
         + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
         + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
         + ok + '/' + byId.size + ' Paperclip agents hervat.',
-    });
+    }, fence);
+    } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
     return { fenced: false };
   });
   if (!resumeLock.ok) log('state-lock: RESUME state write skipped (' + resumeLock.reason + ') — agents WERE resumed via the API but the state file could not record it this round');
@@ -1765,7 +1824,7 @@ if (require.main === module) {
     // in a FILE the owner writes. An env var is deliberately not accepted — the process asking for
     // permission can set its own environment.
     const og = require('./forge-ownergrant.cjs');
-    const grant = og.verifyOwnerGrant({ token: argv('owner-approval', null), projectRoot: OWNERGRANT_PROJECT_ROOT });
+    const grant = og.verifyOwnerGrant({ token: argv('owner-approval', null), projectRoot: TRUSTED_OWNERGRANT_ROOT });
     if (!grant.ok) {
       console.error('usage-guard override-on REFUSED — ' + grant.reason);
       console.error('  run: node .claude/forge-bin/usage-guard.cjs override-on --owner-approval <token> --reason "<why>"');
@@ -1799,7 +1858,7 @@ if (require.main === module) {
         reason: argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn'),
         reArmWhenCreditsExhausted: true, until };
       if (fence && !fence()) return { fenced: true };
-      writeState(st);
+      try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
       return { fenced: false, resumed, wasPaused, until };
     });
     if (!onLock.ok) {
@@ -1820,7 +1879,8 @@ if (require.main === module) {
     const offLockResult = await withStateLock((fence) => {
       const st = readState(); const had = !!st.ownerOverride; delete st.ownerOverride;
       if (fence && !fence()) return { fenced: true };
-      writeState(st); return { fenced: false, had };
+      try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
+      return { fenced: false, had };
     });
     if (!offLockResult.ok) {
       console.error('usage-guard override-off FAILED — could not acquire the state lock (' + offLockResult.reason + ') — no change made; try again');
@@ -2118,4 +2178,5 @@ module.exports = {
   readGuardSwitch, watchStep, readToken, credentialsPresent, noCredentialsLine,
   guardNetworkAllowed, readState, fetchUsage, pc, allAgents,
   withStateLock, withLockedState, stateLockPath,
+  verifyForcedWatchGrant, __setOwnerGrantRootForTests,
 };
