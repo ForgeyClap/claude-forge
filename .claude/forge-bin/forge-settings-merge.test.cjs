@@ -734,6 +734,71 @@ t('a safe integer at exactly 2^53-1 and an ordinary decimal do NOT trigger a fal
   assert.strictEqual(r.status, 'merged');
 });
 
+// wp-g2 (2026-09-24 Codex re-check out-p7.md V08): the scanner used to compare RAW key source text (missing
+// an escaped duplicate) and only checked whether a number's parsed VALUE round-tripped (missing every case
+// where only the SOURCE TEXT would silently change on reserialize). These three fixtures are Codex's own
+// out-p7.md evidence, verbatim, run through the real scanner AND a real applySettingsMerge refusal — each
+// must be refused and the target left byte-for-byte untouched, never silently "merged" over.
+t('guards.scanJsonRisks decodes an escaped duplicate key (\\u006fwner vs owner) directly (V08)', () => {
+  const r = guards.scanJsonRisks('{"owner":"first","\\u006fwner":"second"}');
+  assert.deepStrictEqual(r.duplicateKeys, ['owner']);
+});
+t('guards.scanJsonRisks catches a decimal-integer overflow (9007199254740993.0) directly (V08)', () => {
+  const r = guards.scanJsonRisks('{"n":9007199254740993.0}');
+  assert.deepStrictEqual(r.unsafeNumbers, ['9007199254740993.0']);
+});
+t('guards.scanJsonRisks catches an exponent underflow to zero (1e-400) directly (V08)', () => {
+  const r = guards.scanJsonRisks('{"n":1e-400}');
+  assert.deepStrictEqual(r.unsafeNumbers, ['1e-400']);
+});
+t('guards.scanJsonRisks also catches -0 (loses its sign on reserialize) and 1E2 (redundant exponent notation) (V08)', () => {
+  const r = guards.scanJsonRisks('{"a":-0,"b":1E2}');
+  assert.deepStrictEqual(r.unsafeNumbers.sort(), ['-0', '1E2'].sort());
+});
+
+t('CODEX FIXTURE 1/3 — {"owner":"first","\\u006fwner":"second"} refuses the merge and leaves the target byte-for-byte untouched', () => {
+  const dir = freshDir('settings-merge-codex-v08-dupkey');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  const original = '{"owner":"first","\\u006fwner":"second","hooks":{}}';
+  fs.writeFileSync(target, original, 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.deepStrictEqual(r.duplicateKeys, ['owner']);
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), original, 'the target must be left byte-for-byte untouched on refusal');
+  assert.strictEqual(recommendedFiles(dir).length, 1, 'a guarded settings.forge-recommended-*.json is still offered');
+});
+
+t('CODEX FIXTURE 2/3 — {"n":9007199254740993.0} refuses the merge and leaves the target byte-for-byte untouched', () => {
+  const dir = freshDir('settings-merge-codex-v08-decimal-overflow');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  const original = '{"n":9007199254740993.0,"hooks":{}}';
+  fs.writeFileSync(target, original, 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.deepStrictEqual(r.unsafeNumbers, ['9007199254740993.0']);
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), original, 'the target must be left byte-for-byte untouched on refusal');
+});
+
+t('CODEX FIXTURE 3/3 — {"n":1e-400} refuses the merge and leaves the target byte-for-byte untouched', () => {
+  const dir = freshDir('settings-merge-codex-v08-underflow');
+  const source = path.join(dir, 'source.json');
+  writeJson(source, realSourceFixture());
+  const target = path.join(dir, 'settings.json');
+  const original = '{"n":1e-400,"hooks":{}}';
+  fs.writeFileSync(target, original, 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.status, 'refused');
+  assert.deepStrictEqual(r.unsafeNumbers, ['1e-400']);
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), original, 'the target must be left byte-for-byte untouched on refusal');
+});
+
 t('BOM + CRLF + tab-indent + no-final-newline are all preserved through a real merge', () => {
   const dir = freshDir('settings-merge-formatting');
   const source = path.join(dir, 'source.json');

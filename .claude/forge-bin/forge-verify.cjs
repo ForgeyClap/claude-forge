@@ -94,6 +94,23 @@ const { spawnSync } = require('child_process');
 
 const DEFAULT_ROOT = path.resolve(__dirname, '..', '..');
 
+/** isDisprovenEvent(e) -> boolean (V23 fix, 2026-09-24 second Codex recheck, out-p7.md) — delegates to the
+ *  ONE shared predicate in forge-proof-gate.cjs (also consulted by forge-runcontract.cjs's isGoedkeuring)
+ *  so this file's task-closure path and the independent-review protocol can never again disagree about
+ *  whether a claim is disproven. Falls back to the identical inline check if the sibling is ever
+ *  unreachable — same resilience convention every other loadXTool() lazy-loader in this file already uses. */
+let _proofGateCache; // undefined = not yet attempted, null = load failed, object = loaded module
+function loadProofGate() {
+  if (_proofGateCache !== undefined) return _proofGateCache;
+  try { _proofGateCache = require('./forge-proof-gate.cjs'); } catch { _proofGateCache = null; }
+  return _proofGateCache;
+}
+function isDisprovenEvent(e) {
+  const pg = loadProofGate();
+  if (pg && typeof pg.isDisprovenEvent === 'function') return pg.isDisprovenEvent(e);
+  return !!(e && typeof e === 'object' && e._forge_verify && e._forge_verify.proof_verified === false);
+}
+
 // When invoked directly as `node forge-verify.cjs ...`, derive FORGE_STORE_ROOT from --root BEFORE
 // requiring forge-store.cjs (it resolves its CLAUDE_DIR once, at require time). Skipped when required
 // as a library (require.main !== module here) or when the caller already set FORGE_STORE_ROOT (tests).
@@ -358,16 +375,30 @@ function loadRuncontractTool() {
   try { _runcontractCache = require('./forge-runcontract.cjs'); } catch { _runcontractCache = null; }
   return _runcontractCache;
 }
+// V24 (2026-09-24 second Codex recheck, out-p7.md) — `ok` was missing from this outcome-field list, so a
+// review_completed logged with ONLY `{ok:false}` (no review_verdict/verdict/status/result/outcome field at
+// all) had `hasOutcomeField === false`, returned null here, and fell through to taskStatus()'s ordinary
+// TERMINAL_TYPES default ('done') — a paired review_completed carrying ok:false, followed by agent_completed,
+// read as a fully done run. `ok` is exactly as machine-readable an outcome signal as the other five fields.
+const REVIEW_OUTCOME_FIELDS = ['review_verdict', 'verdict', 'status', 'result', 'outcome', 'ok'];
 function reviewOutcome(e) {
   const rc = loadRuncontractTool();
   if (!rc || typeof rc.isGoedkeuring !== 'function') return null; // sibling unavailable — fall back, never fabricate
-  const hasOutcomeField = ['review_verdict', 'verdict', 'status', 'result', 'outcome'].some((f) => e[f] !== undefined);
+  const hasOutcomeField = REVIEW_OUTCOME_FIELDS.some((f) => e[f] !== undefined);
   if (!hasOutcomeField) return null; // no outcome asserted at all — let the caller use its own default
   return rc.isGoedkeuring(e).ok ? 'done' : 'failed';
 }
 
 // app.js taskStatus() — same branch semantics, reordered around disjoint sets (see header comment).
 function taskStatus(e) {
+  // V23 (2026-09-24 second Codex recheck, out-p7.md) — checked FIRST, before any verdict/status/event_type
+  // classification: log-event.cjs's own content oracle already flagged this event's claim as unproven
+  // (`_forge_verify.proof_verified:false`). A disproven claim is not evidence of anything, whatever verdict
+  // string or `status` field it also carries — REPRODUCED: a disproven `check_passed` still closed its
+  // paired task and returned verifier exit 0. Central here means every caller of taskStatus() (the
+  // TASK_PAIRS merge, the closes_event_id RULE 2 closure, and the initial per-task status assignment)
+  // automatically inherits the fix from this ONE place, never re-checked per call site.
+  if (isDisprovenEvent(e)) return 'failed';
   if (REVIEW_DONE_EVENT_TYPES.has(e.event_type)) {
     const ro = reviewOutcome(e);
     if (ro) return ro;
@@ -407,7 +438,18 @@ const BACKBONE = new Set(['run_started', 'run_completed', 'agent_selected', 'age
  *  match is a foreign entry and is excluded before any task/closure logic ever sees it. An event with NO
  *  run_id field at all (older/minimal fixtures; the writer stamps run_id on every real write) is left alone —
  *  narrowing to "present and present-and-wrong" avoids a mass regression on run_id-less fixtures while still
- *  closing the reproduced exploit (a foreign run_id that IS present). */
+ *  closing the reproduced exploit (a foreign run_id that IS present).
+ *
+ *  V31 (2026-09-24 second Codex recheck, out-p7.md) — "present-and-wrong" above only ever tested
+ *  `typeof parsed.run_id === 'string'`, so a MALFORMED run_id (`null`, a number, an object/array — anything
+ *  present but not a genuine string) fell through the `typeof ... === 'string'` guard entirely and was
+ *  treated exactly like a legacy run_id-LESS event: silently ALLOWED to close a current-run obligation.
+ *  REPRODUCED: a positive completion carrying `run_id:null` still closed its paired review and returned
+ *  verifier exit 0, while an equivalent foreign STRING run_id was already correctly rejected. The envelope
+ *  check now distinguishes GENUINELY ABSENT (the key/value is `undefined` — legacy, still allowed through)
+ *  from PRESENT-BUT-INVALID (present with any other value, including `null` — non-string, empty-string and
+ *  mismatched-string are all folded into the SAME `foreignRunId` counter, which already gates the CLI via
+ *  EXIT_GATES's `malformed_events` entry). */
 function readEventsJsonl(runDir) {
   const file = path.join(runDir, 'events.jsonl');
   if (!fs.existsSync(file)) {
@@ -424,7 +466,10 @@ function readEventsJsonl(runDir) {
     if (!s) continue;
     let parsed;
     try { parsed = JSON.parse(s); } catch { malformed++; continue; }
-    if (parsed && typeof parsed === 'object' && typeof parsed.run_id === 'string' && parsed.run_id !== expectedRunId) { foreignRunId++; continue; }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.run_id !== undefined) {
+      const rid = parsed.run_id;
+      if (typeof rid !== 'string' || !rid.trim() || rid !== expectedRunId) { foreignRunId++; continue; }
+    }
     events.push(parsed);
   }
   return { events, malformed, foreignRunId };
@@ -541,9 +586,20 @@ function verifyRun(runDir, opts) {
     // RULE 2 — independent of the TASK_PAIRS merge above: a fix_completed/check_passed is still recorded
     // as its own task/pair exactly as before; closes_event_id is an ADDITIONAL, separate closure of
     // whatever earlier task it names. See VERIFY-ARBITRARY-CLOSURE's doc above for the full grammar.
+    //
+    // V27 (2026-09-24 second Codex recheck, out-p7.md) — this event's OWN evidence/status was already being
+    // stretched to close TWO independent obligations at once: its natural TASK_PAIRS partner (`openTask`,
+    // just closed above) AND, separately, whatever unrelated task its `closes_event_id` names. REPRODUCED:
+    // one `fix_completed` closed both its own `fix_started` pair AND an unrelated reviewer's `check_failed`
+    // via closes_event_id — one piece of proof clearing two obligations. A completion now closes exactly ONE
+    // obligation: when it already closed its own natural pair, closes_event_id is NOT ALSO honored (an
+    // advisory names why) — the caller must log a SEPARATE completion, bound to its own evidence, to close a
+    // genuinely different task.
     if (t === 'fix_completed' || t === 'check_passed') {
       const closesId = (typeof e.closes_event_id === 'string' && e.closes_event_id.trim()) || null;
-      if (closesId) {
+      if (closesId && openTask) {
+        closesAdvisories.push('closes_event_id ignored: ' + t + ' already closed its own paired task (' + openTask.event_type + ') — one completion closes one obligation, not two; log a separate completion for ' + closesId);
+      } else if (closesId) {
         const target = eventIdToTask.get(closesId);
         if (!target) {
           closesAdvisories.push('closes_event_id ignored: unknown event_id ' + closesId);

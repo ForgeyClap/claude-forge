@@ -54,6 +54,31 @@ function isReceiptFinalized(events) {
   const last = list.length ? list[list.length - 1] : null;
   return !!(last && last.event_type === 'run_finalized');
 }
+/** isFinalizeClaimContradicted(runId) -> boolean (V26 fix, 2026-09-24 second Codex recheck, out-p7.md).
+ *
+ *  isReceiptFinalized() above only ever answers "does the log's terminal event CLAIM finalization" — it is
+ *  a claim, never proof: forge-finalize.cjs appends the run_finalized EVENT before it writes
+ *  run-finalized.json (see forge-finalize.cjs::finalizeLocked), so a crash between the two — or a receipt
+ *  that later goes STALE/HISTORICAL (evidence/ruleset/HEAD/domain drift, see forge-finalize.cjs::check()) —
+ *  leaves exactly this event shape with no currently-valid receipt at all. Real acceptance needs
+ *  forge-finalize.cjs's own re-evaluated rules (live all-green evidence, HEAD/domain match, a fresh
+ *  contract re-run) against the ACTUAL run-finalized.json receipt — this browser-only file has no channel
+ *  to fetch that file (no `/api/finalize` route exists on the server; adding one is a server.cjs change,
+ *  outside this fix's edit scope — see this work package's report for the named follow-up).
+ *
+ *  The ONE piece of live, server-verified data this file already has a route for is `/api/runcontract`
+ *  (STATE.runcontract — lazy-loaded by the Capabilities panel, see panels.js loadCapabilitiesPanel()): when
+ *  that check has been loaded for THIS exact run and reports NOT ok, that is real, independently-verified
+ *  evidence the run is no longer currently correct, so the finalize claim is downgraded even though the
+ *  bare run_finalized event is still present. When no runcontract check has been loaded at all (the common
+ *  case — nothing forces that panel open), this function reports NOT contradicted: the bare claim is left
+ *  exactly as before (isReceiptFinalized's existing, honest "claimed" reading), never silently upgraded to
+ *  fully verified, but also never downgraded on the mere ABSENCE of corroborating data (an unavailable
+ *  check is not the same claim as a FAILED check). */
+function isFinalizeClaimContradicted(runId) {
+  const rc = STATE.runcontract;
+  return !!(rc && runId && rc.run_id === runId && rc.ok === false);
+}
 let selectedKey = null, selRef = { refKey: null, refEvIdx: null }, CURRENT_MODEL = { nodes: [], edges: [], world: { w: 0, h: 0 } };
 
 const SYNTH = { run_started: 'orchestrator', run_completed: 'orchestrator', agent_selected: 'forge-router',
@@ -214,15 +239,21 @@ function statusClass(s) { const v = String(s || '').toLowerCase();
 // `outcome`, or `ok:false`) with NO `status` field fell straight into the done-bucket membership list below
 // regardless. Scoped to REVIEW_DONE_EVENT_TYPES only — every other event_type's derivation is unchanged.
 const REVIEW_DONE_EVENT_TYPES = new Set(['review_completed', 'codex_review_completed']);
+// V24 (2026-09-24 second Codex recheck, out-p7.md) — mirrored from forge-verify.cjs's own V24 fix: a
+// review_completed logged with ONLY {ok:false} (no review_verdict/verdict/status/result/outcome field at
+// all) had `present.length === 0` below and returned null BEFORE the separate `e.ok` check further down
+// could ever run — it fell through to the ordinary done-bucket membership list. `ok` is checked alongside
+// the other outcome fields now, not after an early bail-out that skips it entirely.
 const REVIEW_OUTCOME_FIELDS = ['review_verdict', 'verdict', 'status', 'result', 'outcome'];
 const POSITIVE_REVIEW_VERDICTS = new Set(['pass', 'passed', 'approved', 'ok', 'akkoord', 'goedgekeurd']);
 function reviewOutcome(e) {
   const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
   const present = REVIEW_OUTCOME_FIELDS.filter((f) => e[f] !== undefined).map((f) => norm(e[f]));
-  if (!present.length) return null; // no outcome asserted at all — caller uses its own default
+  const hasOk = e.ok !== undefined;
+  if (!present.length && !hasOk) return null; // no outcome asserted at all — caller uses its own default
   if (present.some((v) => v === '')) return 'failed'; // present but empty is not an approval
   if (present.some((v) => !POSITIVE_REVIEW_VERDICTS.has(v))) return 'failed';
-  if (e.ok !== undefined && e.ok !== true) return 'failed';
+  if (hasOk && e.ok !== true) return 'failed';
   return 'done';
 }
 function taskStatus(e) {
@@ -500,7 +531,10 @@ function buildNodes() {
   // run_finalized receipt event, or further work logged after one) got every still-running task silently
   // repainted 'done' — hiding exactly the mismatch this repaint should never be able to hide. Requiring the
   // real receipt event as well means an unverified claim renders as a claim, not as verified completion.
-  const runCompleted = replayAtLive() && (STATE.run.status || '').toLowerCase() === 'completed' && isReceiptFinalized(visibleEvents());
+  // V26 (2026-09-24 second Codex recheck, out-p7.md) — also requires the claim not be CONTRADICTED by a
+  // live forge-runcontract.cjs re-check for this exact run (see isFinalizeClaimContradicted's doc above):
+  // running tasks must keep their real state, not get repainted 'done' off a claim a live check disproves.
+  const runCompleted = replayAtLive() && (STATE.run.status || '').toLowerCase() === 'completed' && isReceiptFinalized(visibleEvents()) && !isFinalizeClaimContradicted(STATE.run.run_id);
   for (const n of map.values()) {
     n.group = groupBandOf(n); if (n.title === n.key && n.role) n.title = n.role; if (n.wp && n.wp.mission && !n.mission) n.mission = n.wp.mission;
     const taskRunning = n.tasks.some((t) => t.status === 'running');
@@ -631,7 +665,9 @@ function renderTop() {
   // fully green "COMPLETE" badge. That field is a metadata CLAIM the run itself writes; the receipt-backed
   // proof is a genuine run_finalized event as the log's last entry (see isReceiptFinalized() above). A
   // claimed-but-unverified completion now renders distinctly instead of visually passing for a verified one.
-  const receiptFinalized = isReceiptFinalized(STATE.events);
+  // V26 (2026-09-24 second Codex recheck, out-p7.md) — the claim is downgraded when a live runcontract
+  // re-check for this exact run says it is NOT currently ok (see isFinalizeClaimContradicted's doc above).
+  const receiptFinalized = isReceiptFinalized(STATE.events) && !isFinalizeClaimContradicted(run.run_id);
   if (st === 'running') { dot.className = tdot.className = 'dot run'; txt.textContent = 'BUILDING'; }
   else if (st === 'completed' && receiptFinalized) { dot.className = tdot.className = 'dot done'; txt.textContent = 'COMPLETE'; }
   else if (st === 'completed') { dot.className = tdot.className = 'dot'; txt.textContent = 'CLAIMED COMPLETE (UNVERIFIED)'; }
@@ -706,4 +742,4 @@ function startPolling(reason) { if (polling) return; const iv = STATE.settings.f
 
 window.Forge = Object.assign(window.Forge || {}, { buildNodes, agentColor, roleOf, nodeState, statusClass, taskStatus, statusLabel, SYNTH, trunc, esc, hhmmss,
   visibleEvents, replayAtLive, isPreflight, isSubagentNode, isLeadNode, isCodexNode, isReportNode, runtimeBadge, codexStatus, categoryLabel, governanceSummary,
-  reviewOutcome, isReceiptFinalized });
+  reviewOutcome, isReceiptFinalized, isFinalizeClaimContradicted });

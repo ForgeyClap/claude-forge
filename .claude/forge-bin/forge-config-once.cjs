@@ -5,7 +5,8 @@
  * split out of forge-config.cjs (Codex recheck 2026-09-24, CFG-07/S06/CFG-09/CFG-10) so that file stays a
  * readable size. WHY together: both pieces exist for the SAME reason — forge-config.cjs's writes must be
  * safe under concurrency and its one-off exception must be a real single-use approval, not an extensible
- * window. Zero-dependency (fs/path only). Not a CLI — required only by forge-config.cjs.
+ * window. Zero-dependency (fs/path/crypto only, all Node built-ins). Not a CLI — required only by
+ * forge-config.cjs.
  *
  * ONE-OFF STATE MACHINE (CFG-07/S06):
  *   A ONCE_KEYS entry on disk looks like:
@@ -22,20 +23,33 @@
  *   forge-config.cjs's consumeOnce() is the real defense in that window: it is a single atomic use, so an
  *   already-consumed entry stays refused regardless of what the wall clock says.
  *
- * FILE LOCK (CFG-09/CFG-10):
+ * FILE LOCK (CFG-09/CFG-10, ownership hardened for V09 — Codex recheck 2026-09-24):
  *   withLock(file, fn, opts) serializes the ENTIRE read-validate-modify-write transaction any caller runs
  *   against one physical file (project/global FORGE_CONFIG.json, FORGE_SESSION_STATE.json, ...) using a
- *   plain `<file>.lock` marker created with the exclusive 'wx' flag (atomic create-if-absent on every
- *   platform Node supports, including Windows). A second writer blocks (short poll, opts.pollMs, default
- *   15 ms) until the lock is free or opts.timeoutMs (default 4000 ms) is exceeded — then throws a plain
- *   Error with code 'lock_busy' rather than silently reading a stale snapshot and clobbering the first
- *   writer's change. A lock older than opts.staleMs (default 15000 ms) is presumed to belong to a crashed
- *   process and is reclaimed. Because `fn` re-reads the file from disk AFTER the lock is acquired (every
- *   forge-config.cjs writer follows this rule), two callers can never lose each other's update — the
- *   second one always starts from the first one's committed bytes.
+ *   `<file>.lock` marker created with the exclusive 'wx' flag (atomic create-if-absent on every platform
+ *   Node supports, including Windows). A second writer blocks (short poll, opts.pollMs, default 15 ms)
+ *   until the lock is free or opts.timeoutMs (default 4000 ms) is exceeded — then throws a plain Error with
+ *   code 'lock_busy' rather than silently reading a stale snapshot and clobbering the first writer's change.
+ *   A lock older than opts.staleMs (default 15000 ms) is presumed to belong to a crashed process and may be
+ *   reclaimed. Because `fn` re-reads the file from disk AFTER the lock is acquired (every forge-config.cjs
+ *   writer follows this rule), two callers can never lose each other's update — the second one always
+ *   starts from the first one's committed bytes.
+ *
+ *   V09 fix: age alone used to decide BOTH reclamation (unlink whatever sits at `<file>.lock` once it looks
+ *   old) and release (unconditionally unlink the pathname) — a holder suspended past staleMs could have its
+ *   lock reclaimed by another process, then unwittingly delete THAT process's fresh replacement lock on its
+ *   own (now-meaningless) release, and a third process could then acquire concurrently with the second.
+ *   Every lock file's content is now an opaque per-holder TOKEN (`acquireLock` returns `{path, token}`, not
+ *   a bare path): reclaiming a stale lock re-verifies, immediately before acting, that the SPECIFIC lock
+ *   inspected (same mtime AND same token) is still there, replaces it via an atomic rename from a private
+ *   temp path, and reads the result back to confirm this holder's own token — not a concurrent reclaimer's
+ *   — actually won; releasing only ever unlinks a lock file whose current content still matches the exact
+ *   token this holder wrote when it acquired. A holder that was reclaimed out from under it finds its token
+ *   no longer matches on release and does nothing, so the new holder's lock survives untouched.
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // ---- one-off approvals (`gate-hook` only, project file only, 10 minutes) ----
 const ONCE_KEYS = ['gate-hook'];
@@ -82,8 +96,39 @@ function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** acquireLock(file, opts) -> the lock file path, once held. Throws { code:'lock_busy' } after
- *  opts.timeoutMs of contention. opts: pollMs, timeoutMs, staleMs. */
+function randomToken() {
+  return process.pid + ':' + crypto.randomBytes(8).toString('hex');
+}
+
+/** tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken) -> boolean (true = this call now
+ *  holds the lock). V09: re-verifies, immediately before acting, that the lock at `lockPath` is STILL the
+ *  exact stale entry inspected a moment ago (same mtime AND same token) — never reclaims based on a snapshot
+ *  that might already be gone or replaced. Writes `newToken` to a private temp path and replaces the lock
+ *  via `fs.renameSync` (atomic on every platform Node supports, confirmed live on this machine: renaming
+ *  over an existing file replaces its content in one step), then reads the result back: if a concurrent
+ *  reclaimer's write landed instead, THIS call correctly reports it does not hold the lock (never assumes
+ *  ownership it cannot prove) rather than proceeding into the caller's critical section believing it does. */
+function tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken) {
+  let freshSt;
+  try { freshSt = fs.statSync(lockPath); } catch { return false; } // gone: someone else already reclaimed/released it
+  let freshToken;
+  try { freshToken = fs.readFileSync(lockPath, 'utf8'); } catch { return false; }
+  if (freshSt.mtimeMs !== expectedMtimeMs || freshToken !== expectedToken) return false; // no longer the SAME stale lock inspected
+  const tmp = lockPath + '.reclaim.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
+  try {
+    fs.writeFileSync(tmp, newToken);
+    fs.renameSync(tmp, lockPath); // atomic replace — a concurrent reclaimer's rename may still win the race
+  } catch {
+    try { fs.unlinkSync(tmp); } catch { /* best effort — the temp file was never created or is already gone */ }
+    return false;
+  }
+  try { return fs.readFileSync(lockPath, 'utf8') === newToken; }
+  catch { return false; }
+}
+
+/** acquireLock(file, opts) -> { path: lockPath, token }, once held — pass this SAME object to releaseLock;
+ *  never a bare path (V09). Throws { code:'lock_busy' } after opts.timeoutMs of contention. opts: pollMs,
+ *  timeoutMs, staleMs. */
 function acquireLock(file, opts) {
   opts = opts || {};
   const lockPath = file + '.lock';
@@ -93,17 +138,19 @@ function acquireLock(file, opts) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    const token = randomToken();
     try {
       const fd = fs.openSync(lockPath, 'wx');
-      try { fs.writeSync(fd, String(process.pid)); } catch { /* best effort — the lock's mere existence is what matters */ }
+      try { fs.writeSync(fd, token); } catch { /* best effort — the lock's mere existence is what matters most */ }
       fs.closeSync(fd);
-      return lockPath;
+      return { path: lockPath, token };
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      let st = null;
-      try { st = fs.statSync(lockPath); } catch { /* the lock vanished between the failed create and this stat — retry */ }
-      if (st && Date.now() - st.mtimeMs > staleMs) {
-        try { fs.unlinkSync(lockPath); continue; } catch { /* someone else already reclaimed/renewed it */ }
+      let st = null, curToken = null;
+      try { st = fs.statSync(lockPath); curToken = fs.readFileSync(lockPath, 'utf8'); }
+      catch { /* the lock vanished (or became unreadable) between the failed create and this inspection — retry below */ }
+      if (st && Date.now() - st.mtimeMs > staleMs && tryReclaimStaleLock(lockPath, curToken, st.mtimeMs, token)) {
+        return { path: lockPath, token };
       }
       if (Date.now() >= deadline) {
         const err = new Error('forge-config: another process is writing ' + file + ' — try again');
@@ -115,21 +162,29 @@ function acquireLock(file, opts) {
   }
 }
 
-function releaseLock(lockPath) {
-  try { fs.unlinkSync(lockPath); } catch { /* already released or never created */ }
+/** releaseLock(lock) — unlinks the lock file ONLY when its current content still matches the exact token
+ *  this holder wrote when it acquired (V09). A lock this holder no longer actually owns (already reclaimed
+ *  by another process as stale) is left completely alone — never unlinks "whatever is at that path now". */
+function releaseLock(lock) {
+  if (!lock || !lock.path) return; // defensive: never throw on release
+  try {
+    if (fs.readFileSync(lock.path, 'utf8') !== lock.token) return; // someone else's replacement lock — not ours to touch
+    fs.unlinkSync(lock.path);
+  } catch { /* already released, never created, or unreadable — nothing safe to do */ }
 }
 
 /** withLock(file, fn, opts) -> fn()'s return value, run while holding file's lock. Always releases, even
  *  when fn throws. `fn` MUST re-read `file` from disk itself (never reuse a snapshot taken before the
  *  lock) — that is what actually prevents a lost update between two callers. */
 function withLock(file, fn, opts) {
-  const lockPath = acquireLock(file, opts);
+  const lock = acquireLock(file, opts);
   try { return fn(); }
-  finally { releaseLock(lockPath); }
+  finally { releaseLock(lock); }
 }
 
 module.exports = {
   ONCE_KEYS, ONCE_MS, ONCE_QUOTE_MAX,
   sanitizeQuote, onceState, onceQuote,
   acquireLock, releaseLock, withLock,
+  randomToken, tryReclaimStaleLock, // exported for direct V09 lock-ownership tests only
 };

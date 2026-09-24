@@ -461,6 +461,11 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
   t('17 setup: arm() wrote a manifest without touching events.jsonl', armed.ok === true);
   const after = F_FORGERY.check(FROOT, RUN);
   t('RECEIPT-FORGERY: acceptance re-evaluates the contract and catches the new unfinished obligation — no longer FINALIZED', after.verdict !== 'FINALIZED', JSON.stringify(after).slice(0, 220));
+  // V22 (2026-09-24 second Codex recheck, out-p7.md): the SAME still-unfinished manifest state must make a
+  // REPEAT (idempotent-shaped: events.jsonl digest is byte-for-byte unchanged) finalize() call refuse too —
+  // before this fix the idempotent branch never re-ran the contract at all and would have reported success.
+  const idempotentAfterArm = F_FORGERY.finalize(FROOT, RUN);
+  t('V22: an idempotent (repeat) finalize() also refuses once the contract has genuinely gone red, not just check()', idempotentAfterArm.ok === false, JSON.stringify(idempotentAfterArm).slice(0, 220));
   try { fs.rmSync(FROOT, { recursive: true, force: true }); } catch { }
 }
 
@@ -511,9 +516,20 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
     git('commit', '-q', '-m', 'a real second commit');
     const afterHeadChange = FIN_GIT.check(GITROOT, RUN);
     t('FINALIZE-STALE-CODE: a real HEAD change after finalization downgrades the verdict to HISTORICAL, not a stale-looking FINALIZED', afterHeadChange.verdict === 'HISTORICAL', JSON.stringify(afterHeadChange).slice(0, 220));
+
+    // V22 (2026-09-24 second Codex recheck, out-p7.md): the exact same moved-HEAD state must make a REPEAT
+    // (idempotent-shaped) finalize() call REFUSE, not silently re-succeed — finalize's job is to confirm
+    // CURRENT correctness, so "historical" is never an acceptable outcome from finalize() itself, only from
+    // the read-only check() query above.
+    const idempotentAfterHeadChange = FIN_GIT.finalize(GITROOT, RUN);
+    t('V22: an idempotent (repeat) finalize() REFUSES once real HEAD has moved, it does not silently re-succeed', idempotentAfterHeadChange.ok === false, JSON.stringify(idempotentAfterHeadChange).slice(0, 220));
+    t('V22: the refusal is explicitly flagged historical, not a generic failure', idempotentAfterHeadChange.historical === true);
+    t('V22: check() still agrees (no receipt was corrupted/overwritten by the refused finalize attempt)', FIN_GIT.check(GITROOT, RUN).verdict === 'HISTORICAL');
   }
   try { fs.rmSync(GITROOT, { recursive: true, force: true }); } catch { }
 }
+
+console.log('\n' + pass + ' passed, ' + fail + ' failed');
 
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

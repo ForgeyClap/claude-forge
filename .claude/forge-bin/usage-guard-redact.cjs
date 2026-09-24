@@ -69,24 +69,43 @@ function writeMap(mapFile, map) {
     return true;
   } catch { return false; }
 }
+/** fallbackLabel(fp, mapFile) -> a PURE, DETERMINISTIC local label — same (fp, mapFile) in, same label
+ *  out, every single call, no I/O and no randomness (GUARD-ACCOUNT-STABILITY, Codex recheck wp-f4 V14,
+ *  2026-09-24). Used ONLY when the map could not be persisted (read failed for any reason other than "no
+ *  entry yet", OR the newly-generated label's write/rename failed) — the caller (usage-guard.cjs's tick())
+ *  treats ANY label change across calls as an account switch and discards its measurement, so a random
+ *  label minted fresh on every failed call turned a *persistence* failure into a never-ending sequence of
+ *  false "account switches" that could indefinitely suppress a real pause (an EACCES map read/write with
+ *  utilization pinned at 100% reported pauses:0). HMAC-keyed by the map file's own path (a non-secret,
+ *  stable local fact — never the raw fp alone) so the fallback can never be produced by anyone who only
+ *  knows fp, and stays distinguishable in the mapping file's own format from a genuinely-persisted label. */
+function fallbackLabel(fp, mapFile) {
+  const key = typeof mapFile === 'string' && mapFile ? mapFile : 'no-map-file';
+  const h = crypto.createHmac('sha256', key).update('fp:' + fp).digest('hex').slice(0, 12);
+  return 'account-fallback-' + h;
+}
 
 /** resolveLocalAccountLabel(fp, opts) -> { label, isNew, persisted } | null (fp falsy/non-string).
  *  opts.mapFile: the local mapping file path (REQUIRED for persistence across process restarts — the
- *  whole point of account-switch detection; a caller that omits it gets a fresh, unpersisted, per-call
- *  label, which is still safe — just not stable across a restart). Never throws: an unwritable mapping
- *  file still returns a usable label for the current call rather than failing the caller (fail-safe, the
- *  same direction this guard already takes elsewhere — see usage-guard.cjs's own header). */
+ *  whole point of account-switch detection). Never throws. GUARD-ACCOUNT-STABILITY (V14, 2026-09-24): the
+ *  RANDOM, incrementing "account-N-hex" label is only ever returned when it was ACTUALLY persisted this
+ *  call (self-healing: a corrupt-but-writable map is repaired in place). The instant persistence fails for
+ *  ANY reason — the map could not be read for a reason other than "does not exist yet", the write of the
+ *  new mapping failed, or the rename that publishes it failed — every subsequent call for the SAME (fp,
+ *  mapFile) returns the SAME deterministic fallbackLabel() instead of a fresh random one, so a sustained
+ *  persistence failure degrades to "one stable local label", never "a new identity every call". Omitting
+ *  mapFile entirely is the same contract with a fixed key, so even that path is stable within a run. */
 function resolveLocalAccountLabel(fp, opts) {
   if (!fp || typeof fp !== 'string') return null;
   const o = opts || {};
   const mapFile = o.mapFile;
-  if (!mapFile) return { label: 'account-' + crypto.randomBytes(4).toString('hex'), isNew: true, persisted: false };
+  if (!mapFile) return { label: fallbackLabel(fp, null), isNew: true, persisted: false };
   const map = readMap(mapFile);
   if (typeof map[fp] === 'string' && map[fp]) return { label: map[fp], isNew: false, persisted: true };
   const label = 'account-' + (Object.keys(map).length + 1) + '-' + crypto.randomBytes(3).toString('hex');
-  map[fp] = label;
-  const persisted = writeMap(mapFile, map);
-  return { label, isNew: true, persisted };
+  const persisted = writeMap(mapFile, Object.assign({}, map, { [fp]: label }));
+  if (!persisted) return { label: fallbackLabel(fp, mapFile), isNew: true, persisted: false };
+  return { label, isNew: true, persisted: true };
 }
 
 module.exports = { validateTokenShape, transportErrorCode, resolveLocalAccountLabel, TOKEN_SHAPE_RE };

@@ -160,6 +160,25 @@ t('C01 counterfactual: a genuinely unrelated event/tool STAYS silent (exit 0) �
   }
 });
 
+// ---------------------------------------------------------------------------
+// V01 (codex-recheck 2026-09-24) — an UNRECOGNISED hook_event_name is never positively known to be unrelated:
+// it must be VISIBLE (exit 1), not silently treated the same as a real Claude Code non-tool-call event.
+// ---------------------------------------------------------------------------
+t('V01: an unrecognised hook_event_name (a bogus/corrupted envelope) -> exit 1, visible "NOT checked"', () => {
+  for (const name of ['bogus', 'PreTool', 'pretooluse', 'ToolUse', '']) {
+    const r = spawnHook(JSON.stringify({ hook_event_name: name, tool_name: 'Bash', tool_input: { command: 'rm -rf src' } }));
+    assert.strictEqual(r.status, 1, JSON.stringify(name) + ' exit ' + r.status + ' stderr ' + r.stderr);
+    assert.ok(/NOT checked/.test(r.stderr), JSON.stringify(name) + ' stderr: ' + r.stderr);
+  }
+});
+t('V01 counterfactual: every hook_event_name Claude Code really sends for a non-tool-call event stays silent', () => {
+  for (const name of ['PostToolUse', 'Stop', 'SessionStart', 'SessionEnd', 'PreCompact', 'UserPromptSubmit', 'Notification', 'SubagentStop', 'PermissionRequest']) {
+    const r = spawnHook(JSON.stringify({ hook_event_name: name, tool_name: 'Bash', tool_input: { command: 'rm -rf src' } }));
+    assert.strictEqual(r.status, 0, name + ' exit ' + r.status + ' stderr ' + r.stderr);
+    assert.strictEqual(r.stderr, '');
+  }
+});
+
 t('an oversized payload (> MAX_STDIN_BYTES) is not inspected: exit 1 (non-blocking but VISIBLE, security M2) + one line', () => {
   const big = JSON.stringify(bash('echo ' + 'x'.repeat(hook.MAX_STDIN_BYTES) + ' && rm -rf ./src'));
   const r = spawnHook(big);
@@ -343,6 +362,72 @@ t('S05: the once-shape must be EXACT — an extra flag (--json) or a trailing ar
 });
 
 // ---------------------------------------------------------------------------
+// V02 (codex-recheck 2026-09-24) — real, equivalent invocation forms of forge-config.cjs must all still be
+// caught: a node CLI flag before the script path, a full interpreter path, `env`-resolved, sudo/time/nohup
+// wrappers, forge-config-cli.cjs (the CLI entry point forge-config.cjs itself delegates to), and a shell
+// word-concatenation trick the strict tokenizer cannot read at all — which must REFUSE (block), never fall
+// through to "not a config call" = permission.
+// ---------------------------------------------------------------------------
+console.log('\n2c-bis) V02 — self-disable detection survives interpreter wrappers and ambiguous/glued quoting');
+
+t('V02: node CLI flags before the script path still block ("node --no-warnings ... set gate-hook off")', () => {
+  for (const cmd of [
+    'node --no-warnings .claude/forge-bin/forge-config.cjs set gate-hook off',
+    'node --no-warnings --experimental-vm-modules .claude/forge-bin/forge-config.cjs set gate-hook off',
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr);
+    assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('V02: a full interpreter path still blocks ("/usr/bin/node ... set gate-hook off")', () => {
+  const r = spawnHook(bash('/usr/bin/node .claude/forge-bin/forge-config.cjs set gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02: `env node ...` still blocks', () => {
+  const r = spawnHook(bash('env node .claude/forge-bin/forge-config.cjs set gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02: sudo/time/nohup wrappers still block', () => {
+  for (const cmd of [
+    'sudo node .claude/forge-bin/forge-config.cjs set gate-hook off',
+    'time node .claude/forge-bin/forge-config.cjs set gate-hook off',
+    'nohup node .claude/forge-bin/forge-config.cjs set gate-hook off',
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr);
+    assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('V02: forge-config-cli.cjs (the CLI entry point forge-config.cjs itself delegates to) is recognised too', () => {
+  const r = spawnHook(bash('node .claude/forge-bin/forge-config-cli.cjs set gate-hook off'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr.split('\n')[0]);
+});
+
+t('V02: a shell word-concatenation trick the strict tokenizer cannot parse is REFUSED (block), never treated as permission', () => {
+  for (const cmd of [
+    CFG + ' s"et" gate-hook off',
+    CFG + " 'se't gate-hook off",
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr);
+    assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('V02 counterfactual: an ambiguous/glued-quote segment that does NOT plausibly name forge-config.cjs + gate-hook still stays silent', () => {
+  const r = spawnHook(bash("echo it's a \"day\" for gate-hook"));
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ' stderr ' + r.stderr);
+});
+
+// ---------------------------------------------------------------------------
 // 3) the gate-hook setting (forge-config.cjs soft-require; FORGE_PROJECT_ROOT seam)
 // ---------------------------------------------------------------------------
 console.log('\n3) gate-hook setting — off means silent, a missing/damaged config means the default (ON)');
@@ -438,13 +523,26 @@ t('S06: consumeOnce THROWS -> fail-closed BLOCK', () => {
   assert.ok(r.stderr.startsWith('FORGE GATE (git-destructive'), r.stderr);
 });
 
-t('S06/S07: a self-disable attempt DURING a once-window is never approvable through it — off-notice, not silent, consumeOnce never called', () => {
+t('V03 (codex-recheck 2026-09-24, fixed): a self-disable attempt DURING a once-window is BLOCKED outright, not merely noticed — consumeOnce never called', () => {
   let called = false;
   const cfg = onceCfg('2026-09-24T12:10:00.000Z', 'ja, doe het', () => { called = true; return { ok: true }; });
   const r = hook.run(JSON.stringify(bash('node .claude/forge-bin/forge-config.cjs set gate-hook off')), { config: cfg });
-  assert.strictEqual(r.exitCode, 1, 'exit ' + r.exitCode + ' stderr ' + r.stderr);
-  assert.ok(r.stderr.startsWith('FORGE GATE is OFF until 2026-09-24T12:10:00.000Z'), r.stderr);
+  assert.strictEqual(r.exitCode, 2, 'exit ' + r.exitCode + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr);
   assert.strictEqual(called, false, 'a self-disable attempt must never consume the once-grant');
+});
+
+t('V03: "unset gate-hook" DURING a once-window is also BLOCKED, not merely noticed', () => {
+  const cfg = onceCfg('2026-09-24T12:10:00.000Z', 'ja, doe het', () => ({ ok: true }));
+  const r = hook.run(JSON.stringify(bash('node .claude/forge-bin/forge-config.cjs unset gate-hook')), { config: cfg });
+  assert.strictEqual(r.exitCode, 2, 'exit ' + r.exitCode + ' stderr ' + r.stderr);
+  assert.ok(r.stderr.startsWith('FORGE GATE (gate-hook-self-disable'), r.stderr);
+});
+
+t('V03 counterfactual: the once-EXEMPT shape itself still passes DURING its own once-window (never confused with self-disable)', () => {
+  const cfg = onceCfg('2026-09-24T12:10:00.000Z', 'ja, doe het', () => ({ ok: true }));
+  const r = hook.run(JSON.stringify(bash('node .claude/forge-bin/forge-config.cjs set gate-hook off --once "ja, doe het"')), { config: cfg });
+  assert.strictEqual(r.exitCode, 0, 'exit ' + r.exitCode + ' stderr ' + r.stderr);
 });
 
 t('a call that would NOT have been blocked never touches consumeOnce (only genuinely gated commands consume the grant)', () => {
@@ -677,34 +775,76 @@ t('I01: "cd .. && rm -rf node_modules" — an excused literal preceded by a cwd 
 // I02 (codex-recheck 2026-09-24) — a canonicalization FAILURE is never proof of containment: areaOf() must
 // refuse the scratch exception, not substitute the unresolved lexical path, the instant realpath fails.
 // ---------------------------------------------------------------------------
-console.log('\n4b-ter) I02 — a realpath failure fails CLOSED, never treated as proof');
+console.log('\n4b-ter) I02/V04 — a realpath failure fails CLOSED, never treated as proof; access errors are never "just missing"');
 
-t('I02: realish() reports ok:false on a canonicalization failure — never substitutes the lexical path as proof', () => {
-  // The documented failure mode is a PERMISSION error or a broken link, which fs cannot be forced to produce
-  // hermetically on every CI runner — so this proves the CONTRACT via the module seam instead: force
-  // realpathSync.native to be reached on an unrepresentable path (an embedded NUL byte) and assert realish()
-  // reports failure rather than falling back to the unresolved lexical string.
+t('I02: realish() reports ok:false on a canonicalization failure — never substitutes the lexical path as proof (an unrepresentable NUL-byte path, caught by statOrFail as a non-ENOENT error)', () => {
   const scratch = require('./forge-gate-scratch.cjs');
-  const originalExists = fs.existsSync;
-  fs.existsSync = () => true; // skip straight to realpathSync.native
-  try {
-    const r = scratch.realish(path.join(ROOT, '\u0000-does-not-exist-as-a-real-path'));
-    assert.strictEqual(r.ok, false, 'a realpath failure must report ok:false, never substitute the lexical path');
-    assert.strictEqual(r.real, null);
-  } finally {
-    fs.existsSync = originalExists;
-  }
+  const r = scratch.realish(path.join(ROOT, '\u0000-does-not-exist-as-a-real-path'));
+  assert.strictEqual(r.ok, false, 'a realpath failure must report ok:false, never substitute the lexical path');
+  assert.strictEqual(r.real, null);
 });
 
 t('I02: areaOf() refuses (returns null) when it cannot canonicalize, rather than proving containment on a guess', () => {
   const scratch = require('./forge-gate-scratch.cjs');
-  const originalExists = fs.existsSync;
-  fs.existsSync = () => true;
+  const area = scratch.areaOf(path.join(ROOT, '\u0000-bogus'), { root: ROOT, protectedRoots: [ROOT], tmp: os.tmpdir(), platform: process.platform });
+  assert.strictEqual(area, null);
+});
+
+// ---------------------------------------------------------------------------
+// V04 (codex-recheck 2026-09-24) — existsSync swallows EVERY stat error (EACCES/EPERM/ELOOP/an unreadable
+// ancestor) into the same bare `false` as genuine absence, so the OLD realish() walk climbed straight past a
+// real access error as if that level simply did not exist, then canonicalized a shorter, WRONG ancestor as if
+// it were proof. statOrFail() (an explicit lstat) must tell these apart: only a clean ENOENT keeps climbing;
+// every other error fails the walk closed immediately.
+// ---------------------------------------------------------------------------
+console.log('\n4b-quater) V04 — verified ENOENT keeps climbing; every other stat error fails CLOSED, never masked as "missing"');
+
+t('V04: statOrFail() reports a clean ENOENT distinctly from any other error code', () => {
+  const scratch = require('./forge-gate-scratch.cjs');
+  const enoent = scratch.statOrFail(path.join(ROOT, 'this-does-not-exist-xyz-' + process.pid));
+  assert.strictEqual(enoent.kind, 'enoent');
+  const orig = fs.lstatSync;
+  fs.lstatSync = () => { const e = new Error('denied'); e.code = 'EACCES'; throw e; };
   try {
-    const area = scratch.areaOf(path.join(ROOT, '\u0000-bogus'), { root: ROOT, protectedRoots: [ROOT], tmp: os.tmpdir(), platform: process.platform });
+    const denied = scratch.statOrFail(path.join(ROOT, 'anything'));
+    assert.strictEqual(denied.kind, 'error');
+    assert.strictEqual(denied.err.code, 'EACCES');
+  } finally {
+    fs.lstatSync = orig;
+  }
+});
+
+t('V04: realish() fails CLOSED (ok:false) the instant lstat reports EACCES/EPERM/ELOOP anywhere in the walk — never reinterpreted as "keep climbing"', () => {
+  const scratch = require('./forge-gate-scratch.cjs');
+  const orig = fs.lstatSync;
+  for (const code of ['EACCES', 'EPERM', 'ELOOP']) {
+    fs.lstatSync = () => { const e = new Error('x'); e.code = code; throw e; };
+    try {
+      const r = scratch.realish(path.join(ROOT, 'blocked-child'));
+      assert.strictEqual(r.ok, false, code + ' must fail closed');
+      assert.strictEqual(r.real, null);
+    } finally {
+      fs.lstatSync = orig;
+    }
+  }
+});
+
+t('V04 counterfactual: a genuinely absent leaf (verified ENOENT, real parents) still resolves normally — the fix never breaks the ordinary case', () => {
+  const scratch = require('./forge-gate-scratch.cjs');
+  const r = scratch.realish(path.join(ROOT, 'this-does-not-exist-xyz-' + process.pid));
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.real && r.real.endsWith('this-does-not-exist-xyz-' + process.pid), r.real);
+});
+
+t('V04: areaOf() refuses when an ancestor cannot be read (EACCES), rather than proving containment on a guess', () => {
+  const scratch = require('./forge-gate-scratch.cjs');
+  const orig = fs.lstatSync;
+  fs.lstatSync = () => { const e = new Error('denied'); e.code = 'EACCES'; throw e; };
+  try {
+    const area = scratch.areaOf(path.join(ROOT, '_scratch', 'blocked-child'), { root: ROOT, protectedRoots: [ROOT], tmp: os.tmpdir(), platform: process.platform });
     assert.strictEqual(area, null);
   } finally {
-    fs.existsSync = originalExists;
+    fs.lstatSync = orig;
   }
 });
 
@@ -841,6 +981,11 @@ const DATA_CASES = [
   ['L3: PowerShell Select-String -Pattern', 'PowerShell', 'Select-String -Pattern "Stop-Process -Name node" -Path notes.md', 0],
   ['L3: findstr "pkill"', 'PowerShell', 'findstr "pkill" notes.md', 0],
   ['L3: a search piped into xargs kill is NOT data', 'Bash', 'grep -l "pkill" . | xargs kill', 2],
+  // V05 (codex-recheck 2026-09-24) — a fake heredoc marker sitting inside an ALREADY-OPEN single-quoted
+  // literal must never be mistaken for a real one; both reported bypasses must retain the destructive line.
+  ['V05a: $( inside single quotes must not be treated as a substitution to skip', 'Bash', "echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF", 2],
+  ['V05b: stripHeredocs must keep correct offsets after skipping an earlier real heredoc', 'Bash',
+    "cat <<'FIRST'\njust data\nFIRST\necho '\ncat <<EOF\n'\nrm -rf ./src\nEOF", 2],
 ];
 for (const [label, tool, command, want] of DATA_CASES) {
   t(label + ' -> exit ' + want, () => {
@@ -856,6 +1001,36 @@ t('stripInertData never throws and strips nothing it cannot read (garbage, unbal
     assert.strictEqual(r.regions, 0, JSON.stringify(s));
     assert.strictEqual(r.text, String(s).replace(/\r\n/g, '\n'));
   }
+});
+
+// ---------------------------------------------------------------------------
+// V05 (codex-recheck 2026-09-24) — direct unit tests on quoteMask()/stripHeredocs() themselves, not just the
+// end-to-end hook exit code, so a future regression on either helper is pinned precisely.
+// ---------------------------------------------------------------------------
+console.log('\n4c-bis) V05 — quoteMask single-quote semantics + stripHeredocs offset tracking after a skipped heredoc');
+
+t('V05: quoteMask() does not let a `$(` inside a SINGLE-quoted string swallow the closing quote position', () => {
+  const text = "echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF";
+  const mask = data.quoteMask(text);
+  assert.strictEqual(mask.unterminated, false);
+  const catLineIdx = text.indexOf('cat <<EOF');
+  assert.ok(mask.inside(catLineIdx + 3), 'the fake heredoc marker line must be reported INSIDE the open single quote');
+  const closeQuoteIdx = text.indexOf(")'") + 1; // the real closing '
+  assert.ok(mask.inside(closeQuoteIdx), 'the real closing quote character itself must be marked inside');
+});
+
+t('V05 counterfactual: `$(` inside a DOUBLE-quoted string is still skipped as a real substitution (unchanged behaviour)', () => {
+  const text = 'echo "$(cat <<\'EOF\'\nreal heredoc content\nEOF\n)"';
+  const mask = data.quoteMask(text);
+  assert.strictEqual(mask.unterminated, false, 'a real nested heredoc inside $( ) inside double quotes must still resolve');
+});
+
+t('V05: stripHeredocs() advances its offset past a SKIPPED body+delimiter, not just the marker line', () => {
+  const text = "cat <<'FIRST'\njust data\nFIRST\necho '\ncat <<EOF\n'\nrm -rf ./src\nEOF";
+  const r = data.stripHeredocs(text);
+  assert.strictEqual(r.regions, 1, 'exactly the first, real heredoc is stripped');
+  assert.ok(r.text.includes('rm -rf ./src'), 'the destructive line after the fake marker must survive: ' + r.text);
+  assert.ok(!r.text.includes('just data'), 'the real heredoc body must still be gone: ' + r.text);
 });
 
 t('the data pass-through is not a scratch pass: stripping leaves the real command intact for classification', () => {

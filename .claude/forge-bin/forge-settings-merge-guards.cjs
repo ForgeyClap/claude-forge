@@ -62,11 +62,22 @@ function containedWithin(root, p) {
 // ---------------------------------------------------------------------------
 // JSON round-trip safety scanner (LOSSY-ROUNDTRIP): only ever called on TEXT THAT ALREADY PARSED
 // successfully via JSON.parse (so it never has to handle malformed syntax) — it looks specifically for the
-// two byte-level things a parse+reserialize round trip silently corrupts: (1) a duplicate object key (JSON.parse
-// keeps only the LAST occurrence, discarding earlier ones without a trace) and (2) a numeric literal whose
-// value cannot be reproduced by JSON.stringify(Number(literal)) — an overflow to Infinity (e.g. 1e400, which
-// JSON.stringify turns into the literal `null`) or a pure integer beyond Number.MAX_SAFE_INTEGER (2^53-1,
-// e.g. 9007199254740993 silently rounds to 9007199254740992).
+// two byte-level things a parse+reserialize round trip silently corrupts:
+//   (1) a duplicate object key compared on its DECODED value, not its raw source text (Codex re-check
+//       out-p7.md V08): a key written with a Unicode escape for one of its letters decodes to the exact same
+//       string as a plain-spelled duplicate key — a duplicate either way — even though the two key SOURCE
+//       literals differ byte-for-byte. Each raw literal is already a lone, self-contained, valid JSON string
+//       token (the whole document already parsed), so `JSON.parse(raw)` alone is a safe, correct decoder here
+//       — no hand-rolled surrogate-pair/escape-sequence logic needed.
+//   (2) a numeric literal whose SOURCE TEXT would not come back unchanged from JSON.stringify(Number(literal))
+//       — not merely one whose numeric VALUE changed. Comparing text (not just value) is what catches every
+//       form Codex demonstrated: overflow to Infinity (`1e400`/`1e+400` -> stringifies to the literal `null`),
+//       underflow to zero (`1e-400` -> `0`), a pure/decimal integer beyond Number.MAX_SAFE_INTEGER
+//       (`9007199254740993` or `9007199254740993.0` -> `9007199254740992`), `-0` (stringifies to plain `0`,
+//       silently dropping the sign), and redundant-but-value-preserving notation such as `1E2` (stringifies to
+//       `100`) or a huge-but-finite exponent that reserializes in a different notation. A ordinary literal a
+//       human would actually type by hand (`30`, `1.5`, `0.1`, `9007199254740991`) already round-trips
+//       byte-identically, so this does not flag typical settings.json content.
 // ---------------------------------------------------------------------------
 function scanJsonRisks(text) {
   const duplicateKeys = [];
@@ -116,8 +127,12 @@ function scanJsonRisks(text) {
       const top = stack[stack.length - 1];
       const isKeyPosition = !!(top && top.type === 'object' && text[i] === ':');
       if (isKeyPosition) {
-        if (top.keys.has(raw)) duplicateKeys.push(raw.slice(1, -1));
-        else top.keys.add(raw);
+        // decode (not raw.slice(1,-1)) so a Unicode-escaped duplicate (decodes to the same string as a
+        // plain-spelled key) is caught too (V08).
+        // `raw` is always a lone, already-valid JSON string token here — JSON.parse cannot throw on it.
+        const key = JSON.parse(raw);
+        if (top.keys.has(key)) duplicateKeys.push(key);
+        else top.keys.add(key);
       } else {
         i = savedI; // not a key — do not consume the whitespace we peeked past; harmless either way, kept explicit
       }
@@ -125,13 +140,13 @@ function scanJsonRisks(text) {
     }
     if (c === '-' || (c >= '0' && c <= '9')) {
       const raw = parseNumberLiteral();
-      const num = Number(raw);
-      if (!Number.isFinite(num)) {
-        unsafeNumbers.push(raw);
-      } else if (/^-?\d+$/.test(raw)) {
-        try { if (BigInt(raw) !== BigInt(Math.trunc(num))) unsafeNumbers.push(raw); }
-        catch { /* not representable as BigInt for some other reason — leave it, JSON.parse already accepted it */ }
-      }
+      // V08: compare SOURCE TEXT to what JSON.stringify(Number(raw)) would emit — not just the parsed value —
+      // so every reserialize-changing form is caught (overflow-to-null, underflow-to-zero, >2^53 integers in
+      // either integer or decimal notation, -0 losing its sign, 1E2-style redundant exponent notation), while
+      // an ordinary hand-typed literal (30, 1.5, 0.1, 9007199254740991) round-trips unchanged and is never
+      // flagged.
+      const reserialized = JSON.stringify(Number(raw));
+      if (reserialized !== raw) unsafeNumbers.push(raw);
       continue;
     }
     if (/[a-zA-Z]/.test(c)) { while (i < n && /[a-zA-Z]/.test(text[i])) i++; continue; } // true/false/null

@@ -79,16 +79,34 @@ function extractTargets(tokens, verbAt) {
   return targets;
 }
 
+/** statOrFail(p) -> {kind:'ok',stat} | {kind:'enoent'} | {kind:'error',err} — a single explicit lstat, never
+ *  existsSync (codex-recheck V04: existsSync swallows EVERY error — EACCES/EPERM, ELOOP, ENOTDIR, a
+ *  permission-denied ancestor — into the SAME bare `false` as a genuinely absent path, so the realish() walk
+ *  below used to climb straight past a real access error as if that level simply "did not exist"). Only a
+ *  clean ENOENT is ever verified absence; every other error is reported as such and must fail the walk
+ *  closed, never be reinterpreted as "keep climbing". */
+function statOrFail(p) {
+  try { return { kind: 'ok', stat: fs.lstatSync(p) }; }
+  catch (e) { return e && e.code === 'ENOENT' ? { kind: 'enoent' } : { kind: 'error', err: e }; }
+}
+
 /** realish(p) -> { real, ok }. Resolves the realpath of the longest existing ancestor + the missing tail (a
- *  link is judged by its target). ok:false means canonicalization itself FAILED (a permission error, a broken
- *  link) — codex-recheck I02: that is never proof of containment, so the caller must refuse the scratch
- *  exception rather than silently substituting the unresolved lexical path. */
+ *  link is judged by its target). ok:false means canonicalization itself FAILED — a permission error or an
+ *  unreadable ancestor anywhere in the walk (V04, via statOrFail), a symlink loop (ELOOP), or a dangling
+ *  symlink/junction at the stopping point (the lstat succeeds — the link itself exists — but resolving it
+ *  below throws) — codex-recheck I02/V04: NONE of that is ever proof of containment, so the caller must
+ *  refuse the scratch exception rather than silently substituting the unresolved lexical path. VERIFIED
+ *  absence (a clean ENOENT on the leaf, with every parent up to the stopping point resolved for real) is the
+ *  ONLY case that continues climbing instead of failing outright. */
 function realish(p) {
   let existing = p;
   const tail = [];
-  while (!fs.existsSync(existing)) {
+  for (;;) {
+    const s = statOrFail(existing);
+    if (s.kind === 'ok') break;
+    if (s.kind === 'error') return { real: null, ok: false }; // V04: an access error is never "just missing"
     const parent = path.dirname(existing);
-    if (parent === existing) break;
+    if (parent === existing) break; // reached the filesystem root without finding an existing ancestor
     tail.unshift(path.basename(existing));
     existing = parent;
   }
@@ -189,4 +207,5 @@ function scratchPassThrough(command, ctx) {
   }
 }
 
-module.exports = { tokenize, verbIndex, extractTargets, realish, relInside, resolveTarget, areaOf, scratchPassThrough, DELETE_VERBS, REFUSED_TOKENS };
+module.exports = { tokenize, verbIndex, extractTargets, realish, relInside, resolveTarget, areaOf, scratchPassThrough,
+  statOrFail, DELETE_VERBS, REFUSED_TOKENS };

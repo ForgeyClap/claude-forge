@@ -84,11 +84,19 @@ function skipSubstitution(text, at) {
 /** quoteMask(text) -> { inside(pos), unterminated } — a BASH-ONLY, whole-text (never per-line) scan of `'`/`"`
  *  runs, so a heredoc operator that only LOOKS like one while sitting inside an already-open multi-line quote
  *  is never mistaken for a real one (codex-recheck S01). Backslash escaping is honoured only inside double
- *  quotes, mirroring scanWords()'s own bash rules. A `$(...)` command substitution — even one found WHILE
- *  scanning for a quote's closing character — is skipped over unmarked: its content is not "inside" the outer
- *  quote for this scanner's purposes, and a genuinely nested heredoc inside it is judged on its own. An
- *  unterminated quote poisons everything from its opening character to the end of the text; `unterminated`
- *  tells the caller to refuse the whole heredoc pass. */
+ *  quotes, mirroring scanWords()'s own bash rules. A `$(...)` command substitution at the OUTER (not-yet-
+ *  inside-any-quote) scan level — even one found WHILE scanning for a DOUBLE quote's closing character — is
+ *  skipped over unmarked: its content is not "inside" the outer quote for this scanner's purposes, and a
+ *  genuinely nested heredoc inside it is judged on its own. SINGLE QUOTES ARE DIFFERENT (codex-recheck V05,
+ *  fixing a real bypass): bash gives single quotes ZERO special characters until the next literal `'` — not
+ *  even `$(`. Skipping `$(...)` while scanning FOR that closing `'` used to jump straight to whatever `)`
+ *  balanced it, silently leaving every character in between UNMARKED (not "inside" the quote) even though it
+ *  truly is; a fake `<<EOF` heredoc marker sitting inside a single-quoted literal like `echo '$(\ncat
+ *  <<EOF\n)'` then looked "outside" any quote to stripHeredocs() and swallowed the real command that followed
+ *  it. Inside a single quote every character up to the literal closing `'` is now marked one at a time — no
+ *  substitution, no backslash escaping, exactly like a real shell. An unterminated quote poisons everything
+ *  from its opening character to the end of the text; `unterminated` tells the caller to refuse the whole
+ *  heredoc pass. */
 function quoteMask(text) {
   const marks = new Array(text.length + 1).fill(false);
   let unterminated = false;
@@ -101,7 +109,8 @@ function quoteMask(text) {
     let j = i + 1;
     let closed = false;
     while (j < text.length) {
-      if (text[j] === '$' && text[j + 1] === '(') { j = skipSubstitution(text, j); continue; }
+      // V05: a single quote suppresses `$(` too — only a double quote lets a substitution run inside it.
+      if (ch === '"' && text[j] === '$' && text[j + 1] === '(') { j = skipSubstitution(text, j); continue; }
       if (ch === '"' && text[j] === '\\') { marks[j] = true; if (j + 1 < text.length) marks[j + 1] = true; j += 2; continue; }
       if (text[j] === ch) { marks[j] = true; closed = true; j++; break; }
       marks[j] = true;
@@ -131,7 +140,14 @@ function writerDests(consumer, between, tail) {
 
 /** stripHeredocs(text) -> { text, regions, unstripped }. Two markers on one line, an unterminated quote
  *  anywhere in the WHOLE text, or an unterminated heredoc strip nothing; a heredoc that fails the rule is kept
- *  verbatim and skipped whole (an executed body is never re-read). */
+ *  verbatim and skipped whole (an executed body is never re-read). `offset`/`lineOffset` track each line's
+ *  real byte position in the ORIGINAL `text` so qmask.inside() (built once against that original text) is
+ *  asked about the right position — codex-recheck V05: after successfully recognising a heredoc the loop
+ *  jumps `i` straight to its `end` line to avoid re-scanning the body, but `offset` used to advance ONLY by
+ *  the marker line's own length, never by the SKIPPED body+delimiter lines' lengths too. Every later line's
+ *  `lineOffset` then understated the true offset by exactly that skipped span, so a second, FAKE heredoc
+ *  marker sitting inside an earlier still-open single-quoted literal got checked against the WRONG (too-early,
+ *  unquoted) position in the mask and wrongly looked "outside" any quote — exactly the bypass this fixes. */
 function stripHeredocs(text) {
   const qmask = quoteMask(text);
   if (qmask.unterminated) return { text, regions: 0, unstripped: true }; // S01: cannot tell "inside" from "outside"
@@ -166,6 +182,9 @@ function stripHeredocs(text) {
     }
     if (ok) regions++; else { unstripped = true; out.push(...lines.slice(i + 1, end)); }
     out.push(lines[end]);
+    // V05: account for the body+delimiter lines' length BEFORE jumping `i` — offset must reflect their real
+    // span in `text` even though the outer loop never visits them as their own iteration.
+    for (let k = i + 1; k <= end; k++) offset += lines[k].length + 1;
     i = end;
   }
   return { text: out.join('\n'), regions, unstripped };

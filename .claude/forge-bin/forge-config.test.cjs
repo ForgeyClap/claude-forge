@@ -1046,7 +1046,7 @@ t('expiry: after 10 min get/list/resolve/safeGet treat it as absent (gate-hook O
   writeJson(broken.projectFile, { version: 1, settings: { 'gate-hook': { value: false, expires_at: 'not a time' } } });
   assert.strictEqual(cfg.get('gate-hook', broken.o).value, true, 'an unparseable expires_at never keeps the gate off');
 });
-t('set gate-hook on clears the one-off (entry removed, nothing permanent left); a permanent off replaces it', () => {
+t('set gate-hook on clears the one-off (entry removed, nothing permanent left)', () => {
   const fx = fixture();
   cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: at(0) }));
   const R = cfg.set('gate-hook', 'on', withOpts(fx, { now: at(60000), lang: 'en' }));
@@ -1054,10 +1054,13 @@ t('set gate-hook on clears the one-off (entry removed, nothing permanent left); 
   assert.ok(!Object.prototype.hasOwnProperty.call(readJson(fx.projectFile).settings, 'gate-hook'), 'the one-off entry is gone');
   assert.deepStrictEqual([cfg.get('gate-hook', fx.o).value, cfg.get('gate-hook', fx.o).source], [true, 'default']);
   assert.ok(/on/.test(text.renderSet(R, 'en')) && /cleared/.test(text.renderSet(R, 'en')), text.renderSet(R, 'en'));
+});
+t('V03 (Codex recheck 2026-09-24): a plain "off" writes a permanent value once the one-off has genuinely EXPIRED (not pending anymore)', () => {
+  const fx = fixture();
   cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: at(0) }));
-  cfg.set('gate-hook', 'off', withOpts(fx, { now: at(60000) }));
+  cfg.set('gate-hook', 'off', withOpts(fx, { now: at(10 * 60000 + 1) })); // past the 10-min window: no longer pending
   const e = readJson(fx.projectFile).settings['gate-hook'];
-  assert.deepStrictEqual([e.value, Object.prototype.hasOwnProperty.call(e, 'expires_at')], [false, false], 'a normal set writes a permanent value');
+  assert.deepStrictEqual([e.value, Object.prototype.hasOwnProperty.call(e, 'expires_at')], [false, false], 'a normal set after real expiry writes a permanent value');
 });
 t('diff reports the one-off as a change: gate-hook: on -> off (one-off, 10 min, <quote>)', () => {
   const fx = fixture();
@@ -1238,6 +1241,57 @@ t('CFG-07: a hand-edited expires_at later than set_at + 10 min, or a set_at in t
   assert.strictEqual(cfg.get('gate-hook', withOpts(fx2, { now: '2026-09-24T12:05:00.000Z' })).value, true, 'a set_at in the future (clock rollback) is never trusted');
 });
 
+// ---- V03 (Codex recheck 2026-09-24): a pending one-off approval can only end by consumption, expiry, or an
+// explicit "on" — still part of section 14's Codex-recheck family, no new numbered header.
+t('V03: the EXACT transition Codex measured — arm once -> a plain "off" while pending is REFUSED (exit 3), nothing written; the next check (after real expiry) still sees the gate ON', () => {
+  const fx = fixture();
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja, verwijder die map', now: at(0) })); // armed, expires at +10min
+  const before = readJson(fx.projectFile).settings['gate-hook'];
+  const err = throwsCode(() => cfg.set('gate-hook', 'off', withOpts(fx, { now: at(60000) })), 'once_pending', 3); // +1 min: still pending
+  assert.ok(/pending|armed|expire/i.test(err.message), 'plain-English refusal reason: ' + err.message);
+  const after = readJson(fx.projectFile).settings['gate-hook'];
+  assert.deepStrictEqual(after, before, 'the once entry is byte-for-byte unchanged — no silent permanent conversion');
+  // The gate is still enforced during the window (the once entry itself is still the temporary off), and once
+  // it genuinely expires, get() reports ON again — proving the refused plain "off" never became a permanent
+  // disablement (the exact regression: it used to delete the once entry and write {value:false} with no expiry).
+  const late = cfg.get('gate-hook', withOpts(fx, { now: at(10 * 60000 + 1) }));
+  assert.deepStrictEqual([late.value, late.source], [true, 'default'], 'after real expiry the gate is back to its default ON — never stuck off');
+});
+t('V03: every plain-off synonym (uit/false/no/nee) is refused the same way while pending', () => {
+  const fx = fixture();
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: at(0) }));
+  for (const synonym of ['uit', 'false', 'no', 'nee']) {
+    throwsCode(() => cfg.set('gate-hook', synonym, withOpts(fx, { now: at(120000) })), 'once_pending', 3);
+  }
+  const e = readJson(fx.projectFile).settings['gate-hook'];
+  assert.strictEqual(e.expires_at, at(10 * 60000), 'still the original once entry, untouched by any of the refused synonyms');
+});
+t('V03: "unset gate-hook" is ALSO refused while pending (never a backdoor around the plain-off refusal)', () => {
+  const fx = fixture();
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: at(0) }));
+  const before = readJson(fx.projectFile).settings['gate-hook'];
+  throwsCode(() => cfg.unset('gate-hook', withOpts(fx, { now: at(60000) })), 'once_pending', 3);
+  assert.deepStrictEqual(readJson(fx.projectFile).settings['gate-hook'], before, 'unset wrote nothing while pending');
+});
+t('V03: "set gate-hook on" still ends a pending one-off early (the one explicitly-allowed early exit)', () => {
+  const fx = fixture();
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: at(0) }));
+  const R = cfg.set('gate-hook', 'on', withOpts(fx, { now: at(60000) }));
+  assert.strictEqual(R.cleared_once, true);
+  assert.ok(!Object.prototype.hasOwnProperty.call(readJson(fx.projectFile).settings, 'gate-hook'));
+});
+t('V03: the CLI surfaces the refusal as exit 3 with a plain message, in both languages', () => {
+  const fx = fixture();
+  cli(fx, ['set', 'gate-hook', 'off', '--once', 'ja', '--lang', 'en']);
+  const en = cli(fx, ['set', 'gate-hook', 'off', '--lang', 'en']);
+  assert.deepStrictEqual([en.status, /pending|armed/i.test(en.err)], [3, true], en.all);
+  const nl = cli(fx, ['set', 'gate-hook', 'uit', '--lang', 'nl']);
+  assert.deepStrictEqual([nl.status, /toestemming/i.test(nl.err)], [3, true], nl.all);
+  const json = cli(fx, ['set', 'gate-hook', 'off', '--json']);
+  assert.strictEqual(json.status, 3, json.all);
+  assert.strictEqual(JSON.parse(json.out).error.code, 'once_pending', json.all);
+});
+
 t('CFG-09: a stale/held lock on the target file is serialized, not clobbered — the delayed writer re-reads the fresh bytes', () => {
   const fx = fixture();
   cfg.set('council', 'off', fx.o); // an existing value the "other writer" will change while we hold the lock
@@ -1270,6 +1324,62 @@ t('CFG-10: atomicWriteJson leaves no temp file and the written bytes read back b
   cfg.set('council', 'off', fx.o);
   assert.deepStrictEqual(fs.readdirSync(path.dirname(fx.projectFile)).filter((f) => f.endsWith('.tmp') || f.endsWith('.lock')), []);
   assert.strictEqual(readJson(fx.projectFile).settings.council.value, 'off');
+});
+
+// ---- V10 (Codex recheck 2026-09-24): fsyncFile propagates a real file-fsync error — still part of section
+// 14's Codex-recheck family, no new numbered header (this block runs after CFG-09/CFG-10 below in file order).
+t('V10: an injected file-fsync EIO makes set() throw and leaves the original target file completely untouched (no temp file left behind)', () => {
+  const fx = fixture();
+  cfg.set('nvidia', 'off', fx.o); // a real, valid project file to protect
+  const before = fs.readFileSync(fx.projectFile, 'utf8');
+  const real = fs.fsyncSync;
+  let calls = 0;
+  fs.fsyncSync = () => { calls++; const e = new Error('EIO: i/o error, fsync'); e.code = 'EIO'; throw e; };
+  try {
+    assert.throws(() => cfg.set('nvidia', 'on', fx.o), /EIO/);
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.ok(calls >= 1, 'fs.fsyncSync was actually invoked by the write path');
+  assert.strictEqual(fs.readFileSync(fx.projectFile, 'utf8'), before, 'the original target file was never replaced');
+  const leftovers = fs.readdirSync(path.dirname(fx.projectFile)).filter((f) => f.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], 'no temp file left behind: ' + leftovers.join(','));
+});
+t('V10: a directory-fsync EPERM (the real, live-confirmed Windows/NTFS shape) is still tolerated — the write still completes', () => {
+  const fx = fixture();
+  const real = fs.fsyncSync;
+  // atomicWriteJson always calls fsyncFile (the temp FILE) before fsyncDir (the DIRECTORY, after rename) —
+  // the 1st fsyncSync call in one write is always the file, the 2nd is always the directory; only the 2nd
+  // is made to fail here, proving fsyncDir's narrow tolerance independently of fsyncFile's propagation.
+  let call = 0;
+  fs.fsyncSync = (fd) => {
+    call++;
+    if (call === 1) return real.call(fs, fd); // the file fsync: let it really happen
+    const e = new Error('EPERM: operation not permitted, fsync'); e.code = 'EPERM'; throw e; // the directory fsync
+  };
+  try {
+    cfg.set('nvidia', 'off', fx.o); // must NOT throw despite the directory-fsync EPERM
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.strictEqual(call, 2, 'both the file and the directory fsync were attempted');
+  assert.strictEqual(cfg.get('nvidia', fx.o).value, false, 'the write took effect despite the tolerated directory-fsync failure');
+});
+t('V10: a NON-tolerated directory-fsync error (e.g. EIO) still propagates — "unsupported" is narrow, not "any error"', () => {
+  const fx = fixture();
+  const real = fs.fsyncSync;
+  let call = 0;
+  fs.fsyncSync = (fd) => {
+    call++;
+    if (call === 1) return real.call(fs, fd);
+    const e = new Error('EIO: i/o error, fsync'); e.code = 'EIO'; throw e;
+  };
+  try {
+    assert.throws(() => cfg.set('council', 'off', fx.o), /EIO/);
+  } finally {
+    fs.fsyncSync = real;
+  }
+  assert.strictEqual(call, 2);
 });
 
 // ---------------------------------------------------------------------------------------------------

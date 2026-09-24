@@ -20,9 +20,14 @@
  * VISIBLE (hook internal error, oversized/hanging/unparseable/ambiguous stdin, gate-hook OFF while a gate
  * would have fired, classifier unavailable and the fallback regex silent) · 0 = allowed. A call this hook
  * cannot actually judge — malformed JSON, a null/array/string payload, a shell tool with a missing or
- * non-string command — is NEVER silently allowed: it exits 1 with a visible "NOT checked" line. Silent exit 0
- * is reserved for a call this hook can POSITIVELY tell is unrelated (a real PostToolUse event, a recognised
- * non-shell tool, or an empty no-op command). When hard-gates.json / the classifier cannot load, FALLBACK_RE
+ * non-string command, or an UNRECOGNISED hook_event_name (codex-recheck V01: only a name Claude Code really
+ * sends for a non-tool-call event is silently unrelated) — is NEVER silently allowed: it exits 1 with a
+ * visible "NOT checked" line. Silent exit 0 is reserved for a call this hook can POSITIVELY tell is unrelated
+ * (a real recognised non-PreToolUse event, a recognised non-shell tool, or an empty no-op command). A
+ * self-disable attempt is BLOCKED (exit 2) whenever gate-hook is ON, and also while a ONCE-style grant is
+ * PENDING (codex-recheck V03 — the plain off/unset form must never upgrade a one-off approval into a
+ * persistent OFF); it is visible-but-allowed only under a PERSISTENT off with no once-window open. When
+ * hard-gates.json / the classifier cannot load, FALLBACK_RE
  * blocks the obviously destructive verbs (fail-CLOSED). Inert data is stripped first (forge-gate-data.cjs;
  * absent -> nothing is stripped); a delete whose every segment is a provable scratch delete passes
  * (scratchPassThrough, fail-closed) — and this proof now runs for EVERY recursive-delete SHAPE, even one the
@@ -45,6 +50,11 @@ let SCRATCH = null;
 try { SCRATCH = require('./forge-gate-scratch.cjs'); } catch { SCRATCH = null; } // absent -> no pass-through (stricter)
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+// V01 (codex-recheck 2026-09-24): only a hook_event_name Claude Code ACTUALLY sends for something other than a
+// tool call may pass silently as "not-pretooluse" — an unrecognised/corrupted name (a bogus envelope, not a
+// real Claude Code event) is never proof this call is unrelated, so it stays VISIBLE (exit 1) instead.
+const KNOWN_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'Stop', 'SessionStart', 'SessionEnd', 'PreCompact',
+  'UserPromptSubmit', 'Notification', 'SubagentStop', 'SubagentStart', 'PermissionRequest']);
 const FAILSAFE_MS = 3000;
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -165,18 +175,36 @@ function splitForSelfDisable(text) {
   return String(text).split(CONFIG_SPLIT_RE).map((s) => s.trim()).filter(Boolean);
 }
 
-/** parseConfigCall(segment) -> a best-effort ARGV read of a single segment invoking forge-config.cjs (any path
- *  form: relative, absolute, quoted, with or without a leading `node`), or null when this segment is not one.
- *  Not a full shell parser: `tokenize()` refuses a glued quote, which correctly makes this parser refuse rather
- *  than misread rather than guess. */
+// V02 (codex-recheck 2026-09-24): the real, equivalent ways this project's own docs and scripts invoke
+// forge-config.cjs — a node CLI flag before the script path, a full interpreter path, `env` re-resolving it
+// from PATH, and sudo/time/nohup wrappers — must all still reach the SAME parsed verdict as the bare `node
+// forge-config.cjs` form, not fall through to "not a config call" = permission.
+const CONFIG_WRAPPER_RE = /^(?:sudo|time|nohup)$/i;
+const CONFIG_BASENAME_RE = /^forge-config(?:-cli)?\.cjs$/i;
+function isNodeToken(tok) {
+  if (!tok || tok.quoted) return false;
+  return /^node(?:\.exe)?$/i.test(String(tok.v).split(/[\\/]/).pop());
+}
+
+/** parseConfigCall(segment) -> a best-effort ARGV read of a single segment invoking forge-config.cjs or
+ *  forge-config-cli.cjs (any path form: relative, absolute, quoted, bare basename, a full interpreter path,
+ *  `env`-resolved, sudo/time/nohup-wrapped, with or without node CLI flags before the script), or null when
+ *  this segment is not one. Not a full shell parser: `tokenize()` refuses a glued quote (a shell
+ *  concatenation trick such as `s"et"`), which correctly makes THIS function refuse too — the caller
+ *  (selfDisable) treats that refusal as "cannot read, not as "permitted"" (V02), unlike a segment that is
+ *  cleanly parsed and genuinely is not a config call. */
 function parseConfigCall(segment) {
   const tokens = tokenize(segment);
   if (!tokens || !tokens.length) return null;
   let i = 0;
-  if (!tokens[i].quoted && /^node(?:\.exe)?$/i.test(tokens[i].v)) i++;
+  while (tokens[i] && !tokens[i].quoted && (CONFIG_WRAPPER_RE.test(tokens[i].v) || /^env$/i.test(tokens[i].v))) i++;
+  if (isNodeToken(tokens[i])) {
+    i++;
+    while (tokens[i] && !tokens[i].quoted && /^-/.test(tokens[i].v)) i++; // node's own CLI flags, e.g. --no-warnings
+  }
   if (!tokens[i]) return null;
   const base = String(tokens[i].v).split(/[\\/]/).pop();
-  if (!/^forge-config\.cjs$/i.test(base)) return null;
+  if (!CONFIG_BASENAME_RE.test(base)) return null;
   const rest = tokens.slice(i + 1);
   const isFlag = (t) => !t.quoted && /^-{1,2}[A-Za-z]/.test(t.v);
   const flags = rest.filter(isFlag).map((t) => t.v.toLowerCase());
@@ -204,13 +232,31 @@ function isOnceExempt(p) {
     && !!p.quoteRaw && p.quoteRaw.trim().length > 0 && !p.extraPositional;
 }
 
+/** looksLikeAmbiguousConfigMutation(segment) -> boolean — V02 fail-closed fallback for a segment the STRICT
+ *  tokenizer refuses to parse at all (e.g. a shell word-concatenation trick like `s"et"` or `'se't`, which is
+ *  not a whole-word quote and correctly makes tokenize()/parseConfigCall() return null). Removing every quote
+ *  character is a crude but honest normalisation: `s"et"` and `'se't` both de-glue to the word "set", exactly
+ *  what a real shell would also assemble. This is used ONLY to decide whether an UNPARSEABLE segment must
+ *  still be refused (blocked) as an ambiguous self-disable attempt — an ordinary, cleanly-tokenized segment
+ *  always goes through the precise parseConfigCall()/isSelfDisableCall() path instead. */
+function deglue(segment) { return String(segment).replace(/["']/g, ''); }
+function looksLikeAmbiguousConfigMutation(segment) {
+  const words = deglue(segment).trim().split(/\s+/).filter(Boolean).map((w) => w.toLowerCase());
+  if (!words.length) return false;
+  const hasScript = words.some((w) => CONFIG_BASENAME_RE.test(String(w).split(/[\\/]/).pop()));
+  return hasScript && (words.includes('set') || words.includes('unset')) && words.includes('gate-hook');
+}
+
 /** selfDisable(seen) -> true when ANY segment of `seen` (the data-stripped text — a self-disable string quoted
  *  inside inert heredoc/echo/commit-message data must not itself trigger this) is a self-disabling forge-config
- *  call that is not the one exempt once-shape. */
+ *  call that is not the one exempt once-shape, OR (V02) a segment the strict parser could not read at all but
+ *  whose de-quoted text still plausibly names forge-config.cjs + gate-hook with a mutating verb — refused
+ *  rather than silently treated as permission. */
 function selfDisable(seen) {
   for (const segment of splitForSelfDisable(seen)) {
     const parsed = parseConfigCall(segment);
-    if (isSelfDisableCall(parsed) && !isOnceExempt(parsed)) return true;
+    if (parsed) { if (isSelfDisableCall(parsed) && !isOnceExempt(parsed)) return true; continue; }
+    if (looksLikeAmbiguousConfigMutation(segment)) return true;
   }
   return false;
 }
@@ -295,7 +341,11 @@ function decide(payload, opts) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return unchecked('invalid-payload');
   if (payload.hook_event_name !== undefined && payload.hook_event_name !== null) {
     if (typeof payload.hook_event_name !== 'string') return unchecked('invalid-hook-event');
-    if (payload.hook_event_name !== 'PreToolUse') return none('not-pretooluse');
+    if (payload.hook_event_name !== 'PreToolUse') {
+      // V01: an unrecognised event name is never positively known to be unrelated — visible, not silent.
+      if (!KNOWN_HOOK_EVENTS.has(payload.hook_event_name)) return unchecked('unknown-hook-event');
+      return none('not-pretooluse');
+    }
   }
   if (typeof payload.tool_name !== 'string' || !payload.tool_name) return unchecked('missing-tool-name');
   if (!SHELL_TOOLS.has(payload.tool_name)) return none('not-a-shell-tool');
@@ -310,8 +360,13 @@ function decide(payload, opts) {
   if (!verdict.block) return none('gate-hook-off (' + en.source + ')');
   if (en.expires_at) {
     // a ONCE-style grant: never a blanket window (S06) — self-disable is never approvable through it either.
+    // V03 (codex-recheck 2026-09-24): a self-disable attempt while a grant is PENDING is BLOCKED outright, not
+    // merely noticed — a warn-only verdict here would let the plain "set gate-hook off"/"unset gate-hook" call
+    // actually EXECUTE and persist a permanent OFF through forge-config.cjs's own writer, upgrading a one-off
+    // approval into indefinite disablement. The once-exempt shape itself (`set gate-hook off --once "<quote>"`)
+    // never reaches this branch at all — selfDisable() excludes it before evaluate() ever names this gate.
     if (verdict.gates[0] === 'gate-hook-self-disable') {
-      return { block: false, warn: true, gates: verdict.gates, notice: offNotice(en, verdict.gates), why: 'gate-hook-off, self-disable-would-have-blocked' };
+      return { block: true, gates: verdict.gates, reason: verdict.reason, why: 'gate-hook-once-pending-self-disable-blocked' };
     }
     const cfg = resolveConfigModule(opts);
     let outcome;
@@ -349,7 +404,7 @@ function run(rawStdin, opts) {
 module.exports = {
   run, decide, evaluate, gateHookEnabled, commandGateIds, blockReason, selfDisable, scratchPassThrough, tokenize, verbIndex,
   extractTargets, resolveTarget, areaOf, parseConfigCall, isSelfDisableCall, isOnceExempt, sha256,
-  SHELL_TOOLS, WORDS, FAILSAFE_MS, MAX_STDIN_BYTES, PROJECT_ROOT, FALLBACK_RE,
+  SHELL_TOOLS, WORDS, FAILSAFE_MS, MAX_STDIN_BYTES, PROJECT_ROOT, FALLBACK_RE, KNOWN_HOOK_EVENTS,
 };
 
 // ---- CLI (PreToolUse hook target). Async stdin collection (proven safe on Windows by forge-toolhook.cjs); every

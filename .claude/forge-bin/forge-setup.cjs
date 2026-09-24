@@ -204,34 +204,109 @@ function verifyAndReinforceIgnored(projectDir, relPath) {
 // forge.md's checkpoint paragraph, which names these same patterns in prose).
 const CHECKPOINT_SECRET_LINES = ['.env.*', '*.pem', '*.key', 'id_rsa*', 'id_ed25519*', 'credentials*.json', 'secrets/'];
 
-/** findDefeatingNegations(lines, patterns) -> [{pattern, negation, atLine}] — a `!<name>` line sitting AFTER
- *  the pattern that is supposed to protect it defeats that protection under git's last-match-wins rule; the
- *  mere PRESENCE of our own line is not proof (the exact SECRET-CHECKPOINT evidence: existing patterns
- *  followed by negations left appended:[] and the negations untouched). `!.env.example` is the one
- *  deliberate, wanted exception (KEEP_NEGATION_LINE) and is never reported as defeating anything. */
-function findDefeatingNegations(lines, patterns) {
+// ---- glob matching for gitignore-style patterns (V13, Codex recheck 2026-09-24) --------------------------
+// A real gitignore pattern's wildcard can sit ANYWHERE (`*.key`, `.env.*.local`, `credentials*.json`), not
+// only at the end (`id_rsa*`) — the pre-fix code only ever stripped a TRAILING `*`, so a leading/middle
+// wildcard pattern like `*.key` never matched its own bare form and a real defeating negation
+// (`!deploy.key`) was silently missed (the exact V13 evidence). `*` -> any run of non-'/' characters, `?`
+// -> one character, `**` -> also crosses '/' (the one extension beyond a single path segment anything here
+// ever needs). This is intentionally small: it is the FALLBACK used only when git itself cannot be asked
+// (see gitDefeatingNegations below) — git's own matcher is always preferred when available.
+function globToRegExp(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') { re += '.*'; i++; }
+      else re += '[^/]*';
+    } else if (c === '?') re += '[^/]';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp('^' + re + '$');
+}
+function patternMatchesName(pattern, name) {
+  if (pattern.endsWith('/')) return name === pattern.slice(0, -1) || name.startsWith(pattern);
+  return globToRegExp(pattern).test(name);
+}
+
+/** fallbackDefeatingNegations(lines, patterns) -> [{pattern, negation, atLine, via:'fallback'}] — the pure-JS
+ *  detector, used only when git cannot be asked (gitDefeatingNegations returns null: not a repo, or git
+ *  unavailable). Wildcard-aware via patternMatchesName (V13) rather than the old trailing-`*`-only prefix
+ *  check. `!.env.example` (KEEP_NEGATION_LINE) is the one deliberate, wanted exception and is never reported
+ *  as defeating anything. Best-effort: it does not fully replicate git's own last-match-wins evaluation
+ *  across multiple gitignore FILES (nested directories, `core.excludesFile`), only the single lines array
+ *  it is given, and it does NOT know git's own rule that a trailing-slash DIRECTORY pattern (`secrets/`)
+ *  can never be re-included by a nested negation at all (git ignores such a negation outright) — so it can
+ *  over-report a "defeat" there that git itself would prove is not real, triggering a harmless-but-
+ *  unnecessary reinforcement rather than a missed one. That gap (fail toward "reinforce a bit too often",
+ *  never toward "miss a real one") is exactly why gitDefeatingNegations is tried first. */
+function fallbackDefeatingNegations(lines, patterns) {
   const out = [];
   for (const pat of patterns) {
     const patIdx = lines.lastIndexOf(pat);
     if (patIdx < 0) continue;
-    const bare = pat.replace(/\*+$/, '').replace(/\/$/, '');
     for (let i = patIdx + 1; i < lines.length; i++) {
       const l = lines[i];
-      if (!l.startsWith('!') || l === KEEP_NEGATION_LINE) continue;
-      const neg = l.slice(1);
-      if (neg === pat || (bare && (neg === bare || neg.startsWith(bare)))) { out.push({ pattern: pat, negation: l, atLine: i }); break; }
+      if (!l.startsWith('!') || l === KEEP_NEGATION_LINE || l.length < 2) continue;
+      const negName = l.slice(1);
+      if (negName && patternMatchesName(pat, negName)) { out.push({ pattern: pat, negation: l, atLine: i, via: 'fallback' }); break; }
     }
   }
   return out;
 }
 
-/** protectSecrets(projectDir) -> { ok, path, created, appended, patterns, reinforced }. `reinforced` lists
- *  every pattern that had to be re-appended at the end because an existing negation elsewhere was defeating
- *  it (SECRET-CHECKPOINT) — a non-empty `reinforced` is worth surfacing to the owner even though `ok` stays
- *  true (the file itself is fixed by the time this returns). */
+/** gitDefeatingNegations(projectDir, lines, patterns) -> [{...via:'git'}] | null (null = git could not answer:
+ *  not a repository, or git unavailable — caller falls back). PRINCIPLE A (verify, don't assume): for every
+ *  `!<name>` line in the CURRENT on-disk .gitignore (the caller must have already written `lines`' content to
+ *  disk — git reads the real file, not this array), ask git itself whether that EXACT literal name is still
+ *  ignored overall (`git check-ignore -q --no-index`). Checking the literal negated name (not a generic
+ *  per-pattern sample) is what a synthetic-sample approach would miss: `!deploy.key` only un-ignores the one
+ *  file `deploy.key`, never a differently-named `*.key` file, so only asking about `deploy.key` itself can
+ *  ever reveal that specific, real defeat (the exact V13 evidence). A pre-filter (patternMatchesName) skips
+ *  negations that plainly cannot concern one of our own patterns, so a normal .gitignore costs at most one
+ *  git call per unrelated negation it happens to contain; `!.env.example` is skipped outright (the one
+ *  deliberate, wanted exception). Any git failure mid-scan discards partial results and returns null — never
+ *  a partial answer presented as complete. */
+function gitDefeatingNegations(projectDir, lines, patterns) {
+  const repoProbe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectDir, encoding: 'utf8' });
+  if (repoProbe.error || repoProbe.status !== 0) return null;
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.startsWith('!') || l === KEEP_NEGATION_LINE || l.length < 2) continue;
+    const negName = l.slice(1);
+    const pat = patterns.find((p) => patternMatchesName(p, negName));
+    if (!pat) continue;
+    const r = spawnSync('git', ['check-ignore', '-q', '--no-index', '--', negName], { cwd: projectDir, encoding: 'utf8' });
+    if (r.error) return null; // git failed unexpectedly mid-scan: never report a partial result — fall back for everything
+    if (r.status === 0) continue; // some OTHER still-active rule keeps this exact name ignored — not a real defeat
+    out.push({ pattern: pat, negation: l, atLine: i, via: 'git' });
+  }
+  return out;
+}
+
+/** findDefeatingNegations(projectDir, lines, patterns) -> { list: [{pattern, negation, atLine, via}], via }
+ *  — a `!<name>` line sitting AFTER the pattern that is supposed to protect it defeats that protection under
+ *  git's last-match-wins rule; the mere PRESENCE of our own line is not proof (the exact SECRET-CHECKPOINT
+ *  evidence: existing patterns followed by negations left appended:[] and the negations untouched). V13
+ *  (Codex recheck 2026-09-24): prefers asking GIT ITSELF (gitDefeatingNegations) — the one authority that can
+ *  never drift from git's real wildcard/nested/`**` semantics — and falls back to the wildcard-aware
+ *  fallbackDefeatingNegations ONLY when git cannot answer; `via` on the returned object says honestly which
+ *  path produced the answer ('git' or 'fallback'), and every item in `list` carries its own `via` too. */
+function findDefeatingNegations(projectDir, lines, patterns) {
+  const git = gitDefeatingNegations(projectDir, lines, patterns);
+  if (git) return { list: git, via: 'git' };
+  return { list: fallbackDefeatingNegations(lines, patterns), via: 'fallback' };
+}
+
+/** protectSecrets(projectDir) -> { ok, path, created, appended, patterns, reinforced, negation_check_via }.
+ *  `reinforced` lists every pattern that had to be re-appended at the end because an existing negation
+ *  elsewhere was defeating it (SECRET-CHECKPOINT) — a non-empty `reinforced` is worth surfacing to the owner
+ *  even though `ok` stays true (the file itself is fixed by the time this returns). `negation_check_via`
+ *  says honestly whether that detection asked git itself or fell back to the pure-JS matcher (V13). */
 function protectSecrets(projectDir) {
   const invalidDir = validateProjectDir(projectDir);
-  if (invalidDir) return { ok: false, reason: invalidDir.reason, path: null, created: false, appended: [], patterns: [], reinforced: [] };
+  if (invalidDir) return { ok: false, reason: invalidDir.reason, path: null, created: false, appended: [], patterns: [], reinforced: [], negation_check_via: null };
   const gitignorePath = path.join(projectDir, '.gitignore');
   const existedBefore = fs.existsSync(gitignorePath);
   let content = existedBefore ? fs.readFileSync(gitignorePath, 'utf8') : '# Forge V2 — secrets (managed by forge-setup)\n';
@@ -243,10 +318,16 @@ function protectSecrets(projectDir) {
   for (const line of patterns) if (!present.has(line)) { add(line); present.add(line); }
   const ls = linesNow();
   if (ls.lastIndexOf(KEEP_NEGATION_LINE) < ls.lastIndexOf('.env.*')) add(KEEP_NEGATION_LINE);
-  const reinforced = findDefeatingNegations(linesNow(), patterns);
-  for (const d of reinforced) add(d.pattern);
+  // V13: gitDefeatingNegations reads the REAL file from disk, so every baseline line ensured above must
+  // already be written before it is asked — idempotent (the same bytes may be written again below).
   if (!existedBefore || appended.length > 0) fs.writeFileSync(gitignorePath, content, 'utf8');
-  return { ok: true, path: gitignorePath, created: !existedBefore, appended, patterns: patterns.concat(KEEP_NEGATION_LINE), reinforced };
+  const check = findDefeatingNegations(projectDir, linesNow(), patterns);
+  for (const d of check.list) add(d.pattern);
+  if (check.list.length) fs.writeFileSync(gitignorePath, content, 'utf8');
+  return {
+    ok: true, path: gitignorePath, created: !existedBefore, appended,
+    patterns: patterns.concat(KEEP_NEGATION_LINE), reinforced: check.list, negation_check_via: check.via,
+  };
 }
 
 // ---- checkpoint-time candidate scan (Codex recheck 2026-09-24, SECRET-CHECKPOINT) -----------------------
@@ -269,12 +350,25 @@ function isSecretShapedName(relPath) {
   return false;
 }
 
-/** listCheckpointCandidates(projectDir) -> relative paths `git add -A` would touch right now (untracked,
- *  modified, renamed, deleted), via `git status --porcelain -z --untracked-files=all`. Never throws; a git
- *  failure (or not a repo) returns []. */
+// A large repo's untracked-file listing can exceed Node's default 1 MB spawnSync buffer; NUL-delimited (-z)
+// parsing already avoids the quoting/embedded-newline problems a plain porcelain format would have, and a
+// generous fixed buffer (64 MB) keeps a large but ordinary checkout from ever tripping the same failure a
+// tiny one would never hit (V12, Codex recheck 2026-09-24 — "handle large output deliberately").
+const CHECKPOINT_STATUS_MAX_BUFFER = 64 * 1024 * 1024;
+
+/** listCheckpointCandidates(projectDir) -> { ok, candidates, reason }. `candidates`: relative paths
+ *  `git add -A` would touch right now (untracked, modified, renamed, deleted), via `git status --porcelain
+ *  -z --untracked-files=all`. Never throws. V12 (Codex recheck 2026-09-24): `ok` is false on ANY enumeration
+ *  problem — a spawn error, a nonzero exit, a kill signal, or output too large for the fixed buffer — NEVER
+ *  silently reported as an empty (clean) list: the pre-fix code returned [] for every one of these, which
+ *  `scanCheckpointSecrets` then read as "nothing to block". The caller MUST treat ok:false as "cannot confirm
+ *  clean", not "clean". */
 function listCheckpointCandidates(projectDir) {
-  const r = spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: projectDir, encoding: 'utf8' });
-  if (r.error || typeof r.stdout !== 'string') return [];
+  const r = spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: projectDir, encoding: 'utf8', maxBuffer: CHECKPOINT_STATUS_MAX_BUFFER });
+  if (r.error) return { ok: false, candidates: [], reason: 'git status failed to run (' + (r.error.code || r.error.message) + ')' };
+  if (r.signal) return { ok: false, candidates: [], reason: 'git status was terminated by signal ' + r.signal };
+  if (typeof r.stdout !== 'string') return { ok: false, candidates: [], reason: 'git status produced no readable output (possibly truncated)' };
+  if (r.status !== 0) return { ok: false, candidates: [], reason: 'git status exited ' + r.status + (r.stderr ? ': ' + String(r.stderr).trim().slice(0, 200) : '') };
   const out = [];
   const recs = r.stdout.split('\0').filter(Boolean);
   for (let i = 0; i < recs.length; i++) {
@@ -283,24 +377,27 @@ function listCheckpointCandidates(projectDir) {
     out.push(rec.slice(3));
     if (code[0] === 'R' || code[1] === 'R') i++; // a rename record is followed by its own oldpath \0-record
   }
-  return out.filter(Boolean);
+  return { ok: true, candidates: out.filter(Boolean) };
 }
 
-/** scanCheckpointSecrets(projectDir) -> { ok, gitAvailable, blocked: [{path, reason}] }. `blocked` names every
- *  checkpoint candidate that is secret-shaped AND not positively confirmed git-ignored — the checkpoint step
- *  must refuse to `git add` these (never stage them and unstage afterwards). `ok` is false only when
- *  `blocked.length > 0`. A git failure / not a repo is permissive (ok:true, gitAvailable:false), the same
- *  posture as checkEnvTracked() — nothing to scan there. Does not catch an already-committed, UNMODIFIED
- *  secret-shaped file from an earlier mistake (out of scope: that needs history scanning, not a checkpoint
- *  candidate scan — report it, do not claim it is covered). */
+/** scanCheckpointSecrets(projectDir) -> { ok, gitAvailable, blocked: [{path, reason}], reason? }. `blocked`
+ *  names every checkpoint candidate that is secret-shaped AND not positively confirmed git-ignored — the
+ *  checkpoint step must refuse to `git add` these (never stage them and unstage afterwards). `ok` is false
+ *  when `blocked.length > 0` OR when candidate enumeration itself failed (V12, Codex recheck 2026-09-24: an
+ *  enumeration failure must REFUSE, never report a clean scan — `reason` names why). A git failure / not a
+ *  repo (the `rev-parse` probe itself) stays permissive (ok:true, gitAvailable:false), the same posture as
+ *  checkEnvTracked() — nothing to scan there. Does not catch an already-committed, UNMODIFIED secret-shaped
+ *  file from an earlier mistake (out of scope: that needs history scanning, not a checkpoint candidate scan
+ *  — report it, do not claim it is covered). */
 function scanCheckpointSecrets(projectDir) {
   const invalidDir = validateProjectDir(projectDir);
   if (invalidDir) return { ok: false, gitAvailable: false, blocked: [], reason: invalidDir.reason };
   const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectDir, encoding: 'utf8' });
   if (probe.error || probe.status !== 0) return { ok: true, gitAvailable: false, blocked: [] };
-  const candidates = listCheckpointCandidates(projectDir);
+  const enumerated = listCheckpointCandidates(projectDir);
+  if (!enumerated.ok) return { ok: false, gitAvailable: true, blocked: [], reason: 'could not list checkpoint candidates: ' + enumerated.reason };
   const blocked = [];
-  for (const rel of candidates) {
+  for (const rel of enumerated.candidates) {
     if (!isSecretShapedName(rel)) continue;
     const ignored = checkGitIgnoreStatus(projectDir, rel);
     if (ignored === true) continue;
@@ -1223,14 +1320,20 @@ if (require.main === module) {
         return;
       }
       case 'checkpoint-scan': {
+        // V11 (Codex recheck 2026-09-24): the exit code must reflect `r.ok` the SAME way in --json and text
+        // mode — the pre-fix code set process.exitCode=3 only in the text branch below, so `--json` (the
+        // form forge.md's own checkpoint procedure documents) printed ok:false yet exited 0, which a caller
+        // that trusts the exit code (not the exit code that's actually 0) — wrongly authorized staging.
         const r = scanCheckpointSecrets(projectDir);
         if (!r.gitAvailable && r.reason) { console.error(r.reason); process.exitCode = 1; return; }
+        if (!r.ok) process.exitCode = 3;
         if (opts.json) { console.log(JSON.stringify(r, null, 2)); return; }
         if (r.blocked.length) {
           console.error('!!! WARNING: secret-shaped file(s) would be staged and are not confirmed git-ignored:');
           for (const b of r.blocked) console.error('  - ' + b.path + ' (' + b.reason + ')');
-          process.exitCode = 3; return;
+          return;
         }
+        if (!r.ok) { console.error('!!! WARNING: ' + (r.reason || 'checkpoint scan could not confirm the working tree is clean')); return; }
         console.log(r.gitAvailable ? 'No secret-shaped files at risk of being staged.' : 'Not a git repository (or git unavailable) — nothing to scan.');
         return;
       }

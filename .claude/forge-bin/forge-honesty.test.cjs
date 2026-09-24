@@ -383,5 +383,67 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   t('DISPLAY-BYPASSES-CONTRACT counterweight: the completed badge is visible for a verified run', sandbox.document.getElementById('badge-complete').hidden === false);
 }
 
+// ---------------------------------------------------------------------------------------------------
+// V26 (2026-09-24 second Codex recheck, out-p7.md) — a bare run_finalized event is a CLAIM, not proof
+// (forge-finalize.cjs appends it BEFORE writing run-finalized.json; a receipt can also later go STALE/
+// HISTORICAL). A live forge-runcontract.cjs re-check for the SAME run (STATE.runcontract, fetched via the
+// EXISTING /api/runcontract route) that reports ok:false is real, verifiable evidence the claim no longer
+// holds — the dashboard must not render verified COMPLETE off the bare event alone in that case, and a
+// genuinely running task must keep its real state instead of being repainted 'done'.
+// ---------------------------------------------------------------------------------------------------
+{
+  const { run, sandbox } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Build Boss', event_type: 'agent_completed', timestamp: '2026-09-24T00:00:01Z' },
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:02Z' },
+  ];
+  run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-contradicted' };
+    STATE.runcontract = { run_id: 'run-contradicted', ok: false, missing: ['evidence-satisfied'] };
+    STATE._nodes = buildNodes();
+    renderTop();
+  `);
+  const stateText = sandbox.document.getElementById('state-text').textContent;
+  t('V26: a run_finalized event contradicted by a live runcontract check (ok:false) for the SAME run does not show verified COMPLETE', stateText !== 'COMPLETE');
+  t('V26: the completed badge stays hidden when a live check contradicts the claim', sandbox.document.getElementById('badge-complete').hidden === true);
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    // no completion for Build Boss — this node stays genuinely 'running'
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-contradicted-2' };
+    STATE.runcontract = { run_id: 'run-contradicted-2', ok: false };
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Build Boss');
+    ({ nodeStatus: n.status });
+  `);
+  t('V26: a contradicted finalize claim keeps a genuinely running task in its real state, not repainted done', r.nodeStatus !== 'done');
+}
+{
+  // counterweight: a runcontract check loaded for a DIFFERENT run must never contradict THIS run's claim
+  const { run, sandbox } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Build Boss', event_type: 'agent_completed', timestamp: '2026-09-24T00:00:01Z' },
+    { event_type: 'run_finalized', agent: 'orchestrator', timestamp: '2026-09-24T00:00:02Z' },
+  ];
+  run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = { status: 'completed', run_id: 'run-verified-2' };
+    STATE.runcontract = { run_id: 'some-other-run', ok: false };
+    STATE._nodes = buildNodes();
+    renderTop();
+  `);
+  const stateText = sandbox.document.getElementById('state-text').textContent;
+  t('V26 counterweight: a runcontract check for a DIFFERENT run never contradicts this run\'s genuine COMPLETE', stateText === 'COMPLETE');
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

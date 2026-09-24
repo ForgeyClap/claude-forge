@@ -243,7 +243,10 @@ function maskDeep(value) {
   if (Array.isArray(value)) return value.map(maskDeep);
   if (value !== null && typeof value === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = maskDeep(v);
+    // V16 (Codex recheck wp-f4, 2026-09-24): object KEYS are masked too, not just their values — the
+    // previous `out[k] = maskDeep(v)` copied the raw key verbatim, so a credential-shaped string landing
+    // in a property NAME (not just its value) would still leave the module unmasked.
+    for (const [k, v] of Object.entries(value)) out[mask(k)] = maskDeep(v);
     return out;
   }
   return value;
@@ -278,13 +281,22 @@ function delayCancellable(ms, isCancelled) {
   });
 }
 
-// role -> model id, honoring env overrides (NVIDIA_<ROLE>_MODEL) then the matrix
+// role -> model id, honoring env overrides (NVIDIA_<ROLE>_MODEL) then the matrix. Internal callers
+// (chatRaw/routeForRaw, and the CLI's own live-model-id comparisons) call this RAW form directly — they
+// need the real value to actually dispatch/validate. The module-boundary export is modelForRoleMasked
+// below (V16).
 function modelForRole(role) {
   const r = (MATRIX.roles || {})[role];
   if (!r) return null;
   const override = r.envOverride && process.env[r.envOverride];
   return (override && override.trim()) || r.model || null;
 }
+/** modelForRoleMasked(role) -> maskDeep(modelForRole(role)) (V16, Codex recheck wp-f4, 2026-09-24): the
+ *  PUBLIC export of modelForRole. A bogus env-model-override (e.g. NVIDIA_CODING_MODEL accidentally set to
+ *  an actual leaked key-shaped string) must never reach an external caller unmasked just because it asked
+ *  for the raw role resolution directly — every OTHER public export/CLI branch already goes through
+ *  maskDeep(); this was the one raw resolution helper that did not. */
+function modelForRoleMasked(role) { return maskDeep(modelForRole(role)); }
 
 // ---- HTTP (native fetch, Node >= 18) with retry/timeout/429 ----
 /** call(method, p, body, opts) -> the single HTTP choke point. NVIDIA-RETRY-OFF (2026-09-24): a public
@@ -357,7 +369,13 @@ async function health(opts) {
   if (off) return maskDeep(off);
   if (!hasKey()) return { ok: false, mode: 'mock', reason: 'NVIDIA_API_KEY not set (adapter works in mock mode; no live calls)' };
   const t0 = Date.now();
-  const r = await listModels({ force: true }); // the switch was checked just above
+  // V17 (Codex recheck wp-f4, 2026-09-24): preserve the CALLER's own authorization instead of forcing this
+  // internal listModels() call — offResult(opts) was already checked ONCE, just above, using the real
+  // opts.force. Hardcoding {force:true} here meant every health() call permanently disabled
+  // NVIDIA-RETRY-OFF's own per-attempt off-check inside call()'s retry loop (force ALWAYS short-circuits
+  // that check to "authorized"), so switching NVIDIA off during a 503 backoff no longer stopped the next
+  // retry attempt — a normal (non-forced) health probe kept transmitting the key after the owner switch.
+  const r = await listModels({ force: opts && opts.force === true });
   if (r.error) return maskDeep({ ok: false, mode: r.refused ? 'refused' : 'live', reason: r.error });
   return maskDeep({ ok: true, mode: 'live', models: r.models.length, ms: Date.now() - t0, baseUrl: CONFIG.baseUrl });
 }
@@ -499,7 +517,8 @@ async function chatRaw({ role, model, prompt, system, maxTokens, agent, func, fo
 // export costs nothing and is a second, independent layer against a future validation regression.
 module.exports = { chat, health, listModels, routeFor, resolveFunction, loadEnv,
   CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '', baseUrl: mask(CONFIG.baseUrl), baseUrlError: CONFIG.baseUrlError ? mask(CONFIG.baseUrlError) : CONFIG.baseUrlError },
-  modelForRole, mask, maskDeep, configOn, nvidiaState, checkBaseUrl, NVIDIA_OFF_REASON, NVIDIA_UNREADABLE_REASON };
+  // V16: the public export is the MASKED wrapper — modelForRole (raw) stays module-private.
+  modelForRole: modelForRoleMasked, mask, maskDeep, configOn, nvidiaState, checkBaseUrl, NVIDIA_OFF_REASON, NVIDIA_UNREADABLE_REASON };
 
 // ---- CLI ----
 if (require.main === module) {
@@ -531,7 +550,9 @@ if (require.main === module) {
       console.log(r.models.length + ' live models on ' + CONFIG.baseUrl);
       if (args.includes('--verify')) {
         for (const roleName of Object.keys(MATRIX.roles || {})) {
-          const m = modelForRole(roleName);
+          // V16: display the MASKED value — a bogus env override (e.g. NVIDIA_CODING_MODEL set to a
+          // leaked key-shaped string) must never reach stdout here just because --verify prints it.
+          const m = modelForRoleMasked(roleName);
           console.log('  role ' + roleName.padEnd(10) + ' -> ' + String(m).padEnd(40) + (r.models.includes(m) ? 'LIVE ✓' : '⚠ NOT in live list — update the matrix or env override'));
         }
       } else r.models.forEach((m) => console.log('  ' + m));

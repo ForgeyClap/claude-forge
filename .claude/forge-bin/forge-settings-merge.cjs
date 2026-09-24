@@ -49,9 +49,12 @@
  *   - When called with `projectRoot` (forge-sync.cjs passes the project's own `.claude` dir), every write
  *     destination (settings target, backup, recommended) must resolve inside that root, and the root itself
  *     must not be a symlink/junction (PROJECT-DIRECTORY-ESCAPE).
- *   - A target containing a duplicate JSON object key, or a number whose value would change on reserialize
- *     (overflow to Infinity, or a pure integer beyond Number.MAX_SAFE_INTEGER), is refused rather than
- *     silently corrupted (LOSSY-ROUNDTRIP). A successful merge preserves the target's own BOM, line-ending,
+ *   - A target containing a duplicate JSON object key (compared on its DECODED value, so an escaped duplicate
+ *     like owner vs owner is caught too), or a number literal whose SOURCE TEXT would not come back
+ *     unchanged from JSON.stringify(Number(literal)) — overflow to Infinity, underflow to zero, a pure or
+ *     decimal integer beyond Number.MAX_SAFE_INTEGER, -0 losing its sign, or redundant exponent notation like
+ *     1E2 — is refused rather than silently corrupted/reformatted (LOSSY-ROUNDTRIP, hardened wp-g2 2026-09-24
+ *     Codex re-check out-p7.md V08). A successful merge preserves the target's own BOM, line-ending,
  *     indentation and trailing-newline style instead of always re-emitting 2-space/LF — this does NOT
  *     preserve comments or exact per-node spacing beyond that (no full lossless syntax tree), a documented,
  *     narrower scope than "byte-for-byte for every untouched byte".

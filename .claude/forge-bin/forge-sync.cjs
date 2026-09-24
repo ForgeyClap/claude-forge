@@ -417,6 +417,12 @@ const SYSTEM = [
   // values out of logged/printed usage-guard output). Already covered by SYSTEM_GLOB below — pinned here
   // explicitly too anyway.
   'forge-bin/usage-guard-redact.cjs', 'forge-bin/usage-guard-redact.test.cjs',
+  // wave 2 of the same Codex re-check (2026-09-24, verification pass p7): wp-g3 added a dedicated test for the
+  // once/lock machinery (V09 ownership proofs); wp-g5 extracted the shared negative-proof predicate
+  // (isDisprovenEvent, V23) into forge-proof-gate.cjs so runcontract/verify/finalize/log-event all reject a
+  // disproven event through ONE gate; wp-g4 split usage-guard's state/lock layer (V15) into usage-guard-state.cjs.
+  // All three are already covered by SYSTEM_GLOB below — pinned here explicitly too anyway.
+  'forge-bin/forge-config-once.test.cjs', 'forge-bin/forge-proof-gate.cjs', 'forge-bin/usage-guard-state.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by

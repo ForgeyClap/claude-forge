@@ -338,6 +338,9 @@ The usage guard is the only setting that is on by default and reads a credential
 - When your 5-hour window or your weekly limit reaches 98 %, the guard marks your account as paused. Forge
   checks that mark before every new phase and stops there (best effort: it measures every 2 minutes, so a
   step can still cross the limit between two samples); it continues after the reset. On any error the guard does nothing (fail-safe), and it never logs or prints your token.
+- When the guard is switched off it makes no call at all, with exactly two exceptions you have to ask for: an
+  explicit `--force` on a read-only measurement (`check`, `status`, `credits` — one measurement, never a resume,
+  never a setting change) and a verified owner grant for `override-on`, the only action that resumes paused agents.
 
 More about limits and cost: [TOKEN-USAGE.md](TOKEN-USAGE.md).
 

@@ -124,5 +124,49 @@ t('resolveLocalAccountLabel: a corrupt mapping file degrades to a fresh mapping 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- GUARD-ACCOUNT-STABILITY (Codex recheck wp-f4 V14, 2026-09-24): a PERSISTENTLY failing map (read
+// failure, write failure, rename failure) must return the SAME label on every call, never a fresh random
+// one — usage-guard.cjs's tick() treats any label change as an account switch and discards its
+// measurement, so a churning label under sustained failure could indefinitely suppress a real pause.
+t('V14: a mapFile whose read AND write both fail (missing parent dir) still returns the SAME label across repeated calls', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-redact-v14-'));
+  try {
+    const mapFile = path.join(dir, 'does-not-exist', 'account-map.json'); // read: ENOENT; write: ENOENT (no parent)
+    const a = R.resolveLocalAccountLabel('v14aaaa0000', { mapFile });
+    const b = R.resolveLocalAccountLabel('v14aaaa0000', { mapFile });
+    const c = R.resolveLocalAccountLabel('v14aaaa0000', { mapFile });
+    assert.strictEqual(a.persisted, false);
+    assert.strictEqual(a.label, b.label, 'label must not change between calls under a sustained read/write failure: ' + JSON.stringify([a, b]));
+    assert.strictEqual(b.label, c.label);
+    assert.ok(!/^account-\d/.test(a.label), 'a never-persisted label must not look like a real persisted "account-N-hex" label: ' + a.label);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+t('V14: a mapFile that IS a directory (read fails EISDIR; the tmp write succeeds but the publishing rename fails) still returns the SAME label across repeated calls', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-redact-v14b-'));
+  try {
+    const mapFile = path.join(dir, 'account-map.json');
+    fs.mkdirSync(mapFile); // mapFile itself is a directory: read fails, and rename(tmp -> mapFile) fails too
+    const a = R.resolveLocalAccountLabel('v14bbbb1111', { mapFile });
+    const b = R.resolveLocalAccountLabel('v14bbbb1111', { mapFile });
+    assert.strictEqual(a.persisted, false);
+    assert.strictEqual(a.label, b.label, 'label must not change between calls when the map path is itself a directory: ' + JSON.stringify([a, b]));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+t('V14: without a mapFile at all, the SAME fp still returns the SAME label across repeated calls (deterministic, not random-per-call)', () => {
+  const a = R.resolveLocalAccountLabel('v14nomapfile');
+  const b = R.resolveLocalAccountLabel('v14nomapfile');
+  assert.strictEqual(a.persisted, false);
+  assert.strictEqual(a.label, b.label);
+});
+t('V14: two DIFFERENT fps under the SAME sustained-failure mapFile still get two DIFFERENT deterministic labels', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-redact-v14c-'));
+  try {
+    const mapFile = path.join(dir, 'does-not-exist', 'account-map.json');
+    const a = R.resolveLocalAccountLabel('v14-fp-a', { mapFile });
+    const b = R.resolveLocalAccountLabel('v14-fp-b', { mapFile });
+    assert.notStrictEqual(a.label, b.label);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

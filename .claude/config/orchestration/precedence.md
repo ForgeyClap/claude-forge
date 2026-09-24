@@ -25,7 +25,7 @@ before intake — never re-derive this ordering elsewhere; point back to this fi
      documented non-coverage (see `hard-gates.json`'s `_not_caught` block, which lists exactly what
      it does not see). An action it does not recognise is simply not gated — so the absence of an
      interrupt is never evidence that an action was safe.
-   - **The exception — three COMMAND gates are hook-enforced (v2.7.0, WP16, 2026-09-24).**
+   - **The exception — four COMMAND gates are hook-enforced (three since v2.7.0 WP16; `opaque-exec` since the 2026-09-24 codex-recheck) — a classifier, not a proof.**
      `destructive-delete`, `kill-by-name` and `git-destructive` are also checked by a real PreToolUse hook,
      `.claude/forge-bin/forge-gate-hook.cjs` (matcher `Bash|PowerShell`, started as
      `node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"` so it works from any working directory),

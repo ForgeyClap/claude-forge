@@ -127,6 +127,20 @@
       "status": "active",
       "cannot_override_core": false,
       "notes": "owner directive 2026-09-24; reinforces autonomy_default"
+    },
+    {
+      "id": "owner-remember-mufjpi9a-vyc8vq",
+      "text": "Owner-directive 2026-09-24 (verbatim, /forge): 'als codex usage opraakt en bij 1% is mag je de reset token gebruiken'. Lead-lezing (veilig): wanneer de Codex-usage tijdens een missie op of onder 1% komt of Codex een usage-limiet-fout geeft, stopt de missie NIET; de Lead mag de reset van de owner gebruiken. De codex-cli (0.156.1) kent geen reset-commando, dus de reset is een owner-handeling in de Codex-app; de Lead meldt de limiet één keer, zet 'Codex-reset toepassen' in de owner-actielijst en probeert Codex daarna precies één keer opnieuw. Nooit zelf credits kopen of een andere sleutel/account gebruiken.",
+      "scope": "codex",
+      "trigger": "always",
+      "domain": null,
+      "glob": null,
+      "topic": null,
+      "source": "owner /forge remember",
+      "confidence": "high",
+      "status": "active",
+      "cannot_override_core": false,
+      "notes": null
     }
   ]
 }

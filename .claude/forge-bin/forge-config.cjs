@@ -432,18 +432,29 @@ function renameWithRetry(from, to) {
     }
   }
 }
-// CFG-10 (Codex recheck 2026-09-24): a successful return must mean the new bytes actually survive a crash,
-// not just that writeFileSync()+rename() returned without throwing. fsyncFile flushes the temp file's
-// content to disk before it is ever renamed over the real file; fsyncDir flushes the directory entry (the
-// rename itself) afterwards. Both are wrapped in try/catch: fsync-ing a DIRECTORY handle is not supported
-// on every platform (notably Windows/NTFS, which throws EISDIR/EPERM opening one for fsync) — a platform
-// that cannot honor this is a best-effort degrade, never a thrown error or a lost write.
-function fsyncFile(fd) { try { fs.fsyncSync(fd); } catch { /* best effort — see header note */ } }
+// CFG-10 (Codex recheck 2026-09-24, hardened again for V10): a successful return must mean the new bytes
+// actually survive a crash, not just that writeFileSync()+rename() returned without throwing. fsyncFile
+// flushes the temp file's content to disk BEFORE it is ever renamed over the real file — a real failure
+// there (EIO, ENOSPC, a dying disk, ...) is a genuine durability problem and MUST propagate: it runs inside
+// atomicWriteJson's own try/catch, before renameWithRetry, so the exception it throws is caught there, the
+// temp file is cleaned up, and the real target file is never touched (V10 verification: "File EIO must
+// fail without replacing the original target"). fsyncDir flushes the directory entry (the rename itself)
+// AFTER the rename already succeeded; a directory handle is NOT syncable on every platform (notably
+// Windows/NTFS, confirmed live on this machine: fsyncSync on a directory fd throws EPERM) — that ONE narrow,
+// platform-shaped case is tolerated as a best-effort degrade; any OTHER error opening or syncing the
+// directory still propagates, exactly as a real file fsync error would.
+const DIR_FSYNC_UNSUPPORTED_CODES = ['EPERM', 'EISDIR', 'EINVAL', 'ENOTSUP', 'ENOSYS'];
+function fsyncFile(fd) { fs.fsyncSync(fd); }
 function fsyncDir(dir) {
   let fd;
-  try { fd = fs.openSync(dir, 'r'); fs.fsyncSync(fd); }
-  catch { /* directory fsync is not supported on every platform — best effort, see header note */ }
-  if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (e) {
+    if (!DIR_FSYNC_UNSUPPORTED_CODES.includes(e.code)) throw e; // anything else is a real failure, not "unsupported"
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+  }
 }
 function atomicWriteJson(file, obj) {
   const dir = path.dirname(file);
@@ -754,13 +765,15 @@ function writableKey(key, opts, checkIgnoreGlobal) {
 
 /** set(key, rawValue, opts) — validates, then atomically writes the value into the project file (or the global
  *  file for opts.global and for every scope:"global" key). Returns { key, from, to, file, scope, entry, ... }.
- *  Throws (nothing written): 'locked' exit 3 · 'unknown_key' / 'invalid_value' / 'malformed' exit 2. The actual
- *  read-modify-write against `file` is serialized with onceLib.withLock (CFG-09): a concurrent writer targeting
- *  the same file always re-reads AFTER acquiring the lock, so neither writer's change can be lost. */
+ *  Throws (nothing written): 'locked' exit 3 · 'unknown_key' / 'invalid_value' / 'malformed' exit 2 ·
+ *  'once_pending' exit 3 (V03, Codex recheck 2026-09-24 — see below). The actual read-modify-write against
+ *  `file` is serialized with onceLib.withLock (CFG-09): a concurrent writer targeting the same file always
+ *  re-reads AFTER acquiring the lock, so neither writer's change can be lost. */
 function set(key, rawValue, opts) {
   opts = opts || {};
   if (opts.once != null) return setOnce(key, rawValue, opts);
   const { P, schema, lang } = writableKey(key, opts, true);
+  const T = text.t(lang);
   if (!hasOwn(schema.settings, key)) throw unknownKeyError(key, schema, lang, 2);
   const spec = schema.settings[key];
   const value = parseValue(key, rawValue, schema, lang);
@@ -775,9 +788,19 @@ function set(key, rawValue, opts) {
     const cur = readRaw(file, lang, P);
     const data = cur.present ? cur.data : { version: 1, settings: {} };
     const old = data.settings[key];
-    if (onceLib.onceState(old, nowMsOf(opts))) {
-      // A normal set always ends a one-off approval ("set gate-hook on" clears it): drop that entry first, and
-      // keep a permanent value only when the layer beneath does not already give the requested one.
+    const onceSt = onceLib.onceState(old, nowMsOf(opts));
+    if (onceSt) {
+      // V03 (Codex recheck 2026-09-24): while the one-off is still PENDING (armed, unconsumed, unexpired), an
+      // ordinary set() may ONLY end it via an explicit "on" (value === true) — a plain "off" (or any other
+      // value) is REFUSED outright (exit 3, nothing written). Without this, `set gate-hook off` while a
+      // one-off grant is pending silently deleted the temporary, self-expiring entry and replaced it with a
+      // PERMANENT value:false (no expires_at) — turning one authorized one-off command into an indefinite
+      // disablement. An EXPIRED once entry (already effectively "back to normal") is not pending and is
+      // simply cleared and replaced like any other stale entry, same as before this fix.
+      if (!onceSt.expired && value !== true) throw new ConfigError('once_pending', T.oncePendingRefuse(key), 3, { key });
+      // A normal set always ends a one-off approval ("set gate-hook on" clears it, or it was already expired):
+      // drop that entry first, and keep a permanent value only when the layer beneath does not already give
+      // the requested one.
       const settings = Object.assign({}, data.settings);
       delete settings[key];
       atomicWriteJson(file, Object.assign({}, data, { settings }));
@@ -890,10 +913,13 @@ function consumeOnce(key, opts) {
 /** unset(key, opts) — removes the owner's own value. --global: the global file only. Otherwise a project-scope
  *  key leaves the project file; a global-scope key leaves the global file AND any (ignored) stray copy in the
  *  project file. A key unknown to the schema may still be removed when it literally sits in a target file.
- *  Each target file's read-decide-write is serialized with onceLib.withLock (CFG-09). */
+ *  Each target file's read-decide-write is serialized with onceLib.withLock (CFG-09). Throws 'once_pending'
+ *  exit 3 (V03, Codex recheck 2026-09-24) when the entry is a still-PENDING one-off grant — like set(), unset()
+ *  may never be the thing that ends a pending one-off; only consumption, expiry, or an explicit "on" may. */
 function unset(key, opts) {
   opts = opts || {};
   const { P, schema, lang } = writableKey(key, opts);
+  const T = text.t(lang);
   const known = hasOwn(schema.settings, key);
   const wanted = opts.global ? [P.global] : known && schema.settings[key].scope === 'global' ? [P.global, P.project] : [P.project];
   const targets = [...new Set(wanted.map((f) => path.resolve(f)))];
@@ -907,6 +933,8 @@ function unset(key, opts) {
     onceLib.withLock(f, () => {
       const r = readRaw(f, lang, P);
       if (!r.present || !hasOwn(r.data.settings, key)) return;
+      const onceSt = onceLib.onceState(r.data.settings[key], nowMsOf(opts));
+      if (onceSt && !onceSt.expired) throw new ConfigError('once_pending', T.oncePendingRefuse(key), 3, { key }); // V03
       const settings = Object.assign({}, r.data.settings);
       delete settings[key];
       atomicWriteJson(f, Object.assign({}, r.data, { settings }));

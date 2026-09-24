@@ -875,5 +875,62 @@ t('5q: CLI on a stale rules file with an unevaluated BLOCKING rule exits 3 and P
   t('RC-MANIFEST-STALE: a non-owner-attributed "skip" does NOT clear the outstanding package', fakeSkip.ok === false && fakeSkip.missing.includes('evidence-satisfied'));
 }
 
+// ================================================================================================
+// V21/V25 (2026-09-24 second Codex recheck, out-p7.md)
+// ================================================================================================
+
+// ---- V21: manifest LOAD FAILURES must not read as "never armed" once manifest_armed is genuinely on
+// record — corrupt/deleted-after-arm both stay red; only a genuinely never-armed run is not-applicable ----
+{
+  const MANIFEST = require('./forge-manifest.cjs');
+  const runId = 'run-v21-manifest-load-fail';
+  // a real manifest_armed EVENT (not just the manifest.json file) — the discriminator manifestCompleteness
+  // now consults via hasEvent(). This test's TMP root's log-event.cjs is a minimal argv-capture stub (see
+  // the file header), not a real writer, so arm()'s own opt-in --log-event would not land in THIS run's
+  // events.jsonl — write it the same way every other fixture in this file writes its events instead.
+  const v21Events = completeEvents.concat([ev({ event_type: 'manifest_armed', agent: 'orchestrator', note: 'manifest arm: 1 work package(s) armed [wp-v21]' })]);
+  writeRun(runId, v21Events, { 'final-report.md': '# Report\n' });
+  const armed = MANIFEST.arm({ run_id: runId, wps: [{ wp_id: 'wp-v21', agent: 'Build Boss', narrowed_prompt: 'do the thing' }] }, { root: TMP });
+  t('V21 setup: arm() really wrote a manifest', armed.ok === true);
+  const manifestPath = path.join(TMP, '.claude', 'forge-runs', runId, 'manifest.json');
+
+  fs.writeFileSync(manifestPath, '{{{not json');
+  const corrupt = RC.check({ run_id: runId }, { root: TMP });
+  t('V21: a CORRUPT manifest after a real manifest_armed event stays RED, not green', corrupt.ok === false && corrupt.missing.includes('evidence-satisfied'));
+  t('V21: manifest-complete is applicable:true, ok:false, and names the load failure',
+    !!corrupt.rule_details['manifest-complete'] && corrupt.rule_details['manifest-complete'].applicable === true
+    && corrupt.rule_details['manifest-complete'].ok === false && /could not be loaded/.test(corrupt.rule_details['manifest-complete'].reason || ''));
+
+  fs.rmSync(manifestPath, { force: true });
+  const deleted = RC.check({ run_id: runId }, { root: TMP });
+  t('V21: a DELETED-after-arm manifest also stays RED (never silently reclassified as "never armed")',
+    deleted.ok === false && !!deleted.rule_details['manifest-complete'] && deleted.rule_details['manifest-complete'].applicable === true);
+
+  const neverArmedRunId = 'run-v21-never-armed';
+  writeRun(neverArmedRunId, completeEvents, { 'final-report.md': '# Report\n' });
+  const neverArmed = RC.check({ run_id: neverArmedRunId }, { root: TMP });
+  t('V21 counterweight: a run that never armed any manifest stays a genuine ok:true (not-applicable, not red)',
+    neverArmed.ok === true && (!neverArmed.rule_details['manifest-complete'] || neverArmed.rule_details['manifest-complete'].applicable !== true));
+}
+
+// ---- V25: a caller --domain must not WEAKEN the declared run.json domain — the union of both domains'
+// obligations applies, so a correctness-critical declared domain cannot be checked away by an override ----
+{
+  const runId = 'run-v25-domain-union';
+  writeRun(runId, completeEvents, { 'final-report.md': '# Report\n', 'run.json': JSON.stringify({ domain: 'finance' }) });
+  const declared = RC.check({ run_id: runId }, { root: TMP });
+  t('V25 setup: the declared finance domain alone is genuinely red (no fixtures_waived event)', declared.ok === false && declared.missing.includes('correctness-critical-fixtures'));
+  const overridden = RC.check({ run_id: runId, domain: 'api' }, { root: TMP });
+  t('V25: overriding to a non-critical domain does NOT drop the declared critical-domain obligation (union, not replacement)', overridden.ok === false && overridden.missing.includes('correctness-critical-fixtures'));
+  t('V25: the reported domain still reflects the explicit override (caller intent stays visible)', overridden.domain === 'api' && overridden.domain_overridden === true);
+
+  // counterweight: a real fixtures_waived event clears it under the union too — an override can still add
+  // obligations without being able to erase what the run itself declared
+  const waivedEvents = completeEvents.concat([ev({ event_type: 'fixtures_waived', agent: 'orchestrator', note: 'real fixtures used, waiver logged' })]);
+  writeRun(runId, waivedEvents, { 'final-report.md': '# Report\n', 'run.json': JSON.stringify({ domain: 'finance' }) });
+  const waivedOverridden = RC.check({ run_id: runId, domain: 'api' }, { root: TMP });
+  t('V25 counterweight: a real fixtures_waived event clears the union obligation regardless of the override', waivedOverridden.ok === true);
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

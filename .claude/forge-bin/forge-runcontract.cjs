@@ -303,19 +303,39 @@ function findManifestSkip(events, wpId, ownerAllowlist) {
   }
   return null;
 }
-/** manifestCompleteness(root, runId, events, ownerAllowlist) -> {applicable, ok, outstanding:[{wp_id,status}]}
+/** manifestCompleteness(root, runId, events, ownerAllowlist) -> {applicable, ok, outstanding:[{wp_id,status}],
+ *  reason?}
  *  Reads the run's OWN manifest.json (via forge-manifest.cjs's `load()`) and projects its real status purely
  *  from this run's events (forge-manifest.cjs's own pure `projectManifest()` — never writes, never re-derives
  *  a second projection algorithm). A project without forge-manifest.cjs, or a run that never armed one, is
- *  simply NOT APPLICABLE — never a fabricated block on a run that used no manifest at all. */
+ *  simply NOT APPLICABLE — never a fabricated block on a run that used no manifest at all.
+ *
+ *  V21 (2026-09-24 second Codex recheck, out-p7.md) — every `mod.load()` exception used to collapse to the
+ *  SAME `{applicable:false, ok:true}` "never armed" outcome, whether the manifest was genuinely never armed
+ *  (ENOENT) or was ARMED and then corrupted, made unreadable (EACCES), or deleted outright. REPRODUCED: an
+ *  armed-but-unfinished manifest made the contract red; replacing manifest.json with malformed JSON, or
+ *  injecting an EACCES on read, made the SAME run green again — corrupting the mandatory-work record was
+ *  strictly BETTER for the run than leaving it intact. `manifest_armed` (see `isStalingEvent` above) is this
+ *  run's own event-logged proof that a manifest WAS armed; when that event is present, a `load()` failure of
+ *  ANY kind is a genuine defect in required evidence — reported `applicable:true, ok:false` with the reason —
+ *  never silently downgraded to "not applicable". Only a run whose events never recorded arming at all stays
+ *  NOT APPLICABLE, matching every other run that used no manifest. `hasEvent()` already excludes a disproven
+ *  `manifest_armed` claim (content-oracle proof_verified:false), so a fabricated arming claim does not count
+ *  as "armed" here either. */
 function manifestCompleteness(root, runId, events, ownerAllowlist) {
   const mod = loadManifestTool();
   if (!mod || typeof mod.load !== 'function' || typeof mod.projectManifest !== 'function') {
     return { applicable: false, ok: true, outstanding: [] };
   }
+  const armed = hasEvent(events, 'manifest_armed');
   let wps;
   try { wps = mod.load(runId, { root }); }
-  catch { return { applicable: false, ok: true, outstanding: [] }; } // no manifest ever armed for this run
+  catch (e) {
+    if (armed) {
+      return { applicable: true, ok: false, outstanding: [], reason: 'manifest_armed is logged for this run but the manifest could not be loaded (' + (e && e.message ? e.message : String(e)) + ') — a corrupted or missing manifest after arming is a defect, never a silent pass' };
+    }
+    return { applicable: false, ok: true, outstanding: [] }; // no manifest ever armed for this run
+  }
   const projected = mod.projectManifest(wps, events);
   const outstanding = [];
   for (const wp of projected) {
@@ -514,8 +534,22 @@ function toArray(v) {
 
 /** eventIsDisproven(e) — mirrors forge-manifest.cjs::eventIsDisproven(): log-event.cjs's own CONTENT
  *  ORACLE already flagged this event's pass-claim as false (non-zero exit code / missing-or-blank proof
- *  artifact). Such an event is a CLAIM, not evidence. */
-function eventIsDisproven(e) { return !!(e && e._forge_verify && e._forge_verify.proof_verified === false); }
+ *  artifact). Such an event is a CLAIM, not evidence.
+ *  V23 (2026-09-24 second Codex recheck, out-p7.md) — delegates to the ONE shared predicate in
+ *  forge-proof-gate.cjs (also consulted by forge-verify.cjs's taskStatus()) so this file's independent-
+ *  review protocol and the task-closure path can never again disagree about what counts as disproven.
+ *  Falls back to the identical inline check if the sibling is ever unreachable. */
+let _proofGateCache; // undefined = not yet attempted, null = load failed, object = loaded module
+function loadProofGate() {
+  if (_proofGateCache !== undefined) return _proofGateCache;
+  try { _proofGateCache = require('./forge-proof-gate.cjs'); } catch { _proofGateCache = null; }
+  return _proofGateCache;
+}
+function eventIsDisproven(e) {
+  const pg = loadProofGate();
+  if (pg && typeof pg.isDisprovenEvent === 'function') return pg.isDisprovenEvent(e);
+  return !!(e && e._forge_verify && e._forge_verify.proof_verified === false);
+}
 
 /** RC-CLAIMS-AS-PROOF (2026-09-24 Codex re-review, out-p5.md) — hasEvent() used to match on `event_type`
  *  alone, so an event the writer's own content oracle already flagged as false
@@ -791,9 +825,15 @@ const SHA256_RE = /^[0-9a-f]{64}$/i;
 /** isGoedkeuring(ev) -> {ok:true} of {ok:false, reden}. DE ENE definitie van "deze review keurde goed".
  *  R7-05: er stonden er twee, en de zwakkere zat in de staleness-check — dus een latere afkeuring met een
  *  leeg veld of `ok:"true"` telde daar niet als afkeuring terwijl de hoofdvalidator hem wél zou weigeren.
- *  Twee ingangen naar hetzelfde oordeel die van elkaar verschillen, zijn erger dan één strenge. */
+ *  Twee ingangen naar hetzelfde oordeel die van elkaar verschillen, zijn erger dan één strenge.
+ *  V23 (2026-09-24 second Codex recheck, out-p7.md) — deze functie keek alleen naar het VERDICT-veld en
+ *  nooit naar log-event.cjs's eigen content-oracle stempel. REPRODUCED: een `review_completed` met een
+ *  positief verdict MAAR `_forge_verify.proof_verified:false` (de writer kon de eigen claim niet bevestigen)
+ *  gold hier gewoon als goedkeuring, en valideerde zo als een onafhankelijke review. Een weerlegde claim is
+ *  geen bewijs, ongeacht welk verdict-woord ernaast staat — gecontroleerd EERST, vóór elke verdict-lezing. */
 const UITKOMST_VELDEN = ['review_verdict', 'verdict', 'status', 'result', 'outcome'];
 function isGoedkeuring(ev) {
+  if (eventIsDisproven(ev)) return { ok: false, reden: 'dit event is door de eigen contentoracle als proof_verified:false gemarkeerd — een weerlegde claim is geen goedkeuring, welk verdict-veld er ook naast staat' };
   const norm = (a) => String(a == null ? '' : a).trim().toLowerCase();
   const aanwezig = UITKOMST_VELDEN.filter((f) => ev[f] !== undefined).map((f) => ({ f, v: norm(ev[f]) }));
   if (!aanwezig.length) return { ok: false, reden: 'geen machineleesbaar review_verdict — een review zonder uitslag bevestigt niets' };
@@ -1307,6 +1347,21 @@ function check(params, opts) {
   const domain = paramDomain || declaredDomain || null;
   const domainOverridden = !!(paramDomain && declaredDomain && declaredDomain.toLowerCase() !== paramDomain.toLowerCase());
   const domainSource = paramDomain ? (domainOverridden ? 'param-override' : 'param') : (declaredDomain ? 'declared' : 'none');
+  /** V25 (2026-09-24 second Codex recheck, out-p7.md) — `domain` above still gave the CALLER'S param
+   *  unconditional precedence for RULE APPLICABILITY, not just for the reported label: `ruleApplies(rule,
+   *  domain, ...)` only ever consulted the single winning value. REPRODUCED: a run.json declaring
+   *  `domain:"finance"` (a correctness-critical domain, obligated to prove real fixtures) read as fully
+   *  compliant the moment a caller checked it with `--domain api` — `domain_overridden:true` was reported,
+   *  but nothing actually still required the finance obligation. A caller relabeling the check must not be
+   *  able to WEAKEN what the run itself declared: on a genuine conflict, a rule now applies if it applies to
+   *  EITHER the declared OR the param domain (the union of both obligation sets), so an explicit but
+   *  narrower override can still legitimately ADD rules (the caller's own declared intent) without ever
+   *  being able to drop the run's own declared ones. No conflict (equal, or only one present) is the
+   *  ordinary single-domain case, unchanged. */
+  function ruleAppliesForRun(rule, complexity) {
+    if (!domainOverridden) return ruleApplies(rule, domain, complexity);
+    return ruleApplies(rule, declaredDomain, complexity) || ruleApplies(rule, paramDomain, complexity);
+  }
 
   const unknownTriggerIds = new Set(meta.unknownTriggers.map((u) => u.id));
   const satisfied = [];
@@ -1329,7 +1384,7 @@ function check(params, opts) {
   const evidenceSet = canonicalEvidenceDigest(root, params.run_id);
   for (const rule of rules) {
     if (unknownTriggerIds.has(rule.id)) continue;
-    if (!ruleApplies(rule, domain, cx.level)) {
+    if (!ruleAppliesForRun(rule, cx.level)) {
       /** F-09/punt 10: op L1 triggert deze regel niet. Stilzwijgen zou de gevaarlijkste uitkomst zijn —
        *  een lezer (of dashboard) leest "geen missing rules" dan als "onafhankelijk geverifieerd". Daarom
        *  expliciet NOT_APPLICABLE, zodat L1 nergens verificatie CLAIMT die niet heeft plaatsgevonden. */
@@ -1394,8 +1449,12 @@ function check(params, opts) {
   const manifestState = manifestCompleteness(root, params.run_id, events, ownerAllowlist);
   if (manifestState.applicable) {
     if (!manifestState.ok) {
-      const reason = 'armed manifest package(s) without a completion event or an owner-authenticated skip: '
-        + manifestState.outstanding.map((o) => o.wp_id + ' (' + o.status + ')').join(', ');
+      // V21: a load-failure reason (corrupt/unreadable/deleted-after-arm) carries no `outstanding` list at
+      // all — use manifestState's own reason instead of an empty-list sentence in that case.
+      const reason = manifestState.outstanding.length
+        ? 'armed manifest package(s) without a completion event or an owner-authenticated skip: '
+          + manifestState.outstanding.map((o) => o.wp_id + ' (' + o.status + ')').join(', ')
+        : (manifestState.reason || 'the run\'s manifest could not be confirmed complete');
       for (const gateId of MANIFEST_GATED_RULE_IDS) {
         const idx = satisfied.indexOf(gateId);
         if (idx !== -1) {

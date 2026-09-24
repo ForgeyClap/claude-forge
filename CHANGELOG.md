@@ -103,7 +103,36 @@ evidence or deferred with a reason before this release went out. The code fixes:
   shape, closing a gap `_not_caught` had named since the gate was introduced; the payload is still never decoded.
   Named gaps stay named: a fully literal `sh -c "echo hi"`, `| node`/`| python`, an encoded payload reaching
   PowerShell by any route other than that flag, and a heredoc line that itself starts with `eval` inside a
-  non-writer heredoc such as `git commit -F - <<'MSG'` (a safe false block). Deferred with reason: a bare
+  non-writer heredoc such as `git commit -F - <<'MSG'` (a safe false block).
+- **Second pass (Codex verified the wave above and returned 31 findings — 13 high, 0 critical; all fixed with a
+  test or deferred with a written reason).** Gate hook: an unknown hook event name is a visible exit 1 (only the
+  events Claude Code really sends pass silently); the self-disable check recognises `node` flags, absolute `node`
+  paths, `env`/`sudo`/`time`/`nohup` wrappers, `forge-config-cli.cjs` and a concatenated verb, and refuses a
+  `forge-config` mutation it cannot read unambiguously; a pending one-off blocks a plain "off" in the hook AND the
+  config writer refuses to persist it; the scratch proof fails closed on access errors and dangling links; the
+  quoted-data rule honours single-quote semantics and keeps heredoc offsets right (both Codex bypasses now block);
+  the command-position regression is closed — `eval`/`iex` inside `{ }`, `( )`, `if`/`while`/`for`/`case` bodies and
+  PowerShell blocks, `bash -c "$(cat payload)"`, backticks and `/bin/bash` paths are caught again while file names
+  and commit messages stay data. Installers: every settings destination (recommended-file fallback, first copy)
+  goes through the guarded path with `--project-root`; `install.ps1` propagates a settings refusal into a nonzero
+  exit and both installers say plainly when the gate hook was NOT installed; junction, directory, malformed and
+  pre-existing-file fixtures are part of the end-to-end test for both. Settings merge refuses escaped duplicate keys
+  and any number literal that would change on reserialize. Config core: once-lock ownership (owner token, verified
+  reclaim and release), fsync errors propagate, `checkpoint-scan --json` exits 3 on a blocked candidate, enumeration
+  errors refuse instead of returning a clean list, gitignore negations are judged by `git check-ignore`. Usage guard:
+  a stable identity when the account map cannot be persisted (100 % ticks still pause), a fail-closed state lock on
+  every read-modify-write (new `usage-guard-state.cjs`), key-aware masking and a clean `models --verify`, `health()`
+  keeps the caller's authorization, schema bounds never fail open, spawned-watcher tests deny real network, shutdown
+  reaches Paperclip operations, `watch --once` discloses first; the `--force` contract is decided and pinned by a
+  test (read-only diagnostics only; `override-on` needs the owner grant). Completion honesty: a corrupt or
+  deleted-after-arm manifest is red, one shared acceptance validator for fresh/repeat/check finalize (a red
+  contract is never hidden behind HISTORICAL), one central negative-proof gate (`forge-proof-gate.cjs`),
+  `ok:false` reviews stay open, a caller domain can only add obligations, one completion closes one obligation,
+  `run_id` null/non-string never closes anything. Deferred with a written reason: the dashboard's finalize badge
+  corroborates against the loaded contract check but cannot read the receipt file itself (needs a gateway
+  endpoint); the whole install is not yet refused when `.claude` is a junction (only the settings destination is);
+  `usage-guard.cjs`, `forge-setup.cjs`, `forge-verify.cjs` and `forge-runcontract.cjs` remain far over the
+  file-size guidance. Deferred with reason: a bare
   `git checkout <path>` without `--` (a classifier cannot tell a branch from a path without repository state, and a
   blocking hook that fires on `git checkout main` would break the most common everyday git command).
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
@@ -118,8 +147,10 @@ evidence or deferred with a reason before this release went out. The code fixes:
   mirrors the contract instead of bypassing it. Deferred with reason: an evidence-field schema; tolerance for a missing
   output file.
 - **Usage guard, NVIDIA provider, gateway (`usage-guard.cjs` + new `usage-guard-redact.cjs`, `nvidia-provider.cjs`,
-  `forge-ownergrant.cjs`, gateway `capabilities.mjs`/`models.mjs`):** a switched-off guard makes no network call at all
-  (`check`/`status`/`credits`/`watch --once` refuse; the only exception is a verified owner grant); the token's shape is
+  `forge-ownergrant.cjs`, gateway `capabilities.mjs`/`models.mjs`):** a switched-off guard makes no network call
+  (`check`/`status`/`credits`/`watch --once` refuse), with exactly two documented exceptions: a plain `--force` on the
+  read-only diagnostics (`check`/`status`/`credits` — one measurement, never a resume, never a setting change) and a
+  verified owner grant for `override-on`, the only consequential path; the token's shape is
   validated before any header is built and transport errors are reported as codes, never with the raw message; the
   refresh-token identity fallback is gone (an opaque local account label instead) and a refusal names a
   project-relative label, never the absolute credential path; a corrupt state file is distinguished from a missing one

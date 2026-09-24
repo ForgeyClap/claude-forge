@@ -487,6 +487,83 @@ const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } 
   const maskDeepUnit = P.maskDeep({ a: 'contains nvapi-UNITTESTKEY1234567890 here', b: [1, 'nvapi-UNITTESTKEY1234567890', null], c: { d: true, e: 'nvapi-UNITTESTKEY1234567890' }, f: 42, g: null, h: undefined });
   t('maskDeep(): nested objects/arrays are walked, non-strings pass through untouched',
     !JSON.stringify(maskDeepUnit).includes('UNITTESTKEY') && maskDeepUnit.f === 42 && maskDeepUnit.g === null && maskDeepUnit.h === undefined && maskDeepUnit.c.d === true);
+  const maskDeepKeyUnit = P.maskDeep({ 'nvapi-KEYSHAPEDPROPERTYNAME1234567890': 'value', normal: 'ok' });
+  t('maskDeep(): a key-shaped OBJECT KEY is masked too, not just values (V16, Codex recheck wp-f4)',
+    !JSON.stringify(maskDeepKeyUnit).includes('KEYSHAPEDPROPERTYNAME') && maskDeepKeyUnit.normal === 'ok');
+
+  // 16) V17 (Codex recheck wp-f4, 2026-09-24): health() must preserve the CALLER's own authorization when
+  // delegating to listModels() internally — hardcoding {force:true} defeated NVIDIA-RETRY-OFF's own
+  // per-attempt off-check for every health() call, so a switch-off during a 503 backoff kept retrying.
+  console.log('16) V17: health() honors a switch-off mid-retry (no force delegation bypass)');
+  const healthRetryOffProbe = (cfgDir) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-healthretryoff-'));
+    const script = path.join(dir, 'probe.cjs');
+    const cfgFile = path.join(cfgDir, 'FORGE_CONFIG.json');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'const fs = require("fs");',
+      'const cfgFile = ' + JSON.stringify(cfgFile) + ';',
+      'let calls = 0;',
+      'global.fetch = async () => {',
+      '  calls++;',
+      '  if (calls === 1) {',
+      '    fs.writeFileSync(cfgFile, JSON.stringify({ version: 1, settings: { nvidia: { value: false } } }));',
+      '    return { ok: false, status: 503, headers: { get: (k) => (k === "retry-after" ? "1" : null) }, text: async () => "busy" };',
+      '  }',
+      '  return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ data: [{ id: "SHOULD-NOT-BE-REACHED" }] }) };',
+      '};',
+      'const P = require(' + JSON.stringify(CLI) + ');',
+      '(async () => {',
+      '  const out = await P.health({});',
+      '  process.stdout.write(JSON.stringify({ out, calls }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const env = baseEnv({ NVIDIA_API_KEY: FAKE_KEY, NVIDIA_SKIP_ENV_FILES: '1', FORGE_PROJECT_ROOT: EMPTY_PROJECT, FORGE_CONFIG_HOME: cfgDir });
+    const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  };
+  const healthRetryCfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-healthretryoff-cfg-'));
+  fs.writeFileSync(path.join(healthRetryCfgDir, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { nvidia: { value: true } } }));
+  const healthRetryOff = healthRetryOffProbe(healthRetryCfgDir);
+  t('V17: health() switching nvidia off during a 503 backoff prevents the next attempt (exactly 1 fetch call, never reaches the live "SHOULD-NOT-BE-REACHED" response)',
+    !!healthRetryOff.out && healthRetryOff.calls === 1 && !/SHOULD-NOT-BE-REACHED/.test(JSON.stringify(healthRetryOff.out))
+    && /switched off mid-retry/.test(healthRetryOff.out.reason || ''));
+  try { fs.rmSync(healthRetryCfgDir, { recursive: true, force: true }); } catch { /* best effort */ }
+
+  // 17) V16 canary (Codex recheck wp-f4, 2026-09-24): a synthetic key-shaped string planted in EVERY
+  // env/config slot Codex named (including NVIDIA_CODING_MODEL) must never appear in any return value or
+  // stdout/stderr line — including the CLI `models --verify` branch, which used to print modelForRole()'s
+  // RAW resolved value directly (nvidia-provider.cjs's own modelForRole export and its --verify CLI loop).
+  console.log('17) V16 canary: a leaked-key-shaped model override never reaches any public surface');
+  const CANARY_V16 = 'nvapi-V16CANARYLEAKEDMODELNAME1234567890';
+  process.env.NVIDIA_CODING_MODEL = CANARY_V16;
+  t('V16: modelForRole() (the PUBLIC export) masks a leaked-key-shaped env override',
+    !/V16CANARYLEAKEDMODELNAME/.test(String(P.modelForRole('coding'))) && /\*\*\*MASKED\*\*\*/.test(String(P.modelForRole('coding'))));
+  t('V16: routeFor() masks a leaked-key-shaped coding-model env override', !/V16CANARYLEAKEDMODELNAME/.test(JSON.stringify(P.routeFor('build-boss'))));
+  {
+    const chatCanaryOut = await P.chat({ role: 'coding', prompt: 'hi', agent: 'build-boss' }); // mock mode — the model id comes straight from the env override
+    t('V16: chat() masks a leaked-key-shaped model id in its own return (mock mode)', !/V16CANARYLEAKEDMODELNAME/.test(JSON.stringify(chatCanaryOut)));
+  }
+  delete process.env.NVIDIA_CODING_MODEL;
+  // CLI `models --verify`: a real key + a fetch stub (preloaded via NODE_OPTIONS) so the LIVE branch is
+  // reached (the --verify loop is unreachable in mock mode), with the same canary planted for the child.
+  const verifyStubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-verifystub-'));
+  const verifyStubFile = path.join(verifyStubDir, 'stub.cjs');
+  fs.writeFileSync(verifyStubFile, [
+    "'use strict';",
+    'global.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ data: [',
+    '  { id: "mistralai/mistral-nemotron" }, { id: "nvidia/nemotron-3-super-120b-a12b" }, { id: "z-ai/glm-5.3" }, { id: "meta/llama-3.2-11b-vision-instruct" },',
+    '] }) });',
+  ].join('\n'), 'utf8');
+  const verifyEnv = Object.assign({}, process.env, {
+    NVIDIA_API_KEY: FAKE_KEY, NVIDIA_SKIP_ENV_FILES: '1', NVIDIA_CODING_MODEL: CANARY_V16,
+    NODE_OPTIONS: ((process.env.NODE_OPTIONS ? process.env.NODE_OPTIONS + ' ' : '') + '--require ' + verifyStubFile),
+  });
+  const verifyOut = spawnSync(process.execPath, [CLI, 'models', '--verify'], { encoding: 'utf8', env: verifyEnv, timeout: 30000 });
+  try { fs.rmSync(verifyStubDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  t('V16 canary: CLI `models --verify` never prints the leaked-key-shaped NVIDIA_CODING_MODEL override in stdout/stderr',
+    !/V16CANARYLEAKEDMODELNAME/.test((verifyOut.stdout || '') + (verifyOut.stderr || '')) && /\*\*\*MASKED\*\*\*/.test(verifyOut.stdout || ''));
 
   for (const d of [CONFIG_HOME, EMPTY_PROJECT, OFF_ROOT, ON_ROOT, BROKEN_ROOT]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
 

@@ -1051,5 +1051,133 @@ t('EVENT-RUN-BINDING-GAP: the excluded foreign event never closed the local chec
   t('VERIFY-READ-ERROR-GREEN: the printed VERIFY line names the open/unreadable ticket gate', /open\/unreadable ticket/.test(r.stdout));
 }
 
+// ================================================================================================
+// V23/V24/V27/V31 (2026-09-24 second Codex recheck, out-p7.md)
+// ================================================================================================
+
+// ---- V23: a DISPROVEN completion (_forge_verify.proof_verified:false) must not close its own paired task,
+// even with an otherwise-perfectly-positive status/verdict ----
+{
+  const disprovenCloseDir = writeEvents('run-v23-disproven-close', [
+    ev({ event_type: 'check_started', agent: 'Build Boss', task: 'lint gate' }),
+    ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'lint gate', _forge_verify: { proof_verified: false } }),
+  ]);
+  const disprovenClose = V.verifyRun(disprovenCloseDir, {});
+  const disprovenCloseAgent = disprovenClose.agents.find((a) => a.agent === 'Build Boss');
+  t('V23: a disproven check_passed does NOT close its paired check_started (task stays open)', disprovenCloseAgent.tasksOpen.length === 1);
+  t('V23: the surviving task is reported failed, not silently done', disprovenCloseAgent.tasksOpen[0].status === 'failed');
+}
+// ---- V23 counterweight: the same shape WITHOUT the disproven stamp closes normally ----
+{
+  const provenCloseDir = writeEvents('run-v23-proven-close', [
+    ev({ event_type: 'check_started', agent: 'Build Boss', task: 'lint gate' }),
+    ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'lint gate' }),
+  ]);
+  const provenClose = V.verifyRun(provenCloseDir, {});
+  const provenCloseAgent = provenClose.agents.find((a) => a.agent === 'Build Boss');
+  t('V23 counterweight: an ordinary (non-disproven) check_passed closes its pair as before', provenCloseAgent.tasksOpen.length === 0);
+}
+// ---- V23: a disproven completion must not close a closes_event_id target either ----
+{
+  const disprovenClosesIdDir = writeEvents('run-v23-disproven-closes-id', [
+    ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-v23-1', task: 'security check' }),
+    ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-v23-1', evidence: 'reran, 5/5 passed', _forge_verify: { proof_verified: false } }),
+  ]);
+  const disprovenClosesId = V.verifyRun(disprovenClosesIdDir, {});
+  const disprovenClosesIdAgent = disprovenClosesId.agents.find((a) => a.agent === 'Review Boss');
+  t('V23: a disproven closes_event_id completion does not clear the target (still open)', disprovenClosesIdAgent.tasksOpen.length === 1);
+}
+// ---- V23: forge-runcontract.cjs's independent-review protocol also rejects a disproven review completion
+// (isGoedkeuring), not just forge-verify.cjs's task-closure path — same central predicate, both call sites ----
+{
+  const RC = require('./forge-runcontract.cjs');
+  const positive = RC.isGoedkeuring({ review_verdict: 'approved' });
+  t('V23 setup: an ordinary positive verdict is approved', positive.ok === true);
+  const disprovenPositive = RC.isGoedkeuring({ review_verdict: 'approved', _forge_verify: { proof_verified: false } });
+  t('V23: isGoedkeuring rejects a disproven event even with a positive verdict string', disprovenPositive.ok === false);
+}
+
+// ---- V24: a review_completed with ONLY {ok:false} (no verdict/status/result/outcome field at all) must
+// be recognised as an outcome and read as failed, not fall through to the TERMINAL_TYPES 'done' default ----
+{
+  t('V24: reviewOutcome({event_type:review_completed, ok:false}) is failed, not null', V.reviewOutcome({ event_type: 'review_completed', ok: false }) === 'failed');
+  const okFalseReviewDir = writeEvents('run-v24-ok-false-review', [
+    ev({ event_type: 'review_started', agent: 'Review Boss', review_id: 'rv-v24', task: 'review the change' }),
+    ev({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rv-v24', ok: false }),
+    ev({ event_type: 'agent_completed', agent: 'Review Boss', status: 'done' }),
+  ]);
+  const okFalseReview = V.verifyRun(okFalseReviewDir, {});
+  const okFalseReviewAgent = okFalseReview.agents.find((a) => a.agent === 'Review Boss');
+  t('V24: the review_completed with ok:false keeps the paired review OPEN (mismatch), not silently done', okFalseReviewAgent.mismatch === true && okFalseReviewAgent.tasksOpen.length === 1);
+  const okFalseCli = spawnSync(process.execPath, [path.join(__dirname, 'forge-verify.cjs'), 'run-v24-ok-false-review', '--root', TMP], { encoding: 'utf8' });
+  t('V24: the CLI exits nonzero on an ok:false-only failed review followed by agent_completed', okFalseCli.status !== 0);
+}
+
+// ---- V27: one completion closes ONE obligation — its own natural TASK_PAIRS pair, never ALSO an unrelated
+// closes_event_id target at the same time ----
+{
+  const pairPlusReferenceDir = writeEvents('run-v27-pair-plus-reference', [
+    ev({ event_type: 'fix_started', agent: 'Build Boss' }),
+    ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-v27-1', task: 'security check' }),
+    ev({ event_type: 'fix_completed', agent: 'Build Boss', closes_event_id: 'ev-v27-1', evidence: 'fixed my own thing, 5/5 passed' }),
+  ]);
+  const pairPlusReference = V.verifyRun(pairPlusReferenceDir, {});
+  const buildBossAgent = pairPlusReference.agents.find((a) => a.agent === 'Build Boss');
+  const reviewBossAgent = pairPlusReference.agents.find((a) => a.agent === 'Review Boss');
+  t('V27: the completion closes its own paired fix_started task', buildBossAgent.tasksOpen.length === 0);
+  t('V27: the UNRELATED reviewer failure stays open — not double-closed by the same completion', reviewBossAgent.tasksOpen.length === 1);
+  t('V27: an advisory explains the reference was ignored (one obligation, not two)', pairPlusReference.closesAdvisories.some((a) => /one obligation/.test(a)));
+}
+// ---- V27 counterweight: when the completion has NO natural pair of its own, closes_event_id still works
+// exactly as before (this fix must not disable RULE 2 in general) ----
+{
+  const noNaturalPairDir = writeEvents('run-v27-no-natural-pair', [
+    ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-v27-2', task: 'security check' }),
+    ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-v27-2', evidence: 'fixed it, 5/5 passed' }),
+  ]);
+  const noNaturalPair = V.verifyRun(noNaturalPairDir, {});
+  const reviewBossAgent2 = noNaturalPair.agents.find((a) => a.agent === 'Review Boss');
+  t('V27 counterweight: closes_event_id still closes a genuinely unrelated task when the closer has no natural pair of its own', reviewBossAgent2.tasksOpen.length === 0);
+}
+
+// ---- V31: a MALFORMED run_id (null / non-string) must never close a current-run obligation — same
+// treatment as an already-rejected FOREIGN STRING run_id, not the same treatment as a genuinely absent one ----
+{
+  const nullRunIdDir = writeEvents('run-v31-null-run-id', [
+    ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+    ev({ event_type: 'check_started', agent: 'Build Boss', task: 'unit tests' }),
+    ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'unit tests', run_id: null }),
+    ev({ event_type: 'agent_completed', agent: 'Build Boss', status: 'done' }),
+  ]);
+  const nullRunId = V.verifyRun(nullRunIdDir, {});
+  t('V31: a run_id:null event is excluded and counted exactly like a foreign string run_id', nullRunId.foreignRunId === 1);
+  const nullRunIdAgent = nullRunId.agents.find((a) => a.agent === 'Build Boss');
+  t('V31: the excluded null-run_id event never closed the local check_started (still open, real mismatch)', nullRunIdAgent.mismatch === true);
+}
+{
+  const numberRunIdDir = writeEvents('run-v31-number-run-id', [
+    ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+    ev({ event_type: 'check_started', agent: 'Build Boss', task: 'unit tests' }),
+    ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'unit tests', run_id: 12345 }),
+    ev({ event_type: 'agent_completed', agent: 'Build Boss', status: 'done' }),
+  ]);
+  const numberRunId = V.verifyRun(numberRunIdDir, {});
+  t('V31: a non-string (number) run_id is also excluded, not treated as legacy-absent', numberRunId.foreignRunId === 1);
+}
+// ---- V31 counterweight: a genuinely ABSENT run_id key (never set at all) is still the ordinary legacy
+// case and is left alone — this fix must not regress every run_id-less fixture in this file ----
+{
+  const absentRunIdDir = writeEvents('run-v31-absent-run-id', [
+    ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+    ev({ event_type: 'check_started', agent: 'Build Boss', task: 'unit tests' }),
+    ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'unit tests' }),
+    ev({ event_type: 'agent_completed', agent: 'Build Boss', status: 'done' }),
+  ]);
+  const absentRunId = V.verifyRun(absentRunIdDir, {});
+  t('V31 counterweight: a genuinely absent run_id field is legacy-allowed, not foreign', absentRunId.foreignRunId === 0);
+  const absentRunIdAgent = absentRunId.agents.find((a) => a.agent === 'Build Boss');
+  t('V31 counterweight: the ordinary run_id-less event closes its pair normally', absentRunIdAgent.mismatch === false);
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

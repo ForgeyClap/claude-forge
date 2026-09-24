@@ -12,7 +12,7 @@ item: wat de video zei, waarom dat onveilig is, en wat Forge in plaats daarvan d
 
 | Wat de video zei | Waarom onveilig | Wat Forge doet |
 |---|---|---|
-| Start Claude Code met de vlag die elke toestemmingsvraag overslaat, "om sneller te kunnen beginnen" | Ontgrendelt ook destructieve acties, zonder enige vraag vooraf | De doctor-check `bypass-mode` waarschuwt hierover; de gate-hook blokkeert de drie harde commandovormen sowieso; een scoped `/forge config`-allowlist per tool/pad is de bedoelde snelheidswinst |
+| Start Claude Code met de vlag die elke toestemmingsvraag overslaat, "om sneller te kunnen beginnen" | Ontgrendelt ook destructieve acties, zonder enige vraag vooraf | De doctor-check `bypass-mode` waarschuwt hierover; de gate-hook blokkeert de vier harde commandovormen sowieso (een classifier, geen sluitend bewijs — wat hij niet herkent houdt hij niet tegen); een scoped `/forge config`-allowlist per tool/pad is de bedoelde snelheidswinst |
 | "Klik gewoon op Trust publisher" bij de VS Code-extensiemelding | Traint een automatische vertrouwensreflex zonder de uitgever echt te controleren | Controleer eerst de uitgever/marktplaats tegen de officiële bron |
 | "Always Allow, dan hoef je niet steeds te bevestigen" | Eén klik geeft stilzwijgend toestemming voor elke toekomstige actie, ook destructieve | Scoped allowlists per tool/pad in plaats van een blanco akkoord |
 | Een token-compressie-proxy installeren die het agent-verkeer onderschept (bv. de Caveman-proxy) | Een beginner kan niet controleren wat de proxy met het onderschepte verkeer doet | Standaard zonder extra dependencies; niets wordt geïnstalleerd zonder Scout-vetting en akkoord van de eigenaar |
@@ -34,7 +34,7 @@ why it is unsafe, and what Forge does instead.
 
 | What the video said | Why it is unsafe | What Forge does instead |
 |---|---|---|
-| Launch Claude Code with the flag that skips every permission prompt, "to speed up setup" | Also unlocks destructive actions, with no prompt at all | The doctor's `bypass-mode` check warns about this; the gate hook still blocks the three hard command shapes regardless; a scoped `/forge config` allowlist per tool/path is the intended speed-up |
+| Launch Claude Code with the flag that skips every permission prompt, "to speed up setup" | Also unlocks destructive actions, with no prompt at all | The doctor's `bypass-mode` check warns about this; the gate hook still blocks the four hard command shapes regardless (a classifier, not a proof — what it does not recognise it does not stop); a scoped `/forge config` allowlist per tool/path is the intended speed-up |
 | "Just click Trust publisher" on the VS Code extension prompt | Trains a reflexive trust habit without actually verifying the publisher | Verify the publisher/marketplace against the official source first |
 | "Always Allow so you don't get asked again" | One click silently authorises every future action, destructive ones included | Scoped per-tool/per-path allowlists instead of a blanket accept |
 | Installing a token-compression proxy that intercepts agent traffic (e.g. the Caveman proxy) | A beginner cannot audit what the proxy does with the intercepted traffic | Zero-dependency by default; nothing is installed without Scout vetting and owner opt-in |

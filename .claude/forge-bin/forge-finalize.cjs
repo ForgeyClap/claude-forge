@@ -176,6 +176,64 @@ function rulesetHashOf(root) {
   catch { return null; }
 }
 
+/** evaluateAcceptance(root, runId, receipt) -> ONE shared acceptance judgement (V22 fix, 2026-09-24 second
+ *  Codex recheck, out-p7.md) — used by the IDEMPOTENT finalize reconfirmation and by check() alike, closing
+ *  an inconsistency where each path recomputed a DIFFERENT subset of the same live facts.
+ *
+ *  GEREPRODUCEERD: a matching-digest receipt whose CURRENT evidence set was no longer all-green still
+ *  reconfirmed successfully on a repeat `finalize()` call (the old idempotent branch never asked
+ *  `nuSet.allGreen`, only whether the digest happened to match). Moving real git HEAD after finalization
+ *  left a repeat `finalize()` still reporting success while `check()` correctly said HISTORICAL — the old
+ *  idempotent branch compared only the STATIC commit gate-evidence.json itself recorded, never the LIVE
+ *  current HEAD, and never re-ran the contract at all. `check()`'s own HEAD/domain comparison ran BEFORE
+ *  its contract re-evaluation, so a run that was ALSO currently contract-red could read as merely
+ *  "HISTORICAL" (sounds like "just old") instead of the real failure it was.
+ *
+ *  Returns exactly one of:
+ *   {status:'fail', reason}      — evidence changed, the live evidence set is not (or no longer) all-green,
+ *                                  the ruleset changed, or the contract does not re-evaluate to ok:true
+ *                                  RIGHT NOW. Never acceptable from ANY caller.
+ *   {status:'historical', reason, code_commit_then, code_commit_now, domain_then, domain_now} — the
+ *                                  contract IS currently green against this receipt's own pinned subject,
+ *                                  but the receipt's pinned commit and/or declared domain no longer matches
+ *                                  the LIVE current state. Computed ONLY after the contract re-evaluation
+ *                                  above succeeded — a genuinely red contract is always 'fail', never
+ *                                  quietly hidden behind 'historical'.
+ *   {status:'current'}           — contract is currently green AND the pinned subject (commit + domain)
+ *                                  still matches the live state: fully valid and current.
+ *  Never throws — a re-check failure folds into {status:'fail'}. */
+function evaluateAcceptance(root, runId, receipt) {
+  const nuSet = canonicalEvidenceOf(root, runId);
+  const nu = nuSet ? nuSet.digest : null;
+  if (nu !== receipt.evidence_digest) {
+    return { status: 'fail', reason: 'de bewijsset is sinds de finalisatie veranderd (gate-evidence ' + String(receipt.evidence_digest).slice(0, 12) + '… -> ' + (nu ? nu.slice(0, 12) + '…' : 'ontbreekt/ongeldig') + ') — het oordeel sloeg op ander bewijs' };
+  }
+  if (!nuSet || nuSet.allGreen !== true) {
+    return { status: 'fail', reason: 'de huidige bewijsset bevat gefaalde poort(en) (' + ((nuSet && nuSet.failed) || []).join(', ') + ') — een receipt met bijpassende hash maar rode uitvoer wordt niet geaccepteerd' };
+  }
+  const nuRules = rulesetHashOf(root);
+  if (nuRules !== receipt.ruleset_sha256) {
+    return { status: 'fail', reason: 'de regelset is sinds de finalisatie veranderd (' + String(receipt.ruleset_sha256).slice(0, 12) + '… -> ' + String(nuRules).slice(0, 12) + '…) — het oordeel gold tegen andere regels' };
+  }
+  const RC = require(path.join(__dirname, 'forge-runcontract.cjs'));
+  let headNow = null;
+  try { headNow = typeof RC.resolveHeadCommit === 'function' ? RC.resolveHeadCommit(root) : null; } catch { headNow = null; }
+  let contractNow = null;
+  try { contractNow = RC.check({ run_id: runId, domain: receipt.domain || undefined, commit_sha: headNow }, { root }); }
+  catch (e) { return { status: 'fail', reason: 'het contract kon bij acceptatie niet worden herbeoordeeld (' + (e && e.message ? e.message : String(e)) + ') — een receipt die niet herbevestigd kan worden, wordt niet vertrouwd' }; }
+  if (!contractNow || contractNow.ok !== true) {
+    return { status: 'fail', reason: 'het contract is bij acceptatie NIET meer groen (missing: ' + ((contractNow && contractNow.missing) || []).join(', ') + ') — een opgeslagen contract:"ok" wordt niet blind vertrouwd; deze receipt wordt niet geaccepteerd' };
+  }
+  const domainNow = runDomainOf(root, runId);
+  if (headNow && headNow !== receipt.code_commit) {
+    return { status: 'historical', reason: 'deze receipt geldt voor commit ' + receipt.code_commit.slice(0, 12) + '… maar de huidige HEAD is ' + headNow.slice(0, 12) + '… — dit eindverdict is HISTORISCH, niet actueel', code_commit_then: receipt.code_commit, code_commit_now: headNow };
+  }
+  if (domainNow !== (receipt.domain || null)) {
+    return { status: 'historical', reason: 'deze receipt geldt voor domein ' + JSON.stringify(receipt.domain) + ' maar run.json declareert nu ' + JSON.stringify(domainNow) + ' — dit eindverdict is HISTORISCH, niet actueel', domain_then: receipt.domain, domain_now: domainNow };
+  }
+  return { status: 'current' };
+}
+
 /** finalize (herbouwd, Codex r4 #8-rest/#9/#10-rest, 2026-08-07) — de receipt pint nu de VOLLEDIGE log
  *  INCLUSIEF exact het eigen run_finalized-audittrail-event als laatste regel:
  *    1. keten-gevalideerde classificatie (fail-closed);
@@ -262,27 +320,17 @@ function finalizeLocked(root, runId) {
     // status 'running' en blijven liveness claimen. Zelfgenezend, want de receipt bewijst hier al dat de
     // run klaar is — en fail-safe, dus een onveranderbare run.json breekt de herbevestiging niet.
     if (d0.digest === existing.digest && d0.bytes === existing.bytes) {
-      /** R4-03 (vierde herreview): de idempotente herbevestiging vergeleek ALLEEN logdigest en bytes en
-       *  gaf daarna direct succes — gewijzigd bewijs of een gewijzigde regelset bleef zo groen, terwijl
-       *  check() wél STALE zou melden. Twee ingangen naar hetzelfde verdict mogen niet verschillen, dus
-       *  de herbevestiging toetst nu exact wat de receipt pint. */
-      {
-        const nu = evidenceDigestOf(root, runId);
-        if (nu !== existing.evidence_digest) {
-          return { ok: false, verdict: 'refused', reason: 'de bewijsset is sinds de finalisatie veranderd (gate-evidence ' + existing.evidence_digest.slice(0, 12) + '… -> ' + (nu ? nu.slice(0, 12) + '…' : 'ontbreekt/ongeldig') + ') — een herbevestiging kan dat niet wegpoetsen' };
-        }
-      }
-      {
-        const nuCode = (canonicalEvidenceOf(root, runId) || {}).commit || null;
-        if (nuCode !== existing.code_commit) {
-          return { ok: false, verdict: 'refused', reason: 'het bewijs hoort nu bij commit ' + String(nuCode).slice(0, 12) + '… terwijl de receipt ' + String(existing.code_commit).slice(0, 12) + '… pinde — een herbevestiging kan dat verschil niet wegpoetsen' };
-        }
-      }
-      {
-        const nuRules = rulesetHashOf(root);
-        if (nuRules !== existing.ruleset_sha256) {
-          return { ok: false, verdict: 'refused', reason: 'de regelset is sinds de finalisatie veranderd (' + existing.ruleset_sha256.slice(0, 12) + '… -> ' + String(nuRules).slice(0, 12) + '…) — het oordeel gold tegen andere regels' };
-        }
+      /** R4-03 (vierde herreview) / V22 (2026-09-24 second Codex recheck, out-p7.md): de idempotente
+       *  herbevestiging vergeleek ALLEEN logdigest en bytes en gaf daarna direct succes — gewijzigd bewijs
+       *  of een gewijzigde regelset bleef zo groen, terwijl check() wél STALE zou melden; en géén van beide
+       *  vergeleek de LEVENDE HEAD/het levende domein of herbeoordeelde het contract. Twee (en straks drie)
+       *  ingangen naar hetzelfde verdict mogen niet verschillen — evaluateAcceptance() is nu de ENE
+       *  gedeelde poortwachter. Een `historical` uitkomst is hier GEEN succes: finalize() bevestigt de
+       *  HUIDIGE staat, dus een verschoven HEAD/domein weigert net als elke andere afwijking — check() is
+       *  de losstaande leesfunctie die HISTORICAL als eigen, eerlijke status mag teruggeven. */
+      const acceptance = evaluateAcceptance(root, runId, existing);
+      if (acceptance.status !== 'current') {
+        return { ok: false, verdict: 'refused', reason: acceptance.reason, historical: acceptance.status === 'historical' };
       }
       return { ok: true, verdict: 'finalized', receipt: existing, idempotent: true, run_meta: markRunFinalized(root, runId, existing) };
     }
@@ -501,76 +549,24 @@ function check(root, runId) {
   if (d.digest !== receipt.digest || d.bytes !== receipt.bytes) {
     return { verdict: 'STALE', receipt, reason: 'de log matcht de receipt niet meer exact (digest/bytes gewijzigd — afgekapt, aangegroeid of bewerkt)' };
   }
-  /** R3-05: de bewijsset hoort net zo goed bij het gepinde subject als de log. Wijzigt gate-evidence.json
-   *  na de finalisatie, dan is het oordeel niet meer over dat bewijs gegeven — dus STALE, precies zoals
-   *  bij een gewijzigde log. Receipts van vóór deze wijziging dragen geen evidence_digest; die blijven
-   *  geldig op hun eigen (log-)pin, maar krijgen wel een zichtbare markering dat die binding ontbrak. */
+  /** V22 (2026-09-24 second Codex recheck, out-p7.md) — the evidence/ruleset/HEAD/domain/contract
+   *  acceptance checks that used to live here inline (R3-05, R4-03, FINALIZE-STALE-CODE, RECEIPT-FORGERY)
+   *  are now ONE shared judgement (`evaluateAcceptance`, also used by the idempotent finalize path) so the
+   *  two entry points can never again disagree about the same receipt. Ordering matters: `evaluateAcceptance`
+   *  re-runs the contract BEFORE ever reporting `historical` — a receipt whose commit/domain has drifted
+   *  AND whose contract is currently red is reported as the real failure (STALE), never masked behind a
+   *  softer-sounding HISTORICAL. */
   {
-    /** R10-02: één canonieke lezing voor digest ÉN commit — en de code_commit-vergelijking die bij mijn
-     *  R9-refactor uit check() was weggevallen, staat hier nu onlosmakelijk naast de digest. Een receipt
-     *  waarvan de code_commit is gemanipuleerd terwijl het bewijs ongewijzigd bleef, valt hierop. */
-    const nuSet = canonicalEvidenceOf(root, runId);
-    const nu = nuSet ? nuSet.digest : null;
-    if (nu !== receipt.evidence_digest) {
-      return { verdict: 'STALE', receipt, reason: 'de bewijsset is sinds de finalisatie veranderd (gate-evidence ' + receipt.evidence_digest.slice(0, 12) + '… -> ' + (nu ? nu.slice(0, 12) + '…' : 'ontbreekt/ongeldig') + ') — het verdict sloeg op ander bewijs' };
+    const acceptance = evaluateAcceptance(root, runId, receipt);
+    if (acceptance.status === 'fail') {
+      return { verdict: 'STALE', receipt, reason: acceptance.reason };
     }
-    const nuCommit = (nuSet && nuSet.commit) || null;
-    if (nuCommit !== receipt.code_commit) {
-      return { verdict: 'STALE', receipt, reason: 'het bewijs hoort bij commit ' + String(nuCommit).slice(0, 12) + '… terwijl de receipt code_commit ' + String(receipt.code_commit).slice(0, 12) + '… draagt — de codepin klopt niet meer met het bewijs' };
-    }
-  }
-  /** R4-03: de receipt pinde de regelset al, maar check() vergeleek hem nooit. Een gewijzigde
-   *  FORGE_HARD_RULES.json betekent dat het oordeel tegen ANDERE regels is geveld — even ongeldig als een
-   *  gewijzigde log. */
-  {
-    const nuRules = rulesetHashOf(root);
-    if (nuRules !== receipt.ruleset_sha256) {
-      return { verdict: 'STALE', receipt, reason: 'de regelset is sinds de finalisatie veranderd (' + receipt.ruleset_sha256.slice(0, 12) + '… -> ' + String(nuRules).slice(0, 12) + '…) — het verdict gold tegen andere regels' };
-    }
-  }
-  /** FINALIZE-STALE-CODE (2026-09-24, out-p5.md) — the code comparison above (`nuCommit !== receipt.
-   *  code_commit`) reads TWO values from the SAME static gate-evidence.json — a `git checkout` to a
-   *  different commit never touches that file, so the comparison trivially kept matching regardless of
-   *  what is ACTUALLY checked out. GEREPRODUCEERD: changing the real HEAD after finalization, while
-   *  retaining the same evidence artifacts, still returned "FINALIZED". This receipt correctly proves the
-   *  run was finalized FOR THE COMMIT/DOMAIN IT PINNED — it does not prove that is still the current
-   *  subject. A live mismatch against the REAL current git HEAD (or the run's current declared domain)
-   *  downgrades the verdict to HISTORICAL rather than continuing to claim a current FINALIZED — a genuinely
-   *  different, honest status, never silently folded into either FINALIZED or STALE. No git repo / git
-   *  unavailable degrades to "cannot compare" (headNow === null) — an honest limitation, not a false
-   *  positive. */
-  {
-    const RC = require(path.join(__dirname, 'forge-runcontract.cjs'));
-    let headNow = null;
-    try { headNow = typeof RC.resolveHeadCommit === 'function' ? RC.resolveHeadCommit(root) : null; } catch { headNow = null; }
-    if (headNow && headNow !== receipt.code_commit) {
-      return { verdict: 'HISTORICAL', receipt, reason: 'deze receipt geldt voor commit ' + receipt.code_commit.slice(0, 12) + '… maar de huidige HEAD is ' + headNow.slice(0, 12) + '… — dit eindverdict is HISTORISCH, niet actueel', code_commit_then: receipt.code_commit, code_commit_now: headNow };
-    }
-    const domainNow = runDomainOf(root, runId);
-    if (domainNow !== (receipt.domain || null)) {
-      return { verdict: 'HISTORICAL', receipt, reason: 'deze receipt geldt voor domein ' + JSON.stringify(receipt.domain) + ' maar run.json declareert nu ' + JSON.stringify(domainNow) + ' — dit eindverdict is HISTORISCH, niet actueel', domain_then: receipt.domain, domain_now: domainNow };
-    }
-    /** RECEIPT-FORGERY (2026-09-24, out-p5.md) — acceptance ONLY compared public hashes (log digest,
-     *  evidence digest, ruleset hash, code commit) and trusted the receipt's own `contract:"ok"` STRING —
-     *  it never re-ran the contract. GEREPRODUCEERD: a forged schema-2 receipt over a log carrying only
-     *  run_finalized, matching every hash it itself declared, read as classification:valid / verdict:
-     *  FINALIZED with zero real gates ever having run. Re-evaluating the ACTUAL contract on acceptance
-     *  means a receipt cannot simply assert "ok" — it must still BE ok against the real, current run state.
-     *  SCOPE NOTE (honesty): this closes the "trust the stored string" half of the finding. The narrower
-     *  "canonicalEvidenceDigest tolerates a missing output file" half (a fabricated gate-evidence.json
-     *  entry whose referenced output never existed) is a SEPARATE, deliberately NOT-tightened compromise —
-     *  tightening it would require every existing gate-evidence.json fixture across this project's test
-     *  suites (forge-finalize.test.cjs, forge-independent-verification.test.cjs, forge-runcontract.test.cjs)
-     *  to also write real on-disk output files, which is out of safe scope for this pass; see this work
-     *  package's report for the explicit deferred classification. */
-    let contractNow = null;
-    try {
-      contractNow = RC.check({ run_id: runId, domain: receipt.domain || undefined, commit_sha: headNow }, { root });
-    } catch (e) {
-      return { verdict: 'STALE', receipt, reason: 'het contract kon bij acceptatie niet worden herbeoordeeld (' + (e && e.message ? e.message : String(e)) + ') — een receipt die niet herbevestigd kan worden, wordt niet vertrouwd' };
-    }
-    if (!contractNow || contractNow.ok !== true) {
-      return { verdict: 'STALE', receipt, reason: 'het contract is bij acceptatie NIET meer groen (missing: ' + ((contractNow && contractNow.missing) || []).join(', ') + ') — een opgeslagen contract:"ok" wordt niet blind vertrouwd; deze receipt wordt niet als FINALIZED geaccepteerd' };
+    if (acceptance.status === 'historical') {
+      return {
+        verdict: 'HISTORICAL', receipt, reason: acceptance.reason,
+        code_commit_then: acceptance.code_commit_then, code_commit_now: acceptance.code_commit_now,
+        domain_then: acceptance.domain_then, domain_now: acceptance.domain_now,
+      };
     }
   }
   /** R4-07/R5-08: ook de UITSLAG draagt de caveat, niet alleen de receipt — een consument die alleen
