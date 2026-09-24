@@ -160,14 +160,15 @@ Claude's reach:
    reaching PowerShell by a route other than that flag are named, deliberate gaps (full list: `hard-gates.json` →
    `_not_caught`; beginner version: `docs/SETTINGS.md` → "What the gate hook stops, and what it cannot see").
 
-**Deny rules** (`permissions.deny`, 28 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
+**Deny rules** (`permissions.deny`, 29 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
 `Read(./.env.development)`, `Read(./.env.production)`, `Read(./.env.staging)`, `Read(./.env.test)`,
 `Read(./.env.forge-setup)`, `Read(./secrets/**)`, the same names nested anywhere (`Read(./**/.env)`,
 `Read(./**/.env.local)`, `Read(./**/.env.*.local)`, `Read(./**/.env.development)`, `Read(./**/.env.production)`,
 `Read(./**/.env.staging)`, `Read(./**/.env.test)`, `Read(./**/.env.forge-setup)`, `Read(./**/.env.prod)`,
 `Read(./**/.env.bak)`, `Read(./**/.env.backup)`, `Read(./**/secrets/**)`), private keys (`Read(./**/*.pem)`, `Read(./**/*.key)`,
-`Read(./**/id_rsa*)`, `Read(./**/id_ed25519*)`) and the user's own credential files (`Read(~/.claude/.credentials.json)`,
-`Read(~/.claude/nvidia.env)`, `Read(~/.ssh/**)`). `.env.example` stays readable on purpose (Forge records new
+`Read(./**/id_rsa*)`, `Read(./**/id_ed25519*)`), the user's own credential files (`Read(~/.claude/.credentials.json)`,
+`Read(~/.claude/nvidia.env)`, `Read(~/.ssh/**)`) and the usage guard's owner-approval secret
+(`Read(./.claude/config/forge-owner-grant.txt)`). `.env.example` stays readable on purpose (Forge records new
 variable names in it; a test asserts it). Not covered: reading a file through the shell (`cat .env`).
 
 Each hook runs a small, fast Node command that fires locally only — nothing phones home. To opt out of any hook,

@@ -295,6 +295,58 @@ t('opaque-exec: a heredoc body line that itself STARTS with the gate word still 
   assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), r.stderr.split('\n')[0]);
 });
 
+// ---------------------------------------------------------------------------
+// wave 6 (codex-recheck 2026-09-24, wp-k3) — N09 over-blocking regression and H2 fail-open, proven through the
+// REAL spawned hook (see forge-actiongate.test.cjs 2c-wave6 for the module-level classify() proof of the same
+// fixtures). N13 robustness is proven here as a real-hook TIMING bound: a decision within 1.5s, never a hang.
+// ---------------------------------------------------------------------------
+t('N09 (over-blocking regression, fixed): currency/.sh-extension/byte-count/commit-prose stay silent through the real hook', () => {
+  for (const cmd of [
+    'bash build.sh && node report.cjs -c "total $5 due"',
+    'cp install.sh /tmp/ && node report.cjs -c "$5 total"',
+    'bash setup.sh; wc -c "$file"',
+    'git commit -m "migrated build script to bash -c and saved $20 total"',
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 0, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('N09 counterfactual: real -c positives still fire (exit 2) through the real hook', () => {
+  for (const cmd of ['bash -c "$SCRIPT"', '/bin/bash -c "$x"', 'sudo bash -c "$x"']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status);
+    assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), r.stderr.split('\n')[0]);
+  }
+});
+
+t('H2: a trailing-backslash quoted path before a later else/elseif/catch/finally branch still FIRES, for both Bash and PowerShell tool calls', () => {
+  const prefix = 'Write-Output "C:\\Users\\foo\\" ; ';
+  const bodies = [
+    'if ($false) { Write-Output ok } else { iex $cmd }',
+    'if ($false) { Write-Output ok } elseif ($true) { iex $cmd }',
+    'try { Write-Output ok } catch { iex $cmd }',
+    'try { Write-Output ok } finally { iex $cmd }',
+  ];
+  for (const body of bodies) {
+    const cmd = prefix + body;
+    for (const tool of ['Bash', 'PowerShell']) {
+      const r = spawnHook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command: cmd } });
+      assert.strictEqual(r.status, 2, '[' + tool + '] ' + cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+      assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), '[' + tool + '] ' + r.stderr.split('\n')[0]);
+    }
+  }
+});
+
+t('N13: a 9.9 kB / 3300-deep nested $(...) construct resolves through the real hook within 1.5s (never a timeout, never a throw)', () => {
+  const nested = 'echo ' + '$('.repeat(3300) + 'x' + ')'.repeat(3300);
+  const t0 = Date.now();
+  const r = spawnHook(bash(nested));
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 1500, 'real hook took ' + elapsed + 'ms on 3300-deep nesting, expected < 1500ms');
+  assert.ok(r.status === 0 || r.status === 2, 'must reach a real decision (0 or 2), not a timeout/crash: exit ' + r.status);
+});
+
 // Self-disable (security wp9b M3) and the ONE owner-approved one-off (review wp9a M4).
 const CFG = 'node .claude/forge-bin/forge-config.cjs';
 for (const [tool, cmd] of [['Bash', CFG + ' set gate-hook off'], ['Bash', CFG + ' set gate-hook uit'], ['Bash', CFG + ' set gate-hook false --global'],

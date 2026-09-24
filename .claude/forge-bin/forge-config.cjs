@@ -81,6 +81,9 @@ const text = require('./forge-config-text.cjs');
 // contract. ONCE_KEYS/ONCE_MS stay exported here unchanged for existing consumers.
 const onceLib = require('./forge-config-once.cjs');
 const { ONCE_KEYS, ONCE_MS, ONCE_QUOTE_MAX } = onceLib;
+// The exactly-once PENDING/CONSUMED grant store (V09 FIFTH fix, out-p11 + addendum) — split into its own
+// sibling so forge-config-once.cjs stays under this project's file-size guidance; see that file's header.
+const onceStore = require('./forge-config-once-store.cjs');
 
 const PROJECT_ROOT_DEFAULT = path.resolve(__dirname, '..', '..');
 const SCHEMA_PATH_DEFAULT = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json');
@@ -456,7 +459,17 @@ function fsyncDir(dir) {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
   }
 }
-function atomicWriteJson(file, obj) {
+/** atomicWriteJson(file, obj, fence) — `fence`, when given, is onceLib.withLock's own zero-arg fence
+ *  function (V09 FIFTH fix, out-p11 + Security Boss addendum), re-checked IMMEDIATELY BEFORE the rename that
+ *  actually publishes this write — not only by the caller, earlier, before its own read-modify-write. A
+ *  caller whose EARLIER fence() check passed (or who never checked at all) can still have lost the lock by
+ *  the time this function finally renames its temp file into place; re-checking here, as the LAST synchronous
+ *  step before the one mutation that makes the write visible, closes that gap to the practical minimum — the
+ *  same fence-at-publish pattern usage-guard.cjs::writeStateTo already uses for usage-guard-state.cjs's own
+ *  lock. On a failed re-check this throws an Error with `.code === 'EFENCED'`, cleans up the temp file, and
+ *  never runs the rename — this is what makes the CHANGELOG's "the config lock's fence refuses a stale
+ *  write" claim actually true; before this fix no such check existed anywhere in this write path. */
+function atomicWriteJson(file, obj, fence) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
@@ -467,6 +480,11 @@ function atomicWriteJson(file, obj) {
     fsyncFile(fd);
     fs.closeSync(fd);
     fd = undefined;
+    if (typeof fence === 'function' && !fence()) {
+      const err = new Error('forge-config: write refused — the file lock was reclaimed by another writer before this write could publish');
+      err.code = 'EFENCED';
+      throw err;
+    }
     renameWithRetry(tmp, file);
     fsyncDir(dir);
   } catch (e) {
@@ -784,7 +802,7 @@ function set(key, rawValue, opts) {
   const file = toGlobal ? P.global : P.project;
   let unchanged = false;
   let clearedOnce = false;
-  onceLib.withLock(file, () => {
+  onceLib.withLock(file, (fence) => {
     const cur = readRaw(file, lang, P);
     const data = cur.present ? cur.data : { version: 1, settings: {} };
     const old = data.settings[key];
@@ -800,10 +818,13 @@ function set(key, rawValue, opts) {
       if (!onceSt.expired && value !== true) throw new ConfigError('once_pending', T.oncePendingRefuse(key), 3, { key });
       // A normal set always ends a one-off approval ("set gate-hook on" clears it, or it was already expired):
       // drop that entry first, and keep a permanent value only when the layer beneath does not already give
-      // the requested one.
+      // the requested one. Also drop the authoritative PENDING grant file (V09 FIFTH fix) so an early "on"
+      // never leaves an orphaned grant nobody will ever consume — hygiene only, never a safety dependency
+      // (consumeOnce()'s mirror-based outer check already refuses once this entry itself is gone).
       const settings = Object.assign({}, data.settings);
       delete settings[key];
-      atomicWriteJson(file, Object.assign({}, data, { settings }));
+      atomicWriteJson(file, Object.assign({}, data, { settings }), fence);
+      onceStore.removePendingOnceGrant(path.dirname(file), key);
       clearedOnce = true;
       unchanged = resolve(noFlags(opts)).settings[key].value === value;
     } else if (isObj(old) && hasOwn(old, 'value')) {
@@ -812,7 +833,7 @@ function set(key, rawValue, opts) {
     if (!unchanged) {
       const entry = { value, set_at: new Date(nowMsOf(opts)).toISOString(), set_by: text.SET_BY };
       const settings = Object.assign({}, data.settings, { [key]: entry });
-      atomicWriteJson(file, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings }));
+      atomicWriteJson(file, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings }), fence);
     }
   }, lockOptsOf(opts));
   const after = resolve(noFlags(opts)).settings[key];
@@ -836,7 +857,11 @@ function set(key, rawValue, opts) {
  *  (exit 2, nothing written): another key, --global, a value other than off, no quote, or an unexpired
  *  UNCONSUMED one-off already armed for this key ("one-off already armed" — re-issuing can never silently
  *  extend the window; wait for it to be consumed or to expire first). The whole read-check-write is inside
- *  onceLib.withLock so two concurrent `--once` requests can never both succeed. */
+ *  onceLib.withLock so two concurrent `--once` requests can never both succeed. V09 FIFTH fix (out-p11 +
+ *  addendum): also writes the SAME entry to the authoritative PENDING grant file (onceStore) that
+ *  consumeOnce() below atomically consumes — written FIRST, inside the same lock, so a failure here throws
+ *  before the mirror is ever touched (fail closed: never an armed-looking mirror entry with no pending file
+ *  to actually consume). */
 function setOnce(key, rawValue, opts) {
   const { P, schema, lang } = writableKey(key, opts);
   const T = text.t(lang);
@@ -848,7 +873,7 @@ function setOnce(key, rawValue, opts) {
   const spec = schema.settings[key];
   const before = resolve(noFlags(opts));
   const nowMs = nowMsOf(opts);
-  const entry = onceLib.withLock(P.project, () => {
+  const entry = onceLib.withLock(P.project, (fence) => {
     const cur = readRaw(P.project, lang, P);
     const data = cur.present ? cur.data : { version: 1, settings: {} };
     const old = data.settings[key];
@@ -858,7 +883,8 @@ function setOnce(key, rawValue, opts) {
       value: false, set_at: new Date(nowMs).toISOString(), set_by: text.ONCE_BY + quote, once_quote: quote,
       expires_at: new Date(nowMs + ONCE_MS).toISOString(), consumed_at: null, consumed_command_sha256: null,
     };
-    atomicWriteJson(P.project, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings: Object.assign({}, data.settings, { [key]: ent }) }));
+    onceStore.writePendingOnceGrant(path.dirname(P.project), key, ent); // the authoritative record — written first
+    atomicWriteJson(P.project, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings: Object.assign({}, data.settings, { [key]: ent }) }), fence);
     return ent;
   }, lockOptsOf(opts));
   const after = resolve(noFlags(opts)).settings[key];
@@ -871,16 +897,19 @@ function setOnce(key, rawValue, opts) {
   };
 }
 
-/** consumeOnce(key, opts) -> { ok:true } | { ok:false, reason:'consumed'|'expired'|'absent'|'clock' } (CFG-07/S06).
- *  The ONE atomic single-use step every hard-gate check must call before honouring a `--once` approval: it
- *  marks the PROJECT-file entry consumed (consumed_at, opts.commandSha256 -> consumed_command_sha256) and
- *  returns ok:true EXACTLY ONCE for an entry that is armed (unexpired) and not yet consumed; every other call
- *  — a second consume, an expired entry, no entry at all, or a set_at that lies in the future relative to
- *  opts.now (a clock-integrity problem) — returns ok:false with the matching reason and writes nothing. Reads
- *  and writes happen inside onceLib.withLock on the SAME project file setOnce() uses, so two concurrent
- *  consume attempts (parallel requests sharing one approval — the exact CFG-07 evidence) can never both
- *  succeed: the second one always re-reads the first one's committed consumed_at. Never throws for a normal
- *  call; a schema/path problem is reported as reason:'absent' (fail closed — no approval, no proceed). */
+/** consumeOnce(key, opts) -> { ok:true } | { ok:false, reason:'consumed'|'expired'|'absent'|'clock' } (CFG-07/
+ *  S06, hardened by the V09 FIFTH fix, out-p11 + Security Boss addendum). The ONE atomic single-use step every
+ *  hard-gate check must call before honouring a `--once` approval. Runs the SAME mirror-based checks as
+ *  before (still fail closed on 'absent'/'clock'/'consumed'/'expired' read straight off the PROJECT-file
+ *  entry) — but a call that PASSES all of them is no longer trusted as a real approval on its own. Out-p11
+ *  proved forge-config-once.cjs's own lock can still let two callers both pass those mirror checks at once (a
+ *  reclaim/release race, or the lock being unavailable for any other reason); the mirror alone was the ENTIRE
+ *  V09 vulnerability. THE ACTUAL, LOCK-INDEPENDENT GATE is onceStore.consumeOnceGrant() — exactly one
+ *  `fs.renameSync` of the shared PENDING grant file, which at most one caller can ever win regardless of any
+ *  interleaving. Only a caller who wins that rename may then mark the mirror entry consumed (for
+ *  get()/list()/explain() display); a caller who loses it returns ok:false with the store's own reason —
+ *  never proceeds to write consumed_at at all. Never throws for a normal call; a schema/path/lock problem is
+ *  reported as reason:'absent' (fail closed — no approval, no proceed). */
 function consumeOnce(key, opts) {
   opts = opts || {};
   let P;
@@ -891,7 +920,7 @@ function consumeOnce(key, opts) {
   const nowMs = nowMsOf(opts);
   const commandSha256 = typeof opts.commandSha256 === 'string' && opts.commandSha256 ? opts.commandSha256 : null;
   try {
-    return onceLib.withLock(P.project, () => {
+    return onceLib.withLock(P.project, (fence) => {
       let cur;
       try { cur = readRaw(P.project, lang, P); } catch { return { ok: false, reason: 'absent' }; }
       if (!cur.present || !hasOwn(cur.data.settings, key)) return { ok: false, reason: 'absent' };
@@ -902,9 +931,14 @@ function consumeOnce(key, opts) {
       if (ent.consumed_at) return { ok: false, reason: 'consumed' };
       const st = onceLib.onceState(ent, nowMs);
       if (!st || st.expired) return { ok: false, reason: 'expired' };
+      // V09 FIFTH fix: the mirror-based checks above can both pass for two concurrent callers whenever the
+      // lock lets their reads interleave. This rename is what actually enforces "at most one caller ever
+      // wins" — independent of that lock's own correctness.
+      const outcome = onceStore.consumeOnceGrant(path.dirname(P.project), key, nowMs, commandSha256);
+      if (!outcome.ok) return { ok: false, reason: outcome.reason };
       const updated = Object.assign({}, ent, { consumed_at: new Date(nowMs).toISOString(), consumed_command_sha256: commandSha256 });
       const settings = Object.assign({}, cur.data.settings, { [key]: updated });
-      atomicWriteJson(P.project, Object.assign({}, cur.data, { settings }));
+      atomicWriteJson(P.project, Object.assign({}, cur.data, { settings }), fence);
       return { ok: true };
     }, lockOptsOf(opts));
   } catch { return { ok: false, reason: 'absent' }; /* a lock/IO problem is never treated as an approval */ }
@@ -930,14 +964,15 @@ function unset(key, opts) {
   const before = known ? resolve(noFlags(opts)).settings[key].value : null;
   const removed = [];
   for (const f of targets) {
-    onceLib.withLock(f, () => {
+    onceLib.withLock(f, (fence) => {
       const r = readRaw(f, lang, P);
       if (!r.present || !hasOwn(r.data.settings, key)) return;
       const onceSt = onceLib.onceState(r.data.settings[key], nowMsOf(opts));
       if (onceSt && !onceSt.expired) throw new ConfigError('once_pending', T.oncePendingRefuse(key), 3, { key }); // V03
       const settings = Object.assign({}, r.data.settings);
       delete settings[key];
-      atomicWriteJson(f, Object.assign({}, r.data, { settings }));
+      atomicWriteJson(f, Object.assign({}, r.data, { settings }), fence);
+      if (ONCE_KEYS.includes(key)) onceStore.removePendingOnceGrant(path.dirname(f), key); // hygiene (V09 FIFTH fix)
       removed.push(f);
     }, lockOptsOf(opts));
   }
@@ -959,7 +994,7 @@ function reset(opts) {
   const schema = loadSchema(P.schema, opts);
   const lang = detectLang(opts, P);
   const file = opts.global ? P.global : P.project;
-  return onceLib.withLock(file, () => {
+  return onceLib.withLock(file, (fence) => {
     try { readConfigFile(file, schema, lockedIds(schema, opts).ids, lang, P, nowMsOf(opts)); } // full validation first
     catch (e) {
       if (!(e instanceof ConfigError) || e.code !== 'malformed') throw e;
@@ -967,7 +1002,7 @@ function reset(opts) {
       const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: [], removed: [], lang, damaged: true, reason: e.message, moved_to: aside, moved_to_pretty: prettyPath(aside, P) };
       if (!opts.yes) return Object.assign(base, { confirmed: false });
       renameWithRetry(file, aside);
-      atomicWriteJson(file, { version: 1, settings: {} });
+      atomicWriteJson(file, { version: 1, settings: {} }, fence);
       return Object.assign(base, { confirmed: true, bridges: [] });
     }
     const r = readRaw(file, lang, P);
@@ -976,7 +1011,8 @@ function reset(opts) {
     if (!opts.yes) return Object.assign(base, { confirmed: false, removed: [] });
     const bridges = keys.filter((k) => hasOwn(schema.settings, k)).map((k) => bridgeOf(k, schema, P, opts)).filter(Boolean);
     for (const b of bridges) readBridge(b, lang, P); // fail closed before any write
-    if (keys.length) atomicWriteJson(file, Object.assign({}, r.data, { settings: {} }));
+    if (keys.length) atomicWriteJson(file, Object.assign({}, r.data, { settings: {} }), fence);
+    for (const k of keys) if (ONCE_KEYS.includes(k)) onceStore.removePendingOnceGrant(path.dirname(file), k); // hygiene
     const now = bridges.length ? resolve(noFlags(opts)).settings : null;
     return Object.assign(base, { confirmed: true, removed: keys, bridges: bridges.map((b) => applyBridge(b, now[b.key].value, schema, lang, P)) });
   }, lockOptsOf(opts));

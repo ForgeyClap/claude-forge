@@ -251,5 +251,35 @@ t('V14 (second recheck): a map file that reads fine and whose tmp WRITE succeeds
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- sanitizeReason (N10/N11/N12 Codex recheck, 2026-09-24: "reasons are stored without redaction") ----
+t('sanitizeReason: a plain, short reason passes through unchanged', () => {
+  assert.strictEqual(R.sanitizeReason('Eigenaar kocht usage credits'), 'Eigenaar kocht usage credits');
+});
+t('sanitizeReason: non-string / empty / whitespace-only input returns null', () => {
+  assert.strictEqual(R.sanitizeReason(undefined), null);
+  assert.strictEqual(R.sanitizeReason(null), null);
+  assert.strictEqual(R.sanitizeReason(42), null);
+  assert.strictEqual(R.sanitizeReason(''), null);
+  assert.strictEqual(R.sanitizeReason('   '), null);
+});
+t('sanitizeReason: control characters (CR/LF/NUL — log/JSON injection shape) are stripped, never persisted verbatim', () => {
+  const out = R.sanitizeReason('line one\nFAKE-LOG-LINE: pwned\r\nmore\x00text');
+  assert.ok(!/[\n\r\x00]/.test(out), 'no raw control character may survive: ' + JSON.stringify(out));
+});
+t('sanitizeReason: a long token-shaped run (>=20 chars, no whitespace, token alphabet) is masked, never echoed', () => {
+  const fakeToken = 'sk-ant-oat01-' + 'a'.repeat(40);
+  const out = R.sanitizeReason('owner note: ' + fakeToken + ' pasted by mistake');
+  assert.ok(!out.includes(fakeToken), 'the token-shaped run must be masked: ' + out);
+  assert.ok(out.includes('[redacted-token-like-value]'), out);
+});
+t('sanitizeReason: ordinary short hyphenated/technical words are NOT masked (false-positive guard)', () => {
+  const out = R.sanitizeReason('usage-guard-override-grant test');
+  assert.strictEqual(out, 'usage-guard-override-grant test');
+});
+t('sanitizeReason: total length is capped', () => {
+  const out = R.sanitizeReason('word '.repeat(200));
+  assert.ok(out.length <= 501, 'must be capped to ~500 chars: ' + out.length);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

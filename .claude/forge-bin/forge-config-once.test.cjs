@@ -172,22 +172,24 @@ t('a lock that vanished entirely between the eligibility check and the reclaim r
   assert.strictEqual(ok, false);
   assert.strictEqual(fs.existsSync(lockPath), false);
 });
-t('a lock that changes in the tiny window between the eligibility check and the rename itself is caught by the post-rename re-verify and restored, never falsely reclaimed', () => {
+t('V09 FIFTH fix (out-p11 + addendum): the lock path is NEVER absent during a reclaim — a concurrent exclusive-create attempt mid-reclaim still sees the path occupied, closing the exact "third acquirer takes the vacant path" half of the finding (mirrors this project\'s own usage-guard-state.cjs test for its identical fix)', () => {
   const file = tmpTarget();
   const lockPath = file + '.lock';
   const DEAD_PID = 999991;
-  const staleToken = DEAD_PID + ':deadfeeddeadfeed';
-  fs.writeFileSync(lockPath, staleToken);
+  fs.writeFileSync(lockPath, DEAD_PID + ':stale-token');
   backdate(lockPath, 5000);
   const origRename = fs.renameSync;
-  let hijacked = false;
-  const freshToken = process.pid + ':freshlivetoken';
+  let checkedMidRename = false;
   fs.renameSync = function (src, dest) {
-    if (!hijacked && src === lockPath) {
-      hijacked = true;
-      // A genuine concurrent replacement lands in the instant between this call's eligibility check and its
-      // rename (V09 out-p10's own residual fs-seam interval).
-      fs.writeFileSync(lockPath, freshToken);
+    if (dest === lockPath) {
+      // exactly the moment the OLD (steal-away) design would have had lockPath vacant (post-steal,
+      // pre-restore-or-create) — the new design never removes lockPath at all; a concurrent fresh
+      // exclusive-create must still see it occupied right now.
+      assert.ok(fs.existsSync(lockPath), 'lockPath must never be absent mid-reclaim');
+      let creationErrorCode = null;
+      try { fs.closeSync(fs.openSync(lockPath, 'wx')); } catch (e) { creationErrorCode = e.code; }
+      assert.strictEqual(creationErrorCode, 'EEXIST', 'a fresh exclusive-create must NEVER succeed mid-reclaim (the path was never vacant)');
+      checkedMidRename = true;
     }
     return origRename.apply(fs, arguments);
   };
@@ -197,9 +199,88 @@ t('a lock that changes in the tiny window between the eligibility check and the 
   } finally {
     fs.renameSync = origRename;
   }
+  assert.strictEqual(checkedMidRename, true, 'the instrumentation must actually have run during the real reclaim');
+  assert.strictEqual(ok, true);
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
+});
+t('V09 FIFTH fix, honest residual (measured, not assumed): a genuinely concurrent write landing between the eligibility check and the replace-rename is silently overwritten by a blind replace — this is why every real write MUST use fence() at publish time (see forge-config.test.cjs), not trust tryReclaimStaleLock\'s own success alone', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const DEAD_PID = 999990;
+  fs.writeFileSync(lockPath, DEAD_PID + ':deadfeeddeadfeed');
+  backdate(lockPath, 5000);
+  const origRename = fs.renameSync;
+  let hijacked = false;
+  const freshToken = process.pid + ':freshlivetoken';
+  const ourToken = once.randomToken();
+  fs.renameSync = function (src, dest) {
+    if (!hijacked && dest === lockPath) {
+      hijacked = true;
+      // A genuine concurrent write (e.g. a different live holder's own refresh) lands in the instant between
+      // this call's eligibility check and its replace-rename — a raw fs-seam injection, not a second reclaim.
+      fs.writeFileSync(lockPath, freshToken);
+    }
+    return origRename.apply(fs, arguments);
+  };
+  let ok;
+  try {
+    ok = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, ourToken));
+  } finally {
+    fs.renameSync = origRename;
+  }
   assert.strictEqual(hijacked, true, 'the injected interleaving must actually have fired');
-  assert.strictEqual(ok, false, 'the reclaim must fail — what it actually captured was not what it had just confirmed eligible');
-  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), freshToken, 'the fresh replacement lock must be restored, fully intact');
+  // Documented, not silently claimed fixed: a plain replace-rename is unconditional, so our own later replace
+  // simply overwrites whatever landed in that instant — `ok` reports true because our OWN readback matches,
+  // even though a genuinely different write briefly existed there. Closing this needs a real compare-and-swap
+  // (not available from Node's fs API) or OS-level locking; the actual safety net is the fence at publish time.
+  assert.strictEqual(ok, true, 'documents the residual: a blind replace does not protect a write that lands in this narrow window');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), ourToken, 'our own replace is what is actually on disk — the injected fresh write did not survive');
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
+});
+t('V09 FIFTH fix, two-reclaimer interleaving THROUGH THE RECLAIM PATH (Security Boss addendum): B and C can each independently pass eligibility on the SAME stale lock and each report tryReclaimStaleLock success — but only the physically-last replace is ever actually on disk, and withLock\'s own fence() correctly refuses the earlier "winner" once it checks again at publish time', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const DEAD_PID = 999979;
+  fs.writeFileSync(lockPath, DEAD_PID + ':stale-token');
+  backdate(lockPath, 5000);
+  const origOpenSync = fs.openSync;
+  let injected = false;
+  let cWon = null;
+  const tokenB = once.randomToken();
+  const tokenC = once.randomToken();
+  fs.openSync = function (p, flags) {
+    if (!injected && typeof p === 'string' && p.includes('.reclaim.') && flags === 'wx') {
+      // B has just started preparing its OWN private reclaim file — lockPath still shows the ORIGINAL stale
+      // token (B has not replaced anything yet). A genuinely separate process (C) racing the identical stale
+      // lock would ALSO still see it as eligible right now — simulate that with a real, complete reclaim.
+      injected = true;
+      cWon = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, tokenC));
+    }
+    return origOpenSync.apply(fs, arguments);
+  };
+  let bWon;
+  try {
+    bWon = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, tokenB));
+  } finally {
+    fs.openSync = origOpenSync;
+  }
+  // Both C (replaced first, while B had not yet touched lockPath) and B (replaced second, after C) pass
+  // their OWN immediate readback — this is the exact, honestly-documented residual (see the file header):
+  // a plain replace+readback proves "my write was most recent AT THE INSTANT I CHECKED", never "still true
+  // afterward". B's later replace physically wins; only B's token is actually on disk.
+  assert.strictEqual(cWon, true, 'C\'s own readback passed at the time it checked — the residual this test measures');
+  assert.strictEqual(bWon, true, 'B replaced last and its own readback also passed');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), tokenB, 'only B\'s token is actually on disk — C was silently overwritten');
+  // THE ACTUAL SAFETY NET: a caller that used withLock (not the raw primitive directly) re-checks fence()
+  // immediately before its own real write. C's fence, checked NOW (after B's later replace), must correctly
+  // report false — this is what stops the stale "winner" from taking real action, independent of whichever
+  // primitive told it it had won.
+  const cFence = () => fs.readFileSync(lockPath, 'utf8') === tokenC; // the same in-place-read comparison withLock's real fence() performs
+  assert.strictEqual(cFence(), false, 'C\'s fence must report false once B\'s later replace has actually landed');
   const dir = path.dirname(lockPath);
   const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
   assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
@@ -364,41 +445,92 @@ t('V09.3: release must verify ownership IN PLACE before ever renaming — it mus
   assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
 });
 
-t('V09.3/out-p10: a restoration failure (a third lock already occupies the name) preserves the captured lock on disk instead of discarding it, and the reclaim still fails honestly', () => {
+t('V09 FIFTH fix: a THROWN token write while preparing the private reclaim file leaves the ORIGINAL stale lock byte-for-byte untouched (never a fresh zero-byte orphan, never a rename attempted) — an immediate successor can retry right away, without waiting out the full stale interval', () => {
   const file = tmpTarget();
   const lockPath = file + '.lock';
   const DEAD_PID = 999989;
-  const staleToken = DEAD_PID + ':live-token-that-will-be-wrongly-captured';
+  const staleToken = DEAD_PID + ':stale-token';
   fs.writeFileSync(lockPath, staleToken);
   backdate(lockPath, 5000);
-  const origRename = fs.renameSync;
-  const origLinkSync = fs.linkSync;
-  // A genuine concurrent replacement lands in the instant between the eligibility check and the rename
-  // (same fs-seam technique as the direct unit test above), forcing the post-rename re-verify to detect a
-  // mismatch and fall into the restoration branch.
-  fs.renameSync = function (src, dest) {
-    const r = origRename.apply(fs, arguments);
-    if (src === lockPath) fs.writeFileSync(dest, 'a-different-token-than-was-checked');
-    return r;
+  const origWriteSync = fs.writeSync;
+  let sawWrite = false;
+  fs.writeSync = function (fd, data) {
+    if (!sawWrite && typeof data === 'string' && data.includes(process.pid + ':')) {
+      sawWrite = true; // this is the reclaim's own private-file token write
+      const e = new Error('simulated EIO during reclaim token write'); e.code = 'EIO'; throw e;
+    }
+    return origWriteSync.apply(fs, arguments);
   };
-  fs.linkSync = function () {
-    const err = new Error('simulated EEXIST — a third lock already occupies this name');
-    err.code = 'EEXIST';
-    throw err;
+  let ok;
+  try {
+    ok = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, once.randomToken()));
+  } finally {
+    fs.writeSync = origWriteSync;
+  }
+  assert.ok(sawWrite, 'the simulated token-write failure must actually have been exercised');
+  assert.strictEqual(ok, false, 'a thrown token write during reclamation must report failure, never a false success');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), staleToken, 'the ORIGINAL stale lock must survive completely untouched — lockPath itself is never approached until the private file is fully written');
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
+  // an immediate successor (no waiting) must be able to retry the SAME stale lock right away.
+  const retryToken = once.randomToken();
+  const retryOk = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, retryToken));
+  assert.strictEqual(retryOk, true, 'the very next attempt must succeed immediately — the stale lock was never corrupted into a fresh-looking orphan');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), retryToken);
+});
+t('V09 FIFTH fix: a transient Windows-style EPERM/EBUSY on the replace-rename (another reader briefly has lockPath open — a real, live-confirmed platform difference from POSIX) is retried and still succeeds; a non-transient error is never retried forever', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const DEAD_PID = 999988;
+  fs.writeFileSync(lockPath, DEAD_PID + ':stale-token');
+  backdate(lockPath, 5000);
+  const origRename = fs.renameSync;
+  let attempts = 0;
+  fs.renameSync = function (src, dest) {
+    if (dest === lockPath) {
+      attempts++;
+      if (attempts < 3) { const e = new Error('simulated EPERM'); e.code = 'EPERM'; throw e; }
+    }
+    return origRename.apply(fs, arguments);
   };
   let ok;
   try {
     ok = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, once.randomToken()));
   } finally {
     fs.renameSync = origRename;
-    fs.linkSync = origLinkSync;
   }
-  assert.strictEqual(ok, false, 'a mismatched reclaim whose restoration also fails must still report failure honestly, never success');
-  assert.strictEqual(fs.existsSync(lockPath), false, 'lockPath itself was genuinely vacated by the steal, and restoration could not put it back (simulated third lock)');
+  assert.strictEqual(attempts, 3, 'must have retried the transient failure before succeeding');
+  assert.strictEqual(ok, true, 'a transient EPERM/EBUSY/EACCES must be absorbed by a short retry, matching forge-config.cjs\'s own renameWithRetry convention');
   const dir = path.dirname(lockPath);
-  const preserved = fs.readdirSync(dir).filter((f) => f.includes('.reclaim.'));
-  assert.strictEqual(preserved.length, 1, 'the captured (stolen) lock content must be PRESERVED on disk, never discarded, when restoration fails: found ' + preserved.join(','));
-  assert.strictEqual(fs.readFileSync(path.join(dir, preserved[0]), 'utf8'), 'a-different-token-than-was-checked', 'the preserved file must still hold the exact captured content, untouched');
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
+});
+t('V09 FIFTH fix: a NON-transient rename error (e.g. EIO) on the replace fails the reclaim outright, cleans up the private temp file, and never retries', () => {
+  const file = tmpTarget();
+  const lockPath = file + '.lock';
+  const DEAD_PID = 999987;
+  const staleToken = DEAD_PID + ':stale-token';
+  fs.writeFileSync(lockPath, staleToken);
+  backdate(lockPath, 5000);
+  const origRename = fs.renameSync;
+  let attempts = 0;
+  fs.renameSync = function (src, dest) {
+    if (dest === lockPath) { attempts++; const e = new Error('simulated EIO'); e.code = 'EIO'; throw e; }
+    return origRename.apply(fs, arguments);
+  };
+  let ok;
+  try {
+    ok = withDeadPid(DEAD_PID, () => once.tryReclaimStaleLock(lockPath, 1000, once.randomToken()));
+  } finally {
+    fs.renameSync = origRename;
+  }
+  assert.strictEqual(attempts, 1, 'a non-transient error must never be retried');
+  assert.strictEqual(ok, false);
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), staleToken, 'the original stale lock is untouched');
+  const dir = path.dirname(lockPath);
+  const leftovers = fs.readdirSync(dir).filter((f) => f !== path.basename(lockPath));
+  assert.deepStrictEqual(leftovers, [], 'no stray private/temp file left behind: ' + leftovers.join(','));
 });
 
 t('V09.3: a SHORT writeSync (returns fewer bytes than the token, no exception) must fail acquisition — a partial token is never accepted', () => {
@@ -475,7 +607,7 @@ t('out-p10: the exact reported schedule through the real module — B genuinely 
   once.releaseLock(lockB);
 });
 
-t('out-p10: fs-seam injection — B\'s real reclaim lands in the syscall-width gap between release\'s own in-place read and its action; release must never RENAME anything in this window (no capture step exists to exploit)', () => {
+t('out-p10: fs-seam injection — B\'s real reclaim lands in the syscall-width gap AFTER release\'s own in-place read completes (readLockInPlace\'s open+fstat+read+close already finished, still A\'s own bytes) but BEFORE releaseLock\'s code acts on that result; release must never RENAME anything in this window (no capture step exists to exploit)', () => {
   const file = tmpTarget();
   const lockPath = file + '.lock';
   const DEAD_PID = 999986;
@@ -484,20 +616,28 @@ t('out-p10: fs-seam injection — B\'s real reclaim lands in the syscall-width g
   backdate(lockPath, 5000);
   const lockA = { path: lockPath, token: tokenA };
 
-  const origReadSync = fs.readSync;
+  const origOpenSync = fs.openSync;
+  const origCloseSync = fs.closeSync;
   const origRenameSync = fs.renameSync;
+  let trackedFd = null;
   let injectedB = false;
   let bReclaimDone = false; // B's OWN legitimate internal reclaim rename must not be mistaken for release's
   let lockB = null;
   let renameAttempted = false;
-  // The instant release's OWN readLockInPlace finishes reading A's bytes (still A's own — B has not acted
-  // yet) but BEFORE releaseLock's code gets to look at that result and decide what to do, inject B's REAL,
-  // complete reclaim through the real acquireLock() entrypoint — this is the exact "read-to-rename interval"
-  // Codex located at forge-config-once.cjs:306 (out-p10). The guard prevents recursing into this same hook
-  // from B's own internal reads.
-  fs.readSync = function () {
-    const r = origReadSync.apply(fs, arguments);
-    if (!injectedB) {
+  // Track the EXACT fd release's own readLockInPlace(lockA.path) opens, so the injection fires only once
+  // THAT fd is closed again (the read has genuinely finished, still A's own bytes) — never while it is still
+  // open (a real reclaim's replace-rename would itself transiently fail on Windows against an open reader,
+  // a real platform difference from POSIX this project's own replaceLockFile now retries around; injecting
+  // while the fd is already closed avoids that unrelated timing artifact and matches the REAL gap Codex named:
+  // AFTER the read, BEFORE the caller acts on it).
+  fs.openSync = function (p, flags) {
+    const fd = origOpenSync.apply(fs, arguments);
+    if (trackedFd === null && p === lockA.path && flags === 'r') trackedFd = fd;
+    return fd;
+  };
+  fs.closeSync = function (fd) {
+    const r = origCloseSync.apply(fs, arguments);
+    if (!injectedB && fd === trackedFd) {
       injectedB = true;
       lockB = withDeadPid(DEAD_PID, () => once.acquireLock(file, { staleMs: 1000, timeoutMs: 2000, pollMs: 5 }));
       bReclaimDone = true; // any rename from here on is release's own, never B's legitimate reclaim
@@ -511,7 +651,7 @@ t('out-p10: fs-seam injection — B\'s real reclaim lands in the syscall-width g
 
   let released;
   try { released = once.releaseLock(lockA); }
-  finally { fs.readSync = origReadSync; fs.renameSync = origRenameSync; }
+  finally { fs.openSync = origOpenSync; fs.closeSync = origCloseSync; fs.renameSync = origRenameSync; }
 
   assert.ok(lockB, 'the injected interleaving must actually have fired — B must have genuinely reclaimed');
   assert.notStrictEqual(lockB.token, tokenA, 'B holds a genuinely fresh, different token');
@@ -528,23 +668,30 @@ t('RESIDUAL (documented, not closed by this or any rename/unlink-based design): 
   backdate(lockPath, 5000);
   const lockA = { path: lockPath, token: tokenA };
 
-  const origReadSync = fs.readSync;
+  const origOpenSync = fs.openSync;
+  const origCloseSync = fs.closeSync;
+  let trackedFd = null;
   let injectedB = false;
   let lockB = null;
-  fs.readSync = function () {
-    const r = origReadSync.apply(fs, arguments);
-    if (!injectedB) {
+  fs.openSync = function (p, flags) {
+    const fd = origOpenSync.apply(fs, arguments);
+    if (trackedFd === null && p === lockA.path && flags === 'r') trackedFd = fd;
+    return fd;
+  };
+  fs.closeSync = function (fd) {
+    const r = origCloseSync.apply(fs, arguments);
+    if (!injectedB && fd === trackedFd) {
       injectedB = true;
-      // B's real reclaim lands strictly BETWEEN release's in-place read (already captured A's own bytes,
-      // above) and release's own decision/unlink below — the one syscall-width gap a plain "read, then act"
-      // sequence cannot close without OS-level locking.
+      // B's real reclaim lands strictly AFTER release's in-place read has already finished (already captured
+      // A's own bytes) but BEFORE release's own decision/unlink below — the one syscall-width gap a plain
+      // "read, then act" sequence cannot close without OS-level locking.
       lockB = withDeadPid(DEAD_PID, () => once.acquireLock(file, { staleMs: 1000, timeoutMs: 2000, pollMs: 5 }));
     }
     return r;
   };
   let released;
   try { released = once.releaseLock(lockA); }
-  finally { fs.readSync = origReadSync; }
+  finally { fs.openSync = origOpenSync; fs.closeSync = origCloseSync; }
 
   assert.ok(lockB, 'the injected interleaving must actually have fired');
   // This is the accepted, documented residual (module header, "V09 FOURTH fix ... RESIDUAL"): A's read
@@ -574,6 +721,131 @@ t('isPidAlive: ESRCH means dead, EPERM/any other error and a successful signal b
     assert.strictEqual(once.isPidAlive(0), true, 'pid 0 is never a valid holder pid — fails closed');
     assert.strictEqual(once.isPidAlive(-5), true, 'a negative pid is never valid — fails closed');
   } finally { process.kill = origKill; }
+});
+
+// ---------------------------------------------------------------------------------------------------
+console.log('\n10) V09 FIFTH fix (out-p11 + addendum): withLock\'s real fence — a lock replaced between');
+console.log('    acquisition and a caller\'s own write must be refused, not silently trusted');
+t('fence() reports true while this call genuinely still holds the lock, and false once a DIFFERENT token has been written to lockPath (a reclaim by someone else)', () => {
+  const file = tmpTarget();
+  let sawInside = null, sawAfterForeignWrite = null;
+  once.withLock(file, (fence) => {
+    sawInside = fence();
+    fs.writeFileSync(file + '.lock', 'someone-elses-token'); // simulate a reclaim landing mid-transaction
+    sawAfterForeignWrite = fence();
+  });
+  assert.strictEqual(sawInside, true, 'fence() must report true immediately after acquisition');
+  assert.strictEqual(sawAfterForeignWrite, false, 'fence() must report false once a foreign token is on disk');
+  fs.unlinkSync(file + '.lock'); // cleanup — withLock's own release will see the foreign token and correctly no-op
+});
+t('withLock still calls fn(fence) and releases normally when fn never calls fence() at all (backward compatible with callbacks written before this fix)', () => {
+  const file = tmpTarget();
+  let ran = false;
+  once.withLock(file, () => { ran = true; });
+  assert.strictEqual(ran, true);
+  assert.strictEqual(fs.existsSync(file + '.lock'), false);
+});
+
+// ---------------------------------------------------------------------------------------------------
+console.log('\n11) V09 FIFTH fix (out-p11 + addendum): the exactly-once PENDING/CONSUMED grant store');
+console.log('    (forge-config-once-store.cjs) — the real safety property, independent of the lock above');
+const onceStore = require('./forge-config-once-store.cjs');
+function storeDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-config-once-store-')); }
+function grantEntry(nowMs, minutes) {
+  return {
+    value: false, set_at: new Date(nowMs).toISOString(), set_by: 'owner one-off approval: test',
+    once_quote: 'test', expires_at: new Date(nowMs + (minutes || 10) * 60000).toISOString(),
+    consumed_at: null, consumed_command_sha256: null,
+  };
+}
+t('writePendingOnceGrant writes an atomic, readable file at oncePendingPath; no .tmp leftover', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  const p = onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now));
+  assert.strictEqual(p, onceStore.oncePendingPath(dir, 'gate-hook'));
+  const read = onceStore.readOnceEntryInPlace(p);
+  assert.strictEqual(read.once_quote, 'test');
+  const leftovers = fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, []);
+});
+t('consumeOnceGrant: absent (no pending file at all) -> reason:absent, never true', () => {
+  const dir = storeDir();
+  const r = onceStore.consumeOnceGrant(dir, 'gate-hook', Date.now(), 'sha');
+  assert.deepStrictEqual(r, { ok: false, reason: 'absent' });
+});
+t('consumeOnceGrant: clock (set_at in the future relative to now) -> reason:clock, nothing consumed', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now + 3600000)); // set_at one hour in the future
+  const r = onceStore.consumeOnceGrant(dir, 'gate-hook', now, 'sha');
+  assert.deepStrictEqual(r, { ok: false, reason: 'clock' });
+  assert.strictEqual(fs.existsSync(onceStore.oncePendingPath(dir, 'gate-hook')), true, 'a clock-refused attempt must not consume the pending file');
+});
+t('consumeOnceGrant: expired -> reason:expired, the pending file is left exactly as it was (never renamed)', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now, 10));
+  const r = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 11 * 60000, 'sha'); // 11 min later — past the 10-min window
+  assert.deepStrictEqual(r, { ok: false, reason: 'expired' });
+  assert.strictEqual(fs.existsSync(onceStore.oncePendingPath(dir, 'gate-hook')), true);
+});
+t('consumeOnceGrant: a single caller consumes exactly once — first call ok:true, the SAME pending path is gone afterward, a consumed file embedding the sha now exists', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now));
+  const r = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 60000, 'deadbeef12345678');
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(fs.existsSync(onceStore.oncePendingPath(dir, 'gate-hook')), false, 'the pending file must be gone — renamed away by the single use');
+  const consumedFiles = fs.readdirSync(dir).filter((f) => f.includes('.consumed.'));
+  assert.strictEqual(consumedFiles.length, 1, 'exactly one consumed record must exist: ' + consumedFiles.join(','));
+  assert.ok(consumedFiles[0].includes('deadbeef12345678'.slice(0, 16)), 'the consumed filename must embed the approved command\'s sha256: ' + consumedFiles[0]);
+  const consumed = JSON.parse(fs.readFileSync(path.join(dir, consumedFiles[0]), 'utf8'));
+  assert.strictEqual(consumed.consumed_command_sha256, 'deadbeef12345678');
+  assert.ok(Date.parse(consumed.consumed_at) > 0);
+});
+t('THE CORE V09 FIX: two SEQUENTIAL consumers racing the identical pending grant — exactly ONE consumeOnceGrant() call succeeds, independent of any external lock (this test uses NO lock at all); the second call finds the pending file already gone (reason:absent) since nothing raced it at the syscall level here — see the interleaved test below for the genuine race, which yields reason:consumed', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now));
+  const first = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 1000, 'first-caller-sha');
+  const second = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 1000, 'second-caller-sha');
+  const results = [first, second];
+  const successes = results.filter((r) => r.ok === true);
+  assert.strictEqual(successes.length, 1, 'exactly one of the two calls must succeed: ' + JSON.stringify(results));
+  assert.strictEqual(second.ok, false, 'the second (later) call must never also succeed');
+});
+t('THE CORE V09 FIX, genuinely interleaved via a real fs-seam on the rename itself: a SECOND consumeOnceGrant() call that races INSIDE the first call\'s own rename (the loser\'s rename throws ENOENT because the source is already gone) still yields exactly one success', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now));
+  const pendingPath = onceStore.oncePendingPath(dir, 'gate-hook');
+  const origRename = fs.renameSync;
+  let fired = false;
+  let nested = null;
+  fs.renameSync = function (src, dest) {
+    if (!fired && src === pendingPath) {
+      fired = true;
+      // A genuinely concurrent second consumer races the SAME pending file in the syscall-width gap before
+      // this (the "outer") call's own rename executes — it runs to completion FIRST (winning the real rename).
+      nested = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 1000, 'nested-sha');
+    }
+    return origRename.apply(fs, arguments);
+  };
+  let outer;
+  try { outer = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 1000, 'outer-sha'); }
+  finally { fs.renameSync = origRename; }
+  assert.strictEqual(fired, true, 'the injected interleaving must actually have fired');
+  const results = [outer, nested];
+  const successes = results.filter((r) => r && r.ok === true);
+  assert.strictEqual(successes.length, 1, 'exactly one of the two genuinely interleaved calls must succeed: ' + JSON.stringify(results));
+  assert.ok(results.some((r) => r && r.ok === false && r.reason === 'consumed'), 'the loser must be refused with reason:consumed: ' + JSON.stringify(results));
+});
+t('removePendingOnceGrant is a safe, best-effort no-op when nothing is armed, and actually removes an armed-but-not-yet-consumed grant', () => {
+  const dir = storeDir();
+  onceStore.removePendingOnceGrant(dir, 'gate-hook'); // nothing there — must not throw
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(Date.now()));
+  onceStore.removePendingOnceGrant(dir, 'gate-hook');
+  assert.strictEqual(fs.existsSync(onceStore.oncePendingPath(dir, 'gate-hook')), false);
 });
 
 console.log('');

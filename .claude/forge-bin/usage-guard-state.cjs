@@ -124,6 +124,16 @@ function isPidAlive(pid) {
   try { process.kill(pid, 0); return true; }
   catch (e) { return !!(e && e.code === 'EPERM'); }
 }
+// L4 (Security Boss addendum, 2026-09-24 — documented, not fixed by this or any bare-pid liveness check,
+// mirrors forge-config-once.cjs's own identical residual for its analogous lock): PID REUSE remains a real
+// limitation. If a holder's process exits and the OS hands that EXACT pid number to a brand-new, unrelated
+// process before this lock goes stale, `isPidAlive` cannot tell the new process apart from the original
+// holder — the lock reads as "still live" and can never be reclaimed until that unrelated process ALSO
+// exits (or the token's own pid, coincidentally, becomes unreachable another way). This is a LIVENESS
+// (availability) limitation, not an EXCLUSION (safety) one: the worst outcome is an un-reclaimable lock that
+// requires manual intervention (delete the lock file), never two holders running the callback at once.
+// Closing it fully needs real OS-level process-handle tracking (e.g. a kernel-revoked advisory lock), which
+// this cross-platform, dependency-free, token-file design intentionally does not depend on.
 
 /** verifyLockStaleInPlace(lockPath, staleMs) -> { stale, mtimeMs, content } | null. THE fresh, in-place
  *  check (V15, FOURTH Codex recheck, 2026-09-24) — ONE open+fstat+read, never a value a caller assembled
@@ -200,23 +210,25 @@ async function withStateLock(lockPath, fn, opts) {
   const myToken = randomToken();
   let loggedWaiting = false;
   for (;;) {
+    // L2 (Security Boss addendum, 2026-09-24 — CORRECTS N07's own "wx guarantees exclusivity, so whatever
+    // is now at lockPath can only be our own incomplete write" claim, which is FALSE on Windows): the
+    // create and the token write are done as two EXPLICIT steps (open, then write+close) rather than one
+    // `fs.writeFileSync(..., {flag:'wx'})` call, specifically so a failure can be attributed correctly:
+    //   - the OPEN itself failing (anything other than EEXIST, e.g. Windows EPERM/EBUSY while a file is
+    //     mid-delete by another process) means we never got a handle — we cannot prove the content sitting
+    //     at lockPath is ours, so it is NEVER deleted here (only a later, liveness-checked reclaim may touch
+    //     it). This is the exact hazard Security Boss's L2 finding named: an unconditional unlink in this
+    //     branch could delete a DIFFERENT, genuinely live holder's real lock.
+    //   - the OPEN succeeding (a fresh `wx` create genuinely happened — no other process could have created
+    //     this exact path in between, by definition of an exclusive create) means whatever is at lockPath
+    //     afterward — even wrong bytes from a failed write, or a readback mismatch — is UNAMBIGUOUSLY ours to
+    //     clean up, preserving N07's original guarantee (no ownerless orphan left behind) exactly for the
+    //     case it actually applies to.
+    let fd = null;
     try {
-      fs.writeFileSync(lockPath, myToken, { flag: 'wx' });
-      if (readLockToken(lockPath) === myToken) break; // acquired, and independently confirmed (N07)
-      // N07 (2026-09-24): a write that neither threw nor produced the expected content on readback — this
-      // must REFUSE outright rather than proceed into fn() with a fence() that can only ever report false.
-      // `wx` guarantees exclusivity, so whatever is now at lockPath can only be our own incomplete write —
-      // safe to remove, never someone else's.
-      try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
-      return { ok: false, reason: 'lock-write-failed' };
+      fd = fs.openSync(lockPath, 'wx');
     } catch (e) {
-      if (e.code !== 'EEXIST') {
-        // N07: a THROWN token write (EIO/ENOSPC/etc.) during acquisition — same refusal, same cleanup
-        // rationale as the readback-mismatch branch above (a non-EEXIST failure here can only ever follow
-        // our own successful exclusive create).
-        try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
-        return { ok: false, reason: 'lock-write-failed' };
-      }
+      if (e.code !== 'EEXIST') return { ok: false, reason: 'lock-write-failed' }; // open failed — not ours, never delete
       // EEXIST: genuine contention. Reclaim now verifies staleness freshly, IN PLACE, immediately before
       // acting — never against a value read via separate, earlier syscalls (V15, fourth recheck).
       if (tryReclaimStaleLock(lockPath, myToken, staleMs)) break;
@@ -234,7 +246,21 @@ async function withStateLock(lockPath, fn, opts) {
         loggedWaiting = true;
       }
       await new Promise((res) => setTimeout(res, DEFAULT_POLL_MS));
+      continue; // back to the top — retry the exclusive open
     }
+    // our OWN exclusive create just succeeded (no other process could have created this exact path in
+    // between) — whatever ends up at lockPath from here is UNAMBIGUOUSLY ours to write to and, on failure,
+    // to clean up (N07's original guarantee, preserved exactly for the case it actually proves).
+    let wroteOk = false;
+    try { fs.writeSync(fd, myToken); wroteOk = true; } catch { /* wroteOk stays false */ }
+    try { fs.closeSync(fd); } catch { /* best effort */ }
+    if (wroteOk && readLockToken(lockPath) === myToken) break; // acquired, and independently confirmed (N07)
+    // N07 (2026-09-24): a write that threw, or that neither threw nor produced the expected content on
+    // readback — this must REFUSE outright rather than proceed into fn() with a fence() that can only ever
+    // report false. Safe to remove unconditionally: we created this file moments ago via our own exclusive
+    // open, so it cannot belong to anyone else.
+    try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
+    return { ok: false, reason: 'lock-write-failed' };
   }
   // LIVENESS (V15, second recheck): refresh this lock's mtime while `fn()` runs, so a genuinely live
   // holder — whose transaction may span a real network round trip well past `staleMs` — is never mistaken

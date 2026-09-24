@@ -496,10 +496,16 @@ t('N04 root cause: a shared full-text mask resolves what a per-segment mask cann
   const withMask = position.laterBranchStarts(tail.segment, mask, tail.offset);
   assert.ok(withMask.some((s) => s.startsWith('else')), 'the ORIGINAL-offset mask must still find the later else: ' + JSON.stringify(withMask));
   // counterfactual: a mask rebuilt fresh over JUST the stump text (the pre-fix shape) misreads the stray
-  // closing quote as an opener and swallows the branch — proving the fix is load-bearing, not a no-op.
+  // closing quote as an opener and marks the later "else" as (wrongly) inside a quote — proving the fix is
+  // load-bearing at the MASK level, not a no-op. (H2, codex-recheck 2026-09-24 wave 6 / wp-k3:
+  // laterBranchStarts() itself now has an ADDITIONAL, orthogonal safety net for a mask it cannot resolve at
+  // all — see the dedicated H2 test below — so THIS counterfactual asserts directly against the mask's own
+  // inside() rather than routing through laterBranchStarts, to keep proving the ORIGINAL-OFFSET point alone.)
   const freshMask = quotes.scanQuotes(tail.segment);
-  const withoutOriginalOffset = position.laterBranchStarts(tail.segment, freshMask, 0);
-  assert.strictEqual(withoutOriginalOffset.length, 0, 'counterfactual: a mask rebuilt over the stump alone must (wrongly) hide the branch — proves the fix is load-bearing');
+  const elseIndexInStump = tail.segment.indexOf('else');
+  assert.ok(elseIndexInStump > 0, 'fixture assumption: "else" is present in the stump: ' + tail.segment);
+  assert.strictEqual(freshMask.inside(elseIndexInStump), true,
+    'counterfactual: a mask rebuilt over the stump alone must (wrongly) mark "else" as inside a quote — proves the fix is load-bearing');
 });
 
 t('N04 fourth pass: quoted-";" branch fixtures FIRE through the full classify() pipeline (else/elseif/catch/finally)', () => {
@@ -581,6 +587,159 @@ t('N05: scanQuotes() resolves a 10 kB adversarial input (many empty heredocs + u
   const elapsed = Date.now() - t0;
   assert.ok(elapsed < 100, 'scanQuotes() took ' + elapsed + 'ms on a 10kB adversarial input, expected < 100ms');
   assert.strictEqual(typeof mask.unterminated, 'boolean');
+});
+
+// ---------------------------------------------------------------------------
+// wave 6 (codex-recheck 2026-09-24, wp-k3) — N09 (over-blocking regression) and N13 (scanner robustness), plus
+// H2/M1 from the Security Boss's independent read-only review of the same wave-5 classifier.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave6-a) N09 — hasLiveCArg()/cArgLiveAfterFlag() associate -c with a REAL interpreter invocation');
+
+const N09_SILENT = [
+  // a quoted CURRENCY amount as an argument to an unrelated program, with an unrelated real "bash" invocation
+  // elsewhere in the same command line — the pre-fix code combined a shell-name-ANYWHERE check with an
+  // independently-located -c+dollar check, firing even though neither belonged to the other.
+  'bash build.sh && node report.cjs -c "total $5 due"',
+  // a ".sh" FILE EXTENSION (not a real shell invocation at all) matching the old bare "sh" alternative,
+  // combined with an unrelated program's own -c flag and a currency amount.
+  'cp install.sh /tmp/ && node report.cjs -c "$5 total"',
+  // a byte/count -style -c flag on an ordinary program (wc), with an unrelated real "bash" invocation earlier.
+  'bash setup.sh; wc -c "$file"',
+  // commit prose: a -m message that MENTIONS "bash -c" and a dollar amount is quoted DATA, not a real flag.
+  'git commit -m "migrated build script to bash -c and saved $20 total"',
+];
+for (const cmd of N09_SILENT) {
+  t('N09 must stay SILENT (over-blocking regression fixed): "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(!r.matched.includes('opaque-exec'), 'unexpectedly matched opaque-exec: ' + JSON.stringify(r.matched));
+  });
+}
+
+t('N09: cArgLiveAfterFlag() direct unit — currency dollar is never live, a real -c must belong to its own statement', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash build.sh && node report.cjs -c "total $5 due"'), false,
+    'the -c belongs to node report.cjs, not to the unrelated bash invocation');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('cp install.sh /tmp/ && node report.cjs -c "$5 total"'), false,
+    'a .sh file EXTENSION is not a shell invocation');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('node report.cjs -c "$5"'), false, 'a literal currency dollar is not substitution syntax');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$5"'), false, 'even a REAL bash -c stays silent for a currency amount');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x"'), true, 'a REAL substitution in a REAL invocation still fires');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo bash -c "$x"'), true, 'a wrapper prefix (sudo) does not hide the real invocation');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('{ bash -c "$x"; }'), true, 'a grouping opener does not hide the real invocation');
+});
+
+t('N09 counterfactual: real -c positives (bare/single/double, wrapped, sudo-prefixed) still fire through classify()', () => {
+  for (const cmd of ['bash -c "$SCRIPT"', '/bin/bash -c "$x"', 'sudo bash -c "$x"', '/usr/bin/env bash -c "$x"',
+    '/bin/bash -c $x', "/bin/bash -c '$x'", "bash -c \"printf '$(word)'\""]) {
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'must still fire: ' + cmd + ' -> ' + JSON.stringify(r.matched));
+  }
+});
+
+// M2 (Security Boss review) — named, documented gaps, not fixed: a clustered short flag and an option placed
+// between -c and its argument are not associated with the invocation at all (pattern-level gap, pre-existing
+// both before and after N09 — see hard-gates.json's opaque-exec _not_caught entry).
+t('M2 (documented gap, unchanged by N09): a clustered flag and an option between -c and its argument stay silent', () => {
+  for (const cmd of ['sh -xc "$x"', 'bash -c -- "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'documented gap: ' + cmd);
+  }
+});
+
+console.log('\n2c-wave6-b) N13 — scanQuotes() is iterative and bounded: no RangeError, no throw, ever');
+
+t('N13: a 9.9 kB, 3300-level-deep nested $(...) construct returns a decision within 1.5s, never throws', () => {
+  const depth = 3300;
+  const nested = '$('.repeat(depth) + 'x' + ')'.repeat(depth);
+  assert.strictEqual(nested.length, depth * 3 + 1, 'fixture assumption: ~9.9kB, depth >= 3300');
+  const t0 = Date.now();
+  let mask;
+  assert.doesNotThrow(() => { mask = quotes.scanQuotes(nested); }, 'scanQuotes() must never throw, even here');
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 1500, 'scanQuotes() took ' + elapsed + 'ms on 3300-deep nesting, expected < 1500ms');
+  assert.strictEqual(typeof mask.unterminated, 'boolean');
+});
+
+t('N13: the SAME deep-nesting text run through the real classify() pipeline resolves, never throws', () => {
+  const nested = '$('.repeat(3300) + 'x' + ')'.repeat(3300);
+  const t0 = Date.now();
+  let r;
+  assert.doesNotThrow(() => { r = gate.classify('echo ' + nested); });
+  assert.ok(Date.now() - t0 < 1500, 'classify() must resolve the deep-nesting input within 1.5s');
+  assert.ok(Array.isArray(r.matched));
+});
+
+t('N13 (L3, Security Boss review): MANY never-resolving heredoc markers in one text stay bounded, not quadratic', () => {
+  const parts = [];
+  for (let i = 0; i < 2000; i++) parts.push("cat <<'NEVER_MATCHES_" + i + "'");
+  const manyMarkers = parts.join('\n');
+  const t0 = Date.now();
+  let mask;
+  assert.doesNotThrow(() => { mask = quotes.scanQuotes(manyMarkers); });
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 500, 'scanQuotes() took ' + elapsed + 'ms on 2000 unresolved heredoc markers, expected < 500ms');
+  assert.strictEqual(typeof mask.unterminated, 'boolean');
+});
+
+t('N13: fuzzed random input never throws and always resolves within a bounded time (a few thousand strings)', () => {
+  const alphabet = '\'"`$(){}<> \\\n;|&aoeuXY0123456789.-_';
+  let rng = 42;
+  const next = () => { rng = (rng * 1103515245 + 12345) & 0x7fffffff; return rng; };
+  const t0 = Date.now();
+  for (let i = 0; i < 3000; i++) {
+    const len = next() % 200;
+    let s = '';
+    for (let k = 0; k < len; k++) s += alphabet[next() % alphabet.length];
+    let mask;
+    assert.doesNotThrow(() => { mask = quotes.scanQuotes(s); }, 'threw on fuzz input #' + i + ': ' + JSON.stringify(s));
+    assert.strictEqual(typeof mask.unterminated, 'boolean', 'bad result shape on fuzz input #' + i);
+  }
+  assert.ok(Date.now() - t0 < 5000, '3000 fuzz inputs took ' + (Date.now() - t0) + 'ms, expected < 5000ms total');
+});
+
+console.log('\n2c-wave6-c) H2 (Security Boss review) — an unresolved mask must widen later-branch detection, never narrow it');
+
+const H2_TRAILING_BACKSLASH_PREFIX = 'Write-Output "C:\\Users\\foo\\" ; ';
+const H2_BRANCH_BODIES = [
+  'if ($false) { Write-Output ok } else { iex $cmd }',
+  'if ($false) { Write-Output ok } elseif ($true) { iex $cmd }',
+  'try { Write-Output ok } catch { iex $cmd }',
+  'try { Write-Output ok } finally { iex $cmd }',
+];
+// The real PreToolUse-hook-level proof (spawned for both a "Bash" and a "PowerShell" tool_name, exit 2) lives
+// in forge-gate-hook.test.cjs section 2b (that file owns the spawnHook() harness); this file proves the SAME
+// fixtures through the module-level classify() API, which is what testCommandGate()/laterBranchStarts() above
+// actually execute.
+for (const body of H2_BRANCH_BODIES) {
+  const cmd = H2_TRAILING_BACKSLASH_PREFIX + body;
+  t('H2: a trailing-backslash quoted path before a later branch must still FIRE opaque-exec: "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), cmd + ' -> matched: ' + JSON.stringify(r.matched));
+  });
+}
+
+t('H2: laterBranchStarts() keeps every keyword candidate when the shared mask is unterminated (unit level)', () => {
+  const body = 'if ($false) { Write-Output ok } else { iex $cmd }';
+  const text = H2_TRAILING_BACKSLASH_PREFIX + body;
+  const mask = quotes.scanQuotes(text);
+  assert.strictEqual(mask.unterminated, true, 'fixture assumption: the trailing-backslash path makes the mask unresolved');
+  const elseIdx = text.indexOf('else');
+  assert.strictEqual(mask.inside(elseIdx), true, 'fixture assumption: bash-rules scanning still marks "else" as (wrongly) inside');
+  const starts = position.laterBranchStarts(text, mask, 0);
+  assert.ok(starts.some((s) => s.startsWith('else')), 'an unresolved mask must not suppress a later-branch candidate: ' + JSON.stringify(starts));
+});
+
+console.log('\n2c-wave6-d) M1 (Security Boss review) — an apostrophe inside an inner escaped-double-quote span cannot silently protect a later escaped $/backtick');
+
+t('M1: a real inner double-quoted span (escaped quotes) containing an apostrophe no longer masks a later escaped $', () => {
+  // bash -c "echo \"it's fine\" && \$x" — for the INNER -c shell, \"..\" is a literal quoted string; the "'"
+  // inside it has no special meaning at all. The escaped $x after it is still live at the inner shell.
+  const cmd = 'bash -c "echo \\"it\'s fine\\" && \\$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'an apostrophe inside an escaped-double-quote span must not protect a later escaped $');
+  const r = gate.classify(cmd);
+  assert.ok(r.matched.includes('opaque-exec'), 'must fire through the full pipeline: ' + JSON.stringify(r.matched));
+});
+
+t('M1 counterfactual: the existing wave-5 fixture (escaped $ genuinely protected by real single-quoting) stays silent', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash -c \"printf '\\$(word)'\""), false, 'must not regress the wave-5 fixture');
 });
 
 // ---------------------------------------------------------------------------

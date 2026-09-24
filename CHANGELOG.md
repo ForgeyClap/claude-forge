@@ -187,6 +187,40 @@ evidence or deferred with a reason before this release went out. The code fixes:
   check (a receipt-acceptance endpoint in the gateway is still to do). Deferred with reason: a bare
   `git checkout <path>` without `--` (a classifier cannot tell a branch from a path without repository state, and a
   blocking hook that fires on `git checkout main` would break the most common everyday git command).
+- **Sixth pass (Codex's sixth verification — its first attempt was cut off by OpenAI's content filter while it read our own
+  destructive-command test fixtures; a rephrased, payload-free second attempt completed — had 3 highs open: a `--once`
+  approval could be consumed twice, the override grant knew no account, and `override-on`/`override-off` reported a status
+  the grant file contradicted. An independent Security Boss review of the same redesign, run in parallel, confirmed two
+  of those and found one more high Codex had not; see the gate-hook part of this pass below).** Config: a `--once`
+  approval is consumed by ONE atomic rename of its grant file from pending to consumed (`forge-config-once-store.cjs`),
+  independent of the lock — two consumers with the lock switched off produce exactly one success (tested); reclaim never
+  leaves a vacancy (temp file + rename onto the existing lock, with a bounded Windows EPERM retry and a read-back), and
+  the fence an earlier entry here described is now real: a stale holder's config write is refused with `EFENCED` before
+  the publishing rename. Usage guard: the override grant is bound to the account identity, a generation and an explicit
+  expiry — a grant for account A never suppresses pausing on account B, a label-less or foreign grant is rejected, a
+  missing or unparseable expiry reads as invalid, and `override-on` fills in a bounded default when none is given;
+  `override-on`/`override-off` take their final status from the authoritative grant outcome (a failed removal exits
+  non-zero and says protection is NOT re-armed; a lock hiccup after a successful activation reports the grant active with
+  a lagging cache); the watcher never writes or deletes the grant — on credit exhaustion it reports that the override is
+  not honoured, so "single writer" is finally true; lock cleanup removes only a lock the process provably created itself;
+  reason text is redacted before it reaches state or logs. Secrets: the owner-approval secret and the grant record are
+  gitignored in the source and in the template snippet, and the secret file is now also a `permissions.deny` rule (29
+  rules) so an agent cannot read the owner's secret back through the Read tool. **Known limitations, written down:** the
+  grant record is a plain, unsigned JSON file protected only by filesystem permissions (the same trust boundary the old
+  cached flag had); a reused pid can leave a lock unreclaimable until the owner clears it; the deny rule guards the Read
+  tool, not a shell `cat`; grant writing by `override-on`/`override-off` is still proven at function level, not through a
+  spawned CLI. Gate hook (the Security Boss's high and the two mediums Codex added): the quote scanner is iterative with a
+  work budget instead of recursive — a 3,300-level nested substitution of 9.9 kB returns a decision in about 0.1 s instead
+  of throwing a RangeError that read as "NOT checked"; a `-c` flag is attributed to the real interpreter word of its OWN
+  statement, so a shell name somewhere in the line plus a dollar in an unrelated quoted argument (a currency amount, commit
+  prose that mentions `bash -c`) no longer blocks an ordinary command, while every interpreter call whose argument holds a
+  variable still stops; when the shared mask ends unterminated (a Windows path ending in a backslash inside quotes, read
+  with bash escaping rules) later-branch detection keeps every candidate instead of failing open, for Bash and PowerShell
+  tool calls alike; an apostrophe inside an inner escaped double-quoted span no longer masks a later escaped dollar.
+  Named, unfixed gaps written into `hard-gates.json`: a clustered flag such as `-xc`, an option between `-c` and its
+  argument, and PowerShell's case-insensitive `-C`/`-Command` are not recognised; a full PowerShell quoting dialect
+  (backtick escapes, backslash literal) is not implemented — the mask reads every command with bash rules and fails
+  closed where they disagree.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every

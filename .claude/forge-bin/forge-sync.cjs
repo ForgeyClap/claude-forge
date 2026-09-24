@@ -438,6 +438,9 @@ const SYSTEM = [
   // authoritative owner-grant record (forge-ownergrant.cjs) instead of the state file's cached flag; the small
   // decision module + its test ship with usage-guard.cjs, which requires it. SYSTEM_GLOB-covered — pinned too.
   'forge-bin/usage-guard-override.cjs', 'forge-bin/usage-guard-override.test.cjs',
+  // wave 6, wp-k1 (Codex p11 V09): the exactly-once pending -> consumed store for --once approvals (one atomic
+  // rename; independent of the config lock). forge-config.cjs requires it. SYSTEM_GLOB-covered — pinned too.
+  'forge-bin/forge-config-once-store.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by

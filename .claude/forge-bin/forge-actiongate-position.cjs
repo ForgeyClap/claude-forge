@@ -106,7 +106,16 @@ function stripCommandOpeners(segment) {
  *  OPENED a quote at its own position 0, hiding a genuine later branch. Consulting the shared, whole-original-
  *  text mask (see this file's header) at each match's ABSOLUTE position — `baseOffset + m.index` — resolves
  *  both directions at once: a keyword truly inside a quote (in the ORIGINAL text) is skipped; one truly outside
- *  it (even if the local segment text alone looks ambiguous) is not. */
+ *  it (even if the local segment text alone looks ambiguous) is not.
+ *  H2 (Security Boss review, codex-recheck 2026-09-24, wave 6 / wp-k3 — a fail-OPEN regression): the shared
+ *  mask applies BASH quoting rules to every command, PowerShell included, and treats an UNTERMINATED quote by
+ *  marking everything after it "inside" (fail closed for stripping/allowing — see forge-gate-quotes.cjs). This
+ *  function used to treat that SAME "inside" as "skip this keyword", which is fail-OPEN in the other direction:
+ *  an earlier double-quoted Windows path ending in a single backslash (`"C:\Users\foo\"`) reads, under bash
+ *  escaping rules, as never closing, and a genuine later `else`/`catch`/etc. branch after it was silently
+ *  dropped instead of tested. Candidates only ever ADD detection (see this function's own doc above), so when
+ *  the mask itself could not be resolved, keeping EVERY keyword candidate is the safe direction — never
+ *  trusting `.inside()` to suppress one. */
 const LATER_BRANCH_RE = /\b(?:else|elseif|catch|finally)\b/ig;
 function laterBranchStarts(text, mask, baseOffset) {
   const starts = [];
@@ -115,7 +124,7 @@ function laterBranchStarts(text, mask, baseOffset) {
   LATER_BRANCH_RE.lastIndex = 0;
   let mm;
   while ((mm = LATER_BRANCH_RE.exec(text)) !== null) {
-    if (mm.index > 0 && !m.inside(base + mm.index)) starts.push(text.slice(mm.index));
+    if (mm.index > 0 && (m.unterminated || !m.inside(base + mm.index))) starts.push(text.slice(mm.index));
     if (mm[0].length === 0) LATER_BRANCH_RE.lastIndex++; // defensive: never spin on a zero-width match
   }
   return starts;
@@ -157,22 +166,23 @@ function commandPositionCandidates(entry, mask) {
   return out;
 }
 
-/** hasLiveCArg(text) -> boolean — the -c ARGUMENT POLICY (N02, FOURTH pass, codex-recheck p10): a live
- *  variable or substitution inside a `sh -c`/`bash -c`/`pwsh -c`/`powershell -c` argument cannot be told apart
- *  from a genuinely inert one by a single declarative regex. THIRD pass (cArgHasLiveMarker, now retired)
- *  fixed the DOUBLE-quoted-argument case only — an escaped `\$`/backtick is inert for the outer shell but
- *  still live at the inner `-c` interpreter unless protected by the argument's OWN nested single-quoting.
- *  FOURTH pass: Codex reproduced the SAME class of bypass one layer up — `/bin/bash -c $x` (no quoting at all)
- *  and `/bin/bash -c '$x'` (single-quoted) both changed the exit code from blocked to silent, because the
- *  double-quote-only reader never looked at those two other outer forms at all. cArgLiveAfterFlag() (shared,
- *  forge-gate-quotes.cjs) now reads ALL THREE outer forms — none/single/double — for every genuine `-c` token
- *  in the FULL original text (not a per-segment fragment, so a naive split can never cut this argument in two
- *  and hide half of it); see that file's own header for the exact two-shell-layer policy this implements,
- *  which hard-gates.json's opaque-exec `_pattern_doc` states as the canonical contract. Pure, never throws. */
-const C_SHAPE_RE = /\b(?:sh|bash|pwsh|powershell)\b/i;
+/** hasLiveCArg(text) -> boolean — the -c ARGUMENT POLICY (N02 fourth pass, codex-recheck p10; N09 codex-
+ *  recheck wave 6 / wp-k3). A live variable or substitution inside a `sh -c`/`bash -c`/`pwsh -c`/
+ *  `powershell -c` argument cannot be told apart from a genuinely inert one by a single declarative regex.
+ *  THIRD pass (cArgHasLiveMarker, now retired) fixed the DOUBLE-quoted-argument case only. FOURTH pass:
+ *  cArgLiveAfterFlag() (shared, forge-gate-quotes.cjs) reads ALL THREE outer forms — none/single/double — for
+ *  every genuine `-c` token in the FULL original text. That fourth-pass version paired the -c search with a
+ *  SEPARATE, independently located "does this text contain a shell name ANYWHERE" pre-filter here
+ *  (`\b(?:sh|bash|pwsh|powershell)\b`) — which is exactly what N09 found over-blocking on: the pre-filter and
+ *  the -c search never had to belong to the SAME command, so an unrelated `bash script.sh` elsewhere in the
+ *  text, a `.sh` FILE EXTENSION matching the bare `sh` alternative, or a shell word merely mentioned in a
+ *  commit message could combine with any OTHER program's own `-c` flag into a false block. cArgLiveAfterFlag()
+ *  now does its OWN association — a `-c` token is read only when it belongs to an actual interpreter
+ *  invocation (see that file's header) — so this wrapper no longer needs (or performs) a separate shell-name
+ *  pre-filter; it also now recognises `zsh`/`dash`/`ksh`, which the old regex here never named. Pure, never
+ *  throws. */
 function hasLiveCArg(text) {
-  const s = String(text);
-  return C_SHAPE_RE.test(s) && QUOTES.cArgLiveAfterFlag(s);
+  return QUOTES.cArgLiveAfterFlag(String(text));
 }
 
 module.exports = {

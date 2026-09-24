@@ -13,51 +13,56 @@
  * forge-actiongate-position.cjs's laterBranchStarts and the `-c` argument reader) queries that SAME result with
  * ORIGINAL, unmodified offsets into that text — never a fresh mask started over on a fragment.
  *
- * TERMINATION (N05, codex-recheck p10 — a REGRESSION the third pass introduced, not a first bug: an EMPTY
- * heredoc, `cat > f <<'EOF'` immediately followed by `EOF` on the very next line, hung the wave-4 quoteMask
- * forever). The bug: the literal-heredoc-body skip recorded `skipTo.set(bodyStart, delimStart)`, and for an
- * EMPTY body `delimStart === bodyStart` — a skip entry pointing AT ITSELF. The main loop then repeatedly read
- * that same entry and jumped back to the position it started from, forever. scanQuotes() below fixes this at
- * the ROOT: a skip is only ever recorded when its destination is STRICTLY GREATER than its key (an empty body
- * needs no skip at all — the delimiter line is already the very next thing the loop would read, and it contains
- * no quote characters by construction, see findHeredocDelim's own doc). A defensive per-call iteration cap
- * (`text.length + 1`) is layered on top so non-termination stays structurally impossible even if some future
- * change reintroduces a bad skip — every real iteration strictly advances `i`, so a bug-free scan can never
- * reach the cap; hitting it is treated as `unterminated` (fail toward "strip/allow nothing"), never a hang.
+ * TERMINATION / ROBUSTNESS (N05 codex-recheck p10, then N13 codex-recheck wave 6 / wp-k3 — a regression each
+ * pass introduced, not a first bug). N05: an EMPTY heredoc, `cat > f <<'EOF'` immediately followed by `EOF` on
+ * the very next line, hung the wave-4 quoteMask forever (a skip entry pointing at itself). Fixed at the root:
+ * a skip is only ever recorded when its destination is STRICTLY GREATER than its key. N13: the wave-5 fix for
+ * a `$(...)` command substitution's OWN nested lexical context used NATIVE RECURSION — scanQuotes() called
+ * itself on a fresh substring per nesting level — which hit V8's own call-stack ceiling as an uncaught
+ * RangeError around 1000-3000 levels deep, long before this file's per-call iteration guard could ever fire
+ * (that guard only ever bounded ONE recursive call's own loop, never the total across the whole chain).
+ * scanQuotes() below replaces the recursion with an explicit, heap-allocated STACK of paused "scan this
+ * [start,end) range" frames — a nested substitution costs one array push/pop, never one more native call frame
+ * — and meters EVERY unit of work (each character touched, each heredoc-delimiter search, each substitution's
+ * own paren-balance count) against ONE shared, whole-scan budget, so many small attempts cannot add up to
+ * unbounded work between them any more than one big one could. Exceeding the budget yields `unterminated: true`
+ * — the SAME fail-closed "cannot resolve, strip/allow nothing" result every caller already treats an
+ * unterminated quote as — never a hang, never a throw. Every loop in this file is bounded by an index that
+ * strictly advances or by the shared work counter; nothing here recurses.
  *
  * QUOTE SEMANTICS (unchanged from the pre-existing, well-tested design; see the V05/wave-2 history this file
  * carries forward): single quotes give bash ZERO special characters, including `$(` and backslash, until the
  * next literal `'`; double quotes let `$(...)` substitution and backslash-escaping run; a `$(...)` reached
- * OUTSIDE any quote (or from inside a double quote) is its own fresh lexical context, recursed into via
- * mergeNestedSubstitution() so a fake heredoc/quote nested arbitrarily deep inside one is still judged
- * correctly. An unterminated quote or unbalanced substitution poisons the rest of the scan as `unterminated`
- * (fail closed).
+ * OUTSIDE any quote (or from inside a double quote) is its own fresh lexical context, so a fake heredoc/quote
+ * nested arbitrarily deep inside one is still judged correctly. An unterminated quote or unbalanced
+ * substitution poisons the rest of that scan as `unterminated` (fail closed).
  *
- * -c ARGUMENT POLICY (N02, FOURTH pass — hard-gates.json's opaque-exec `_pattern_doc` is the canonical
- * statement of this policy; this file is its implementation). A `sh -c`/`bash -c`/`pwsh -c`/`powershell -c`
- * argument is LIVE (dynamic, unknown content) unless it is provably literal for BOTH shells involved:
- *
- *   NONE (a bare, unquoted token right after -c): the OUTER shell fully expands/word-splits it before -c ever
- *     runs. Any `$`/backtick anywhere in the bare token means the outer shell hands -c content it built itself
- *     -> LIVE. A token with neither character is a static literal -> not live.
- *   SINGLE ('...'): bash gives single quotes zero special characters, so this exact literal text (including any
- *     `$`/backtick in it, verbatim) becomes the -c argument UNCHANGED, and THAT text is what the inner `-c`
- *     interpreter then reads as ITS OWN script. A literal `'` can never appear inside a single-quoted span (it
- *     would close it), so nothing inside can be "protected by inner single-quoting" either — any `$`/backtick
- *     anywhere in the content -> LIVE.
- *   DOUBLE ("..."): the outer shell expands an UNESCAPED `$`/backtick inside double quotes regardless of any
- *     literal `'` characters nearby (single quotes carry no meaning inside double quotes to the OUTER shell) ->
- *     always LIVE. A backslash-escaped `\$`/`` \` `` is stripped by the outer shell only, handing the inner -c
- *     interpreter a bare `$`/backtick it will itself expand, UNLESS that exact character also sits inside a
- *     pair of literal `'` characters within the SAME double-quoted argument (those pass through the outer shell
- *     unchanged and become real single-quoting once the inner shell reads the resulting string as its own
- *     script) -> live only when NOT currently inside such a span.
- *   Anything this reader cannot bound (a `-c` argument whose opening quote never closes) is judged dynamic —
- *     fail toward fire, per the same "cannot inspect it -> stop and ask" principle opaque-exec exists for.
+ * -c ARGUMENT POLICY (N02 fourth pass, then N09 codex-recheck wave 6 / wp-k3 — an over-blocking REGRESSION the
+ * fourth pass introduced). hard-gates.json's opaque-exec `_pattern_doc` is the canonical statement of the
+ * quoting policy this file implements for a `-c` argument's own content (bare/single/double outer forms; see
+ * cArgLiveAfterFlag's own doc below for that half, unchanged since the fourth pass). N09's bug was upstream of
+ * that: the fourth pass located a `-c` flag ANYWHERE in the full command text and, independently, checked
+ * whether the text contained a shell name ANYWHERE in it (`\b(?:sh|bash|pwsh|powershell)\b`) — two
+ * INDEPENDENTLY LOCATED conditions that were never required to belong to the SAME command. A commit message
+ * that merely MENTIONED "bash -c" in prose, an unrelated program's own `-c` flag sitting in the same command
+ * line as an unrelated `bash script.sh`, a `.sh` FILE EXTENSION matching the bare `sh` alternative, and a
+ * plain currency amount (`$5`, `$20`) being read as if it were shell substitution syntax could all combine
+ * into a false block. cArgLiveAfterFlag() below fixes this at the root: a `-c` occurrence is read ONLY when
+ * (a) it is not itself sitting inside quoted DATA (a commit message, an ordinary string argument), and (b) the
+ * ENCLOSING STATEMENT's own leading command word — after skipping env assignments and wrapper prefixes
+ * (`sudo`/`time`/`nohup`/`exec`/`command`/`builtin`/`env`, an optional path prefix on `env`) and openers
+ * (`{`/`(`/`!`/a bare `then`/`do`/`else`/`elif`/`while`/`until`/`for`/`if`/`try`/`catch`/`finally`) — is itself
+ * one of `sh`/`bash`/`zsh`/`dash`/`ksh`/`pwsh`/`powershell`, bare or path-qualified (`/bin/bash`, `pwsh.exe`).
+ * Statement boundaries are found by scanning backward from the flag to the nearest UNQUOTED `;`/`&`/`|`/
+ * newline (never a separator sitting inside quoted data — the exact class of bug N04 was, reused here to keep
+ * a quoted `;` inside a commit message from ever looking like a fresh statement start). Separately, a literal
+ * currency dollar (`$5`, `$20`, a trailing lone `$`) is no longer confused with real substitution syntax
+ * (`$name`, `${...}`, `$(...)`, a backtick) — see isSubstitutionDollar()/hasLiveSubstitution() below.
  *
  * API: scanQuotes(text) -> {inside(pos), unterminated, spans} · stripHeredocs(text) [bash-only heredoc removal,
  *      moved here unchanged in external contract from forge-gate-data.cjs] · findHeredocDelim(text, bodyStart,
- *      dash, delim) -> {delimStart, delimEnd} | null · cArgLiveAfterFlag(text) -> boolean.
+ *      dash, delim, limit?) -> {delimStart, delimEnd} | null · cArgLiveAfterFlag(text) -> boolean ·
+ *      isSubstitutionDollar(s, i) / hasLiveSubstitution(s) -> boolean.
  */
 
 // A heredoc marker recognised exactly AT the scanner's current position (never searching ahead), so scanQuotes()
@@ -67,130 +72,155 @@ const MARKER_AT_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_]\
 // given line (may match more than once per line, which stripHeredocs treats as "cannot resolve, strip nothing").
 const MARKER_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_]\w*))/g;
 
-/** findHeredocDelim(text, bodyStart, dash, delim) -> {delimStart, delimEnd} | null. The ONE place either caller
- *  (scanQuotes' own literal-body skip, and forge-gate-data.cjs's stripHeredocs) locates the line whose content
- *  equals `delim` — leading tabs stripped first when `dash` is truthy — scanning forward from `bodyStart`. A
- *  trailing `\r` (CRLF line endings) is stripped before comparison, so a Windows-authored heredoc still
- *  resolves; a delimiter line carrying trailing SPACE, or one wrapped in quote characters, deliberately still
- *  does NOT match — real bash requires the closing line to consist solely of the delimiter, nothing more — so
- *  failing to resolve those (fail closed: strip/skip nothing) mirrors real shell behaviour rather than being
- *  merely cautious. Returns null (never a guess) when no such line exists before the text ends. */
-function findHeredocDelim(text, bodyStart, dash, delim) {
+/** findHeredocDelim(text, bodyStart, dash, delim, limit) -> {delimStart, delimEnd} | null. The ONE place either
+ *  caller (scanQuotes' own literal-body skip, and forge-gate-data.cjs's stripHeredocs) locates the line whose
+ *  content equals `delim` — leading tabs stripped first when `dash` is truthy — scanning forward from
+ *  `bodyStart`. A trailing `\r` (CRLF line endings) is stripped before comparison, so a Windows-authored
+ *  heredoc still resolves; a delimiter line carrying trailing SPACE, or one wrapped in quote characters,
+ *  deliberately still does NOT match — real bash requires the closing line to consist solely of the
+ *  delimiter, nothing more — so failing to resolve those (fail closed: strip/skip nothing) mirrors real shell
+ *  behaviour rather than being merely cautious. Returns null (never a guess) when no such line exists before
+ *  `limit` (N13, codex-recheck wave 6: defaults to `text.length` — every EXISTING caller's own bound — so this
+ *  is a backward-compatible addition; scanQuotes() below passes its OWN current frame's `end` so a heredoc
+ *  search inside a `$(...)` substitution's own inner range can never read past it). */
+function findHeredocDelim(text, bodyStart, dash, delim, limit) {
+  const lim = limit === undefined ? text.length : limit;
   let pos = bodyStart;
-  while (pos <= text.length) {
+  while (pos <= lim) {
     const nl = text.indexOf('\n', pos);
-    const lineEnd = nl === -1 ? text.length : nl;
+    const lineEnd = nl === -1 || nl > lim ? lim : nl;
     let line = text.slice(pos, lineEnd);
     if (line.endsWith('\r')) line = line.slice(0, -1); // CRLF: a trailing \r is never part of the delimiter word
     const cmp = dash ? line.replace(/^\t+/, '') : line;
     if (cmp === delim) return { delimStart: pos, delimEnd: lineEnd };
-    if (nl === -1) return null;
+    if (nl === -1 || nl > lim) return null;
     pos = nl + 1;
   }
   return null;
 }
 
-/** skipSubstitution(text, at) -> {end, balanced}. Naive balanced-paren count over raw characters starting at a
- *  `$(` — this does not lex the substitution's own quoting while counting; mergeNestedSubstitution() below
- *  does that separately by recursing scanQuotes() over the inner text. `balanced:false` means depth never
- *  reached 0 (an unbalanced/truncated substitution); the caller must treat that as unresolved (fail closed). */
-function skipSubstitution(text, at) {
-  let depth = 1;
-  let j = at + 2;
-  for (; j < text.length && depth > 0; j++) {
-    if (text[j] === '(') depth++;
-    else if (text[j] === ')') depth--;
-  }
-  return { end: j, balanced: depth === 0 };
-}
-
-/** mergeNestedSubstitution(text, at, marks) -> {end, unterminated}. A `$(...)` command substitution is bash's
- *  own fresh lexical context: a heredoc marker or quote sitting inside it is judged on ITS OWN nested quote
- *  structure, never on whatever quote (or lack of one) merely contains the substitution. Recursing scanQuotes()
- *  over the substitution's own inner text and merging its "inside" positions (offset-adjusted) into the outer
- *  `marks` array resolves arbitrary nesting depth through ordinary recursion. */
-function mergeNestedSubstitution(text, at, marks) {
-  const sub = skipSubstitution(text, at);
-  const innerStart = at + 2;
-  const innerEnd = sub.balanced ? Math.max(innerStart, sub.end - 1) : sub.end;
-  const inner = scanQuotes(text.slice(innerStart, innerEnd));
-  for (let p = 0; p < innerEnd - innerStart; p++) if (inner.inside(p)) marks[innerStart + p] = true;
-  return { end: sub.end, unterminated: !sub.balanced || inner.unterminated };
-}
-
 /** scanQuotes(text) -> {inside(pos), unterminated, spans}. A BASH-ONLY, whole-text (never per-line, never
  *  per-fragment) single pass over `'`/`"` runs and `$(...)` substitutions, so a heredoc operator or a control-
  *  flow keyword that only LOOKS free-standing while actually sitting inside an already-open quote is never
- *  misread — the exact class of bug N04 was (a naive per-segment rescan started fresh at a position that was
- *  really still inside an earlier, still-open double quote). `spans` records every top-level quote span found
- *  (`{start, end, kind}`, `end` exclusive past the closing quote character) in ORIGINAL-text offsets, for
- *  callers (cArgLiveAfterFlag) that need to reason about a specific argument's own outer quoting form rather
- *  than a plain inside/outside boolean. See this file's header for the N05 termination fix and quote-semantics
- *  summary. Never throws. */
+ *  misread. `spans` records every TOP-LEVEL quote span found (`{start, end, kind}`, `end` exclusive past the
+ *  closing quote character) in ORIGINAL-text offsets, for callers (cArgLiveAfterFlag) that need to reason
+ *  about a specific argument's own outer quoting form rather than a plain inside/outside boolean. See this
+ *  file's header for the N05/N13 termination-and-robustness history and the quote-semantics summary. Never
+ *  throws, for any input — see the header's "meters every unit of work" note. */
 function scanQuotes(text) {
   text = String(text);
   const n = text.length;
   const marks = new Array(n + 1).fill(false);
   const spans = [];
   let unterminated = false;
-  let i = 0;
-  let guard = 0;
-  const guardMax = n + 1; // N05: a hard cap makes non-termination structurally impossible, belt-and-suspenders
-  const skipTo = new Map(); // literal heredoc body start -> its own delimiter line's start, THIS scan only
-  while (i < n) {
-    if (guard++ > guardMax) { unterminated = true; break; } // should never trigger given the invariant below
-    if (skipTo.has(i)) {
-      const dest = skipTo.get(i);
-      i = dest > i ? dest : i + 1; // never accept a non-advancing or backward jump through this map
-      continue;
+  let work = 0;
+  const WORK_CAP = Math.max(50000, n * 30);
+
+  /** boundedParenEnd(at, end) -> {balanced, end}. The naive, quote-blind balanced-paren count this file has
+   *  always used to find a `$(...)` substitution's own end — unchanged in BEHAVIOUR from the pre-fix
+   *  skipSubstitution (it still does not lex the substitution's own quoting while counting). What changed for
+   *  N13: it is bounded to the CURRENT frame's own `end` (never past it, so a substitution inside a nested
+   *  substitution's own inner range cannot read past that range) and metered against the SAME shared `work`
+   *  budget every other step below spends from. */
+  function boundedParenEnd(at, end) {
+    let depth = 1;
+    let j = at + 2;
+    for (; j < end && depth > 0; j++) {
+      if (++work > WORK_CAP) return { balanced: false, end };
+      if (text[j] === '(') depth++;
+      else if (text[j] === ')') depth--;
     }
-    const ch = text[i];
-    if (ch === '<' && text[i + 1] === '<') {
-      MARKER_AT_RE.lastIndex = i;
-      const hm = MARKER_AT_RE.exec(text);
-      if (hm) {
-        const delim = hm[2] || hm[3] || hm[4];
-        const nl = text.indexOf('\n', i + hm[0].length);
-        if (nl !== -1) {
-          const body = findHeredocDelim(text, nl + 1, hm[1], delim);
-          // N05 root-cause fix: an EMPTY body means the delimiter line already starts at nl+1 — there is
-          // nothing to skip, and recording skipTo.set(nl+1, nl+1) would be the exact self-referencing jump
-          // that hung the previous implementation forever. Only a skip landing STRICTLY AFTER its own key is
-          // ever recorded; the delimiter line itself contains no quote characters (see findHeredocDelim's
-          // own doc), so leaving it to the ordinary per-character scan is harmless either way.
-          if (body && body.delimStart > nl + 1) skipTo.set(nl + 1, body.delimStart);
-        }
-      }
-    }
-    if (ch === '$' && text[i + 1] === '(') {
-      const sub = mergeNestedSubstitution(text, i, marks);
-      if (sub.unterminated) { for (let k = i; k <= n; k++) marks[k] = true; unterminated = true; break; }
-      i = sub.end;
-      continue;
-    }
-    if (ch !== "'" && ch !== '"') { i++; continue; }
-    const spanStart = i;
-    const kind = ch === "'" ? 'single' : 'double';
-    marks[i] = true;
-    let j = i + 1;
-    let closed = false;
-    while (j < n) {
-      // single quotes suppress `$(` too — only a double quote lets a substitution run inside it.
-      if (ch === '"' && text[j] === '$' && text[j + 1] === '(') {
-        const sub = mergeNestedSubstitution(text, j, marks);
-        if (sub.unterminated) { j = n; break; } // the outer quote-open-to-end poison below fires
-        j = sub.end;
-        continue;
-      }
-      if (ch === '"' && text[j] === '\\') { marks[j] = true; if (j + 1 < n) marks[j + 1] = true; j += 2; continue; }
-      if (text[j] === ch) { marks[j] = true; closed = true; j++; break; }
-      marks[j] = true;
-      j++;
-    }
-    if (!closed) { for (let k = spanStart; k <= n; k++) marks[k] = true; unterminated = true; break; }
-    spans.push({ start: spanStart, end: j, kind });
-    i = j;
+    return { balanced: depth === 0, end: j };
   }
+
+  // N13 root fix: an explicit LIFO stack of pending "scan this [start,end) range" frames, each in ORIGINAL
+  // absolute offsets into `text` — never a sliced substring. See this file's header for the full "why".
+  const stack = [{ start: 0, end: n, skipTo: new Map(), i: 0, j: 0, inQuote: false, quoteChar: null, spanStart: 0 }];
+
+  scan:
+  while (stack.length) {
+    const f = stack[stack.length - 1];
+
+    if (!f.inQuote) {
+      while (f.i < f.end) {
+        if (++work > WORK_CAP) { unterminated = true; break scan; }
+        if (f.skipTo.has(f.i)) {
+          const dest = f.skipTo.get(f.i);
+          f.i = dest > f.i ? dest : f.i + 1; // never accept a non-advancing or backward jump through this map
+          continue;
+        }
+        const ch = text[f.i];
+        if (ch === '<' && text[f.i + 1] === '<') {
+          MARKER_AT_RE.lastIndex = f.i;
+          const hm = MARKER_AT_RE.exec(text);
+          if (hm) {
+            const delim = hm[2] || hm[3] || hm[4];
+            const nl = text.indexOf('\n', f.i + hm[0].length);
+            if (nl !== -1 && nl < f.end) {
+              const body = findHeredocDelim(text, nl + 1, hm[1], delim, f.end);
+              // N13: meter the delimiter search itself — a text carrying MANY never-resolving heredoc markers
+              // used to cost one full forward scan EACH (a quadratic pattern for many markers in one text);
+              // charging each search's own cost against the shared budget bounds the total regardless of how
+              // many markers are tried.
+              work += (body ? body.delimStart : f.end) - (nl + 1);
+              if (work > WORK_CAP) { unterminated = true; break scan; }
+              // N05 root-cause fix: an EMPTY body means the delimiter line already starts at nl+1 — there is
+              // nothing to skip, and recording a skip THERE would be the exact self-referencing jump that hung
+              // the previous implementation forever. Only a skip landing STRICTLY AFTER its own key is ever
+              // recorded.
+              if (body && body.delimStart > nl + 1) f.skipTo.set(nl + 1, body.delimStart);
+            }
+          }
+        }
+        if (ch === '$' && text[f.i + 1] === '(') {
+          const sub = boundedParenEnd(f.i, f.end);
+          if (!sub.balanced) { unterminated = true; break scan; }
+          const innerStart = f.i + 2;
+          const innerEnd = Math.max(innerStart, sub.end - 1);
+          f.i = sub.end; // resume THIS frame right after the substitution once its own frame is done
+          stack.push({ start: innerStart, end: innerEnd, skipTo: new Map(), i: innerStart, j: innerStart, inQuote: false, quoteChar: null, spanStart: 0 });
+          continue scan; // process the newly pushed (innermost) frame next — depth-first, like recursion was
+        }
+        if (ch !== "'" && ch !== '"') { f.i++; continue; }
+        marks[f.i] = true;
+        f.quoteChar = ch;
+        f.spanStart = f.i;
+        f.j = f.i + 1;
+        f.inQuote = true;
+        break; // fall through to quote-body scanning immediately below, same tick
+      }
+      if (!f.inQuote) { stack.pop(); continue scan; } // this frame's own range is fully consumed
+    }
+
+    // f.inQuote === true here: scan this frame's OPEN quote body from f.j.
+    let closed = false;
+    while (f.j < f.end) {
+      if (++work > WORK_CAP) { unterminated = true; break scan; }
+      // single quotes suppress `$(` too — only a double quote lets a substitution run inside it.
+      if (f.quoteChar === '"' && text[f.j] === '$' && text[f.j + 1] === '(') {
+        const sub = boundedParenEnd(f.j, f.end);
+        if (!sub.balanced) { unterminated = true; break scan; }
+        const innerStart = f.j + 2;
+        const innerEnd = Math.max(innerStart, sub.end - 1);
+        f.j = sub.end;
+        stack.push({ start: innerStart, end: innerEnd, skipTo: new Map(), i: innerStart, j: innerStart, inQuote: false, quoteChar: null, spanStart: 0 });
+        continue scan;
+      }
+      if (f.quoteChar === '"' && text[f.j] === '\\') { marks[f.j] = true; if (f.j + 1 < f.end) marks[f.j + 1] = true; f.j += 2; continue; }
+      if (text[f.j] === f.quoteChar) {
+        marks[f.j] = true;
+        if (stack.length === 1) spans.push({ start: f.spanStart, end: f.j + 1, kind: f.quoteChar === "'" ? 'single' : 'double' });
+        f.i = f.j + 1;
+        f.inQuote = false;
+        closed = true;
+        break;
+      }
+      marks[f.j] = true;
+      f.j++;
+    }
+    if (!closed && f.j >= f.end && f.inQuote) { unterminated = true; break scan; }
+  }
+
   return { inside: (pos) => marks[pos] === true, unterminated, spans };
 }
 
@@ -247,28 +277,67 @@ function stripHeredocs(text, deps) {
 /** skipWs(s, i) -> the index of the next non-whitespace character at/after i (or s.length). */
 function skipWs(s, i) { while (i < s.length && /\s/.test(s[i])) i++; return i; }
 
+/** isSubstitutionDollar(s, i) -> true when s[i] is a `$` character that begins REAL shell substitution syntax
+ *  (a `$NAME`/`$_name` variable, a `${...}` parameter expansion, or a `$(...)` command substitution) rather
+ *  than a literal currency amount (N09, codex-recheck 2026-09-24, wave 6 / wp-k3 — over-blocking regression
+ *  fix). A currency dollar is always immediately followed by a digit, whitespace, punctuation, or the end of
+ *  the string — none of which real shell substitution syntax ever produces right after the `$` itself. */
+function isSubstitutionDollar(s, i) {
+  if (s[i] !== '$') return false;
+  const nx = s[i + 1];
+  if (nx === undefined) return false; // a trailing lone "$" has nothing to substitute -> literal, not live
+  return nx === '(' || nx === '{' || /[A-Za-z_]/.test(nx);
+}
+
+/** hasLiveSubstitution(s) -> true when `s` contains a backtick (always a substitution marker) or a `$` that
+ *  isSubstitutionDollar() (N09 fix — replaces the old blanket `/[$\`]/` test, which treated a literal `$5`/
+ *  `$20` currency amount exactly like a real `$var`/`$(...)` substitution). Pure, never throws. */
+function hasLiveSubstitution(s) {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '`') return true;
+    if (s[i] === '$' && isSubstitutionDollar(s, i)) return true;
+  }
+  return false;
+}
+
 /** scanDoubleQuoteLive(s, i) -> true/false/null. `s[i]` must be the OPENING `"` of a `-c` argument. Reads to
  *  its matching closing `"` applying the two-shell-layer rule from this file's own header: an UNESCAPED
  *  `$`/backtick is always live (the outer shell expands it regardless of any literal `'` nearby); an ESCAPED
  *  `\$`/`` \` `` is live only when NOT currently inside a still-open literal `'` span within this same
- *  argument. Returns null when the quote never closes (unterminated -> the caller must fail toward fire). */
+ *  argument. N09: a `$` (escaped or not) that is a literal currency amount (isSubstitutionDollar() false) is
+ *  never live. M1 (Security Boss review, codex-recheck wave 6 / wp-k3): `singleOpen` used to flip on EVERY
+ *  apostrophe, including one sitting inside an INNER double-quoted span built from escaped double quotes
+ *  (`\"it's fine\"`) — for the INNER `-c` interpreter that whole `\"..\"` is a literal string, so the `'` in
+ *  it has no special meaning at all, and treating it as opening real protective single-quoting could wrongly
+ *  suppress a LATER escaped `$`/backtick the inner shell still expands. Tracking the inner shell's own nested
+ *  double-quote state exactly would need a second parser; the cheap, safe fix instead fails toward fire: once
+ *  BOTH an escaped double quote and an apostrophe have been seen in the SAME argument, `singleOpen` can no
+ *  longer be trusted, so every subsequent escaped `$`/backtick is treated as live regardless of it. Returns
+ *  null when the quote never closes (unterminated -> the caller must fail toward fire). */
 function scanDoubleQuoteLive(s, i) {
   let j = i + 1;
   let singleOpen = false;
   let live = false;
+  let sawEscapedQuote = false;
+  let sawApostrophe = false;
   for (; j < s.length; j++) {
     const c = s[j];
     if (c === '\\' && j + 1 < s.length) {
       const nx = s[j + 1];
-      if (nx === '$' || nx === '`') { if (!singleOpen) live = true; j++; continue; }
-      if (nx === '"' || nx === '\\' || nx === '\n') { j++; continue; }
+      if (nx === '"') { sawEscapedQuote = true; j++; continue; }
+      if (nx === '`' || (nx === '$' && isSubstitutionDollar(s, j + 1))) {
+        if (!singleOpen || (sawEscapedQuote && sawApostrophe)) live = true; // N02 fourth pass + M1 override
+        j++; continue;
+      }
+      if (nx === '$' || nx === '\\' || nx === '\n') { j++; continue; } // escaped literal-currency $ or other: no-op
       continue; // an unrecognised double-quote escape: the backslash is a literal char, protects nothing
     }
-    if (c === "'") { singleOpen = !singleOpen; continue; }
+    if (c === "'") { sawApostrophe = true; singleOpen = !singleOpen; continue; }
     if (c === '"') return live; // closing quote of this argument
-    if (c === '$' || c === '`') live = true; // N02 fourth pass: ALWAYS live when unescaped, regardless of
-    // singleOpen — inside double quotes, a literal `'` character has no special meaning to the OUTER shell and
-    // never suppresses its expansion; only backslash can protect a character from the outer shell here.
+    if (c === '`') live = true; // N02 fourth pass: ALWAYS live when unescaped, regardless of singleOpen —
+    else if (c === '$' && isSubstitutionDollar(s, j)) live = true; // inside double quotes, a literal `'`
+    // character has no special meaning to the OUTER shell and never suppresses its expansion; only backslash
+    // can protect a character from the outer shell here, and only real substitution syntax (not currency) at all.
   }
   return null; // never closed -> unterminated, fail toward fire
 }
@@ -283,24 +352,75 @@ function readBareWord(s, i) {
 
 const C_FLAG_OCCUR_RE = /(?:^|\s)-c\b/g;
 
+// N09 (codex-recheck 2026-09-24, wave 6 / wp-k3) — the ASSOCIATION half of the -c argument policy: a `-c` flag
+// is read only when it belongs to an ACTUAL interpreter invocation. SHELL_WORD_RE recognises that invocation's
+// own leading command word, bare or path-qualified (`/bin/bash`, `pwsh.exe`, case-insensitive since Windows
+// paths are). STATEMENT_BOUNDARY_RE is the (unquoted-only, see statementStart) set of characters that end one
+// statement and begin another for this purpose. ENV_ASSIGN_RE/WRAPPER_RE/OPENER_RE are stripped, repeatedly,
+// from a statement's own start before its leading word is read — an env assignment, a sudo/time/nohup/exec/
+// command/builtin/env wrapper (optionally path-qualified, matching hard-gates.json's own `(?:\S*/)?env` shape
+// for the pipe-into-interpreter rule), or a grouping/control-flow opener must not hide the real interpreter
+// word behind it (`sudo bash -c $x`, `{ bash -c $x; }`, `if true; then bash -c $x; fi` all still associate).
+const SHELL_WORD_RE = /^(?:.*[\\/])?(?:sh|bash|zsh|dash|ksh|pwsh|powershell)(?:\.exe)?$/i;
+const STATEMENT_BOUNDARY_RE = /[;&|\n]/;
+const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s*/;
+const WRAPPER_RE = /^(?:\S*[\\/])?(?:sudo|time|nohup|exec|command|builtin|env)\b\s*/i;
+const OPENER_RE = /^(?:[{(!]\s*|(?:then|do|else|elif|while|until|for|if|try|catch|finally)\b\s*)/i;
+
+/** statementStart(s, mask, pos) -> the absolute index where the statement CONTAINING `pos` begins: the
+ *  character right after the nearest UNQUOTED statement-boundary character before `pos`, or 0. Respecting the
+ *  shared quote mask here is exactly the N04 lesson reapplied: a `;` sitting inside a quoted commit message
+ *  (`git commit -m "run; bash -c $x"`) must never look like a fresh statement start. */
+function statementStart(s, mask, pos) {
+  let i = pos - 1;
+  while (i >= 0) {
+    if (STATEMENT_BOUNDARY_RE.test(s[i]) && !mask.inside(i)) return i + 1;
+    i--;
+  }
+  return 0;
+}
+
+/** statementCommandWord(stmt) -> the leading command word of a statement's own text, after repeatedly
+ *  stripping env assignments, wrapper prefixes and grouping/control-flow openers from its start (capped so a
+ *  pathological input cannot loop unboundedly; ordinary statements resolve in one or two strips). */
+function statementCommandWord(stmt) {
+  let s = String(stmt).replace(/^\s+/, '');
+  for (let i = 0; i < 12; i++) {
+    const before = s;
+    s = s.replace(ENV_ASSIGN_RE, '').replace(WRAPPER_RE, '').replace(OPENER_RE, '');
+    if (s === before) break;
+  }
+  return readBareWord(s, 0);
+}
+
 /** cArgLiveAfterFlag(text) -> boolean. The -c ARGUMENT POLICY (see this file's header) implemented for all
- *  three outer quoting forms. Locates every standalone `-c` token in `text` and classifies the very next shell
- *  word — bare, single-quoted, or double-quoted — firing the instant any one of them is judged live. An
- *  unterminated quote right after `-c` is unresolved shape, not a known-safe one: judged live (fail toward
- *  fire), matching the same principle opaque-exec exists for ("Forge cannot see what this would run"). Pure,
+ *  three outer quoting forms, now ASSOCIATED with a real interpreter invocation (N09). Locates every
+ *  standalone `-c` token in `text`; a token sitting inside quoted DATA, or whose ENCLOSING STATEMENT's own
+ *  leading command word is not an actual shell interpreter, is not a real flag and is skipped. For a token
+ *  that IS associated, the very next shell word — bare, single-quoted, or double-quoted — is read exactly as
+ *  before; the function fires the instant any one of them is judged live. If the shared quote mask itself
+ *  could not be resolved (`unterminated`), neither "is this occurrence quoted data" nor "where does this
+ *  statement start" can be trusted, so — matching this file's own "cannot bound it -> fire" principle for an
+ *  unterminated -c argument below — the presence of ANY `-c` token at all is enough to fire; ordinary text
+ *  with no `-c` token anywhere is completely unaffected by an unrelated unresolved quote elsewhere. Pure,
  *  never throws. */
 function cArgLiveAfterFlag(text) {
   const s = String(text);
+  const mask = scanQuotes(s);
   const re = new RegExp(C_FLAG_OCCUR_RE.source, 'g');
   let m;
   while ((m = re.exec(s)) !== null) {
+    const cStart = m.index + m[0].length - 2; // m[0] is "-c" or "\s-c"; the flag itself is its last 2 chars
+    if (mask.unterminated) return true; // cannot bound the quote structure at all -> fail toward fire
+    if (mask.inside(cStart)) continue; // N09: "-c" sitting inside quoted DATA (e.g. a commit message) is not a real flag
+    if (!SHELL_WORD_RE.test(statementCommandWord(s.slice(statementStart(s, mask, cStart), cStart)))) continue; // N09: associate with the real invocation
     const i = skipWs(s, m.index + m[0].length);
     if (i >= s.length) continue; // a trailing "-c" with nothing after it: no argument to judge
     const ch = s[i];
     if (ch === "'") {
       const close = s.indexOf("'", i + 1);
       if (close === -1) return true; // unterminated -> cannot bound -> fire
-      if (/[$`]/.test(s.slice(i + 1, close))) return true;
+      if (hasLiveSubstitution(s.slice(i + 1, close))) return true;
       continue;
     }
     if (ch === '"') {
@@ -308,12 +428,13 @@ function cArgLiveAfterFlag(text) {
       if (r === null || r === true) return true;
       continue;
     }
-    if (/[$`]/.test(readBareWord(s, i))) return true;
+    if (hasLiveSubstitution(readBareWord(s, i))) return true;
   }
   return false;
 }
 
 module.exports = {
-  scanQuotes, stripHeredocs, findHeredocDelim, mergeNestedSubstitution, skipSubstitution,
-  cArgLiveAfterFlag, scanDoubleQuoteLive, readBareWord, MARKER_RE, MARKER_AT_RE,
+  scanQuotes, stripHeredocs, findHeredocDelim,
+  cArgLiveAfterFlag, scanDoubleQuoteLive, readBareWord, isSubstitutionDollar, hasLiveSubstitution,
+  MARKER_RE, MARKER_AT_RE,
 };

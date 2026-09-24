@@ -167,6 +167,51 @@ t5('V15: release only unlinks a lock whose content still matches this holder\'s 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- L2 (Security Boss addendum, 2026-09-24): the unconditional unlink on a non-EEXIST create failure
+// during ACQUISITION was not ownership-guarded. On Windows an exclusive create can fail with EPERM (a file
+// mid-delete by another process) before anything of ours was ever created — the old code treated ANY
+// non-EEXIST failure as proof "whatever is at lockPath must be our own broken write", which is false: the
+// real content can belong to a DIFFERENT, genuinely live holder. The create and the token write are now two
+// explicit steps (open, then write+close) so a failed OPEN (never proven ours) is never deleted, while a
+// SUCCESSFUL open (provably ours — `wx` is exclusive) still gets N07's original unconditional cleanup. ----
+t5('L2: a non-EEXIST create failure (simulated Windows EPERM while a file is mid-delete) during acquisition must NEVER delete a DIFFERENT, genuinely live holder\'s lock', async () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    // a different, live holder's lock already sits at lockPath.
+    fs.writeFileSync(lockPath, 'OTHER-HOLDER-TOKEN');
+    const realOpenSync = fs.openSync;
+    let injected = false;
+    fs.openSync = function (p, flags, ...rest) {
+      if (p === lockPath && flags === 'wx' && !injected) {
+        injected = true;
+        const e = new Error('EPERM simulated (Windows: file mid-delete by another process)');
+        e.code = 'EPERM';
+        throw e;
+      }
+      return realOpenSync.call(fs, p, flags, ...rest);
+    };
+    let r;
+    try { r = await S.withStateLock(lockPath, () => 'unreachable', { staleMs: 60000, timeoutMs: 50 }); }
+    finally { fs.openSync = realOpenSync; }
+    assert.strictEqual(injected, true, 'the injected EPERM must actually have fired');
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(S.readLockToken(lockPath), 'OTHER-HOLDER-TOKEN', 'the other holder\'s real lock must survive completely untouched — an unconditional unlink here would have deleted it');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('L2: a successful exclusive open with a subsequent write failure IS provably ours (no other holder existed) and is still cleaned up — N07\'s original guarantee is preserved for the case it actually proves', async () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    const realWriteSync = fs.writeSync;
+    fs.writeSync = function (fd, ...rest) { const e = new Error('EIO simulated'); e.code = 'EIO'; throw e; };
+    let r;
+    try { r = await S.withStateLock(lockPath, () => 'unreachable', { staleMs: 60000, timeoutMs: 50 }); }
+    finally { fs.writeSync = realWriteSync; }
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(fs.existsSync(lockPath), false, 'a lock WE just exclusively created must still be cleaned up on a failed write — never left as an ownerless orphan');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ---- V15, THIRD Codex recheck (2026-09-24, now SUPERSEDED — see the FOURTH recheck below): capture-first
 // reclaim/release + fenced publication ----
 const G = require('./usage-guard.cjs');

@@ -1329,6 +1329,97 @@ t('CFG-09: a lock older than lockStaleMs is reclaimed instead of wedging forever
   assert.strictEqual(readJson(fx.projectFile).settings.council.value, 'off');
 });
 
+// ---- V09 FIFTH fix (Codex recheck 2026-09-24, out-p11 + Security Boss addendum): a lock reclaim/release
+// race let two consumeOnce() calls both succeed for one approval; the fix moves the exactly-once guarantee
+// off the lock entirely (a pending/consumed grant file, forge-config-once-store.cjs) and adds a real fence
+// to every config write.
+t('V09 FIFTH fix: setOnce() writes the authoritative PENDING grant file, and a real consumeOnce() consumes it — the pending file is gone and a consumed record embedding the sha exists afterward', () => {
+  const fx = fixture();
+  const onceStoreMod = require('./forge-config-once-store.cjs');
+  const configDir = path.dirname(fx.projectFile);
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: '2026-09-24T12:00:00.000Z' }));
+  const pendingPath = onceStoreMod.oncePendingPath(configDir, 'gate-hook');
+  assert.strictEqual(fs.existsSync(pendingPath), true, 'setOnce must create the authoritative pending grant file');
+  const r = cfg.consumeOnce('gate-hook', withOpts(fx, { now: '2026-09-24T12:01:00.000Z', commandSha256: 'abc123' }));
+  assert.deepStrictEqual(r, { ok: true });
+  assert.strictEqual(fs.existsSync(pendingPath), false, 'the pending file must be gone — consumed by the rename');
+  const consumedFiles = fs.readdirSync(configDir).filter((f) => f.includes('.consumed.'));
+  assert.strictEqual(consumedFiles.length, 1, consumedFiles.join(','));
+});
+t('V09 FIFTH fix: "set gate-hook on" while a grant is still pending removes the orphaned pending grant file too (hygiene) — a later re-arm starts clean', () => {
+  const fx = fixture();
+  const onceStoreMod = require('./forge-config-once-store.cjs');
+  const configDir = path.dirname(fx.projectFile);
+  cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: '2026-09-24T12:00:00.000Z' }));
+  const pendingPath = onceStoreMod.oncePendingPath(configDir, 'gate-hook');
+  assert.strictEqual(fs.existsSync(pendingPath), true);
+  cfg.set('gate-hook', 'on', withOpts(fx, { now: '2026-09-24T12:01:00.000Z' }));
+  assert.strictEqual(fs.existsSync(pendingPath), false, 'the orphaned pending grant must be removed when the owner explicitly turns it back on early');
+});
+t('V09 FIFTH fix, THE CORE REGRESSION PROOF (Security Boss addendum: "prove two concurrent consumers yield one success even if you deliberately break the lock"): with onceLib.withLock deliberately bypassed (no real locking/serialization at all), two consumeOnce() calls genuinely interleaved via a real fs-seam on the MIRROR file\'s own publish rename still yield EXACTLY ONE success — the pending-file rename is what actually enforces this, not the lock', () => {
+  const fx = fixture();
+  const onceLibMod = require('./forge-config-once.cjs');
+  const realWithLock = onceLibMod.withLock;
+  onceLibMod.withLock = (file, fn) => fn(() => true); // a "broken" lock: no exclusivity, fence always reports true
+  try {
+    cfg.set('gate-hook', 'off', withOpts(fx, { once: 'ja', now: '2026-09-24T12:00:00.000Z' }));
+    const onceStoreMod = require('./forge-config-once-store.cjs');
+    const pendingPath = onceStoreMod.oncePendingPath(path.dirname(fx.projectFile), 'gate-hook');
+    const origRename = fs.renameSync;
+    let fired = false;
+    let nestedResult = null;
+    fs.renameSync = function (src, dest) {
+      if (!fired && src === pendingPath) {
+        fired = true;
+        // The instant the OUTER call is about to win the pending-grant rename, a genuinely concurrent second
+        // consumer races the IDENTICAL pending file and runs to full completion first (its own rename wins
+        // the real race), so the outer's own subsequent rename attempt below finds the source already gone.
+        nestedResult = cfg.consumeOnce('gate-hook', withOpts(fx, { now: '2026-09-24T12:01:00.000Z', commandSha256: 'nested' }));
+      }
+      return origRename.apply(fs, arguments);
+    };
+    let outerResult;
+    try { outerResult = cfg.consumeOnce('gate-hook', withOpts(fx, { now: '2026-09-24T12:01:00.000Z', commandSha256: 'outer' })); }
+    finally { fs.renameSync = origRename; }
+    assert.strictEqual(fired, true, 'the injected interleaving must actually have fired');
+    const results = [outerResult, nestedResult];
+    const successes = results.filter((r) => r && r.ok === true);
+    assert.strictEqual(successes.length, 1, 'exactly one of the two interleaved consumeOnce() calls must succeed even with the lock broken: ' + JSON.stringify(results));
+    assert.ok(results.some((r) => r && r.ok === false && r.reason === 'consumed'), 'the loser must be refused with reason:consumed: ' + JSON.stringify(results));
+  } finally {
+    onceLibMod.withLock = realWithLock;
+  }
+});
+t('V09 FIFTH fix, item 3 (a real fence): a lock reclaimed by a different token between acquisition and the actual publish is refused with EFENCED, and nothing is written', () => {
+  const fx = fixture();
+  const lockPath = fx.projectFile + '.lock';
+  const real = fs.fsyncSync;
+  let injected = false;
+  fs.fsyncSync = (fd) => {
+    // atomicWriteJson calls fsyncFile (this) BEFORE its own fence check and the publishing rename — inject
+    // a foreign lock token right here, simulating a genuine reclaim landing between acquisition and publish.
+    if (!injected) { injected = true; fs.writeFileSync(lockPath, 'someone-elses-token'); }
+    return real.call(fs, fd);
+  };
+  let threw = null;
+  try { cfg.set('council', 'off', fx.o); }
+  catch (e) { threw = e; }
+  finally {
+    fs.fsyncSync = real;
+    try { fs.unlinkSync(lockPath); } catch { /* cleanup the injected foreign lock */ }
+  }
+  assert.ok(injected, 'the injected interleaving must actually have fired');
+  assert.strictEqual(threw && threw.code, 'EFENCED', 'the write must be refused once the fence no longer matches: ' + (threw && threw.message));
+  assert.strictEqual(fs.existsSync(fx.projectFile), false, 'nothing must have been written to the target file');
+  const leftovers = fs.readdirSync(path.dirname(fx.projectFile)).filter((f) => f.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], 'no temp file left behind: ' + leftovers.join(','));
+});
+t('V09 FIFTH fix, item 3: a NORMAL write (no reclaim in between) still succeeds — the fence must never falsely refuse a caller that genuinely still holds the lock', () => {
+  const fx = fixture();
+  cfg.set('council', 'off', fx.o); // must not throw
+  assert.strictEqual(cfg.get('council', fx.o).value, 'off');
+});
+
 t('CFG-10: atomicWriteJson leaves no temp file and the written bytes read back byte-identical after fsync', () => {
   const fx = fixture();
   cfg.set('council', 'off', fx.o);

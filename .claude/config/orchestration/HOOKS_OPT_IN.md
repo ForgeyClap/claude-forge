@@ -4,8 +4,8 @@
 running 4 hook scripts** — the 3 snapshot entries (section 4), the tool ledger (section 5) and, new, the
 **gate hook** (section 6: a PreToolUse hook that really BLOCKS the four command gates — destructive-delete,
 kill-by-name, git-destructive and, since the 2026-09-24 codex-recheck, opaque-exec; a classifier, not a proof) —
-plus a **`permissions.deny` block** (28 rules) that keeps `.env` files at any depth, `secrets/`, private keys and
-the user's own credential files out of Claude's Read tool (section 6b).
+plus a **`permissions.deny` block** (29 rules) that keeps `.env` files at any depth, `secrets/`, private keys,
+the user's own credential files and the usage guard's owner-approval secret out of Claude's Read tool (section 6b).
 The gate hook is the first hook here that enforces instead of advising; it is ON by default because the
 owner decided so (config key `gate-hook`), and it is switched off with one command. The history below is kept
 as it was written.
@@ -558,15 +558,19 @@ proofs in a real Claude Code session, 2026-09-24:
 
 ## 6b. `permissions.deny` — secrets stay out of Claude's Read tool (LIVE)
 
-The deny list now holds 28 rules (wp-f2, 2026-09-24 Codex re-check SECRET-READ-GAPS closed the two gaps
-below):
+The deny list now holds 29 rules (wp-f2, 2026-09-24 Codex re-check SECRET-READ-GAPS closed the two gaps
+below; wave 6 of the same recheck added the owner-approval secret):
 - the 9 root-level ones: `./.env`, `./.env.local`, `./.env.*.local`, `./.env.development`, `./.env.production`,
   `./.env.staging`, `./.env.test`, `./.env.forge-setup`, `./secrets/**`;
 - plus security L5 (and SECRET-READ-GAPS): `./**/.env`, `./**/.env.local`, `./**/.env.*.local`,
   `./**/.env.development`, `./**/.env.production`, `./**/.env.staging`, `./**/.env.test`,
   `./**/.env.forge-setup`, `./**/.env.prod`, `./**/.env.bak`, `./**/.env.backup`, `./**/*.pem`, `./**/*.key`,
   `./**/id_rsa*`, `./**/id_ed25519*`, `./**/secrets/**`, `~/.claude/.credentials.json`, `~/.claude/nvidia.env`,
-  `~/.ssh/**`.
+  `~/.ssh/**`;
+- plus the usage guard's owner-approval secret (Security Boss sec-w5 M5, 2026-09-24 wave 6):
+  `./.claude/config/forge-owner-grant.txt` — the file `forge-ownergrant.cjs` reads to verify an `override-on`
+  grant. If Claude could read it, an agent could quote the owner's secret back and grant itself an override; the
+  same file and the grant record are also gitignored (source `.gitignore` + `templates/gitignore.snippet`).
 
 All of them are in the `Read(...)` form. `.env.forge-setup` (the file README.md/AI-INSTALL.md tell a beginner
 to fill with keys during setup) previously had no rule at all, root or nested; `.env.development`,
@@ -586,7 +590,7 @@ cannot be undone with an allow rule, because deny always wins. Every Forge build
 **Not covered (honest):**
 - **Reading a secret through the shell** (`cat .env`, `Get-Content .env`). Deny rules govern Claude's Read
   tool, not the commands a shell runs. The gate hook does not treat a read as a destructive command either.
-- Unlisted names such as `.env.staging2` or any other variant not in the 28-rule list above.
+- Unlisted names such as `.env.staging2` or any other variant not in the 29-rule list above.
 
 **No `_doc` key inside `permissions`.** Claude Code is proven to tolerate an unknown key on a hook-matcher
 object: the existing `_matcher_doc` is there and the ledger keeps recording. It is not proven to tolerate one

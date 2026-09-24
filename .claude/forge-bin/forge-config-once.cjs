@@ -136,6 +136,60 @@
  *       still theirs mid-transaction. Closing either gap fully needs real OS-level locking (e.g. an advisory
  *       byte-range lock the kernel itself revokes on process exit), which this cross-platform,
  *       dependency-free, rename-based file lock intentionally does not depend on.
+ *
+ *   V09 FIFTH fix (Codex recheck 2026-09-24, out-p11 + Security Boss addendum — "checks the lock in place
+ *   and then renames WHATEVER sits at lockPath at that moment; a competing reclaimer that finishes in that
+ *   gap has its live lock captured; the restore ignores its return value; a third acquirer takes the vacant
+ *   path and two holders run... two actual consumeOnce() calls return success for one approval"):
+ *     - RECLAIM NO LONGER RENAMES AWAY FROM lockPath AT ALL — the steal-verify-restore-if-wrong sequence
+ *       (the THIRD fix's own mechanism, `stealLockFile`/`restoreStolenLock`) is REMOVED ENTIRELY, not
+ *       narrowed. `tryReclaimStaleLock` now mirrors this codebase's own already-reviewed
+ *       usage-guard-state.cjs pattern: after the SAME in-place staleness+liveness check as before, a
+ *       brand-new token is written to a PRIVATE temp file first, then `fs.renameSync(<private>, lockPath)` —
+ *       a rename ONTO an EXISTING destination, which both POSIX `rename(2)` and Windows (`MoveFileExW` +
+ *       `MOVEFILE_REPLACE_EXISTING`, what Node's `renameSync` uses) perform as ONE atomic directory-entry
+ *       replace. `lockPath` is NEVER, even momentarily, absent from the directory during a reclaim — there
+ *       is no window left for a concurrent `openSync(lockPath, 'wx')` (a brand-new acquirer) to walk into,
+ *       which is what eliminates the "third acquirer takes the vacant path" half of the finding. A plain
+ *       replace-rename carries no EEXIST-style "did I actually win" signal the way an exclusive create does,
+ *       so a mandatory READBACK immediately afterward is the real "did I win" check: if a second, concurrent
+ *       reclaimer's own replace happened to land after this one, the readback shows THEIR token, and this
+ *       call honestly reports it lost — it never assumes success from a rename call that merely did not throw.
+ *     - HONEST, NOT-FULLY-CLOSED RESIDUAL (measured, not assumed — see forge-config-once.test.cjs's own
+ *       "two-reclaimer interleaving through the reclaim path" test): the in-place check, the replace, and the
+ *       readback are three separate syscalls with no compare-and-swap between them. Two reclaimers racing the
+ *       EXACT SAME already-provably-dead lock can EACH independently pass eligibility, EACH perform their own
+ *       replace, and EACH read back THEIR OWN token immediately afterward — if reclaimer B's replace lands,
+ *       THEN reclaimer C's replace lands (overwriting B's), B's own readback (already completed before C
+ *       acted) still reported `true`. A plain replace+readback is NOT a true compare-and-swap: it proves "my
+ *       write was the most recent one AT THE INSTANT I CHECKED", never "my write is still the one anybody
+ *       else will see afterward". THIS IS EXACTLY WHY `withLock`'s fence exists (the next change below) and
+ *       why every real transaction MUST re-check it immediately before its own publish, not only trust
+ *       tryReclaimStaleLock/acquireLock's own return value: a caller who believed it won a reclaim, like B
+ *       above, has its OWN later fence() check correctly report `false` once C's replace has actually landed,
+ *       so B's real write is refused (EFENCED) even though its EARLIER reclaim looked successful. This
+ *       residual is the SAME class this project's own usage-guard-state.cjs already accepted for its
+ *       identical fourth-recheck fix (mitigated there, as here, by its own fence-at-publish discipline);
+ *       closing it fully needs real OS-level locking, which this dependency-free design intentionally does
+ *       not depend on. CRITICALLY, THIS RESIDUAL NEVER DETERMINES THE SECURITY PROPERTY OUT-P11 ACTUALLY
+ *       CARES ABOUT — consumeOnce()'s exactly-once guarantee (the third change below) does not depend on this
+ *       lock's acquisition being race-free at all.
+ *     - A REAL FENCE: `withLock(file, fn, opts)` now calls `fn(fence)`, where `fence()` re-reads `lockPath`
+ *       IN PLACE and reports whether it still holds this exact token, right now. Every write forge-config.cjs
+ *       performs inside a `withLock` callback re-checks `fence()` as the LAST synchronous step before the one
+ *       mutation that actually publishes it (the rename onto the target file) and refuses with a real
+ *       `EFENCED` error, writing nothing, on a mismatch — the same fence-at-publish pattern this codebase's
+ *       usage-guard.cjs::writeStateTo already uses for usage-guard-state.cjs's own lock. This makes the
+ *       CHANGELOG's "the config lock's fence refuses a stale write" claim true; before this fix no such fence
+ *       existed anywhere in this file or forge-config.cjs.
+ *     - THE REAL FIX FOR "two actual consumeOnce() calls return success for one approval" IS STRUCTURAL, NOT
+ *       A TIGHTER LOCK: an armed `--once` grant now ALSO lives in its own file (see the sibling
+ *       forge-config-once-store.cjs), and consuming it is exactly one `fs.renameSync(pendingPath,
+ *       consumedPath)` — an OS-level atomic claim of a shared source name that holds regardless of ANY
+ *       interleaving two callers experience around this lock (a reclaim race, a release race, or this lock
+ *       being bypassed entirely). forge-config.cjs::consumeOnce() calls that store's consumeOnceGrant() as an
+ *       ADDITIONAL, independent gate before ever honouring what its own (still lock-guarded, display-only)
+ *       FORGE_CONFIG.json mirror check believed was a valid, unconsumed grant.
  */
 const fs = require('fs');
 const path = require('path');
@@ -246,37 +300,6 @@ function reclaimEligibility(lockPath, staleMs) {
   return { token: seen.token, mtimeMs: seen.mtimeMs, eligible: ageMs > staleMs && !isPidAlive(parseTokenPid(seen.token)) };
 }
 
-/** stealLockFile(lockPath, privatePath) -> boolean — atomically removes whatever CURRENTLY sits at
- *  `lockPath` by renaming it to `privatePath` (a name only this call knows about). Returns false (nothing
- *  to do, never throws) when `lockPath` does not currently exist — already released or already reclaimed by
- *  someone else. `fs.renameSync` on a shared SOURCE name is the one primitive this whole module leans on for
- *  real atomicity: when two callers race to rename the SAME source name, the OS guarantees only one of them
- *  can find and move it — the other gets ENOENT — so there is no window in which both can believe they hold
- *  it (V09 out-p8: this is what actually closes the "two reclaimers both return success" gap; the OLD
- *  design's separate stat+read CHECK followed by a later write/rename ACT is exactly the gap this removes). */
-function stealLockFile(lockPath, privatePath) {
-  try { fs.renameSync(lockPath, privatePath); return true; }
-  catch { return false; }
-}
-
-/** restoreStolenLock(privatePath, lockPath) -> boolean (true = restored to `lockPath` under its original
- *  name; false = restoration FAILED — a third lock already occupies `lockPath`) — puts a wrongly-stolen lock
- *  back WITHOUT ever destroying a third lock that may have appeared at `lockPath` in the meantime. `fs.linkSync`
- *  is used (not `fs.renameSync`) because link fails with EEXIST when `lockPath` is already occupied again — an
- *  unconditional rename-back would silently clobber that newer, legitimate lock instead. V09 out-p9: when
- *  restoration itself fails, the private copy is now left EXACTLY as stolen rather than discarded — the old
- *  code unconditionally unlinked it on this branch too, silently destroying a still-live lock nobody else
- *  could reach ("restoration encounters C's lock and discards B's captured lock"). The caller must treat a
- *  `false` return as a real, honest failure of the current operation — never as a quiet no-op. V09 out-p10:
- *  this is now called ONLY from tryReclaimStaleLock's post-rename re-verify — releaseLock no longer renames
- *  anything at all, so it never has a stolen copy to restore. */
-function restoreStolenLock(privatePath, lockPath) {
-  try { fs.linkSync(privatePath, lockPath); }
-  catch { return false; } // lockPath already holds ANOTHER (newer) lock — preserve the captured copy, fail honestly
-  try { fs.unlinkSync(privatePath); } catch { /* best effort — the name-restore already succeeded */ }
-  return true;
-}
-
 /** createOwnedLock(lockPath, token) -> true (freshly created and durably holds exactly `token`) | false
  *  (EEXIST — genuine contention, `lockPath` is untouched). Any OTHER failure — including the token WRITE
  *  itself failing after the exclusive 'wx' create already succeeded (V09 out-p8: "injected token-write EIO
@@ -309,34 +332,50 @@ function createOwnedLock(lockPath, token) {
   return true;
 }
 
+/** replaceLockFile(tmp, lockPath) -> boolean — `fs.renameSync(tmp, lockPath)` with a short, bounded retry on
+ *  Windows's own EPERM/EBUSY/EACCES (confirmed live on this machine: a rename ONTO a destination another
+ *  caller currently has open for a brief, plain read — exactly what readLockInPlace's own open+fstat+read+
+ *  close does, elsewhere, for release or for another reclaimer's eligibility check — can transiently fail on
+ *  Windows even though the destination genuinely exists and the rename is otherwise valid; POSIX rename(2)
+ *  has no such restriction). This is the SAME transient condition and the SAME retry shape
+ *  forge-config.cjs's own `renameWithRetry` already uses for its atomic config writes — never a silent
+ *  swallow of a real, non-transient failure. */
+function replaceLockFile(tmp, lockPath) {
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(tmp, lockPath); return true; }
+    catch (e) {
+      if (i >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) return false;
+      sleepMs(10 * (i + 1));
+    }
+  }
+}
+
 /** tryReclaimStaleLock(lockPath, staleMs, newToken) -> boolean (true = this call now holds the lock, at
- *  `lockPath`, with `newToken`). V09 out-p10: NO CAPTURE OF A LOCK THIS CALL DOES NOT ALREADY KNOW, IN PLACE,
- *  TO BE RECLAIMABLE. This takes its OWN fresh look (reclaimEligibility — never a caller-supplied snapshot
- *  from an earlier poll, which can already be outdated) and only proceeds when BOTH the heartbeat/mtime is
- *  older than `staleMs` AND the recorded holder pid is not alive. A live holder's lock — however old its
- *  heartbeat — is simply never eligible, so the rename below is never even attempted against it. Only once
- *  eligible does it rename that SPECIFIC lock to a private name, then re-verify the private copy's token+mtime
- *  against what was just confirmed a moment ago; a mismatch (something changed in the instant between the
- *  check and the rename — a genuine competing reclaimer, most likely) restores it untouched and this call
- *  reports failure — it NEVER proceeds to create a lock of its own on top of someone else's live entry. */
+ *  `lockPath`, with `newToken`). V09 FIFTH fix (out-p11 + addendum): NO RENAME-AWAY FROM lockPath, EVER —
+ *  mirrors this codebase's own usage-guard-state.cjs pattern (see the file header). Takes its OWN fresh
+ *  in-place look (reclaimEligibility — never a caller-supplied snapshot from an earlier poll, which can
+ *  already be outdated) and only proceeds when BOTH the heartbeat/mtime is older than `staleMs` AND the
+ *  recorded holder pid is not alive — a live holder's lock, however old its heartbeat, is simply never
+ *  eligible, so lockPath itself is never even approached. Once eligible, `newToken` is written to a PRIVATE
+ *  temp file FIRST (reusing createOwnedLock's own full-write-or-throw discipline — a failed write here never
+ *  touches lockPath at all, so a failed attempt leaves the original, still-genuinely-stale lock completely
+ *  intact for an immediate retry), then replaceLockFile REPLACES whatever currently sits at lockPath in ONE
+ *  atomic step — the path is never absent, not even for an instant, closing the exact vacancy a concurrent
+ *  fresh `wx`-create could otherwise walk into. A plain replace-rename has no EEXIST-style success signal, so
+ *  a mandatory READBACK is the only real "did I win" check: only when lockPath now reads back as EXACTLY
+ *  `newToken` does this call report success — never assumed from a rename call that merely did not throw. */
 function tryReclaimStaleLock(lockPath, staleMs, newToken) {
   const info = reclaimEligibility(lockPath, staleMs);
   if (!info || !info.eligible) return false; // vanished, not yet stale, or its holder pid is still alive
-  const privatePath = lockPath + '.reclaim.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
-  if (!stealLockFile(lockPath, privatePath)) return false; // vanished between the check above and this rename
-  const after = readLockInPlace(privatePath); // ours exclusively now — no rename needed to inspect it
-  if (!after || after.token !== info.token || after.mtimeMs !== info.mtimeMs) {
-    // What was actually captured is NOT what was just confirmed eligible a moment ago — a competing
-    // reclaimer (or the original holder resuming and refreshing before ever truly dying) replaced it in
-    // that instant. Put it back. If a THIRD lock has since taken the name, restoration fails and the
-    // captured copy is preserved on disk rather than discarded (V09 out-p9); either way this call did not
-    // win the reclaim, so it fails honestly.
-    restoreStolenLock(privatePath, lockPath);
-    return false;
+  const tmp = lockPath + '.reclaim.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
+  try { createOwnedLock(tmp, newToken); } // same full-write-or-throw-and-cleanup discipline as a fresh acquire
+  catch { try { fs.unlinkSync(tmp); } catch { /* createOwnedLock already cleaned up its own failure */ } return false; }
+  if (!replaceLockFile(tmp, lockPath)) {
+    try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+    return false; // lockPath itself was never touched by a failed replace — nothing to clean up there
   }
-  try { fs.unlinkSync(privatePath); } catch { /* best effort — lockPath (now empty) is what matters from here */ }
-  try { return createOwnedLock(lockPath, newToken); }
-  catch { return false; } // a third, brand-new acquirer (or a real write failure) took the freed slot first
+  const after = readLockInPlace(lockPath);
+  return !!after && after.token === newToken; // a concurrent reclaimer's later replace would show THEIR token here
 }
 
 /** acquireLock(file, opts) -> { path: lockPath, token }, once held — pass this SAME object to releaseLock;
@@ -397,12 +436,23 @@ function releaseLock(lock) {
   catch { return false; } // vanished or became unremovable between the read and the unlink — never throw
 }
 
-/** withLock(file, fn, opts) -> fn()'s return value, run while holding file's lock. Always releases, even
- *  when fn throws. `fn` MUST re-read `file` from disk itself (never reuse a snapshot taken before the
- *  lock) — that is what actually prevents a lost update between two callers. */
+/** withLock(file, fn, opts) -> fn(fence)'s return value, run while holding file's lock. Always releases,
+ *  even when fn throws. `fn` MUST re-read `file` from disk itself (never reuse a snapshot taken before the
+ *  lock) — that is what actually prevents a lost update between two callers. FENCE (V09 FIFTH fix, out-p11 +
+ *  addendum): `fence()` re-reads lockPath IN PLACE and reports whether this call still holds EXACTLY this
+ *  token, right now. A caller whose transaction publishes a write (a rename onto the real target file) MUST
+ *  call `fence()` immediately before that rename and refuse — write nothing — on false: the same
+ *  fence-at-publish pattern usage-guard.cjs::writeStateTo already uses for usage-guard-state.cjs's own lock.
+ *  Without this, a caller could still believe it holds the lock (an earlier check of its own passed) while a
+ *  reclaimer has since genuinely replaced it — `fence()` is what actually makes forge-config.cjs's own write
+ *  path refuse a stale write, not merely acquireLock/releaseLock's own internal bookkeeping. */
 function withLock(file, fn, opts) {
   const lock = acquireLock(file, opts);
-  try { return fn(); }
+  const fence = () => {
+    const seen = readLockInPlace(lock.path);
+    return !!seen && seen.token === lock.token;
+  };
+  try { return fn(fence); }
   finally { releaseLock(lock); }
 }
 

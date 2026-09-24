@@ -103,14 +103,32 @@ t('readOverrideGrant: an ABSENT file reads as inactive', () => {
   const r = G.readOverrideGrant({ projectRoot: root(undefined) });
   assert.strictEqual(r.active, false);
 });
-t('writeOverrideGrant then readOverrideGrant: an active, unexpired grant round-trips', () => {
+t('writeOverrideGrant then readOverrideGrant: an active, unexpired grant with a real `until` round-trips', () => {
   const dir = root(undefined);
-  const ok = G.writeOverrideGrant({ active: true, at: '2026-09-24T00:00:00.000Z', until: null, reason: 'test' }, { projectRoot: dir });
+  const until = new Date(Date.now() + 3600000).toISOString();
+  const ok = G.writeOverrideGrant({ active: true, at: '2026-09-24T00:00:00.000Z', until, reason: 'test' }, { projectRoot: dir });
   assert.strictEqual(ok, true);
   const r = G.readOverrideGrant({ projectRoot: dir });
   assert.strictEqual(r.active, true);
   assert.strictEqual(r.reason, 'test');
   assert.strictEqual(r.at, '2026-09-24T00:00:00.000Z');
+  assert.strictEqual(r.until, until);
+});
+// ---- N12 (2026-09-24, Security Boss addendum reconfirmed): expiry is now MANDATORY — a missing or
+// unparseable `until` reads as an INVALID grant, never as "unlimited". ----
+t('N12: readOverrideGrant — a MISSING `until` (null, the old "unlimited" convention) now reads as INVALID, not active', () => {
+  const dir = root(undefined);
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: null, reason: 'no expiry set' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.active, false, 'a grant with no expiry at all must never read as active (unlimited): ' + JSON.stringify(r));
+  assert.strictEqual(r.invalid, 'missing-expiry');
+});
+t('N12: readOverrideGrant — an UNPARSEABLE `until` (present but not a real date — corruption/typo) reads as INVALID, not active', () => {
+  const dir = root(undefined);
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: 'not-a-real-date', reason: 'corrupted' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.active, false, 'an unparseable expiry must never silently fall back to unlimited: ' + JSON.stringify(r));
+  assert.strictEqual(r.invalid, 'unparseable-expiry');
 });
 t('readOverrideGrant: an EXPIRED `until` reads as inactive, even though the file itself still says active:true', () => {
   const dir = root(undefined);
@@ -125,6 +143,23 @@ t('readOverrideGrant: an UNEXPIRED `until` (in the future) still reads as active
   G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: future, reason: 'still good' }, { projectRoot: dir });
   const r = G.readOverrideGrant({ projectRoot: dir });
   assert.strictEqual(r.active, true);
+});
+// ---- N10 (2026-09-24, Security Boss addendum reconfirmed): the grant record persists the opaque account
+// identity label it is bound to (enforcement of the binding lives in usage-guard-override.cjs's
+// resolveOwnerOverride; this function only ever reports what the file contains). ----
+t('N10: writeOverrideGrant persists accountLabel; readOverrideGrant returns it back unchanged', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'test', accountLabel: 'account-abc123' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.accountLabel, 'account-abc123');
+});
+t('N10: a grant written WITHOUT an accountLabel (a legacy/label-less record) reads back accountLabel: null', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'legacy' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.accountLabel, null);
 });
 t('readOverrideGrant: a CORRUPT/unparseable grant file reads as inactive, never throws', () => {
   const dir = root(undefined);

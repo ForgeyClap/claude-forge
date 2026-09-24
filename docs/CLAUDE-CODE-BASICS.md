@@ -97,9 +97,10 @@ an agent typing that itself is blocked, and a one-off approval (`--once "<your w
 command and expires within 10 minutes. The hook cannot check who typed the quoted words, so read the
 approval line Claude shows before the command runs.
 
-The same file also has **deny rules** (28): Claude cannot read `.env`, `.env.local`, the other common `.env.*`
+The same file also has **deny rules** (29): Claude cannot read `.env`, `.env.local`, the other common `.env.*`
 secret files (including `.env.development`, `.env.staging`, `.env.test` and `.env.forge-setup`, at any depth),
-anything in `secrets/`, private keys, or your own credential files. `.env.example` stays readable, because it
+anything in `secrets/`, private keys, your own credential files, or the secret file behind the usage guard's
+owner approval. `.env.example` stays readable, because it
 only holds placeholders.
 
 ### 4. Undo and going back

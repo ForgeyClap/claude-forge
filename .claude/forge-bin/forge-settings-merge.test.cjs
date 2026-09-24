@@ -26,7 +26,7 @@ function recommendedFiles(dir) { return fs.readdirSync(dir).filter((f) => /^sett
 function backupFiles(dir) { return fs.readdirSync(dir).filter((f) => f.includes('.forge-bak-')); }
 
 /** realSourceFixture — shaped like the REAL .claude/settings.json: 3 snapshot hooks, the tool-ledger
- *  PostToolUse hook, the PreToolUse gate hook (all 5 with `timeout` in SECONDS, <=60), plus the 28-rule
+ *  PostToolUse hook, the PreToolUse gate hook (all 5 with `timeout` in SECONDS, <=60), plus the 29-rule
  *  permissions.deny block. A hand-built FIXTURE, not the real file. */
 function realSourceFixture() {
   return {
@@ -47,8 +47,9 @@ function realSourceFixture() {
     },
     permissions: {
       deny: [
-        // 28 rules, matching the real .claude/settings.json exactly (wp-f2 SECRET-READ-GAPS: added
-        // .env.forge-setup root+nested, and .env.development/.env.staging/.env.test nested).
+        // 29 rules, matching the real .claude/settings.json exactly (wp-f2 SECRET-READ-GAPS: added
+        // .env.forge-setup root+nested, and .env.development/.env.staging/.env.test nested; wave 6 of the
+        // 2026-09-24 recheck: the usage guard's owner-approval secret, Security Boss sec-w5 M5).
         'Read(./.env)', 'Read(./.env.local)', 'Read(./.env.*.local)', 'Read(./.env.development)',
         'Read(./.env.production)', 'Read(./.env.staging)', 'Read(./.env.test)', 'Read(./.env.forge-setup)', 'Read(./secrets/**)',
         'Read(./**/.env)', 'Read(./**/.env.local)', 'Read(./**/.env.*.local)', 'Read(./**/.env.development)',
@@ -56,6 +57,7 @@ function realSourceFixture() {
         'Read(./**/.env.prod)', 'Read(./**/.env.bak)', 'Read(./**/.env.backup)', 'Read(./**/*.pem)',
         'Read(./**/*.key)', 'Read(./**/id_rsa*)', 'Read(./**/id_ed25519*)', 'Read(./**/secrets/**)',
         'Read(~/.claude/.credentials.json)', 'Read(~/.claude/nvidia.env)', 'Read(~/.ssh/**)',
+        'Read(./.claude/config/forge-owner-grant.txt)',
       ],
     },
   };
@@ -110,10 +112,10 @@ t('foreign hook + foreign allow rule + unknown top-level key survive byte-for-by
   assert.strictEqual(settings.ownerNote, 'do not touch this field');
   assert.deepStrictEqual(settings.permissions.allow, ['Bash(npm run build)']);
 
-  // deny union: user's own rule stays first, 28 source rules appended after (28 new, since none pre-existed)
+  // deny union: user's own rule stays first, 29 source rules appended after (29 new, since none pre-existed)
   assert.strictEqual(settings.permissions.deny[0], 'Bash(rm -rf *)');
-  assert.strictEqual(settings.permissions.deny.length, 1 + 28);
-  assert.strictEqual(deny_added.length, 28);
+  assert.strictEqual(settings.permissions.deny.length, 1 + 29);
+  assert.strictEqual(deny_added.length, 29);
 
   assert.ok(added.length >= 3);
 });
@@ -244,7 +246,7 @@ t('deny union keeps the user\'s own rule(s) first, source rules appended after i
   const written = JSON.parse(fs.readFileSync(target, 'utf8'));
   assert.strictEqual(written.permissions.deny[0], 'Bash(rm -rf *)');
   assert.strictEqual(written.permissions.deny[1], 'Read(./.env)');
-  assert.strictEqual(written.permissions.deny.length, 2 + 27); // 27 NEW source rules (1 already present)
+  assert.strictEqual(written.permissions.deny.length, 2 + 28); // 28 NEW source rules (1 of the 29 already present)
 });
 
 t('invalid existing JSON -> refused, file untouched, a UNIQUE settings.forge-recommended-*.json written, ok:false', () => {

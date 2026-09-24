@@ -90,7 +90,8 @@
       "Read(./**/secrets/**)",
       "Read(~/.claude/.credentials.json)",
       "Read(~/.claude/nvidia.env)",
-      "Read(~/.ssh/**)"
+      "Read(~/.ssh/**)",
+      "Read(./.claude/config/forge-owner-grant.txt)"
     ]
   }
 }

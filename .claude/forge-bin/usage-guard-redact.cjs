@@ -138,4 +138,30 @@ function resolveLocalAccountLabel(fp, opts) {
   return { label, isNew: true, persisted: true };
 }
 
-module.exports = { validateTokenShape, transportErrorCode, resolveLocalAccountLabel, TOKEN_SHAPE_RE };
+// A long (>=32 char), whitespace-free run drawn from the SAME token-safe alphabet TOKEN_SHAPE_RE accepts —
+// the shape an owner might paste in BY MISTAKE alongside a short, legitimate free-text reason. A real
+// bearer/OAuth token is typically 40+ characters (e.g. "sk-ant-oat01-" + 40 random chars); an ordinary
+// hyphenated/technical compound word a real reason is likely to contain (e.g. "usage-guard-override-grant",
+// 26 chars) stays well under this threshold and is left alone — this is a defensive mask, not a token
+// detector with false-negative guarantees.
+const REASON_TOKEN_LOOKALIKE_RE = /[A-Za-z0-9._~+/=-]{32,4096}/g;
+const REASON_MAX_LEN = 500;
+
+/** sanitizeReason(text) -> a safe string for persistence in a displayed/synced artifact (usage-guard's
+ *  state.json `ownerOverride.reason` cache — GUARD-TOKEN-ERROR/N10-N12 Codex recheck, 2026-09-24: "reasons
+ *  are stored without redaction"). Three defenses, in order: (1) strip control characters (C0/C1, including
+ *  CR/LF) so an owner/agent-supplied reason can never inject a fake log line or corrupt persisted JSON
+ *  formatting when later embedded in a log/report; (2) mask any long token-shaped run so a credential
+ *  pasted into `--reason` by mistake is never echoed into a synced/dashboard-visible file; (3) cap total
+ *  length. Returns null for non-string/empty input (never throws, matches this module's other functions).
+ *  Pure. */
+function sanitizeReason(text) {
+  if (typeof text !== 'string') return null;
+  let s = text.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').trim();
+  if (!s) return null;
+  s = s.replace(REASON_TOKEN_LOOKALIKE_RE, '[redacted-token-like-value]');
+  if (s.length > REASON_MAX_LEN) s = s.slice(0, REASON_MAX_LEN) + '…';
+  return s;
+}
+
+module.exports = { validateTokenShape, transportErrorCode, resolveLocalAccountLabel, sanitizeReason, TOKEN_SHAPE_RE };

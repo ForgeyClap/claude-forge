@@ -836,6 +836,89 @@ function verifyForcedWatchGrant(token) {
   const og = require('./forge-ownergrant.cjs');
   return og.verifyOwnerGrant({ token, projectRoot: TRUSTED_OWNERGRANT_ROOT });
 }
+/** runOverrideOn() — the `override-on` command body. Extracted from the `require.main === module` CLI
+ *  dispatch (N11, 2026-09-24, Security Boss addendum reconfirmed) into a plain, exported, directly-callable
+ *  function so it can be exercised end-to-end — including injected removal/lock failures — from a test via
+ *  `require()` + `__setOwnerGrantRootForTests()`, the SAME safe, real-module, scratch-root convention this
+ *  file already uses for verifyForcedWatchGrant/the V15 grant probes, never by writing to this project's own
+ *  live `.claude/config/forge-owner-grant.txt`. Reads `argv`/`has`/`cmd` from the module scope exactly like
+ *  every other command handler in this file. N11 status wording lives in usage-guard-override.cjs's
+ *  describeOverrideLockOutcome() (shared with runOverrideOff()). Always calls `process.exit(...)`. */
+async function runOverrideOn() {
+  // OWNER AUTHORISATION REQUIRED (broad Codex audit #6, fixed 2026-08-05): a token matched against a secret
+  // in a FILE the owner writes (forge-ownergrant.cjs) — an env var is deliberately not accepted, since the
+  // process asking for permission can set its own environment.
+  const og = require('./forge-ownergrant.cjs');
+  const grant = og.verifyOwnerGrant({ token: argv('owner-approval', null), projectRoot: TRUSTED_OWNERGRANT_ROOT });
+  if (!grant.ok) {
+    console.error('usage-guard override-on REFUSED — ' + grant.reason);
+    console.error('  run: node .claude/forge-bin/usage-guard.cjs override-on --owner-approval <token> --reason "<why>"');
+    process.exit(3);
+  }
+  const rawUntil = argv('until', null) || null;
+  if (rawUntil && !Number.isFinite(Date.parse(rawUntil))) console.error('ignoring invalid --until "' + rawUntil + '" (not a parseable date) — falling back to the default backstop expiry');
+  // N12: `until` is mandatory at the storage layer (forge-ownergrant.cjs's readOverrideGrant reads a
+  // missing/unparseable expiry as INVALID, never "unlimited") — resolveGrantUntil fills a bounded backstop
+  // when the owner did not supply one; credit exhaustion stays the PRIMARY, expected re-arm path.
+  const until = guardOverride.resolveGrantUntil(rawUntil);
+  const reason = argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn');
+  // N10: bind the authoritative grant to the account it is being granted FOR — an unbound (project-wide)
+  // grant used to survive an account switch and suppress a DIFFERENT account's protection (see
+  // usage-guard-override.cjs's resolveOwnerOverride and forge-ownergrant.cjs's own header).
+  const grantIdent = readAccountIdentity();
+  // V15 (FOURTH Codex recheck, 2026-09-24): write the AUTHORITATIVE grant record FIRST and
+  // UNCONDITIONALLY — the override must take effect even when the state lock (below) is busy; every
+  // subsequent tick reconciles the cache from THIS record, never the other way around.
+  if (!og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
+    console.error('usage-guard override-on FAILED — could not write the authoritative override-grant record to disk; no change made; try again');
+    process.exit(1);
+  }
+  // GUARD-STATE-RACE: best-effort cache/agent bookkeeping below — the grant above has ALREADY taken effect
+  // regardless of this lock's outcome (see describeOverrideLockOutcome's own doc comment for N11 wording).
+  const onLock = await withStateLock(async (fence) => {
+    const st = readState();
+    // GUARD-OFF-BYPASS: force:true here is safe ONLY because verifyOwnerGrant() just succeeded above (a
+    // VERIFIED owner action, not a bare CLI flag) — see guardNetworkAllowed()'s own doc comment.
+    const wasPaused = (st.pausedAgents || []).length;
+    let resumed = 0;
+    for (const a of (st.pausedAgents || [])) { const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true }); if (r.status >= 200 && r.status < 300) resumed++; }
+    st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
+    // N01: stamp the account this override is being granted FOR, exactly like a real tick would — see
+    // detectAccountSwitch()'s own doc comment for why an unstamped state misreads a real switch as adoption.
+    Object.assign(st, accountStamp(readAccountIdentity()));
+    st.ownerOverride = guardOverride.cachedOverrideFrom({ active: true, at: new Date().toISOString(), reason, until });
+    if (fence && !fence()) return { fenced: true };
+    try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
+    return { fenced: false, resumed, wasPaused };
+  });
+  const outcome = guardOverride.describeOverrideLockOutcome('on', onLock, { until });
+  console[outcome.partial ? 'error' : 'log'](outcome.line);
+  process.exit(0);
+}
+
+/** runOverrideOff() — the `override-off` command body (extracted for the SAME test-reachability reason as
+ *  runOverrideOn() above). Always calls `process.exit(...)`. */
+async function runOverrideOff() {
+  // V15/N11: clear the AUTHORITATIVE grant record FIRST — the safety direction (re-arming the guard). N11
+  // MEASURED DEFECT (`V15-override-off-unlink-failure-status`): a FAILED removal used to still exit 0 and
+  // report "re-armed" while the grant stayed active — now reported honestly as NOT re-armed, nonzero exit.
+  const grantCleared = require('./forge-ownergrant.cjs').writeOverrideGrant({ active: false }, { projectRoot: TRUSTED_OWNERGRANT_ROOT });
+  if (!grantCleared) {
+    console.error('usage-guard override-off FAILED — could not clear the authoritative override-grant record on disk; protection is NOT re-armed; try again');
+    process.exit(1);
+  }
+  // GUARD-STATE-RACE: best-effort cache/pausedAgents bookkeeping below — the grant is ALREADY cleared
+  // regardless of this lock's outcome (protection IS re-armed either way).
+  const offLockResult = await withStateLock((fence) => {
+    const st = readState(); const had = !!st.ownerOverride; delete st.ownerOverride;
+    if (fence && !fence()) return { fenced: true };
+    try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
+    return { fenced: false, had };
+  });
+  const outcome = guardOverride.describeOverrideLockOutcome('off', offLockResult, {});
+  console[outcome.partial ? 'error' : 'log'](outcome.line);
+  process.exit(0);
+}
 function readToken() {
   let raw;
   try { raw = fs.readFileSync(CRED_FILE, 'utf8'); } catch (e) { throw credError(e); }
@@ -1361,15 +1444,22 @@ async function tick(deps, opts) {
     }
   }
   // OWNER OVERRIDE (usage credits): while purchased credits remain, do NOT pause on the plan limit.
-  // Auto re-arm the normal guard the moment credits are exhausted (or the override's optional expiry passes).
-  // V15 (FOURTH Codex recheck, 2026-09-24) — DEFENSE IN DEPTH: `st.ownerOverride` (state.json's own cache)
-  // is no longer trusted for this decision on its own. A stale writer resurrecting `active:true` in the
-  // cache (the honest residual usage-guard-state.cjs's own header names — an adjacent fence-check-then-
-  // publish pair is still, in principle, two separate syscalls) can no longer suppress pausing by itself:
-  // the decision is recomputed FRESH from the authoritative, single-writer, expiry-aware grant record every
-  // tick (see usage-guard-override.cjs's own header). Absent/expired grant -> override OFF, regardless of
-  // what the cache says; a valid, unexpired grant keeps it ON even if a stale writer cleared the cache.
-  const overrideNow = guardOverride.resolveOwnerOverride({ projectRoot: TRUSTED_OWNERGRANT_ROOT });
+  // Auto re-arm the normal guard the moment credits are exhausted (or the override's mandatory expiry
+  // passes — see N12 below). V15 (FOURTH Codex recheck, 2026-09-24) — DEFENSE IN DEPTH: `st.ownerOverride`
+  // (state.json's own cache) is no longer trusted for this decision on its own. A stale writer resurrecting
+  // `active:true` in the cache (the honest residual usage-guard-state.cjs's own header names — an adjacent
+  // fence-check-then-publish pair is still, in principle, two separate syscalls) can no longer suppress
+  // pausing by itself: the decision is recomputed FRESH from the authoritative, expiry-aware grant record
+  // every tick (see usage-guard-override.cjs's own header). Absent/expired/invalid grant -> override OFF,
+  // regardless of what the cache says; a valid, unexpired, ACCOUNT-BOUND grant keeps it ON even if a stale
+  // writer cleared the cache.
+  //
+  // N10 (2026-09-24, Security Boss addendum reconfirmed) — the grant is checked against THIS tick's already-
+  // validated `ident` (never a raw fingerprint — `ident.fp` is the opaque local label
+  // usage-guard-redact.cjs's resolveLocalAccountLabel already derived above), so a grant belonging to a
+  // DIFFERENT account, a label-less legacy grant, or an unverifiable/unknown current identity can never
+  // suppress pausing for this account.
+  const overrideNow = guardOverride.resolveOwnerOverride({ projectRoot: TRUSTED_OWNERGRANT_ROOT, accountLabel: ident.fp });
   if (overrideNow.active) {
     const c = u.credits;
     if (!creditsExhausted(c)) {
@@ -1383,18 +1473,36 @@ async function tick(deps, opts) {
       D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : ''));
       return;
     }
-    D.log('OVERRIDE lifted — credits exhausted (used ' + fmtMoney(c && c.used, c && c.currency, c && c.decimals) + '/' + fmtMoney(c && c.limit, c && c.currency, c && c.decimals) + ') → normal guard re-armed');
-    // credits exhaustion clears the AUTHORITATIVE grant itself, not just the cache — otherwise the very
-    // next tick would still see the grant active and immediately re-enter this branch.
-    require('./forge-ownergrant.cjs').writeOverrideGrant({ active: false }, { projectRoot: TRUSTED_OWNERGRANT_ROOT });
-    await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE lifted write');
+    // N12 (2026-09-24, Security Boss addendum reconfirmed) — MEASURED DEFECT (`V15-credits-exhaustion-
+    // deletes-newer-grant`): the watcher used to clear the AUTHORITATIVE grant itself here — a stale tick
+    // (started before a newer, still-valid grant was published) could delete that NEWER grant, and the
+    // claimed "single writer" (only override-on/override-off ever write the grant) was false in practice.
+    // THE FIX: the watcher NEVER writes or deletes the grant file — full stop. On exhaustion it simply does
+    // not HONOUR the grant for this (and every subsequent, while credits stay exhausted) tick and falls
+    // through to the normal pause/resume logic below; the file itself is left exactly as the owner's CLI
+    // last set it. This makes the single-writer claim actually true, at the cost of the grant file
+    // continuing to say "active" until the owner explicitly runs override-off — an intentional trade-off:
+    // the CACHE (state.json's `ownerOverride`, bookkeeping only) is still cleared below so `status` reflects
+    // reality (not currently suppressing), even though the underlying file is untouched.
+    D.log('OVERRIDE NOT honoured — credits exhausted (used ' + fmtMoney(c && c.used, c && c.currency, c && c.decimals) + '/' + fmtMoney(c && c.limit, c && c.currency, c && c.decimals) + ') → normal guard re-armed for this tick; the stored grant record is left unchanged for the owner to update (single-writer: only override-on/override-off ever write it)');
+    await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE not-honoured cache write');
     delete st.ownerOverride; // keep this run's in-memory decision consistent with the write just attempted
     // fall through to the normal pause/resume logic below (pauses if still over the plan limit)
+  } else if (overrideNow.rejected) {
+    // N10: a real, otherwise-active grant exists but failed account verification — never suppress this
+    // tick, and log WHY using only non-secret, opaque account labels (never a fingerprint/uuid/token).
+    D.log('OVERRIDE grant present but NOT honoured (' + overrideNow.rejected + ') — grant account '
+      + (overrideNow.record.accountLabel || '(none)') + ' vs current account ' + (ident.fp || '(unknown)')
+      + ' — falling through to the normal guard for this account');
+    if (st.ownerOverride) {
+      await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write (account mismatch)');
+      delete st.ownerOverride;
+    }
   } else if (st.ownerOverride) {
-    // the cache still shows an override, but the authoritative grant is absent/expired — this tick is NOT
-    // suppressed (the grant decides, never the cache); reconcile the cache to match reality so `status`
-    // does not keep showing a phantom override.
-    D.log('OVERRIDE cache mismatch — state.json showed an override but the authoritative grant is absent/expired; NOT suppressing this tick (V15: the grant decides, never a cached flag)');
+    // the cache still shows an override, but the authoritative grant is absent/expired/invalid — this tick
+    // is NOT suppressed (the grant decides, never the cache); reconcile the cache to match reality so
+    // `status` does not keep showing a phantom override.
+    D.log('OVERRIDE cache mismatch — state.json showed an override but the authoritative grant is absent/expired/invalid; NOT suppressing this tick (V15: the grant decides, never a cached flag)');
     await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write');
     delete st.ownerOverride;
   }
@@ -1860,99 +1968,8 @@ if (require.main === module) {
     } catch (e) { console.error('credits fetch failed: ' + e.message); process.exitCode = 1; }
     return;
   }
-  if (cmd === 'override-on') {
-    // OWNER AUTHORISATION REQUIRED (broad Codex audit #6, fixed 2026-08-05). This command switches the
-    // usage guard OFF for the rest of the window and resumes everything it paused — and it had NO check
-    // at all, so any local agent could run it and un-guard the account it was meant to protect. It now
-    // goes through the one shared verification (forge-ownergrant.cjs): a token matched against a secret
-    // in a FILE the owner writes. An env var is deliberately not accepted — the process asking for
-    // permission can set its own environment.
-    const og = require('./forge-ownergrant.cjs');
-    const grant = og.verifyOwnerGrant({ token: argv('owner-approval', null), projectRoot: TRUSTED_OWNERGRANT_ROOT });
-    if (!grant.ok) {
-      console.error('usage-guard override-on REFUSED — ' + grant.reason);
-      console.error('  run: node .claude/forge-bin/usage-guard.cjs override-on --owner-approval <token> --reason "<why>"');
-      process.exit(3);
-    }
-    let until = argv('until', null) || null;
-    if (until && !Number.isFinite(Date.parse(until))) { console.error('ignoring invalid --until "' + until + '" (not a parseable date) — override will have no time expiry'); until = null; }
-    const reason = argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn');
-    // V15 (FOURTH Codex recheck, 2026-09-24): write the AUTHORITATIVE grant record FIRST and
-    // UNCONDITIONALLY — before ever touching the (lock-contended) state cache below. The override must take
-    // effect even when the state lock is busy; every subsequent tick reconciles the cache from THIS record,
-    // never the other way around (see usage-guard-override.cjs's own header).
-    if (!og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
-      console.error('usage-guard override-on FAILED — could not write the authoritative override-grant record to disk; no change made; try again');
-      process.exit(1);
-    }
-    // GUARD-STATE-RACE (2026-09-24): the whole read-resume-write sequence runs inside the state lock, so
-    // it can never interleave with a concurrent tick()'s doPause()/doResume() (or a concurrent
-    // override-off) reading/writing the same file mid-sequence. V15: a lock refusal is REPORTED honestly
-    // (never a silent unlocked write) — this is a direct CLI command the owner is waiting on. The grant
-    // above has ALREADY taken effect regardless of this lock's outcome — this is best-effort cache/agent
-    // bookkeeping, not the security-relevant decision.
-    const onLock = await withStateLock(async (fence) => {
-      const st = readState();
-      let resumed = 0;
-      // best-effort resume any agents THIS guard paused — override-on used to strand them forever (fix 2026-07-09 checkup)
-      // GUARD-OFF-BYPASS: this is the ONE documented exception where pc() is called with force:true even
-      // if the owner's usage-guard switch happens to be off right now — but ONLY because verifyOwnerGrant()
-      // just succeeded above (a VERIFIED, authenticated owner action, not a bare CLI flag any local agent
-      // could set). See guardNetworkAllowed()'s own doc comment.
-      const wasPaused = (st.pausedAgents || []).length;
-      for (const a of (st.pausedAgents || [])) { const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true }); if (r.status >= 200 && r.status < 300) resumed++; }
-      st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
-      // N01 (second Codex recheck, 2026-09-24): stamp the account this override is being granted FOR,
-      // exactly like a real tick would — without this, a state file with no prior successful tick (or one
-      // whose earlier "normal ok write" predates the N01 fix) never records WHICH account the override
-      // belongs to, so a later switch to a DIFFERENT account reads detectAccountSwitch()'s `from: null` as
-      // "first-stamp (adoption)" rather than a real switch, and the foreign override survives instead of
-      // being cleared. Only ever narrows/confirms identity — never overrides a fresher stamp with a stale one.
-      Object.assign(st, accountStamp(readAccountIdentity()));
-      st.ownerOverride = { active: true, at: new Date().toISOString(), reason, reArmWhenCreditsExhausted: true, until };
-      if (fence && !fence()) return { fenced: true };
-      try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
-      return { fenced: false, resumed, wasPaused };
-    });
-    if (!onLock.ok) {
-      console.error('usage-guard override-on FAILED — could not acquire the state lock (' + onLock.reason + ') — no change made; try again');
-      process.exit(1);
-    }
-    if (onLock.value.fenced) {
-      console.error('usage-guard override-on FAILED — the state lock was reclaimed mid-transaction (fenced) — no change made; try again');
-      process.exit(1);
-    }
-    const { resumed, wasPaused } = onLock.value;
-    console.log('usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + '; auto re-arm when credits exhausted' + (until ? ' or after ' + until : ''));
-    process.exit(0);
-  }
-  if (cmd === 'override-off') {
-    // V15 (FOURTH Codex recheck, 2026-09-24): clear the AUTHORITATIVE grant record FIRST and
-    // unconditionally — this is the safety direction (re-arming the guard), so it must never wait on lock
-    // contention for the cache write below. A failure here is a WARNING, not a hard stop: the cache clear
-    // below still runs best-effort.
-    if (!require('./forge-ownergrant.cjs').writeOverrideGrant({ active: false }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
-      console.error('usage-guard override-off WARNING — could not clear the authoritative override-grant record on disk; the guard may remain suppressed until this is fixed');
-    }
-    // GUARD-STATE-RACE: serialized against a concurrent doPause()/doResume()/override-on write. V15: a
-    // lock refusal is REPORTED honestly rather than silently doing nothing.
-    const offLockResult = await withStateLock((fence) => {
-      const st = readState(); const had = !!st.ownerOverride; delete st.ownerOverride;
-      if (fence && !fence()) return { fenced: true };
-      try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
-      return { fenced: false, had };
-    });
-    if (!offLockResult.ok) {
-      console.error('usage-guard override-off FAILED — could not acquire the state lock (' + offLockResult.reason + ') — no change made; try again');
-      process.exit(1);
-    }
-    if (offLockResult.value.fenced) {
-      console.error('usage-guard override-off FAILED — the state lock was reclaimed mid-transaction (fenced) — no change made; try again');
-      process.exit(1);
-    }
-    console.log('usage-guard OVERRIDE ' + (offLockResult.value.had ? 'CLEARED' : 'was not set') + ' — normal plan-limit guard re-armed');
-    process.exit(0);
-  }
+  if (cmd === 'override-on') { await runOverrideOn(); return; }
+  if (cmd === 'override-off') { await runOverrideOff(); return; }
   if (cmd === 'watch') {
     if (has('once')) {
       // GUARD-OFF-BYPASS (2026-09-24): `watch --once` used to call tick() directly, BEFORE any switch
@@ -2239,4 +2256,5 @@ module.exports = {
   guardNetworkAllowed, readState, fetchUsage, pc, allAgents,
   withStateLock, withLockedState, stateLockPath,
   verifyForcedWatchGrant, __setOwnerGrantRootForTests,
+  runOverrideOn, runOverrideOff,
 };

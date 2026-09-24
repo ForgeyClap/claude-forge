@@ -89,53 +89,89 @@ function verifyOwnerGrant(opts) {
   return { ok: true, source: secret.source, reason: 'owner authorisation verified (' + secret.source + ')' };
 }
 
-/** overrideGrantFilePath(opts) -> the path to the AUTHORITATIVE, single-writer, expiry-aware record of
- *  whether the usage-guard credits override is currently granted (V15, FOURTH Codex recheck, 2026-09-24 —
- *  see usage-guard-override.cjs's own header for WHY this exists: an event-loop heartbeat can never prove
- *  a suspended lock-holder is truly gone, so usage-guard.cjs's state.json cache is no longer trusted for
- *  the pause/don't-pause DECISION on its own — this file is). `opts.projectRoot` must be the SAME trusted
- *  root every other owner-authorisation check in this repo anchors to (never an environment-selected root
- *  — see this file's own header on why an env var is never accepted for a security-relevant root/scope
- *  selector, exactly like the secret itself). */
+/** overrideGrantFilePath(opts) -> the path to the AUTHORITATIVE, expiry-aware record of whether the
+ *  usage-guard credits override is currently granted (V15, FOURTH Codex recheck, 2026-09-24 — see
+ *  usage-guard-override.cjs's own header for WHY this exists: an event-loop heartbeat can never prove a
+ *  suspended lock-holder is truly gone, so usage-guard.cjs's state.json cache is no longer trusted for the
+ *  pause/don't-pause DECISION on its own — this file is). `opts.projectRoot` must be the SAME trusted root
+ *  every other owner-authorisation check in this repo anchors to (never an environment-selected root — see
+ *  this file's own header on why an env var is never accepted for a security-relevant root/scope selector,
+ *  exactly like the secret itself).
+ *
+ *  L5 (Security Boss addendum, 2026-09-24 — documented, not a regression): this file is a PLAIN, UNSIGNED
+ *  JSON file protected only by ordinary filesystem permissions — any local process with write access to
+ *  `.claude/config/` can create or edit it directly, bypassing verifyOwnerGrant()'s token check entirely.
+ *  This is the SAME trust boundary usage-guard.cjs's pre-V15 `state.json`'s `ownerOverride` cache already
+ *  had (any local writer could already flip that field before this file existed) — the V15 grant redesign
+ *  moves the DECISION source, it does not narrow or widen who can write to the local filesystem. The real
+ *  boundary remains OS-level file permissions / a single trusted local user account, exactly as before. */
 function overrideGrantFilePath(opts) {
   const root = (opts && opts.projectRoot) ? path.resolve(opts.projectRoot) : DEFAULT_ROOT;
   return path.join(root, '.claude', 'config', 'forge-usage-guard-override-grant.json');
 }
 
-/** readOverrideGrant(opts) -> { active, at, until, reason, expired? }. ABSENT, UNPARSEABLE, or EXPIRED
- *  (`until` in the past) all read as `{active:false}` — a missing or lapsed grant is never treated as "on".
- *  This is the ONLY function usage-guard.cjs's tick() may trust for the actual suppress-pausing decision;
- *  state.json's own cached copy is a display/bookkeeping convenience, recomputed FROM this on every tick,
- *  never the other way around. Never throws. */
+/** readOverrideGrant(opts) -> { active, at, until, reason, accountLabel, expired?, invalid? }. ABSENT,
+ *  UNPARSEABLE-JSON, or EXPIRED (`until` in the past) all read as `{active:false}` — a missing or lapsed
+ *  grant is never treated as "on". This is the ONLY function usage-guard.cjs's tick() may trust for the
+ *  actual suppress-pausing decision; state.json's own cached copy is a display/bookkeeping convenience,
+ *  recomputed FROM this on every tick, never the other way around. `accountLabel` is the opaque local
+ *  identity label (N10, 2026-09-24) the grant is bound to — usage-guard-override.cjs's resolveOwnerOverride
+ *  is what actually ENFORCES the binding against the current identity; this function only ever reports what
+ *  the file contains.
+ *
+ *  EXPIRY SEMANTICS (N12, 2026-09-24 — Security Boss addendum reconfirmed): a PRESENT-BUT-UNPARSEABLE
+ *  `until` (a non-empty string `Date.parse` cannot make sense of — a corrupted file, a hand-edit typo) reads
+ *  as INVALID (`invalid:'unparseable-expiry'`), never as "unlimited" — silently treating corruption as
+ *  unlimited would turn file damage into an unbounded suppression window. A genuinely ABSENT `until` (null/
+ *  empty/omitted) also now reads as INVALID (`invalid:'missing-expiry'`) — every authoritative grant MUST
+ *  carry a real expiry; `usage-guard.cjs`'s `override-on` fills one in automatically (a bounded backstop)
+ *  when the owner does not pass `--until`, so this is enforced at the point of use, not left as an owner
+ *  chore. Never throws. */
 function readOverrideGrant(opts) {
   const file = overrideGrantFilePath(opts);
   let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { active: false, at: null, until: null, reason: null }; }
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { active: false, at: null, until: null, reason: null, accountLabel: null }; }
   let parsed;
-  try { parsed = JSON.parse(raw); } catch { return { active: false, at: null, until: null, reason: null }; }
+  try { parsed = JSON.parse(raw); } catch { return { active: false, at: null, until: null, reason: null, accountLabel: null }; }
+  const accountLabel = (parsed && typeof parsed.accountLabel === 'string' && parsed.accountLabel) ? parsed.accountLabel : null;
   if (!parsed || typeof parsed !== 'object' || parsed.active !== true) {
     return {
       active: false,
       at: (parsed && typeof parsed.at === 'string') ? parsed.at : null,
       until: (parsed && typeof parsed.until === 'string') ? parsed.until : null,
       reason: (parsed && typeof parsed.reason === 'string') ? parsed.reason : null,
+      accountLabel,
     };
   }
-  const untilMs = parsed.until ? Date.parse(parsed.until) : NaN;
-  if (Number.isFinite(untilMs) && Date.now() > untilMs) {
-    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, expired: true };
+  // N12: a genuinely absent `until` is INVALID, not unlimited (see the doc comment above).
+  if (typeof parsed.until !== 'string' || !parsed.until) {
+    return { active: false, at: parsed.at || null, until: null, reason: parsed.reason || null, accountLabel, invalid: 'missing-expiry' };
   }
-  return { active: true, at: parsed.at || null, until: parsed.until || null, reason: parsed.reason || null };
+  const untilMs = Date.parse(parsed.until);
+  if (!Number.isFinite(untilMs)) {
+    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, invalid: 'unparseable-expiry' };
+  }
+  if (Date.now() > untilMs) {
+    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, expired: true };
+  }
+  return { active: true, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel };
 }
 
 /** writeOverrideGrant(record, opts) -> boolean (true = the authoritative state on disk now matches the
  *  request; false = a real write/removal failure — the caller must decide whether that is safe to ignore).
  *  SINGLE WRITER in practice: only `usage-guard.cjs override-on`/`override-off` (owner-invoked CLI commands
  *  — override-on gated on verifyOwnerGrant() above) ever call this; the watcher's own tick() only ever
- *  READS via readOverrideGrant(). `record.active !== true` removes the file outright (an absent file
+ *  READS via readOverrideGrant() — N12 (2026-09-24, Security Boss addendum) closed the one exception this
+ *  used to have (credits exhaustion used to call this from inside tick() too; it no longer does — see
+ *  usage-guard.cjs's own N12 history). `record.active !== true` removes the file outright (an absent file
  *  already reads as inactive — removing it keeps the directory clean rather than accumulating a growing
  *  history of "off" records). An atomic temp-file + rename write otherwise, the same shape as
- *  usage-guard.cjs's own writeStateTo. Never throws. */
+ *  usage-guard.cjs's own writeStateTo. `record.accountLabel` (N10, 2026-09-24) is the opaque local identity
+ *  label this grant is bound to — this function persists whatever it is given verbatim; it does not itself
+ *  read or validate identity (the caller, usage-guard.cjs's override-on, is responsible for supplying the
+ *  CURRENT account's label). This function also does not itself validate `record.until` (a well-formed vs.
+ *  missing/unparseable expiry is a READ-time concern — see readOverrideGrant's own doc comment); it persists
+ *  whatever string (or absence) it is given. Never throws. */
 function writeOverrideGrant(record, opts) {
   const file = overrideGrantFilePath(opts);
   if (!record || record.active !== true) {
@@ -150,6 +186,7 @@ function writeOverrideGrant(record, opts) {
       at: (typeof record.at === 'string' && record.at) || new Date().toISOString(),
       until: (typeof record.until === 'string' && record.until) || null,
       reason: (typeof record.reason === 'string' && record.reason) || null,
+      accountLabel: (typeof record.accountLabel === 'string' && record.accountLabel) || null,
     };
     fs.writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n');
     fs.renameSync(tmp, file);
