@@ -133,20 +133,32 @@ Claude's reach:
    `git checkout -f` / `.` / `-- <path>`, `git restore <path>`, `git switch -f`, `git stash drop|clear`). If so it
    exits 2: Claude Code blocks the call and shows a plain Dutch/English reason, and the assistant must ask the
    user. A delete whose every target is provably inside a scratch area (`_scratch/`, `node_modules/`, `dist/`, the
-   system temp folder for targets outside the project, …) passes. Quoted data — heredoc bodies, `echo` literals, log payloads, `grep` patterns —
-   is never mistaken for a command. When the hook cannot judge a call (its own error, an oversized payload) it
-   exits 1: visible, not blocking, never a silent pass. It is the only hook that blocks instead of advising; it is
-   ON by default. It is built so the assistant cannot switch it off on its own (`/forge config set gate-hook off` is
-   for the user): the assistant's own attempt to switch it off is blocked whatever the spelling (quoted verb, any
-   path form, flags in any order), a one-off `--once "<quoted approval>"` must carry the user's words, is consumed
-   by exactly one command (a second identical command is blocked again), cannot be armed while another one-off is
-   pending, expires after at most 10 minutes, ignores the global settings file (no hidden global off), and while
-   the gate is off every call it would have stopped still prints a visible notice. Honest limit: the hook cannot
-   verify who typed the quoted words — the user reads the approval line before the command runs. A fourth gate,
-   `opaque-exec`, stops commands whose real content the hook cannot read (`eval`, `iex`/`Invoke-Expression`,
-   `sh -c`/`bash -c`/`pwsh -c` evaluating a variable or substitution, a pipe straight into a shell such as
-   `curl … | bash`, `certutil -decode … & …`); a fully literal `sh -c "echo hi"` and `| node`/`| python` are named,
-   deliberate gaps.
+   system temp folder for targets outside the project, …) passes. Quoted data given to a plain writer or search tool
+   — a `cat`/`tee`/`echo`/`printf` heredoc body, an `echo` literal, a log-event payload, a `grep` pattern — is
+   treated as data, not as a command; any other heredoc (for example a commit message fed to `git commit -F -`) is
+   still scanned line by line, so a line that itself starts with a dangerous command is stopped (a safe false block,
+   never a silent pass). When the hook cannot judge a call (its own error, an oversized payload, an unknown hook
+   event name) it exits 1: visible, not blocking, never a silent pass. It is the only hook that blocks instead of
+   advising; it is ON by default. It is built so the assistant cannot switch it off on its own
+   (`/forge config set gate-hook off` is for the user): the assistant's own attempt to switch it off is blocked in
+   every invocation form the hook's argv parser recognises (a quoted or concatenated verb, any path to
+   `forge-config.cjs`/`forge-config-cli.cjs`, `node` with flags or by absolute path, `env`/`sudo`/`time`/`nohup`
+   wrappers, flags in any order), and a `forge-config` mutation that names `gate-hook` but cannot be read
+   unambiguously is refused rather than allowed; a one-off `--once "<quoted approval>"` must carry the user's words,
+   is consumed by exactly one command (a second identical command is blocked again), cannot be armed while another
+   one-off is pending, blocks a plain "off" while it is pending (a one-off can never become a permanent off — the
+   config writer refuses that transition too), expires after at most 10 minutes, ignores the global settings file (no
+   hidden global off), and while the gate is off every call it would have stopped still prints a visible notice.
+   Honest limits: the hook cannot verify who typed the quoted words — the user reads the approval line before the
+   command runs — and it is a classifier, not a proof: a command assembled in a variable and executed later is
+   caught only through the `opaque-exec` shapes. That fourth gate stops commands whose real content the hook cannot
+   read (`eval`, `iex`/`Invoke-Expression` as the command of a statement — also inside `{ }`, `( )`, `if`/`while`/
+   `for`/`case` bodies and PowerShell blocks — `sh -c`/`bash -c`/`pwsh -c` on a variable or substitution, also via
+   `/bin/bash` or `/usr/bin/env bash`, a pipe straight into a shell such as `curl … | bash`, an encoded PowerShell
+   command (`-EncodedCommand`/`-e`/`-ec`/`-enc`), `certutil -decode … & …`); a fully literal `sh -c "echo hi"`,
+   `| node`/`| python`, a dangerous command inside a script the hook is asked to run, and an encoded payload
+   reaching PowerShell by a route other than that flag are named, deliberate gaps (full list: `hard-gates.json` →
+   `_not_caught`; beginner version: `docs/SETTINGS.md` → "What the gate hook stops, and what it cannot see").
 
 **Deny rules** (`permissions.deny`, 28 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
 `Read(./.env.development)`, `Read(./.env.production)`, `Read(./.env.staging)`, `Read(./.env.test)`,
