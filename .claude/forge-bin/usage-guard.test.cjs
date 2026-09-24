@@ -1326,7 +1326,15 @@ test('H3.3 logrotatie: een log boven de grens roteert naar .1 en verliest de rec
     const torn = '{"claudeAiOauth":{"accessToken":sk-ant-oat01-SECRETFRAGMENTqz9}}';
     fs.writeFileSync(credFile(sb), torn);
     let raw = ''; try { JSON.parse(torn); } catch (e) { raw = e.message; }
-    assert.ok(/sk-ant-oat/.test(raw), 'control: a raw JSON.parse message quotes the login file around the error: ' + raw);
+    // Control arm — Node/V8-version dependent: Node 20+ quotes the input ("Unexpected token 's', "…sk-ant-oat…" is not
+    // valid JSON"), Node 18 prints only "Unexpected token s in JSON at position 32". The product assertions below hold on
+    // both; the control only proves the leak is REAL on runtimes that quote. On a runtime that does not quote, say so
+    // instead of failing the suite (found on the ubuntu/Node 18 CI runner, 2026-09-24 — the local run was Node 24).
+    if (/sk-ant-oat/.test(raw)) {
+      assert.ok(true, 'control: this runtime quotes the login file in the raw JSON.parse message');
+    } else {
+      console.log('  note: this Node runtime (' + process.version + ') does not quote the input in JSON.parse errors; control arm not applicable, product assertions still enforced');
+    }
     const r = runGuard(['watch', '--once'], sb.env);
     const state = readIf(sb.env.FORGE_USAGE_GUARD_STATE);
     const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);

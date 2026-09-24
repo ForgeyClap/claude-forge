@@ -604,7 +604,37 @@ t('timing: best of 5 real spawns (block path, config resolved) under ' + BUDGET_
   assert.ok(times[0] < BUDGET_MS, 'fastest run took ' + times[0].toFixed(0) + ' ms (hard budget ' + BUDGET_MS + ' ms; override FORGE_GATE_HOOK_TIMING_MS on a slow runner)');
 });
 
-for (const d of [TMP, TP_PARENT, SIBLING]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ } }
+// ---------------------------------------------------------------------------
+// 4e) CI FIX (2026-09-24, GitHub windows-latest): the runner's os.tmpdir() is an 8.3 short name
+// (C:\Users\RUNNER~1\AppData\Local\Temp). The pass-through whitelist refused the `~` as a possible tilde expansion, so
+// every temp-dir delete was blocked there (5 red tests, green on a machine without short names). Bash expands a tilde
+// only at the START of a word; a tilde INSIDE a word is a literal character and must stay provable.
+// ---------------------------------------------------------------------------
+console.log('\n4e) a tilde inside a path segment (8.3 short name) is literal — only a leading tilde is unprovable');
+
+const TILDE_DIR = path.join(os.tmpdir(), 'forge-gate-short~1');
+fs.mkdirSync(path.join(TILDE_DIR, 'x'), { recursive: true });
+const PROJECT = hook.PROJECT_ROOT;
+const tildeCtx = () => ({ gate, shell: 'Bash', cwd: PROJECT, root: PROJECT, protectedRoots: [PROJECT], tmp: os.tmpdir(), platform: process.platform });
+t('4e in-word tilde: "rm -rf <tmp>/forge-gate-short~1/x" passes through the temp rule', () => {
+  const r = hook.scratchPassThrough('rm -rf ' + fwd(path.join(TILDE_DIR, 'x')), tildeCtx());
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+t('4e in-word tilde via decide(): exit 0 verdict with the allowed notice', () => {
+  const d = hook.decide(bash('rm -rf ' + fwd(path.join(TILDE_DIR, 'x'))), { config: null, projectRoot: PROJECT, tmpdir: os.tmpdir() });
+  assert.strictEqual(d.block, false, JSON.stringify(d).slice(0, 300));
+  assert.ok(/allowed/.test(d.notice || ''), 'notice names the allowed pass-through');
+});
+t('4e leading tilde stays unprovable: "rm -rf ~/forge-gate-short~1/x" is refused', () => {
+  const r = hook.scratchPassThrough('rm -rf ~/forge-gate-short~1/x', tildeCtx());
+  assert.deepStrictEqual(r, { ok: false, why: 'unprovable-characters' });
+});
+t('4e tilde after = or : stays unprovable (assignment-style expansion)', () => {
+  assert.deepStrictEqual(hook.scratchPassThrough('rm -rf x=~/y', tildeCtx()), { ok: false, why: 'unprovable-characters' });
+  assert.deepStrictEqual(hook.scratchPassThrough('rm -rf ./a:~/y', tildeCtx()), { ok: false, why: 'unprovable-characters' });
+});
+
+for (const d of [TMP, TP_PARENT, SIBLING, TILDE_DIR]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ } }
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

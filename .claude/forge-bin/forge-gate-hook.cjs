@@ -120,6 +120,11 @@ const REFUSED_TOKENS = new Set(['cd', 'chdir', 'pushd', 'popd', 'set-location', 
   'mv', 'move', 'move-item', 'mi', 'cp', 'copy', 'copy-item', 'cpi', 'ren', 'rename', 'rename-item', 'rni', 'ln', 'mklink',
   'new-item', 'ni', 'robocopy', 'xcopy', 'cmd', 'builtin', 'command', 'exec', 'env', 'eval', 'source', 'xargs']);
 const PROVABLE_SEGMENT_RE = /^[A-Za-z0-9_\s.\-/\\:'"=+]*$/; // no expansion, glob, redirection or second command
+// CI fix (2026-09-24, GitHub windows-latest): a tilde INSIDE a word is a literal character — Windows 8.3 short names
+// (`C:\Users\RUNNER~1\AppData\Local\Temp`, the runner's os.tmpdir()) carry one — while bash tilde expansion only
+// applies to a tilde that STARTS a word (`~`, `~user`, `~/x`) or follows `=`/`:` in an assignment. Only the in-word
+// tilde is neutralised before the whitelist test; a leading or `=`/`:`-prefixed tilde stays unprovable.
+const provableSegment = (seg) => PROVABLE_SEGMENT_RE.test(String(seg).replace(/(?<=[A-Za-z0-9_])~(?=[A-Za-z0-9_])/g, '_'));
 const sameName = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
 
 /** tokenize(segment) -> [{v, quoted}] | null. Whole-word quotes only; a quote glued to other text is refused. */
@@ -237,7 +242,7 @@ function scratchPassThrough(command, ctx) {
     const shown = [];
     for (const e of ctx.gate.splitCommandsDetailed(command)) {
       if (!e.intact) return { ok: false, why: 'amputated-segment' };
-      if (!PROVABLE_SEGMENT_RE.test(e.segment)) return { ok: false, why: 'unprovable-characters' };
+      if (!provableSegment(e.segment)) return { ok: false, why: 'unprovable-characters' };
       const tokens = tokenize(e.segment);
       if (!tokens) return { ok: false, why: 'unreadable-quoting' };
       const verbAt = verbIndex(tokens);

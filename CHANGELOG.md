@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.7.1] - 2026-09-24
+
+Patch release, minutes after 2.7.0: the release commit's CI was red on the GitHub runners while every local check was
+green. Two causes, both found by the CI matrix and reproduced locally before fixing. Use v2.7.1; the v2.7.0 tag stays for
+history and every feature note under 2.7.0 applies to this release unchanged.
+
+### Fixed
+
+- **Temp-folder cleanups were blocked on Windows machines whose temp path is an 8.3 short name.** When `os.tmpdir()`
+  reads like `C:\Users\RUNNER~1\AppData\Local\Temp` (the GitHub Windows runners; any Windows account with a user name
+  longer than eight characters can see this), the gate hook's pass-through refused the `~` as a possible tilde expansion
+  and blocked every temp-folder delete — over-blocking, never unsafe. Bash expands a tilde only at the START of a word,
+  so an in-word tilde is now treated as the literal character it is; a leading or `=`/`:`-prefixed tilde stays
+  unprovable. Reproduced locally with a short-name temp dir (155 passed / 5 failed → 164 / 0) and covered by tests.
+- **`usage-guard.test.cjs`'s control arm was Node-version dependent.** The "torn login file" test asserted that V8
+  quotes the input in its `JSON.parse` error message; Node 18 does not, so the suite was red on the Node 18 runners
+  although every product assertion (no token fragment, no home path in state, log or output) held. The control arm now
+  notes the runtime instead of failing; the leak assertions are unchanged.
+
 ## [2.7.0] - 2026-09-24
 
 Release theme: **built for beginners — everything on, one command for every setting, a real safety stop.** The
@@ -604,7 +623,8 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.0...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.1...HEAD
+[2.7.1]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.4.0...v2.7.0
 [2.4.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...v2.3.0
