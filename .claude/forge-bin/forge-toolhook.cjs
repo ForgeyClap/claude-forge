@@ -101,6 +101,14 @@
  *   - NEVER throws. Every failure path is caught and returned as {ok:false, reason}; the CLI always exit 0.
  *   - NEVER blocks: no `decision:"block"`, no non-zero exit, ever.
  *   - NEVER writes stdout. Not one byte, on any path. Diagnostics go to a size-capped local file.
+ *   - Owner setting `tool-log` (v2.7.0, forge-config.cjs; default ON): OFF -> run() returns
+ *     {ok:true, wrote:false, skipped:true, reason:'owner config tool-log=off'} before parsing the payload —
+ *     no ledger line, no diagnostics line, exit 0. Read for the root this hook acts on (FORGE_PROJECT_ROOT,
+ *     the resolver's own seam, wins when set). forge-config.cjs is soft-required and read through its fail-safe
+ *     safeGet(): absent, throwing or a damaged settings file -> the schema default (ON; `tool-log` carries no
+ *     data flag) plus a `config_note` in the returned result (stdout stays silent), so a missing or damaged
+ *     settings file can neither break a tool call nor silently switch the ledger off. opts.configModule injects
+ *     a module in tests (null = "absent").
  *   - Has its OWN hard timeout (FAILSAFE_MS) well under the settings timeout, so it self-terminates before
  *     the harness ever has to wait on it.
  *   - Bounded work: only the first HEAD_BYTES of stdin is retained (the rest is drained and dropped); an
@@ -114,10 +122,10 @@
  *   deriveOk(toolResponse)                     -> { ok, ok_basis }
  *   sessionBucket(sessionId)                   -> safe filename component
  *   buildLine(payload, opts)                   -> the record object
- *   run(rawStdinJson, opts)                    -> { ok, wrote, path, reason, rotated, line }
+ *   run(rawStdinJson, opts)                    -> { ok, wrote, path, reason, rotated, line, skipped? }
  *
  * CLI: reads stdin, calls run(), ALWAYS exits 0, ALWAYS silent.
- *   opts: { root, runId, now, truncated, headBytes, maxLogBytes }
+ *   opts: { root, runId, now, truncated, headBytes, maxLogBytes, configModule }
  */
 const fs = require('fs');
 const path = require('path');
@@ -144,6 +152,35 @@ try {
   const store = require('./forge-store.cjs'); // eslint-disable-line global-require
   if (typeof store.redactValue === 'function') redactFn = (v) => store.redactValue(v);
 } catch { redactFn = null; }
+
+// Owner settings (forge-config.cjs, v2.7.0) — soft-required, see the LIVE-SESSION CONTRACT above.
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default, used only when forge-config.cjs is absent or broken; an older copy without safeGet is read
+ *  through get(). Never throws. opts.projectRoot = the root this hook acts on (ignored when FORGE_PROJECT_ROOT is
+ *  set); opts.configModule injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfg;
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
 
 function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
 function str(v) { return typeof v === 'string' && v.length ? v : null; }
@@ -509,11 +546,19 @@ function diag(root, obj) {
   } catch { /* diagnostics are best-effort only — never allowed to throw */ }
 }
 
-/** run — see file header MODEL. NEVER throws: every failure is caught and returned. */
+/** run — see file header MODEL. NEVER throws: every failure is caught and returned. A degraded settings read
+ *  (damaged FORGE_CONFIG.json, absent forge-config.cjs) adds `config_note` to whatever comes back. */
 function run(rawStdinJson, opts) {
   opts = opts || {};
   let root;
   try { root = resolveProjectRoot(opts); } catch { return { ok: false, wrote: false, reason: 'no-root', path: null }; }
+  const sc = configRead('tool-log', true, { projectRoot: root, configModule: opts.configModule });
+  const r = sc.value === false
+    ? { ok: true, wrote: false, skipped: true, reason: 'owner config tool-log=off', path: null }
+    : record(rawStdinJson, opts, root);
+  return sc.degraded ? Object.assign(r, { config_note: sc.reason }) : r;
+}
+function record(rawStdinJson, opts, root) {
   const raw = typeof rawStdinJson === 'string' ? rawStdinJson : '';
   const headBytes = Number.isFinite(opts.headBytes) ? opts.headBytes : HEAD_BYTES;
 
@@ -572,7 +617,7 @@ function run(rawStdinJson, opts) {
 
 module.exports = {
   run, summarizeTarget, deriveOk, sessionBucket, buildLine, serialize, salvage, scrubRecord,
-  firstToken, canonicalCommand, hostOf, relPath, resolveProjectRoot,
+  firstToken, canonicalCommand, hostOf, relPath, resolveProjectRoot, configOn, configRead,
   MAX_TARGET_CHARS, MAX_LINE_BYTES, MAX_LOG_BYTES, HEAD_BYTES, FAILSAFE_MS, LOG_DIRNAME,
   KNOWN_COMMANDS, ASSIGN_PREFIX_RE,
 };

@@ -1,0 +1,286 @@
+{
+  "_doc": "Forge v2.7.0 (2026-09-24) — the ONE catalogue of every user-facing Forge setting: what it is, its default, where it lives, who reads it, and how to explain it to a beginner. Read ONLY via .claude/forge-bin/forge-config.cjs (resolve/get/list/set/diff) — no other file may re-implement resolution, validation or precedence (same single-source discipline as hard-gates.json + forge-actiongate.cjs). Owner directive (verbatim, 2026-09-24): 'default is standaard alles aan en op 98% usage guard maar de gebruik kan gemakkelijk met command dat overschtijven ook bij de command wil ik dat een lijstje met wat de gebruiker allemaal aan of uit kunnen zetten ... zodat hun uitgebreid lijstje met de waarde kunnen zien en gemakkelijk kunnen veranderen'. So: everything is ON by default; three documented exceptions stay OFF/report-only because an earlier, more specific owner decision or a deletion risk applies (paperclip — owner 2026-07-04 'only on explicit request'; cleanup — deletes files; ecc-full-test — heavy diagnostics). Precedence of a resolved value, highest first: per-run --flag (never written) > project file .claude/FORGE_CONFIG.json > global file ~/.claude/FORGE_CONFIG.json > product-default (the mapped owner-profile pref from forge-prefs.cjs, read-only) > this schema's default. Keys with scope 'global' are machine-wide (a project-file value is ignored with a visible note). Hard gates, the honesty core and project isolation are NOT settings — they are listed under `locked` so a beginner can SEE them, and forge-config.cjs refuses to set them (exit 3).",
+  "version": 1,
+  "value_synonyms": {
+    "true": ["on", "aan", "true", "yes", "ja", "1", "enabled", "enable"],
+    "false": ["off", "uit", "false", "no", "nee", "0", "disabled", "disable"]
+  },
+  "groups": {
+    "core": { "nl": "Standaard aan — Forge gebruikt dit elke run", "en": "On by default — Forge uses this on every run" },
+    "when-needed": { "nl": "Beschikbaar als het nodig is — Forge zet het in zonder te vragen", "en": "Available when needed — Forge uses it without asking" },
+    "advanced": { "nl": "Geavanceerd — alleen aanpassen als je weet waarom", "en": "Advanced — change only if you know why" }
+  },
+  "settings": {
+    "usage-guard": {
+      "type": "bool", "default": true, "scope": "global", "group": "core",
+      "desc": { "nl": "Pauzeert Forge automatisch vlak voor je Claude-gebruikslimiet, zodat je niet midden in een taak wordt afgekapt.", "en": "Pauses Forge automatically just before your Claude usage limit so a task is never cut off mid-way." },
+      "off_means": { "nl": "Forge meet je gebruik niet en pauzeert nooit vanzelf.", "en": "Forge does not measure your usage and never pauses by itself." },
+      "disclosure": { "nl": "Leest je Claude-login-token lokaal uit ~/.claude/.credentials.json (en je account-id uit ~/.claude.json, alleen als vingerafdruk bewaard) en stuurt het token alleen naar api.anthropic.com om je gebruik te meten; draait als achtergrondproces op deze computer, ook na het sluiten van de sessie, en schrijft zijn status-/logbestanden onder ~/.claude. Uitzetten stopt het na de volgende meting.", "en": "Reads your Claude login token locally from ~/.claude/.credentials.json (and your account id from ~/.claude.json, kept only as a fingerprint) and sends the token only to api.anthropic.com to measure your usage; runs as a background process on this machine, also after the session closes, and writes its state/log files under ~/.claude. Turning it off stops it after the next check." },
+      "flags": ["C", "N", "U"],
+      "consumers": [".claude/forge-bin/usage-guard.cjs", ".claude/commands/forge.md (BUILD BY DEFAULT)", ".claude/forge-bin/forge-autonomy.cjs (usage-limit tier)"],
+      "aliases": { "nl": ["usage guard", "gebruiksbewaking", "limietbewaking"], "en": ["usage guard", "usage protection"] }
+    },
+    "usage-guard.pause-at": {
+      "type": "int", "min": 50, "max": 99, "default": 98, "unit": "%", "scope": "global", "group": "core",
+      "desc": { "nl": "Bij dit percentage van je gebruikslimiet pauzeert Forge.", "en": "Forge pauses at this percentage of your usage limit." },
+      "consumers": [".claude/forge-bin/usage-guard.cjs (--pause-at)"],
+      "aliases": { "nl": ["usage guard op", "pauzeer bij", "drempel"], "en": ["pause at", "threshold"] }
+    },
+    "usage-guard.resume-at": {
+      "type": "int", "min": 0, "max": 98, "default": 0, "unit": "%", "scope": "global", "group": "advanced",
+      "desc": { "nl": "Forge gaat vanzelf weer verder als je gebruik onder dit percentage komt (0 = pas na de reset van je limiet).", "en": "Forge resumes on its own once usage drops to this percentage (0 = only after your limit resets)." },
+      "consumers": [".claude/forge-bin/usage-guard.cjs (--resume-at)"],
+      "aliases": { "nl": ["hervat bij"], "en": ["resume at"] }
+    },
+    "usage-guard.interval": {
+      "type": "int", "min": 30, "max": 900, "default": 120, "unit": "s", "scope": "global", "group": "advanced",
+      "desc": { "nl": "Hoe vaak (in seconden) de bewaking je gebruik meet.", "en": "How often (in seconds) the guard measures your usage." },
+      "consumers": [".claude/forge-bin/usage-guard.cjs (--interval)"],
+      "aliases": { "nl": ["meetinterval"], "en": ["interval", "poll interval"] }
+    },
+    "usage-guard.nvidia-shift-at": {
+      "type": "int", "min": 50, "max": 99, "default": 80, "unit": "%", "scope": "global", "group": "advanced",
+      "desc": { "nl": "Vanaf dit weekpercentage geeft Forge bulkwerk liever aan NVIDIA-modellen (alleen een hint, pauzeert niets).", "en": "From this weekly percentage Forge prefers NVIDIA models for bulk work (a hint only, pauses nothing)." },
+      "consumers": [".claude/forge-bin/usage-guard.cjs (--nvidia-shift-at)", ".claude/skills/forge-router/SKILL.md (Step 4d)"],
+      "aliases": { "nl": ["nvidia-drempel"], "en": ["nvidia shift"] }
+    },
+    "autonomy": {
+      "type": "enum", "allowed": ["continue-within-mission", "ask-each-phase", "full-auto-within-mission"], "default": "continue-within-mission", "scope": "project", "group": "core",
+      "desc": { "nl": "Werkt door tussen fases zonder steeds 'moet ik verder?' te vragen. STOP werkt altijd; deploy/push/geld/DNS/productie vragen altijd eerst.", "en": "Keeps working across phases without asking 'continue?' each time. STOP always works; deploy/push/spend/DNS/production always ask first." },
+      "off_means": { "nl": "ask-each-phase: Forge stopt bij elke fasegrens en wacht op jou.", "en": "ask-each-phase: Forge stops at every phase boundary and waits for you." },
+      "consumers": [".claude/forge-bin/forge-autonomy.cjs (decide mode)", ".claude/config/orchestration/FORGE_AUTONOMY.json"],
+      "aliases": { "nl": ["autonomie", "doorwerken", "vraag me niet bij elke fase", "vraag me niet meer bij elke fase", "niet meer vragen", "vraag bij elke fase"], "en": ["autonomy", "keep going", "stop asking", "ask each phase"] }
+    },
+    "start-gate": {
+      "type": "enum", "allowed": ["off", "l4-only", "always"], "default": "off", "scope": "project", "group": "core",
+      "desc": { "nl": "Wacht niet op een START voordat het bouwen begint — het plan wordt gemeld en het werk gaat direct door (zeg STOP om te pauzeren).", "en": "Does not wait for a START before building — the plan is posted and work continues immediately (say STOP to pause)." },
+      "off_means": { "nl": "l4-only: alleen grote gefaseerde missies wachten op START; always: elke run wacht op START.", "en": "l4-only: only large phased missions wait for START; always: every run waits for START." },
+      "consumers": [".claude/commands/forge.md (BUILD BY DEFAULT)", ".claude/skills/forge-router/SKILL.md"],
+      "aliases": { "nl": ["startpoort", "wacht op start"], "en": ["start gate", "wait for start"] }
+    },
+    "gate-hook": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Een echte stop (geen advies) op gevaarlijke commando's: alles recursief verwijderen, processen op naam killen, git-commando's die onvastgelegd werk weggooien. Forge vraagt dan eerst.", "en": "A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work. Forge asks first." },
+      "off_means": { "nl": "De harde poorten blijven bestaan als classifier en regel, maar worden niet meer door de hook afgedwongen.", "en": "The hard gates still exist as classifier and rule, but the hook no longer enforces them." },
+      "consumers": [".claude/forge-bin/forge-gate-hook.cjs", ".claude/settings.json (PreToolUse Bash)", ".claude/forge-bin/forge-actiongate.cjs"],
+      "aliases": { "nl": ["gate hook", "poort-hook", "commando-stop"], "en": ["gate hook", "command guard"] }
+    },
+    "git-checkpoint": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Maakt vóór een grotere bouwklus een lokaal veiligheidspunt in git (commit of branch, nooit gepusht), zodat alles terug te draaien is.", "en": "Creates a local git safety point (commit or branch, never pushed) before a bigger build so everything can be undone." },
+      "off_means": { "nl": "Geen automatisch veiligheidspunt; alleen wat jij zelf commit.", "en": "No automatic safety point; only what you commit yourself." },
+      "consumers": [".claude/commands/forge.md (BUILD BY DEFAULT, L2+)", ".claude/skills/forge-router/SKILL.md"],
+      "aliases": { "nl": ["git checkpoint", "veiligheidspunt", "back-up commit"], "en": ["git checkpoint", "safety commit"] }
+    },
+    "intake": {
+      "type": "enum", "allowed": ["silent", "interview"], "default": "silent", "scope": "project", "group": "core",
+      "desc": { "nl": "Vult de intakevragen zelf in vanuit je opdracht en het project; stelt hooguit één keuzevraag (2-3 opties), alleen als twee lezingen tot een wezenlijk ander bouwsel leiden of als er iets verstuurd/betaald/gedeployd moet worden.", "en": "Answers the intake questions itself from your request and the project; asks at most one multiple-choice question (2-3 options), only when two readings would lead to materially different builds or when something must be sent, paid or deployed." },
+      "off_means": { "nl": "interview: Forge stelt de intakevragen één voor één aan jou.", "en": "interview: Forge asks you the intake questions one at a time." },
+      "consumers": [".claude/skills/forge-intake/SKILL.md", ".claude/skills/forge-prompt-coach/SKILL.md (silent = max 1 question; interview = laddering, grill-me)", ".claude/skills/forge-router/SKILL.md (Step 0a)", ".claude/commands/forge.md (interview)"],
+      "aliases": { "nl": ["intake", "interview", "vragenlijst"], "en": ["intake", "interview"] }
+    },
+    "prompt-doctor": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Controleert je opdracht op de klassieke valkuilen (vaag doel, geen 'klaar'-definitie, geen context) en vult de gaten zelf aan of stelt die ene gerichte vraag.", "en": "Checks your request for the classic traps (vague goal, no definition of done, no context) and fills the gaps itself or asks the one targeted question." },
+      "off_means": { "nl": "Forge neemt je opdracht letterlijk zonder valkuil-check.", "en": "Forge takes your request literally without the trap check." },
+      "consumers": [".claude/forge-bin/forge-promptcheck.cjs (ask mode)", ".claude/skills/forge-prompt-coach/SKILL.md", ".claude/skills/forge-intake/SKILL.md"],
+      "aliases": { "nl": ["prompt doctor", "promptcheck", "opdrachtcheck"], "en": ["prompt doctor", "prompt check"] }
+    },
+    "explain-mode": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Forge legt bij elke fase in één gewone zin uit wat het doet en waarom — handig als je nieuw bent.", "en": "Forge explains each phase in one plain sentence — what it is doing and why — useful when you are new." },
+      "off_means": { "nl": "Alleen de korte statusregels, geen uitleg.", "en": "Only the short status lines, no explanations." },
+      "consumers": [".claude/commands/forge.md (phase lines)", ".claude/skills/forge-report/SKILL.md", ".claude/skills/forge-prompt-coach/SKILL.md (one-line teaching tip)"],
+      "aliases": { "nl": ["uitleg", "uitlegmodus", "beginnersmodus"], "en": ["explain", "explain mode", "beginner mode"] }
+    },
+    "dashboard": {
+      "type": "bool", "default": true, "scope": "global", "group": "core",
+      "desc": { "nl": "Start het Forge Command Center (alleen op deze computer, 127.0.0.1:4100) zodat je live ziet wat de agents doen.", "en": "Starts the Forge Command Center (this machine only, 127.0.0.1:4100) so you can watch the agents live." },
+      "off_means": { "nl": "Geen dashboard; alles staat nog wel in de run-bestanden.", "en": "No dashboard; everything is still in the run files." },
+      "consumers": [".claude/commands/forge.md (dashboard)", "command-center/gateway/supervisor.mjs"],
+      "aliases": { "nl": ["dashboard", "command center"], "en": ["dashboard", "command center"] }
+    },
+    "codex-review": {
+      "type": "enum", "allowed": ["auto", "on-request", "off"], "default": "auto", "scope": "project", "group": "core",
+      "desc": { "nl": "Laat een onafhankelijke tweede AI (OpenAI Codex) belangrijke code nakijken als de codex-CLI op je computer staat en is ingelogd. Nooit een blokkade.", "en": "Has an independent second AI (OpenAI Codex) review important code when the codex CLI is installed and logged in on your machine. Never a blocker." },
+      "off_means": { "nl": "Geen Codex-review; Forge meldt eerlijk dat die niet draaide.", "en": "No Codex review; Forge reports honestly that it did not run." },
+      "disclosure": { "nl": "Stuurt code naar OpenAI via de codex-CLI die jij zelf hebt ingelogd; zonder codex gebeurt er niets.", "en": "Sends code to OpenAI through the codex CLI you logged in yourself; without codex nothing happens." },
+      "flags": ["N", "$"],
+      "consumers": [".claude/commands/forge.md (§10)", ".claude/agents/codex-reviewer.md", ".claude/config/orchestration/codex-review.json"],
+      "aliases": { "nl": ["codex", "codex review", "tweede reviewer"], "en": ["codex", "codex review", "second reviewer"] }
+    },
+    "model-tiering": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Zet zware agents op het sterkste model en simpele taken op een goedkoper model, zodat je quota langer meegaat.", "en": "Runs heavy agents on the strongest model and simple tasks on a cheaper one so your quota lasts longer." },
+      "off_means": { "nl": "Alle agents op het standaardmodel van je sessie.", "en": "All agents on your session's default model." },
+      "consumers": [".claude/FORGE_MODEL_ROUTING.json", ".claude/commands/forge.md (MODEL ROUTING)"],
+      "aliases": { "nl": ["modelkeuze", "model routing"], "en": ["model tiering", "model routing"] }
+    },
+    "nvidia": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Gebruikt NVIDIA-modellen voor bulkwerk als jij een NVIDIA_API_KEY in .env hebt gezet; zonder key gebeurt er niets.", "en": "Uses NVIDIA models for bulk work when you put an NVIDIA_API_KEY in .env; without a key nothing happens." },
+      "off_means": { "nl": "Nooit NVIDIA, ook niet met key.", "en": "Never NVIDIA, even with a key." },
+      "disclosure": { "nl": "Stuurt prompts naar NVIDIA's API met jouw key uit .env of ~/.claude/nvidia.env.", "en": "Sends prompts to NVIDIA's API with your key from .env or ~/.claude/nvidia.env." },
+      "flags": ["C", "N"],
+      "consumers": [".claude/forge-bin/nvidia-provider.cjs", ".claude/config/models/model-capability-matrix.json"],
+      "aliases": { "nl": ["nvidia"], "en": ["nvidia"] }
+    },
+    "agent-memory": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Agents onthouden lessen uit eerdere runs van dit project (wachtwoorden en sleutels worden altijd weggehaald).", "en": "Agents remember lessons from earlier runs of this project (passwords and keys are always redacted)." },
+      "off_means": { "nl": "Geen nieuwe lessen opgeslagen; bestaand geheugen blijft staan.", "en": "No new lessons stored; existing memory stays." },
+      "consumers": [".claude/forge-bin/forge-memory.cjs (addLesson)", ".claude/forge-bin/forge-recall.cjs"],
+      "aliases": { "nl": ["geheugen", "memory", "lessen"], "en": ["memory", "agent memory", "lessons"] }
+    },
+    "snapshots": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Bewaart de missie als het gesprek wordt samengevat, zodat Forge na een lange sessie niet vergeet waar het mee bezig was.", "en": "Saves the mission when the conversation is compacted so Forge never forgets what it was doing after a long session." },
+      "off_means": { "nl": "Geen snapshot bij samenvatten.", "en": "No snapshot on compaction." },
+      "consumers": [".claude/forge-bin/forge-snapshot-marker.cjs", ".claude/forge-bin/forge-snapshot-reinject.cjs", ".claude/settings.json (PreCompact/SessionStart)"],
+      "aliases": { "nl": ["snapshots", "missie-geheugen"], "en": ["snapshots", "mission snapshot"] }
+    },
+    "tool-log": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Houdt bij welke bestanden agents veranderen (in .claude/forge-runs/_toollog/, niet in git).", "en": "Records which files agents change (in .claude/forge-runs/_toollog/, not in git)." },
+      "off_means": { "nl": "Geen wijzigingslogboek.", "en": "No change ledger." },
+      "consumers": [".claude/forge-bin/forge-toolhook.cjs", ".claude/settings.json (PostToolUse)"],
+      "aliases": { "nl": ["toollog", "wijzigingslog"], "en": ["tool log", "change ledger"] }
+    },
+    "ui-quality": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Websites en apps zijn pas klaar met echte screenshots op desktop, tablet en telefoon en een echte kwaliteitscheck.", "en": "Websites and apps are only done with real desktop, tablet and phone screenshots and a real quality check." },
+      "off_means": { "nl": "Geen verplichte screenshots; Forge logt zichtbaar dat jij dit uitzette.", "en": "No mandatory screenshots; Forge visibly logs that you turned this off." },
+      "consumers": [".claude/config/orchestration/FORGE_HARD_RULES.json (web-responsive-evidence)", ".claude/skills/forge-website/SKILL.md"],
+      "aliases": { "nl": ["ui-kwaliteit", "screenshots", "responsive check"], "en": ["ui quality", "screenshots", "responsive check"] }
+    },
+    "real-file-testing": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Voor geld, facturen, parsers en data: testen op echte voorbeeldbestanden van jou, niet op verzonnen data.", "en": "For money, invoices, parsers and data: tests on your real sample files, not on made-up data." },
+      "off_means": { "nl": "Geen echte-bestanden-eis; resultaten worden gemarkeerd als niet op echte data getest.", "en": "No real-file requirement; results are labelled as untested on real data." },
+      "consumers": [".claude/forge-bin/forge-fixtures.cjs", ".claude/config/orchestration/FORGE_HARD_RULES.json (correctness-critical-fixtures)"],
+      "aliases": { "nl": ["echte bestanden", "fixtures"], "en": ["real files", "fixtures", "real-file testing"] }
+    },
+    "research-first": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Zoekt eerst bestaande oplossingen en documentatie op voordat er iets nieuws wordt gebouwd.", "en": "Looks up existing solutions and documentation before building anything new." },
+      "off_means": { "nl": "Direct bouwen zonder onderzoeksstap.", "en": "Build directly without the research step." },
+      "consumers": [".claude/config/orchestration/FORGE_HARD_RULES.json (research-done)", ".claude/agents/search-boss.md"],
+      "aliases": { "nl": ["onderzoek eerst", "research"], "en": ["research first", "research"] }
+    },
+    "council": {
+      "type": "enum", "allowed": ["auto", "off"], "default": "auto", "scope": "project", "group": "core",
+      "desc": { "nl": "Bij twijfelachtige of risicovolle keuzes laat Forge meerdere adviseurs meekijken (kost extra tokens; alleen als het signaal echt is).", "en": "On doubtful or risky choices Forge brings in several advisors (costs extra tokens; only when the signal is real)." },
+      "off_means": { "nl": "Geen automatische raad; als je zelf om een council vraagt gebeurt het wel.", "en": "No automatic council; an explicit request still works." },
+      "consumers": [".claude/forge-bin/forge-quality.cjs (councilTrigger)", ".claude/skills/forge-council/SKILL.md"],
+      "aliases": { "nl": ["council", "raad", "adviseurs"], "en": ["council", "advisors"] }
+    },
+    "docdrift": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Controleert of de documentatie waar Forge op bouwt nog klopt met de echte tools (n8n, Claude Code) voordat die wordt gebruikt.", "en": "Checks that the documentation Forge relies on still matches the real tools (n8n, Claude Code) before using it." },
+      "off_means": { "nl": "Geen documentatie-driftcheck.", "en": "No documentation drift check." },
+      "consumers": [".claude/forge-bin/forge-docdrift.cjs", ".claude/skills/forge-docdrift/SKILL.md"],
+      "aliases": { "nl": ["docdrift", "documentatiecheck"], "en": ["docdrift", "doc drift"] }
+    },
+    "language": {
+      "type": "enum", "allowed": ["auto", "nl", "en"], "default": "auto", "scope": "global", "group": "core",
+      "desc": { "nl": "Taal waarin Forge met je praat (auto = de taal waarin jij schrijft; code en technische docs blijven Engels).", "en": "Language Forge speaks to you in (auto = the language you write in; code and technical docs stay English)." },
+      "consumers": [".claude/forge-bin/forge-config.cjs (list/explain)", ".claude/commands/forge.md", ".claude/.forge-setup.json (lang)"],
+      "aliases": { "nl": ["taal", "nederlands", "engels"], "en": ["language", "dutch", "english"] }
+    },
+    "team-max": {
+      "type": "int-or-auto", "min": 1, "max": 12, "default": "auto", "scope": "project", "group": "core",
+      "desc": { "nl": "Maximaal aantal agents tegelijk (auto = Forge kiest het kleinste team dat past: klein werk 1-3, groot werk tot 12).", "en": "Maximum agents at once (auto = Forge picks the smallest team that fits: small work 1-3, large work up to 12)." },
+      "consumers": [".claude/skills/forge-router/SKILL.md (classify)", "CLAUDE.md (fan-out levels)"],
+      "aliases": { "nl": ["teamgrootte", "parallel", "aantal agents"], "en": ["team size", "parallel", "max agents"] }
+    },
+    "tournament": {
+      "type": "enum", "allowed": ["auto", "off"], "default": "auto", "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Bouwt meerdere varianten en kiest de beste als er geen duidelijke aanpak is (kost N keer zoveel).", "en": "Builds several variants and picks the best when no approach is clearly right (costs N times as much)." },
+      "off_means": { "nl": "Altijd één variant.", "en": "Always one variant." },
+      "consumers": [".claude/forge-bin/forge-tournament.cjs", ".claude/skills/forge-router/SKILL.md (3c)"],
+      "aliases": { "nl": ["tournament", "varianten"], "en": ["tournament", "variants", "best-of-n"] }
+    },
+    "code-index": {
+      "type": "bool", "default": true, "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Houdt een index van je code bij zodat agents sneller de juiste bestanden vinden.", "en": "Keeps an index of your code so agents find the right files faster." },
+      "off_means": { "nl": "Geen index; agents zoeken elke keer opnieuw.", "en": "No index; agents search from scratch each time." },
+      "consumers": [".claude/forge-bin/forge-codemodel.cjs", ".claude/forge-bin/forge-repomap.cjs"],
+      "aliases": { "nl": ["code-index", "repomap"], "en": ["code index", "repo map"] }
+    },
+    "portfolio": {
+      "type": "bool", "default": true, "scope": "global", "group": "when-needed",
+      "desc": { "nl": "Mag lessen uit je andere Forge-projecten gebruiken als je daarnaar vraagt (alleen lezen, nooit wachtwoorden).", "en": "May reuse lessons from your other Forge projects when you ask (read-only, never passwords)." },
+      "off_means": { "nl": "Elk project staat volledig op zichzelf.", "en": "Every project stands completely alone." },
+      "disclosure": { "nl": "Leest alleen de .claude/FORGE_*-geheugenbestanden van je andere Forge-projecten, zonder secrets, en schrijft er nooit in.", "en": "Reads only the .claude/FORGE_* memory files of your other Forge projects, secrets excluded, and never writes to them." },
+      "flags": ["X"],
+      "consumers": [".claude/forge-bin/forge-harvest.cjs (/forge learn)", ".claude/forge-bin/forge-secondbrain.cjs", ".claude/forge-bin/forge-registry.cjs"],
+      "aliases": { "nl": ["portfolio", "andere projecten", "cross-project"], "en": ["portfolio", "other projects", "cross-project learning"] }
+    },
+    "skill-proposals": {
+      "type": "bool", "default": true, "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Forge mag een nieuwe skill vóórstellen als het een echt gat ziet; activeren blijft altijd jouw beslissing.", "en": "Forge may propose a new skill when it sees a real gap; activating it always stays your decision." },
+      "off_means": { "nl": "Geen skill-voorstellen.", "en": "No skill proposals." },
+      "consumers": [".claude/forge-bin/forge-genesis.cjs (propose)", ".claude/commands/forge.md (propose-skill)"],
+      "aliases": { "nl": ["skill-voorstellen", "genesis"], "en": ["skill proposals", "genesis"] }
+    },
+    "nightshift": {
+      "type": "bool", "default": true, "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Mag een onderbroken run zelf hervatten en 's ochtends een briefing maken; plant zichzelf nooit in.", "en": "May resume an interrupted run itself and write a morning briefing; never schedules itself." },
+      "off_means": { "nl": "Geen automatisch hervatten of briefing.", "en": "No automatic resume or briefing." },
+      "consumers": [".claude/forge-bin/forge-swarm-resume.cjs", ".claude/forge-bin/forge-briefing.cjs", ".claude/skills/forge-nightshift/SKILL.md"],
+      "aliases": { "nl": ["nightshift", "nachtdienst", "briefing"], "en": ["nightshift", "overnight", "briefing"] }
+    },
+    "mcp": {
+      "type": "bool", "default": true, "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Mag externe tools (MCP-servers) gebruiken die jij zelf hebt aangezet; installeert of activeert er nooit zelf een.", "en": "May use external tools (MCP servers) you enabled yourself; never installs or activates one on its own." },
+      "off_means": { "nl": "Geen externe MCP-tools.", "en": "No external MCP tools." },
+      "disclosure": { "nl": "Gebruikt alleen servers uit je eigen opt-in-lijst (.claude/config/orchestration/mcp-opt-in.json).", "en": "Uses only servers from your own opt-in list (.claude/config/orchestration/mcp-opt-in.json)." },
+      "flags": ["N"],
+      "consumers": [".claude/forge-bin/forge-mcp-gate.cjs", ".claude/config/orchestration/mcp-registry.json"],
+      "aliases": { "nl": ["mcp", "externe tools"], "en": ["mcp", "external tools"] }
+    },
+    "paperclip": {
+      "type": "bool", "default": false, "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Lokale agent-runtime (127.0.0.1:3100) met agents die onbeheerd doorwerken. Staat UIT: het gebruikt je quota terwijl je niet kijkt, dus alleen als je er zelf om vraagt (Forge-besluit 2026-07-04).", "en": "Local agent runtime (127.0.0.1:3100) with agents that keep working unattended. OFF: it uses your quota while you are not watching, so only when you explicitly ask for it (Forge decision 2026-07-04)." },
+      "disclosure": { "nl": "Onbeheerde agents gebruiken je quota terwijl je niet kijkt.", "en": "Unattended agents use your quota while you are not watching." },
+      "flags": ["U", "$"],
+      "consumers": [".claude/forge-bin/forge-paperclip.cjs", ".claude/commands/forge.md (PAPERCLIP)"],
+      "aliases": { "nl": ["paperclip"], "en": ["paperclip"] }
+    },
+    "cleanup": {
+      "type": "enum", "allowed": ["report", "auto"], "default": "report", "scope": "project", "group": "when-needed",
+      "desc": { "nl": "Oude back-ups en logboeken: alleen rapporteren (standaard) of automatisch opruimen (verwijdert bestanden ouder dan 14 dagen, houdt de laatste 5).", "en": "Old backups and logs: report only (default) or clean up automatically (deletes files older than 14 days, keeps the last 5)." },
+      "flags": ["D"],
+      "consumers": [".claude/forge-bin/forge-retention.cjs"],
+      "aliases": { "nl": ["opruimen", "cleanup", "retentie"], "en": ["cleanup", "retention"] }
+    },
+    "ecc-full-test": {
+      "type": "bool", "default": false, "scope": "project", "group": "advanced", "bridge": ".claude/FORGE_ECC_MODE.json:ecc_full_test_mode",
+      "desc": { "nl": "Uitgebreide ECC-diagnose (inventaris, permissietests). Zwaar en luidruchtig — alleen voor het opsporen van een ECC-probleem.", "en": "Extended ECC diagnostics (inventory, permission tests). Heavy and noisy — only for hunting an ECC problem." },
+      "consumers": [".claude/FORGE_ECC_MODE.json", ".claude/commands/forge.md (ECC Full Test Mode)"],
+      "aliases": { "nl": ["ecc testmodus"], "en": ["ecc test mode", "ecc full test"] }
+    },
+    "budget-usd": {
+      "type": "number", "min": 0.25, "max": 25, "default": 5, "unit": "USD", "scope": "project", "group": "advanced",
+      "desc": { "nl": "Kostenplafond per onbeheerde run (claude -p); je eigen interactieve sessie raakt dit niet.", "en": "Cost ceiling per unattended run (claude -p); your own interactive session is not affected." },
+      "consumers": [".claude/forge-bin/forge-run-budget.cjs", ".claude/config/orchestration/FORGE_RUN_BUDGET.json"],
+      "aliases": { "nl": ["budget", "kostenplafond"], "en": ["budget", "cost ceiling"] }
+    }
+  },
+  "locked": [
+    { "id": "hard-gates", "nl": "Deploy, git push, geld uitgeven, DNS, productie aanzetten, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — Forge vraagt hier ALTIJD eerst.", "en": "Deploy, git push, spending money, DNS, activating production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — Forge ALWAYS asks first.", "source": ".claude/config/orchestration/hard-gates.json via forge-actiongate.cjs" },
+    { "id": "usage-limit", "nl": "Een echte gebruikslimiet-pauze kan door geen enkele instelling worden genegeerd.", "en": "A real usage-limit pause can never be overridden by any setting.", "source": ".claude/forge-bin/forge-autonomy.cjs (tier 1)" },
+    { "id": "honesty-core", "nl": "Forge zegt nooit dat een test, check of review draaide als dat niet zo is.", "en": "Forge never claims a test, check or review ran when it did not.", "source": ".claude/config/orchestration/FORGE_STANDING_RULES.json (honesty-core-untouchable)" },
+    { "id": "project-isolation", "nl": "Forge werkt alleen in dit projectmapje; nooit in andere projecten of je globale instellingen zonder toestemming.", "en": "Forge works only in this project folder; never in other projects or your global settings without permission.", "source": "CLAUDE.md (Project isolation)" },
+    { "id": "does-it-for-you", "nl": "Forge voert commando's en scripts zelf uit — het vraagt je nooit om zelf een bestand of code te draaien.", "en": "Forge runs commands and scripts itself — it never asks you to run a file or code yourself.", "source": "owner directive 2026-09-24 (FORGE_STANDING_RULES.json: does-it-for-you)" },
+    { "id": "never-auto-push", "nl": "Geen git push zonder dat jij het vraagt.", "en": "No git push unless you ask.", "source": ".claude/FORGE_OWNER_PROFILE.json (never_auto_push)" },
+    { "id": "outreach-draft-only", "nl": "E-mails en berichten worden alleen als concept gemaakt, nooit verstuurd.", "en": "Emails and messages are drafted only, never sent.", "source": ".claude/FORGE_OWNER_PROFILE.json (outreach_draft_only)" }
+  ],
+  "product_default_map": {
+    "_doc": "Config keys whose product-default layer is an existing owner-profile pref (forge-prefs.cjs, read-only). forge-config.cjs maps the pref VALUE onto the config key's value space; it never writes a pref. codex-review is deliberately NOT mapped (review-boss M1, 2026-09-24): the shipped profile's codex_on_high_risk=optional-on-request would silently turn the everything-on default `auto` into `on-request` on every fresh install; the owner changes it with /forge config set codex-review on-request if wanted.",
+    "autonomy": { "pref": "autonomy_default" },
+    "ui-quality": { "pref": "ui_quality_default" },
+    "real-file-testing": { "pref": "real_file_testing_for_correctness_critical" },
+    "research-first": { "pref": "deep_research_first" }
+  }
+}

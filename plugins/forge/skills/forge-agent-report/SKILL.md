@@ -1,6 +1,6 @@
 ---
 name: forge-agent-report
-description: Structured completion-report contract every dispatched Boss ends its final message with, plus the forge-bin/forge-report.cjs tool that parses, validates, and ingests it. Use when dispatching any subagent (include the contract requirement in the prompt) and when a dispatched agent's final message comes back (validate/ingest it before treating the work as done).
+description: Structured completion-report contract for every dispatched Boss, validated by forge-report.cjs. Use when dispatching a subagent or ingesting its final report — completion contract, validation.
 ---
 
 # forge-agent-report — the completion-report contract

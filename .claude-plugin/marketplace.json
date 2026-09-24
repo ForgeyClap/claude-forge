@@ -7,13 +7,13 @@
     "url": "https://github.com/ForgeyClap"
   },
   "metadata": {
-    "version": "2.4.0"
+    "version": "2.7.0"
   },
   "plugins": [
     {
       "name": "forge",
       "source": "./plugins/forge",
-      "description": "Multi-agent orchestrator: /forge:forge build command, forge-core skill, 12 Boss agents + 6 specialists (18 agents), 31 curated skills, and the /forge:setup-forge onboarding wizard.",
+      "description": "Multi-agent orchestrator: /forge:forge build command, forge-core skill, 12 Boss agents + 6 specialists (18 agents), 22 curated skills incl. the prompt coach, and the /forge:setup-forge onboarding wizard.",
       "author": {
         "name": "ForgeyClap"
       },

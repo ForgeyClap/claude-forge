@@ -145,7 +145,7 @@
     },
     "bots": {
       "playbook": "forge-bots",
-      "intake_pack": null,
+      "intake_pack": "bots",
       "preset": false,
       "keywords": [
         "bot",
@@ -412,7 +412,8 @@
   "known_gaps": {
     "_doc": "Bekende, BEWUST zichtbare scheefgroei — gerapporteerd door catalogDrift() als tracked gap, nooit stil. Oplossen is een aparte, expliciete beslissing.",
     "intake_pack_without_domain": {
-      "dashboard": "question-bank.json byType kent 'dashboard' maar de router heeft geen dashboard-playbook. Dashboards zijn een echt projecttype (nebula, forgeagency-os, Command Center) — een eigen playbook + catalogusdomein is een aparte beslissing; tot die tijd is dit een ZICHTBARE gap, geen stille."
+      "dashboard": "question-bank.json byType kent 'dashboard' maar de router heeft geen dashboard-playbook. Dashboards zijn een echt projecttype (nebula, forgeagency-os, Command Center) — een eigen playbook + catalogusdomein is een aparte beslissing; tot die tijd is dit een ZICHTBARE gap, geen stille.",
+      "bugfix": "question-bank.json byType kent 'bugfix' zonder catalogusdomein: een task kind that applies across all domains (a bug in any project type) — een taaksoort voor elk projecttype, geen router-domein en dus bewust geen playbook. forge-intake.cjs --type bugfix (of --trigger F9) leest de set: symptoom, stappen, fouttekst, sinds wanneer, verwacht. Gepromoveerd uit byTypePending op 2026-09-24 (wp18); een ZICHTBARE gap, geen stille."
     },
     "evidence_domain_without_playbook": {
       "tooling": "required-evidence.json kent 'tooling' (het meta-domein van Forge zelf); er is bewust geen forge-tooling playbook — Forge-werk volgt CLAUDE.md + forge-canon.",
@@ -438,6 +439,7 @@
     "forge-nightshift",
     "forge-prd",
     "forge-projectbrain",
+    "forge-prompt-coach",
     "forge-quality",
     "forge-registry",
     "forge-report",

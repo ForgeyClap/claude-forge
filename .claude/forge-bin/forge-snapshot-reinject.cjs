@@ -29,14 +29,54 @@
  * when there is no due-marker (the common case: an ordinary SessionStart with source != "compact", or one
  * that already consumed its marker).
  *
- * MODEL: run(opts) -> {ok, printed, dueConsumed, root, text|null} — pure-ish, testable without a real
- * stdin/stdout pipe. CLI: reads the (unused-but-validated) stdin JSON, calls run(), prints text if any,
- * always exits 0.
+ * OWNER SETTING `snapshots` (v2.7.0, forge-config.cjs; default ON): OFF -> run() returns
+ * {ok:true, skipped:true, printed:false, reason:'owner config snapshots=off'} — nothing printed, nothing read
+ * back into context, the due-marker left untouched (nothing written or deleted), exit 0. Same soft-require and
+ * project-root rule as forge-snapshot-marker.cjs (read through the fail-safe safeGet; absent/throwing module or a
+ * damaged settings file -> ON plus a one-line `config_note`, which the CLI prints after a real re-inject; the
+ * GLOBAL copy falls back to the target project's own forge-config.cjs; FORGE_PROJECT_ROOT wins when set).
+ *
+ * MODEL: run(opts) -> {ok, printed, dueConsumed, root, text|null, skipped?} — pure-ish, testable without a
+ * real stdin/stdout pipe (opts.configModule injects a config module; null = "absent"). CLI: reads the
+ * (unused-but-validated) stdin JSON, calls run(), prints text if any, always exits 0.
  */
 const fs = require('fs');
 const path = require('path');
 
 const MAX_CHARS = 2400; // ~600 tokens (chars/4 heuristic) — see file header SIZE DISCIPLINE
+
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+function configModuleFor(root) {
+  if (cfg) return cfg;
+  try { return require(path.join(root, '.claude', 'forge-bin', 'forge-config.cjs')); } // eslint-disable-line global-require
+  catch { return null; }
+}
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default, used only when forge-config.cjs is absent or broken; an older copy without safeGet is read
+ *  through get(). Never throws. opts.projectRoot = the root this hook acts on (ignored when FORGE_PROJECT_ROOT is
+ *  set); opts.configModule injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : configModuleFor(opts.projectRoot || process.cwd());
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
 
 function resolveProjectRoot(opts) {
   opts = opts || {};
@@ -69,9 +109,14 @@ function truncate(text, max) {
 function run(opts) {
   opts = opts || {};
   const root = resolveProjectRoot(opts);
+  const sc = configRead('snapshots', true, { projectRoot: root, configModule: opts.configModule });
+  const note = sc.degraded ? { config_note: sc.reason } : {}; // the CLI prints it after a real re-inject
+  if (sc.value === false) {
+    return Object.assign({ ok: true, skipped: true, reason: 'owner config snapshots=off', printed: false, dueConsumed: false, root, text: null }, note);
+  }
   const duePath = path.join(root, '.claude', '.forge-snapshot-due.json');
   const due = readJsonSafe(duePath);
-  if (!due) return { ok: true, printed: false, dueConsumed: false, root, text: null };
+  if (!due) return Object.assign({ ok: true, printed: false, dueConsumed: false, root, text: null }, note);
 
   const snapshotPath = path.join(root, '.claude', 'FORGE_SNAPSHOT.md');
   const snapshotText = readFileSafe(snapshotPath);
@@ -103,10 +148,10 @@ function run(opts) {
   let dueConsumed = false;
   try { fs.unlinkSync(duePath); dueConsumed = true; } catch { /* best-effort — a leftover marker is re-consumed (or ignored) next time, never fatal */ }
 
-  return { ok: true, printed: true, dueConsumed, root, text };
+  return Object.assign({ ok: true, printed: true, dueConsumed, root, text }, note);
 }
 
-module.exports = { run, resolveProjectRoot, extractSection, truncate, MAX_CHARS };
+module.exports = { run, resolveProjectRoot, extractSection, truncate, configOn, configRead, MAX_CHARS };
 
 // ---- CLI (SessionStart hook target — ALWAYS exits 0, never blocks; stdout IS re-injected into context) ----
 if (require.main === module) {
@@ -123,7 +168,7 @@ if (require.main === module) {
       // CLAUDE_PROJECT_DIR/cwd — never from untrusted payload content) — parsing it is defensive only.
       try { JSON.parse(data || '{}'); } catch { /* malformed payload never blocks — proceed with cwd resolution */ }
       const result = run({});
-      if (result.printed && result.text) process.stdout.write(result.text + '\n');
+      if (result.printed && result.text) process.stdout.write(result.text + '\n' + (result.config_note ? '[forge-config] ' + result.config_note + '\n' : ''));
     } catch { /* an advisory hook must never fail session start */ }
     clearTimeout(failsafe);
     finish();

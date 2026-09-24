@@ -1,5 +1,5 @@
 {
-  "_doc": "Forge V2 WAVE A / A1 (2026-07-18) — the SINGLE source of truth for irreversible-action and project-isolation-escape detection. Read only via .claude/forge-bin/forge-actiongate.cjs::classify() — no other file may define a parallel regex set (the exact 'regex drift' risk cc-risks/dd-autonomy flagged: forge-autonomy.cjs and forge-verify.cjs, wired in a later wave, MUST require() this same classifier rather than re-implement it). Advisory/loud, not a hook — matches this project's light-security governance (CLAUDE.md: 'no mandatory security gates'). Every level of autonomy (ask-each-phase / continue-within-mission / full-loop-until-stop) is powerless over these gates: a match means STOP and get owner_confirmed:true before proceeding, regardless of autonomy level.\n\nMATCH KINDS (2026-08-01): 'regex' matches SPOKEN INTENT against the combined free text; 'command' matches an actual COMMAND LINE per command SEGMENT (split on && || ; | & newline $( and backtick) with an optional `match.except` false-alarm valve, plus an optional `match.pattern_line` matched against the WHOLE line for a danger that only exists ACROSS a pipeline (a name-scoped `Get-Process ... | Stop-Process` / `| ForEach-Object { $_.Kill() }`, where no single segment carries both the name and the kill); 'path-escape' is the isolation check. The command gates were added because a measurement on 2026-08-01 showed the nine intent gates classified `taskkill /IM node.exe`, `Stop-Process -Name node`, `pkill node`, `rm -rf ./src` and `git reset --hard origin/main` ALL as gate:false — the first three being verbatim the commands the owner's global Orchestration-Safety HARD MUST forbids after the 2026-07-29 incident (an agent cleaning up a broken Chrome killed the live Forge gateway on port 4100 with it).\n\nWHAT THE SEGMENT SPLIT REALLY DOES — CORRECTED 2026-08-01. The first version of this file claimed the split was 'the load-bearing part' and that without it `echo hi && rm -rf /` would escape. That claim was FALSE and is retracted. Measurement (splitCommands() neutralised to return the whole string as one segment, then the corpus re-run): ZERO of the five chained cases flipped — `echo hi && rm -rf /`, `npm run dev && taskkill /IM node.exe`, `git fetch; git reset --hard origin/main`, `Get-Process node | Stop-Process` and `cd /tmp && rm -rf ./src` all still fired, because every command pattern uses `[^\\n]*` lookaheads that already scan the rest of the line. The split's real, measurable job is the OPPOSITE — FALSE-POSITIVE SUPPRESSION: it keeps each command's flags, targets and except-valve with THAT command, so `rm -rf node_modules && npm ci`, `rm -rf ./_scratch/run-1 && npm ci` and `rm ./notes.txt && echo -rf` stay silent instead of firing on a blob match. Those three are the cases that flip.\n\nTHE EXCEPT VALVE HAS NO PARSER (2026-08-01, round 4 — the rewrite). It is EXACT STRING EQUALITY between the raw command segment and 16 literal strings (command_prefixes x argument_tails). Nothing about the input is tokenised, unquoted, normalised, path-resolved or case-folded. Three earlier designs each modelled a bit more shell semantics and were each bypassed by a bit we had not modelled: substring matching (`rm -rf ./_scratch/../.claude` excused), path normalisation defeated by the segment split (`rm -rf ./_scratch/$(whoami)/../../.claude` excused), and tokenisation defeated by the PowerShell comma ARRAY (`rm -r -force .claude,./tmp` excused — one 'target' to the tokeniser, two deleted directories in a real shell). A zero-dependency classifier cannot become a complete PowerShell AND POSIX parser, so the parser was removed instead of patched a fourth time. The price is noise, and it is stated in _not_caught.exact_valve_price rather than hidden.\n\nEXAMPLES: every non-path-escape gate carries `examples: {match:[...], no_match:[...]}`. These are not documentation — forge-actiongate.test.cjs iterates them and asserts, for EVERY gate, that each `match` string really makes classify() list that gate id and each `no_match` string really does not. A gate added without examples fails the suite, so the config can never grow an unproven pattern.",
+  "_doc": "Forge V2 WAVE A / A1 (2026-07-18) — the SINGLE source of truth for irreversible-action and project-isolation-escape detection. Read only via .claude/forge-bin/forge-actiongate.cjs::classify() — no other file may define a parallel regex set (the exact 'regex drift' risk cc-risks/dd-autonomy flagged: forge-autonomy.cjs and forge-verify.cjs, wired in a later wave, MUST require() this same classifier rather than re-implement it). Advisory/loud as a CLASSIFIER — and, since 2026-09-24 (v2.7.0, WP16; owner decision carried by the `gate-hook` setting, default on), ENFORCED for the three command gates (kill-by-name, destructive-delete, git-destructive) on Claude's Bash/PowerShell tool calls by the PreToolUse hook .claude/forge-bin/forge-gate-hook.cjs, which runs this same classify() and exits 2. The text gates and write-outside-root remain classifier + prose only. (Until 2026-09-24 this sentence read 'Advisory/loud, not a hook — matches this project's light-security governance'.) Every level of autonomy (ask-each-phase / continue-within-mission / full-loop-until-stop) is powerless over these gates: a match means STOP and get owner_confirmed:true before proceeding, regardless of autonomy level.\n\nMATCH KINDS (2026-08-01): 'regex' matches SPOKEN INTENT against the combined free text; 'command' matches an actual COMMAND LINE per command SEGMENT (split on && || ; | & newline $( and backtick) with an optional `match.except` false-alarm valve, plus an optional `match.pattern_line` matched against the WHOLE line for a danger that only exists ACROSS a pipeline (a name-scoped `Get-Process ... | Stop-Process` / `| ForEach-Object { $_.Kill() }`, where no single segment carries both the name and the kill); 'path-escape' is the isolation check. The command gates were added because a measurement on 2026-08-01 showed the nine intent gates classified `taskkill /IM node.exe`, `Stop-Process -Name node`, `pkill node`, `rm -rf ./src` and `git reset --hard origin/main` ALL as gate:false — the first three being verbatim the commands the owner's global Orchestration-Safety HARD MUST forbids after the 2026-07-29 incident (an agent cleaning up a broken Chrome killed the live Forge gateway on port 4100 with it).\n\nWHAT THE SEGMENT SPLIT REALLY DOES — CORRECTED 2026-08-01. The first version of this file claimed the split was 'the load-bearing part' and that without it `echo hi && rm -rf /` would escape. That claim was FALSE and is retracted. Measurement (splitCommands() neutralised to return the whole string as one segment, then the corpus re-run): ZERO of the five chained cases flipped — `echo hi && rm -rf /`, `npm run dev && taskkill /IM node.exe`, `git fetch; git reset --hard origin/main`, `Get-Process node | Stop-Process` and `cd /tmp && rm -rf ./src` all still fired, because every command pattern uses `[^\\n]*` lookaheads that already scan the rest of the line. The split's real, measurable job is the OPPOSITE — FALSE-POSITIVE SUPPRESSION: it keeps each command's flags, targets and except-valve with THAT command, so `rm -rf node_modules && npm ci`, `rm -rf ./_scratch/run-1 && npm ci` and `rm ./notes.txt && echo -rf` stay silent instead of firing on a blob match. Those three are the cases that flip.\n\nTHE EXCEPT VALVE HAS NO PARSER (2026-08-01, round 4 — the rewrite). It is EXACT STRING EQUALITY between the raw command segment and 16 literal strings (command_prefixes x argument_tails). Nothing about the input is tokenised, unquoted, normalised, path-resolved or case-folded. Three earlier designs each modelled a bit more shell semantics and were each bypassed by a bit we had not modelled: substring matching (`rm -rf ./_scratch/../.claude` excused), path normalisation defeated by the segment split (`rm -rf ./_scratch/$(whoami)/../../.claude` excused), and tokenisation defeated by the PowerShell comma ARRAY (`rm -r -force .claude,./tmp` excused — one 'target' to the tokeniser, two deleted directories in a real shell). A zero-dependency classifier cannot become a complete PowerShell AND POSIX parser, so the parser was removed instead of patched a fourth time. The price is noise, and it is stated in _not_caught.exact_valve_price rather than hidden.\n\nEXAMPLES: every non-path-escape gate carries `examples: {match:[...], no_match:[...]}`. These are not documentation — forge-actiongate.test.cjs iterates them and asserts, for EVERY gate, that each `match` string really makes classify() list that gate id and each `no_match` string really does not. A gate added without examples fails the suite, so the config can never grow an unproven pattern.",
   "version": 1,
   "gates": [
     {
@@ -190,14 +190,14 @@
     {
       "id": "kill-by-name",
       "class": "irreversible",
-      "reason": "Killing a process by IMAGE/NAME (taskkill /IM, Stop-Process -Name, pkill, killall, wmic process where name=..., or a name-scoped Get-Process piped into Stop-Process / $_.Kill()) takes down every process with that name, including unrelated live services — the owner's global HARD MUST allows only killing an exact PID you own.",
+      "reason": "Killing a process by IMAGE/NAME (taskkill /IM, Stop-Process -Name, pkill, killall, wmic process where name=..., a taskkill /FI filter other than PID, a name-scoped Get-Process/gps/ps piped into Stop-Process / $_.Kill(), or kill $(pgrep …) / pgrep … | xargs kill) takes down every process with that name, including unrelated live services — the owner's global HARD MUST allows only killing an exact PID you own.",
       "match": {
         "kind": "command",
-        "pattern": "\\btaskkill\\b(?=[^\\n]*(?:[\\s/-]im\\b|\\bimagename\\b))|\\b(?:Stop-Process|spps|kill)\\b(?=[^\\n]*\\s-{1,2}(?:Name|ProcessName)\\b)|\\b(?:pkill|killall)\\b|\\bwmic\\b(?=[^\\n]*\\bprocess\\b)(?=[^\\n]*\\bname\\s*=)(?=[^\\n]*\\b(?:delete|terminate)\\b)",
-        "pattern_line": "\\bGet-Process\\b(?![^\\n]*\\s-{1,2}(?:Id|InputObject)\\b)[^\\n]*\\|[^\\n]*(?:\\bStop-Process\\b|\\bspps\\b|\\bkill\\b|\\.Kill\\s*\\(\\s*\\))",
+        "pattern": "\\btaskkill\\b(?=[^\\n]*(?:[\\s/-]im\\b|\\bimagename\\b))|\\b(?:Stop-Process|spps)\\b(?=[^\\n]*\\s-{1,2}(?:n|na|nam|name|processname)\\b)|\\bkill\\b(?=[^\\n]*\\s-{1,2}(?:Name|ProcessName)\\b)|\\b(?:pkill|killall)\\b|\\bwmic\\b(?=[^\\n]*\\bprocess\\b)(?=[^\\n]*\\bname\\s*=)(?=[^\\n]*\\b(?:delete|terminate)\\b)|\\btaskkill\\b(?=[^\\n]*[\\s/-]fi\\b)(?![^\\n]*[\\s/-]fi\\s+[\"']?\\s*pid\\s+eq\\b)",
+        "pattern_line": "(?:\\bGet-Process\\b|\\bgps\\b|\\bps\\s+(?=[A-Za-z]))(?![^\\n]*\\s-{1,2}(?:Id|InputObject)\\b)[^\\n]*\\|[^\\n]*(?:\\bStop-Process\\b|\\bspps\\b|\\bkill\\b|\\.Kill\\s*\\(\\s*\\))|\\bkill\\b[^\\n]*(?:\\$\\(|`)\\s*(?:pgrep|pidof)\\b|\\b(?:pgrep|pidof|grep)\\b[^\\n]*\\|[^\\n]*\\bxargs\\b[^\\n]*\\bkill\\b",
         "flags": "i",
-        "_pattern_doc": "SEGMENT pattern: a kill that names its victim inside ONE command — taskkill /IM, an explicit -Name/-ProcessName on Stop-Process/spps/kill, pkill/killall, or a wmic name= delete|terminate. A bare `Stop-Process` no longer fires on its own segment: that was a false alarm (2026-08-01), because `Stop-Process 22420` binds positionally to -Id and `Get-Process -Id 22420 | Stop-Process` is PID-scoped — both are exactly what the HARD MUST ALLOWS, yet both fired.",
-        "_pattern_line_doc": "LINE pattern: the danger that no single segment can see. `Get-Process node | Stop-Process` and `Get-Process node | ForEach-Object { $_.Kill() }` split into a harmless selector and a target-less killer; only the whole line shows that the selection was BY NAME. The negative lookahead keeps `Get-Process -Id 22420 | Stop-Process` silent — the selection there is by PID."
+        "_pattern_doc": "SEGMENT pattern: a kill that names its victim inside ONE command — taskkill /IM, an explicit -Name/-ProcessName on Stop-Process/spps/kill, pkill/killall, or a wmic name= delete|terminate. A bare `Stop-Process` no longer fires on its own segment: that was a false alarm (2026-08-01), because `Stop-Process 22420` binds positionally to -Id and `Get-Process -Id 22420 | Stop-Process` is PID-scoped — both are exactly what the HARD MUST ALLOWS, yet both fired. WP16 / security-boss wp9b M1 (2026-09-24): Stop-Process/spps now also accept the unambiguous prefixes of -Name (`-N`, `-Na`, `-Nam`); `kill` keeps the full names only, because POSIX `kill -n 9 1234` is a signal number, not a name. A `taskkill /FI` filter fires unless it is `PID eq` — `/FI \"WINDOWTITLE eq x\"` or `/FI \"USERNAME eq bob\"` kill by something other than a PID you own.",
+        "_pattern_line_doc": "LINE pattern: the danger that no single segment can see. `Get-Process node | Stop-Process` and `Get-Process node | ForEach-Object { $_.Kill() }` split into a harmless selector and a target-less killer; only the whole line shows that the selection was BY NAME. The negative lookahead keeps `Get-Process -Id 22420 | Stop-Process` silent — the selection there is by PID. WP16 / M1: the Get-Process aliases `gps` and `ps <name>` are selectors too (`gps node | Stop-Process`, `ps node | kill`), and so are the POSIX name lookups: `kill $(pgrep node)`, `kill -9 `pidof node``, `pgrep node | xargs kill` and `ps aux | grep node | xargs kill -9`."
       },
       "examples": {
         "match": [
@@ -217,7 +217,18 @@
           "killall node",
           "sudo pkill -f node",
           "kill -Name node",
-          "npm run dev && taskkill /IM node.exe"
+          "npm run dev && taskkill /IM node.exe",
+          "kill $(pgrep node)",
+          "kill -9 `pidof node`",
+          "pgrep node | xargs kill",
+          "ps aux | grep node | xargs kill -9",
+          "gps node | Stop-Process",
+          "ps node | kill",
+          "Stop-Process -N node",
+          "Stop-Process -na node",
+          "spps -Nam chrome",
+          "taskkill /FI \"WINDOWTITLE eq x\"",
+          "taskkill /F /FI \"USERNAME eq bob\""
         ],
         "no_match": [
           "taskkill /PID 22420 /F",
@@ -231,7 +242,12 @@
           "kill 1234",
           "kill -9 1234",
           "Get-Process node",
-          "add a dark-mode toggle to the settings page"
+          "add a dark-mode toggle to the settings page",
+          "taskkill /FI \"PID eq 22420\"",
+          "gps -Id 22420 | Stop-Process",
+          "ps aux | head",
+          "pgrep node",
+          "kill -9 $(cat app.pid)"
         ]
       }
     },
@@ -241,10 +257,10 @@
       "reason": "A recursive, forced delete (rm -rf, Remove-Item -Recurse, and their Windows aliases del/erase/rd/rmdir/ri, plus rmdir /s, del /s, rimraf) destroys a whole tree with no undo — confirm the exact target with the owner first. `rm` is itself a Remove-Item alias on Windows, so `rm -Recurse .claude` is caught too (round 6); the two-letter `rm -r` is NOT, because it is also POSIX's ordinary recursive flag and is pinned as a false alarm — see _not_caught.alias_arm_asymmetry. A recursive listing piped into a delete (Get-ChildItem -Recurse | Remove-Item) is the same destruction spread over two commands and is caught by match.pattern_line. Only 16 exact command strings (a plain recursive delete of node_modules or _scratch — see match.except._allowed_segments) are excused as ordinary work; anything else, including every variant of them, warns.",
       "match": {
         "kind": "command",
-        "pattern": "\\b(?:rm|del|erase|rd|rmdir)\\b(?=[^\\n]*\\s(?:-(?!-)[A-Za-z]*r[A-Za-z]*\\b|--recursive\\b))(?=[^\\n]*\\s(?:-(?!-)[A-Za-z]*f[A-Za-z]*\\b|--force\\b))|\\b(?:Remove-Item|ri|del|erase|rd|rmdir)\\b(?=[^\\n]*\\s-{1,2}(?:r|re|rec|recu|recur|recurs|recurse)\\b)|\\brm\\b(?=[^\\n]*\\s-{1,2}(?:re|rec|recu|recur|recurs|recurse)\\b)|\\b(?:rmdir|rd)\\b(?=[^\\n]*\\s/s\\b)|\\b(?:del|erase)\\b(?=[^\\n]*\\s/s\\b)|^\\s*(?:(?:sudo|npx)\\s+|(?:pnpm|yarn)\\s+dlx\\s+|-{1,2}[A-Za-z][A-Za-z0-9-]*\\s+)*rimraf\\b",
+        "pattern": "\\b(?:rm|del|erase|rd|rmdir)\\b(?=[^\\n]*\\s(?:-(?!-)[A-Za-z]*r[A-Za-z]*\\b|--recursive\\b))(?=[^\\n]*\\s(?:-(?!-)[A-Za-z]*f[A-Za-z]*\\b|--force\\b))|\\b(?:Remove-Item|ri|del|erase|rd|rmdir)\\b(?=[^\\n]*\\s-{1,2}(?:r|re|rec|recu|recur|recurs|recurse|recursive)\\b)|\\brm\\b(?=[^\\n]*\\s-{1,2}(?:re|rec|recu|recur|recurs|recurse)\\b)|\\b(?:rmdir|rd)\\b(?=[^\\n]*\\s/s\\b)|\\b(?:del|erase)\\b(?=[^\\n]*\\s/s\\b)|^\\s*(?:(?:sudo|npx)\\s+|(?:pnpm|yarn)\\s+dlx\\s+|-{1,2}[A-Za-z][A-Za-z0-9-]*\\s+)*rimraf\\b|(?<!\\b(?:s3|git|gsutil)\\s)\\brm\\b(?=[^\\n]*\\s(?:-(?!-)[A-Za-z]*r[A-Za-z]*\\b|--recursive\\b))",
         "pattern_line": "\\b(?:Get-ChildItem|gci|ls|dir)\\b[^|\\n]*\\s-{1,2}(?:r|re|rec|recu|recur|recurs|recurse)\\b[^|\\n]*\\|[^\\n]*(?:\\b(?:Remove-Item|ri|rm|del|erase|rd|rmdir)\\b|\\.Delete\\s*\\(\\s*\\))",
         "flags": "i",
-        "_pattern_doc": "SIX ARMS. (1) The POSIX-BUNDLE arm requires a REAL recursive flag AND a REAL force flag: a single-dash bundle containing the letter (-r/-rf/-fr/-Rf) or the long form (--recursive/--force). The previous form asked only for 'some flag containing r' and 'some flag containing f' anywhere on the line, which made `rm --force ./notes.txt` and `rm -f --verbose ./notes.txt` fire as tree destruction — a false alarm on a single-file delete (measured 2026-08-01). (2) The POWERSHELL-RECURSE arm accepts every unambiguous abbreviation of -Recurse (-r, -re, -rec, ... ) because `Remove-Item -r -Force ./src` is a real, fully-effective recursive delete that the -Recurse-only form missed. (3) The RM-RECURSE arm, added in round 6 — see below. (4)+(5) The DOS arms (`rd /s`, `del /s`) are unchanged. (6) The rimraf arm is anchored to the START of the segment (optionally behind sudo/npx/pnpm dlx/yarn dlx) so `npm install rimraf --save-dev` does not fire. That arm ended in `rimraf\\s+\\S` until 2026-08-01 round 3: it required a visible target, so ``npx rimraf `cat list`ature`` split into the target-less segment `npx rimraf` and fired NOTHING. Every other arm still matches its own flags-only stump (`rm -rf`, `Remove-Item -Recurse -Force`, `rmdir /s /q`), so rimraf was the one arm an amputation could mute. It is now `rimraf\\b`; the price is that a bare, argument-less `rimraf` (a no-op nobody types) warns.\n\nROUND 5, FAMILY 1 (2026-08-01) — THE ALIAS HOLE. `Get-Alias del,erase,rd,rmdir,ri,rm` on this machine returns Remove-Item for ALL SIX. Arms 1 and 2 covered only `rm`/`Remove-Item`/`ri`; `del`, `erase`, `rd` and `rmdir` appeared ONLY in the DOS arms, which demand a `/s` switch. So every attack in the examples below fired with `rm` and went silent the moment you wrote `del` — measured: 60 of 60 alias-substituted attacks escaped, including the round-3 substitution attack and the round-4 comma array. The four names are now in BOTH arm 1 and arm 2, so `del -Recurse -Force .claude`, `rd -r -force ./src` and `rmdir -rf ./_scratch/$(whoami)/../../.claude` all fire, while the DOS forms (`rd /s /q dist`, `del /f /s /q C:\\src`) keep firing through arms 3-4 and the bare forms (`del notes.txt`, `rd emptydir`) stay silent.\n\nDELIBERATE ASYMMETRY: `Remove-Item` and `ri` are in arm 2 but NOT arm 1. Arm 1's force test accepts any single-dash flag containing an 'f', and PowerShell's `-Force` contains BOTH an 'r' and an 'f' — so putting the spelled-out cmdlet into arm 1 would fire on `Remove-Item -Force ./notes.txt`, a single-file delete pinned as a no_match since round 4. The four alias names have no such pinned case, so they carry the wider arm. The cost is stated in _not_caught.alias_arm_asymmetry rather than hidden.\n\nROUND 6 (2026-08-01) — THE ALIAS HOLE HAD SWAPPED DIRECTION, and arm 3 is the fix. Round 5 put `del`/`erase`/`rd`/`rmdir` into BOTH arms but left `rm` in arm 1 only, and round 5's own `_not_caught` text then claimed all five were 'in both'. They were not: `rm` is a Remove-Item alias on this machine exactly like the other four (`Get-Alias rm` -> Remove-Item, run 2026-08-01), so `rm -Recurse .claude` matched arm 1 on neither test — `-Recurse` carries no 'f' — and arm 2 did not list `rm`. MEASURED SILENT: `rm -Recurse .claude`, `rm -recurse ./src`, `rm -rec .claude`, `rm -re .claude`. Arm 3 is arm 2 restricted to `rm` with the abbreviation set STARTING AT `-re`: the bare `-r` is deliberately excluded, because `rm -r ./emptydir` has been a pinned no_match since round 4 and `rm -r` is POSIX's ordinary recursive flag — the two-letter form is genuinely ambiguous between the two shells and admitting it would break that pin. `--recursive` is excluded too, so that the everyday `aws s3 rm s3://bucket --recursive` does not start warning. Both exclusions leave a real, measured gap and both are written down in _not_caught.non_recursive_deletes rather than hidden.\n\nROUND 5, FAMILY 2 — THE PIPELINE HOLE (match.pattern_line). `Get-ChildItem .claude -Recurse | Remove-Item -Force` splits into a harmless recursive LISTING and a target-less non-recursive DELETE: neither segment is a recursive forced delete, so no segment arm could ever see it — measured, 5 of 5 pipeline forms escaped. pattern_line is modelled on kill-by-name's: it matches the WHOLE line, requires the recursion flag to sit on the LEFT of the pipe (`[^|\\n]*` keeps it there) and a delete verb or a `.Delete()` call on the right. It is never segment-split and has no except valve, exactly like kill-by-name's.",
+        "_pattern_doc": "SIX ARMS. (1) The POSIX-BUNDLE arm requires a REAL recursive flag AND a REAL force flag: a single-dash bundle containing the letter (-r/-rf/-fr/-Rf) or the long form (--recursive/--force). The previous form asked only for 'some flag containing r' and 'some flag containing f' anywhere on the line, which made `rm --force ./notes.txt` and `rm -f --verbose ./notes.txt` fire as tree destruction — a false alarm on a single-file delete (measured 2026-08-01). (2) The POWERSHELL-RECURSE arm accepts every unambiguous abbreviation of -Recurse (-r, -re, -rec, ... ) because `Remove-Item -r -Force ./src` is a real, fully-effective recursive delete that the -Recurse-only form missed. (3) The RM-RECURSE arm, added in round 6 — see below. (4)+(5) The DOS arms (`rd /s`, `del /s`) are unchanged. (6) The rimraf arm is anchored to the START of the segment (optionally behind sudo/npx/pnpm dlx/yarn dlx) so `npm install rimraf --save-dev` does not fire. That arm ended in `rimraf\\s+\\S` until 2026-08-01 round 3: it required a visible target, so ``npx rimraf `cat list`ature`` split into the target-less segment `npx rimraf` and fired NOTHING. Every other arm still matches its own flags-only stump (`rm -rf`, `Remove-Item -Recurse -Force`, `rmdir /s /q`), so rimraf was the one arm an amputation could mute. It is now `rimraf\\b`; the price is that a bare, argument-less `rimraf` (a no-op nobody types) warns.\n\nROUND 5, FAMILY 1 (2026-08-01) — THE ALIAS HOLE. `Get-Alias del,erase,rd,rmdir,ri,rm` on this machine returns Remove-Item for ALL SIX. Arms 1 and 2 covered only `rm`/`Remove-Item`/`ri`; `del`, `erase`, `rd` and `rmdir` appeared ONLY in the DOS arms, which demand a `/s` switch. So every attack in the examples below fired with `rm` and went silent the moment you wrote `del` — measured: 60 of 60 alias-substituted attacks escaped, including the round-3 substitution attack and the round-4 comma array. The four names are now in BOTH arm 1 and arm 2, so `del -Recurse -Force .claude`, `rd -r -force ./src` and `rmdir -rf ./_scratch/$(whoami)/../../.claude` all fire, while the DOS forms (`rd /s /q dist`, `del /f /s /q C:\\src`) keep firing through arms 3-4 and the bare forms (`del notes.txt`, `rd emptydir`) stay silent.\n\nDELIBERATE ASYMMETRY: `Remove-Item` and `ri` are in arm 2 but NOT arm 1. Arm 1's force test accepts any single-dash flag containing an 'f', and PowerShell's `-Force` contains BOTH an 'r' and an 'f' — so putting the spelled-out cmdlet into arm 1 would fire on `Remove-Item -Force ./notes.txt`, a single-file delete pinned as a no_match since round 4. The four alias names have no such pinned case, so they carry the wider arm. The cost is stated in _not_caught.alias_arm_asymmetry rather than hidden.\n\nROUND 6 (2026-08-01) — THE ALIAS HOLE HAD SWAPPED DIRECTION, and arm 3 is the fix. Round 5 put `del`/`erase`/`rd`/`rmdir` into BOTH arms but left `rm` in arm 1 only, and round 5's own `_not_caught` text then claimed all five were 'in both'. They were not: `rm` is a Remove-Item alias on this machine exactly like the other four (`Get-Alias rm` -> Remove-Item, run 2026-08-01), so `rm -Recurse .claude` matched arm 1 on neither test — `-Recurse` carries no 'f' — and arm 2 did not list `rm`. MEASURED SILENT: `rm -Recurse .claude`, `rm -recurse ./src`, `rm -rec .claude`, `rm -re .claude`. Arm 3 is arm 2 restricted to `rm` with the abbreviation set STARTING AT `-re`: the bare `-r` is deliberately excluded, because `rm -r ./emptydir` has been a pinned no_match since round 4 and `rm -r` is POSIX's ordinary recursive flag — the two-letter form is genuinely ambiguous between the two shells and admitting it would break that pin. `--recursive` is excluded too, so that the everyday `aws s3 rm s3://bucket --recursive` does not start warning. Both exclusions leave a real, measured gap and both are written down in _not_caught.non_recursive_deletes rather than hidden.\n\nROUND 5, FAMILY 2 — THE PIPELINE HOLE (match.pattern_line). `Get-ChildItem .claude -Recurse | Remove-Item -Force` splits into a harmless recursive LISTING and a target-less non-recursive DELETE: neither segment is a recursive forced delete, so no segment arm could ever see it — measured, 5 of 5 pipeline forms escaped. pattern_line is modelled on kill-by-name's: it matches the WHOLE line, requires the recursion flag to sit on the LEFT of the pipe (`[^|\\n]*` keeps it there) and a delete verb or a `.Delete()` call on the right. It is never segment-split and has no except valve, exactly like kill-by-name's.\n\nSEVENTH ARM (2026-09-24, WP16 / security-boss audit wp9b finding H1). `rm -r ./src`, `rm -R ./src`, `rm --recursive ./src` and `find . -exec rm -r {} +` are ordinary POSIX TREE deletes and fired NOTHING: arm 1 wants a force flag too, and arm 3 starts at `-re` to keep the old `rm -r ./emptydir` pin. That pin is dropped — an empty directory cannot be told apart from a tree by text — and this arm takes any single-dash flag containing an r (or `--recursive`) after `rm`. A lookbehind keeps `aws s3 rm s3://bucket --recursive`, `git rm -r dir` and `gsutil rm -r gs://b` silent (exactly one space before `rm`; `gsutil -m rm -r` over-warns). The PreToolUse gate hook's scratch pass-through lets a provable `rm -r ./_scratch/x` through. The same day arm 2 learned the long spelling `recursive`, so every alias accepts the flag set `rm` now does (`del --recursive ./src` fires like `rm --recursive ./src`) and the round-5 alias sweep keeps holding.",
         "except": {
           "kind": "exact-segment",
           "command_prefixes": [
@@ -363,12 +379,16 @@
           "Get-ChildItem .claude -Recurse | ForEach-Object { Remove-Item $_ -Force }",
           "gci -r ./src | %{ ri $_ -force }",
           "Get-ChildItem ./src -Recurse | Where-Object { $_.PSIsContainer } | Remove-Item -Force",
-          "Get-ChildItem .claude -Recurse | ForEach-Object { $_.Delete() }"
+          "Get-ChildItem .claude -Recurse | ForEach-Object { $_.Delete() }",
+          "rm -r ./src",
+          "rm -R ./src",
+          "rm --recursive ./src",
+          "rm -r ./emptydir",
+          "find . -exec rm -r {} +"
         ],
         "no_match": [
           "rm ./notes.txt",
           "rm -f ./notes.txt",
-          "rm -r ./emptydir",
           "rm --force ./notes.txt",
           "rm -f --verbose ./notes.txt",
           "rm -f --interactive ./notes.txt",
@@ -397,19 +417,23 @@
           "Get-ChildItem .claude -Recurse | Measure-Object",
           "Get-ChildItem .claude | Select-Object -First 5",
           "gci -r ./src | Format-Table",
-          "Get-ChildItem .claude | Remove-Item -Force"
+          "Get-ChildItem .claude | Remove-Item -Force",
+          "git rm -r dir",
+          "git rm -r --cached dir",
+          "aws s3 rm s3://b --recursive",
+          "gsutil rm -r gs://b"
         ]
       }
     },
     {
       "id": "git-destructive",
       "class": "irreversible",
-      "reason": "A git command that discards work that was never committed (reset --hard, clean -f, checkout --force, stash drop/clear) cannot be undone from the reflog — confirm with the owner before running it. Global options between `git` and the subcommand (-C <path>, -c <k=v>, --git-dir=…, --work-tree=…) do not hide it.",
+      "reason": "A git command that discards work that was never committed cannot be undone from the reflog — confirm with the owner before running it. Covered: reset --hard, clean -f, checkout --force / -f, checkout . (a bare dot), checkout -- <path> and checkout <tree-ish> -- <path> (any pathspec after `--`), restore <path> / restore . (unless it is only `restore --staged`, which merely unstages), switch -f / --force / --discard-changes, and stash drop / stash clear. Global options between `git` and the subcommand (-C <path>, -c <k=v>, --git-dir=…, --work-tree=…) do not hide it.",
       "match": {
         "kind": "command",
-        "pattern": "\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+reset\\b(?=[^\\n]*\\s--hard\\b)|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+clean\\b(?=[^\\n]*\\s-{1,2}[A-Za-z]*f)|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+checkout\\b(?=[^\\n]*\\s(?:-f\\b|--force\\b))|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+stash\\s+(?:drop|clear)\\b",
+        "pattern": "\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+reset\\b(?=[^\\n]*\\s--hard\\b)|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+clean\\b(?=[^\\n]*\\s-{1,2}[A-Za-z]*f)|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+checkout\\b(?=[^\\n]*\\s(?:-f\\b|--force\\b))|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+checkout\\b(?=[^\\n]*\\s--\\s+\\S)|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+checkout\\b(?=[^\\n]*\\s\\.[\\\\/]?(?:\\s|$))|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+restore\\b(?=\\s+\\S)(?![^\\n]*\\s--staged\\b)|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+restore\\b(?=[^\\n]*\\s(?:--worktree\\b|-[A-Za-z0-9]*W[A-Za-z0-9]*\\b))|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+switch\\b(?=[^\\n]*\\s(?:-f|--force|--discard-changes)(?=\\s|$))|\\bgit(?:\\s+-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\\S+)?(?:\\s+[^-\\s]\\S*)?)*\\s+stash\\s+(?:drop|clear)\\b",
         "flags": "i",
-        "_pattern_doc": "The repeated `(?:\\s+-<opt>(=v)?( <value>)?)*` group is git's GLOBAL-OPTION prefix. Without it the pattern required `git` to be immediately followed by the subcommand, so `git -C /repo reset --hard origin/main` — the normal form in this project, which runs git worktrees — did not fire at all (measured 2026-08-01). It is the heaviest of the misses: a worktree reset destroys uncommitted work in a directory the operator may not even be standing in."
+        "_pattern_doc": "The repeated `(?:\\s+-<opt>(=v)?( <value>)?)*` group is git's GLOBAL-OPTION prefix. Without it the pattern required `git` to be immediately followed by the subcommand, so `git -C /repo reset --hard origin/main` — the normal form in this project, which runs git worktrees — did not fire at all (measured 2026-08-01). It is the heaviest of the misses: a worktree reset destroys uncommitted work in a directory the operator may not even be standing in.\n\nWP16 (2026-09-24, run forge-2026-09-24-config-v250) — THE WORKING-TREE RESTORE HOLE. Measured live with the real CLI before this change: `git checkout .`, `git checkout -- src/app.js` and `git restore src/app.js` all printed 'no gate triggered', while `git reset --hard` and `git checkout -f main` fired. All three overwrite uncommitted edits in the working tree, and a change that was never committed or stashed has no reflog entry, so it is gone. Four arms were added, each behind the same global-option prefix: (1) CHECKOUT-PATHSPEC — `checkout` followed anywhere in its segment by a `--` that is itself followed by a non-empty pathspec (`\\s--\\s+\\S`). That covers `git checkout -- <path>` and `git checkout <tree-ish> -- <path>` (DECISION: `git checkout origin/main -- src/app.js` FIRES — it overwrites the working-tree copy exactly like the tree-ish-less form, and the classifier cannot know whether that path had local edits). A trailing `--` with NO pathspec (`git checkout origin/main --`) stays silent: that is a branch switch, which git itself refuses when it would overwrite local changes. `--quiet` and friends do not count — the `--` must stand alone. (2) CHECKOUT-DOT — `checkout` followed by a standalone `.` token (also `./` and `.\\`), i.e. 'restore every file under here'. Deliberately NOT the general `--`-less file form: `git checkout src/app.js` has exactly the same shape as `git checkout main`, and firing on every one-word checkout would fire on every branch switch — so the `--`-less file restore stays a named gap in _gate_coverage. `.claude/...` and `.gitignore` do not count as a bare dot. (3) RESTORE — `restore` with at least one argument and NO `--staged` anywhere in its segment (git restore defaults to --worktree, so `git restore src/app.js`, `git restore .`, `git restore --source=HEAD~2 src/app.js` and `git restore -s main src/app.js` all overwrite the file). (4) RESTORE-WORKTREE — `restore` with `--worktree` or a short bundle containing W (`-W`, `-SW`), which overwrites the working tree even when `--staged` is also given. KNOWN PRICE of arm 3: the gate is case-insensitive (flags:'i', and Node 18 — still in this project's CI matrix — has no inline (?-i:) modifier), so the short `-S` (staged, harmless) cannot be told apart from `-s` (source, destructive). Only the long `--staged` is recognised as the safe form; `git restore -S src/app.js` over-fires, and that is stated in _gate_coverage rather than hidden. This is the form `git status` itself prints (`use \"git restore --staged <file>...\" to unstage`), so it is the one agents actually type.\n\nWP16 FOLLOW-UP (same day) — (5) SWITCH-FORCE. `git switch -f main`, `git switch --force main` and `git switch --discard-changes main` throw away local changes exactly like `git checkout -f`, and were a named gap in the first WP16 pass. The arm requires the flag as a whole token (`(?=\\s|$)` after it), so `git switch --force-create x` (= -C: it resets a branch pointer, and the switch itself still refuses to overwrite local edits) does not fire, and neither do `git switch main`, `git switch -c feature` or `git switch -`."
       },
       "examples": {
         "match": [
@@ -427,7 +451,24 @@
           "git -C /repo checkout -f .",
           "git -C /repo stash drop",
           "git --git-dir=/repo/.git --work-tree=/repo reset --hard",
-          "git -c core.pager=cat reset --hard HEAD"
+          "git -c core.pager=cat reset --hard HEAD",
+          "git checkout .",
+          "git checkout -- src/app.js",
+          "git checkout -- .",
+          "git checkout HEAD -- src/app.js",
+          "git checkout origin/main -- src/app.js",
+          "git checkout ./",
+          "git restore src/app.js",
+          "git restore .",
+          "git restore --source=HEAD~2 src/app.js",
+          "git restore --staged --worktree src/app.js",
+          "git -C repo checkout .",
+          "git -C /repo restore src/app.js",
+          "git status && git checkout .",
+          "git switch -f main",
+          "git switch --force main",
+          "git switch --discard-changes main",
+          "git -C /repo switch -f main"
         ],
         "no_match": [
           "git reset HEAD~1",
@@ -440,7 +481,24 @@
           "git status",
           "git -C /repo status",
           "git -C /repo reset --soft HEAD~1",
-          "git -C /repo stash pop"
+          "git -C /repo stash pop",
+          "git restore --staged src/app.js",
+          "git restore --staged .",
+          "git checkout -b feature",
+          "git checkout -b feature origin/main",
+          "git checkout origin/main --",
+          "git checkout .claude/settings.json",
+          "git checkout main --quiet",
+          "git add .",
+          "git commit -m \"x\"",
+          "git stash list",
+          "git log -- .",
+          "git -C /repo checkout main",
+          "git -C /repo restore --staged src/app.js",
+          "git switch main",
+          "git switch -c feature",
+          "git switch -",
+          "git switch --force-create feature"
         ]
       }
     },
@@ -454,7 +512,7 @@
     }
   ],
   "_not_caught": {
-    "_doc": "DELIBERATE, DOCUMENTED NON-COVERAGE (rewritten 2026-08-01 in round 6, after round 5's own version of this block was measured and found to contain false sentences). Naming what is out of scope is part of the contract: an unnamed gap reads as a promise the gates do not keep, and a WRONG sentence in the very document that exists to be honest is worse than a gap that is named. On BLOCKING (reconciled 2026-08-03, after the audit sweep found this sentence contradicting precedence.md tier 1, which promised the same gates \"always\" stop the run): the two statements were each half true, and an agent reading only one of them drew the wrong conclusion. The precise contract, which precedence.md now states identically: a FIRED gate always interrupts and cannot be overridden by any lower layer — not a standing rule, not a stored pref, not autonomy mode, not even an explicit current owner instruction. What these gates are NOT is a technical enforcement layer or a complete safety net: this file is a regex classifier over an action's text with the deliberate non-coverage listed below, so an action it does not recognise is simply not gated. The absence of an interrupt is never evidence that an action was safe. \"Advisory\" as used here means \"cannot physically prevent\", never \"can be ignored\".\n\nREAD THIS FIRST, BEFORE ANY LIST BELOW: this file does not describe a safety net. It describes a REGEX CLASSIFIER OVER FREE SHELL TEXT, and such a classifier is incomplete by construction — see `classifier_is_incomplete_by_construction`. Round 5 closed two named families (Windows Remove-Item aliases, pipeline deletes); round 6 closed the `rm -Recurse` half of the first one that round 5 had claimed but not delivered. None of that closes the general case, and nothing can. Treat a silent classify() as 'nothing MATCHED', never as 'this is safe'.\n\nWHAT CHANGED IN ROUND 6: (1) `alias_arm_asymmetry` said `rm` was in both delete arms — it was not, and `rm -Recurse .claude` was silent as a result; the arm was added and the sentence rewritten. (2) `non_recursive_deletes` justified its silences as 'single/interactive deletes, not tree destruction' while covering `rm -r ./src`, which is exactly tree destruction; rewritten and split into a deliberate half and a gap half. (3) `expansion_only_at_runtime` and `pipeline_deletes_only_partly_covered` each claimed something was uncovered that measurably fires; both corrected. (4) Every remaining assertion was re-read against the live pattern and is now pinned by `_claim_probes`.",
+    "_doc": "DELIBERATE, DOCUMENTED NON-COVERAGE (rewritten 2026-08-01 in round 6, after round 5's own version of this block was measured and found to contain false sentences). Naming what is out of scope is part of the contract: an unnamed gap reads as a promise the gates do not keep, and a WRONG sentence in the very document that exists to be honest is worse than a gap that is named. On BLOCKING (reconciled 2026-08-03, after the audit sweep found this sentence contradicting precedence.md tier 1, which promised the same gates \"always\" stop the run): the two statements were each half true, and an agent reading only one of them drew the wrong conclusion. The precise contract, which precedence.md now states identically: a FIRED gate always interrupts and cannot be overridden by any lower layer — not a standing rule, not a stored pref, not autonomy mode, not even an explicit current owner instruction. What these gates are NOT is a technical enforcement layer or a complete safety net: this file is a regex classifier over an action's text with the deliberate non-coverage listed below, so an action it does not recognise is simply not gated. The absence of an interrupt is never evidence that an action was safe. \"Advisory\" as used here means \"cannot physically prevent\", never \"can be ignored\". UPDATE 2026-09-24 (WP16): for the three command gates that is no longer the whole story — forge-gate-hook.cjs (PreToolUse, `gate-hook` setting, default on) BLOCKS a Bash/PowerShell tool call on which one of them fires. That makes them an enforcement layer for exactly those tool calls and nothing wider: the hook runs this same classifier, so every blind spot below is a blind spot of the hook too, and every over-warn below is now a blocked call.\n\nREAD THIS FIRST, BEFORE ANY LIST BELOW: this file does not describe a safety net. It describes a REGEX CLASSIFIER OVER FREE SHELL TEXT, and such a classifier is incomplete by construction — see `classifier_is_incomplete_by_construction`. Round 5 closed two named families (Windows Remove-Item aliases, pipeline deletes); round 6 closed the `rm -Recurse` half of the first one that round 5 had claimed but not delivered. None of that closes the general case, and nothing can. Treat a silent classify() as 'nothing MATCHED', never as 'this is safe'.\n\nWHAT CHANGED IN ROUND 6: (1) `alias_arm_asymmetry` said `rm` was in both delete arms — it was not, and `rm -Recurse .claude` was silent as a result; the arm was added and the sentence rewritten. (2) `non_recursive_deletes` justified its silences as 'single/interactive deletes, not tree destruction' while covering `rm -r ./src`, which is exactly tree destruction; rewritten and split into a deliberate half and a gap half. (3) `expansion_only_at_runtime` and `pipeline_deletes_only_partly_covered` each claimed something was uncovered that measurably fires; both corrected. (4) Every remaining assertion was re-read against the live pattern and is now pinned by `_claim_probes`.",
     "_contract": "This block is BOUND TO THE GATE LIST AND TO THE CLASSIFIER, in four directions, by forge-actiongate.test.cjs sections 2e and 2f. (1) `_gate_coverage` must contain exactly one entry per id in `gates` — add a gate without writing down what it does NOT catch and the suite fails; delete a gate and leave a stale entry and the suite fails too. (2) Each entry must be a real, distinct sentence (length floor + duplicate check + a weasel-word ban), so the requirement cannot be satisfied with 'n/a'. (3) The general-limit topics are pinned by name AND by a required concrete example, so nobody can dilute 'we do not catch robocopy /MIR' into 'some things are not caught'. (4) NEW IN ROUND 6 — `_claim_probes` holds, for EVERY claim in this block, concrete example strings that the suite really runs through classify(), each with the outcome the sentence promises and a `quote` that must appear verbatim in that sentence. A claim that over-claims coverage goes red, a claim that under-claims goes red, and a claim with no probes at all goes red. That is what makes this a declaration rather than a decoration.",
     "_gate_coverage": {
       "_doc": "One entry per gate id, stating what that gate does NOT see. Mechanically enforced — see _contract. Every concrete string quoted here is also a probe in _claim_probes[\"_gate_coverage.<id>\"], so the sentence and the measurement cannot drift apart.",
@@ -467,9 +525,9 @@
       "credential-rotate": "Requires rotate/revoke plus a credential noun, so `rotate the api key` fires. `aws iam delete-access-key`, `gh auth logout`, a provider console 'regenerate' button, deleting an OAuth app, or changing a password through a UI all invalidate a live credential without matching.",
       "workflow-activate": "Requires activate/enable/turn-on plus 'workflow', so `turn on the workflow` fires. The n8n REST call (`PATCH /workflows/42 {active:true}`), the n8n MCP tool, the editor's toggle switch, and importing a workflow whose JSON already has `active:true` are all invisible.",
       "outbound-sms": "Requires one of the listed send/email phrasings with an explicit recipient class, so `send the email to the client` fires. A direct SMTP/Nodemailer/Resend/SendGrid call, a Twilio REST call (`api.twilio.com/2010-04-01/Messages.json`), a Slack/Discord webhook post, `gh issue comment`, an n8n send node, and Dutch phrasing (`stuur de mail naar de klant`) are all outbound actions this gate does not see.",
-      "kill-by-name": "Fires on `Stop-Process -Name node` and its documented siblings. See `pid_scoped_kills` (deliberately silent — killing your own PID is what the HARD MUST ALLOWS) and `kill_with_an_invisible_target` (a kill whose victim is only in a variable, or reached through an unlisted Get-Process alias such as `gps`/`ps`). Also invisible: `Stop-Service`, `docker kill`, `systemctl stop`, a Windows Service Manager action, and killing a whole process TREE by PID (`taskkill /T /PID 22420`) which can still take an unrelated child down.",
+      "kill-by-name": "Fires on `Stop-Process -Name node` and its documented siblings. See `pid_scoped_kills` (deliberately silent — killing your own PID is what the HARD MUST ALLOWS) and `kill_with_an_invisible_target` (a kill whose victim is only in a variable). Also invisible: `Stop-Service`, `docker kill`, `systemctl stop`, a Windows Service Manager action, and killing a whole process TREE by PID (`taskkill /T /PID 22420`) which can still take an unrelated child down. Since WP16 / M1 it also fires on `kill $(pgrep node)` and `pgrep node | xargs kill`, while `taskkill /FI \"PID eq 22420\"` stays silent; `kill -n node` (PowerShell's kill alias with a prefix of -Name) is NOT caught, because for POSIX kill `-n` is a signal number.",
       "destructive-delete": "The largest surface, and the one five rounds have been spent on. `rm -rf ./src` fires; `robocopy C:\\src C:\\dst /MIR` and `npm run clean` do not, and neither does `rm| -rf ./src`. Not covered: the general case of free-text rewriting (`variable_indirection`, `encoded_or_obfuscated_commands`, `danger_inside_a_script_or_file`, `expansion_only_at_runtime`); destruction by tools that are not deletes at all (`mirroring_and_overwriting_tools`, `truncation_and_raw_device_writes`); POSIX pipeline deletes (`pipeline_deletes_only_partly_covered`); the deliberate and the accidental silences in `non_recursive_deletes` and `regenerable_or_temp_deletes`; and the pattern-level gap in `metachar_outside_the_target`. The valve's own price is in `exact_valve_price`, `alias_and_pipeline_price`, `rm_recurse_arm_price` and `variants_are_not_covered`.",
-      "git-destructive": "Fires on `git reset --hard origin/main` and the forms pinned in its examples. See `recoverable_git`. Beyond it: `git worktree remove --force ../wt-a`, `git filter-repo --path secrets --invert-paths`, `git filter-branch` (whose `--tree-filter rm -rf secrets` form does not fire THIS gate — the embedded `rm -rf` trips destructive-delete instead), `git update-ref -d refs/heads/main`, `git reflog expire --expire=now --all` followed by `git gc --prune=now` (which is what actually makes a 'recoverable' reset unrecoverable), `git branch -D feature-x` of an unmerged branch, and a force-push, which is covered by git-push as INTENT text but not as a command line.",
+      "git-destructive": "Fires on `git reset --hard origin/main` and the forms pinned in its examples. See `recoverable_git`. Beyond it: a file restore written WITHOUT `--` — `git checkout src/app.js` is silent, because it has exactly the shape of the branch switch `git checkout main` (only `--` or a bare `.` marks a pathspec); `git worktree remove --force ../wt-a`, `git filter-repo --path secrets --invert-paths`, `git filter-branch` (whose `--tree-filter rm -rf secrets` form does not fire THIS gate — the embedded `rm -rf` trips destructive-delete instead), `git update-ref -d refs/heads/main`, `git reflog expire --expire=now --all` followed by `git gc --prune=now` (which is what actually makes a 'recoverable' reset unrecoverable), `git branch -D feature-x` of an unmerged branch, and a force-push, which is covered by git-push as INTENT text but not as a command line. In the other direction, `git restore -S src/app.js` FIRES although it only unstages: the gate is case-insensitive, so the short `-S` cannot be told apart from `-s` (source, which does overwrite files), and only the long `--staged` is recognised as the safe form. (Corrected in the WP16 follow-up: `git switch --discard-changes main` and `git switch -f main` now FIRE — they throw away local changes exactly like `checkout -f`; `git switch main` and `git switch -c feature` stay silent.)",
       "write-outside-root": "Fires only when the CALLER supplies BOTH a project_root and a path — given those, `../other-project/secret.js` is flagged. A write expressed purely as shell text (`echo x > ../other/file`, `cp -r . ..`, a heredoc), a tool that never reports a path, a symlink or junction created INSIDE the root that points out of it (the check resolves the target, not links created later), and any write performed by a spawned process are all outside what this check can see."
     },
     "classifier_is_incomplete_by_construction": "THE HONEST HEADLINE. These gates are regular expressions over free shell text. Deciding whether an arbitrary string will destroy something requires knowing which shell will run it, what its variables and aliases hold, what is on disk, and what the programs it invokes will do — none of which a regex has. So there is no version of this file that is complete, and round 6 is not it. Probed both ways: `dd if=/dev/zero of=/dev/sda` is silent while `rm -rf ./src` fires, and the difference between them is not how destructive they are — it is whether the text happened to look like a pattern. Four rounds of the except-valve taught the same lesson from the other side: every time we modelled a bit more shell semantics, the next attack used a bit we had not modelled. What follows is a list of the specific, KNOWN blind spots. It is not exhaustive either, and claiming otherwise would be the exact dishonesty these gates exist to prevent.",
@@ -480,20 +538,20 @@
     "truncation_and_raw_device_writes": "Destroying CONTENT without deleting the file, every one measured silent: `truncate -s 0 important.log`, `: > important.log`, `Clear-Content important.log`, `Set-Content important.log ''`, `dd if=/dev/zero of=/dev/sdX`, `mkfs.ext4 /dev/sdb1`, `diskpart clean`, `Format-Volume -DriveLetter D`, `cipher /w:C`. `dd of=` and `mkfs` in particular are more destructive than anything the delete gate covers, and none of them matches a single arm here.",
     "expansion_only_at_runtime": "CORRECTED IN ROUND 6 — the round-5 text filed these under 'not caught', and that was false in the direction that matters. `rm -rf $EMPTY/` (an unset variable expanding to nothing has famously deleted a root), `rm -rf ./*`, brace expansion `rm -rf {a,b}/../../x` and `find . -name '*.tmp' | xargs rm -rf` all DO fire — measured. They fire on the FLAGS, never on the danger. The real gap is that the classifier reads text while the shell reads a different, later, expanded string, so it can neither recognise a catastrophe nor excuse a safe one: an expanded target can never be byte-identical to one of the 16 literals, so every glob/variable/substitution cleanup over-warns (priced in `exact_valve_price`). What IS silent here is the runtime-expansion form that carries no recursive-plus-force pair at all: `find . -name '*.x' -print0 | xargs -0 rm -f` and `find . -delete`.",
     "pipeline_deletes_only_partly_covered": "match.pattern_line closes the PowerShell form we measured — a recursive `Get-ChildItem`/`gci`/`ls`/`dir` on the LEFT of a pipe feeding a delete verb or `.Delete()` on the right, so `Get-ChildItem .claude -Recurse | Remove-Item -Force` fires. It does NOT cover: the POSIX form `find . -name '*.x' -print0 | xargs -0 rm -f` (the recursion is implicit in `find`, there is no `-r` flag to require) or `find . -delete`; an enumerator that is not one of those four names (`Get-Item .claude -Recurse | Remove-Item -Force`, a variable such as `$items | Remove-Item -Force`, a custom function, `robocopy`); a right-hand delete carrying no recursion flag at all (`Get-ChildItem .claude | Remove-Item -Force`, pinned silent as a no_match); a delete reached via a method on an unlisted object; and any pipeline built across more than one line or assembled from variables. CORRECTED IN ROUND 6: round 5 also listed 'a pipeline whose recursion flag sits on the RIGHT of the pipe with the enumerator unflagged' as uncovered. That was false — `Get-ChildItem .claude | Remove-Item -Recurse -Force` fires, because the right-hand segment is itself a recursive delete and the ordinary segment arm sees it without pattern_line's help.",
-    "alias_arm_asymmetry": "CORRECTED IN ROUND 6 — round 5's version of this sentence was untrue, and it promised coverage that did not exist. It said `rm`/`del`/`erase`/`rd`/`rmdir` were 'in both' arms. Read from the live pattern, `rm` was in the POSIX-bundle arm ONLY, so `rm -Recurse .claude` was measured SILENT while `del -Recurse .claude` fired — even though `Get-Alias rm` returns Remove-Item on this machine, exactly like the other four. Round 6 adds a third arm carrying `rm` with the -Recurse abbreviations, and `rm -Recurse .claude` now fires. THE THREE ASYMMETRIES THAT REMAIN, all deliberate, all probed: (1) `rm -r ./emptydir` stays silent while `del -r ./emptydir` warns — the bare `-r` is POSIX's ordinary recursive flag and has been a pinned no_match since round 4, so the two-letter form is genuinely ambiguous between the two shells and only one reading can win; (2) `Remove-Item -Force ./notes.txt` stays silent while `del -Force ./notes.txt` warns, because the bundle arm accepts any single-dash flag containing an 'f' and PowerShell's `-Force` contains both an 'r' and an 'f', so admitting the spelled-out cmdlet there would fire on a single-file delete pinned silent since round 4; (3) `rm --recursive ./src` stays silent — the long POSIX form without a force flag matches no arm, and it was left that way on purpose so the everyday `aws s3 rm s3://bucket --recursive` does not start warning. Named here rather than papered over.",
+    "alias_arm_asymmetry": "CORRECTED IN ROUND 6 — round 5's version of this sentence was untrue, and it promised coverage that did not exist. It said `rm`/`del`/`erase`/`rd`/`rmdir` were 'in both' arms. Read from the live pattern, `rm` was in the POSIX-bundle arm ONLY, so `rm -Recurse .claude` was measured SILENT while `del -Recurse .claude` fired — even though `Get-Alias rm` returns Remove-Item on this machine, exactly like the other four. Round 6 adds a third arm carrying `rm` with the -Recurse abbreviations, and `rm -Recurse .claude` now fires. THE ASYMMETRIES, as of 2026-09-24 (WP16 / security-boss H1): round 6 listed three. (1) and (3) are CLOSED by a seventh arm — `rm -r ./emptydir` now warns like `del -r ./emptydir`, and `rm --recursive ./src` warns too. The one that remains: (2) `Remove-Item -Force ./notes.txt` stays silent while `del -Force ./notes.txt` warns, because the bundle arm accepts any single-dash flag containing an 'f' and PowerShell's `-Force` contains both an 'r' and an 'f', so admitting the spelled-out cmdlet there would fire on a single-file delete pinned silent since round 4. The seventh arm keeps the everyday `aws s3 rm s3://bucket --recursive` silent with a lookbehind (also `git rm`, `gsutil rm`). Named here rather than papered over.",
     "pid_scoped_kills": "`taskkill /PID 22420 /F`, `Stop-Process -Id 22420`, `Stop-Process -InputObject $p`, POSIX `kill 1234`, positional `Stop-Process 22420` (PowerShell binds position 0 to -Id), `Get-Process -Id 22420 | Stop-Process` and `wmic process where processid=22420 delete` never fire — killing one exact PID you own is precisely what the HARD MUST ALLOWS, so flagging it would train the warning away.",
-    "kill_with_an_invisible_target": "A kill whose victim is named nowhere in the text does NOT fire: `Stop-Process $procs`, `Stop-Process (Get-Process node)`, `$p | Stop-Process`, or a Get-Process alias (`gps node | Stop-Process`, `ps node | kill`). The classifier only sees the command string, and a bare Stop-Process on its own segment is far more often the PID-scoped form — firing on it produced three measured false alarms, so an explicit -Name / -ProcessName, or a name-scoped `Get-Process … |` on the same line, is required.",
+    "kill_with_an_invisible_target": "A kill whose victim is named nowhere in the text does NOT fire: `Stop-Process $procs`, `Stop-Process (Get-Process node)`, `$p | Stop-Process`. The classifier only sees the command string, and a bare Stop-Process on its own segment is far more often the PID-scoped form — firing on it produced three measured false alarms, so an explicit -Name / -ProcessName, or a name-scoped `Get-Process … |` on the same line, is required. CLOSED 2026-09-24 (WP16 / security-boss M1): the Get-Process aliases are no longer invisible — `gps node | Stop-Process` and `ps node | kill` now fire, exactly like `Get-Process node | Stop-Process`.",
     "regenerable_or_temp_deletes": "EXACTLY 16 command strings are excused (match.except._allowed_segments): a plain recursive delete of node_modules or _scratch via `rm -rf`, `Remove-Item -Recurse -Force`, `npx rimraf` or `rimraf`, with the target written as `node_modules`, `./node_modules`, `_scratch` or `./_scratch` — so `rm -rf node_modules` and `rimraf ./_scratch` are silent. Nothing else. A temp path (`rm -rf /tmp/forge-test-123`, `rm -rf %TEMP%\\forge-x`), a sub-path (`rm -rf ./_scratch/run-1`), a Windows-style path (`Remove-Item -Recurse -Force .\\node_modules`), a prefix (`sudo rm -rf node_modules`, `npx --yes rimraf node_modules`), a trailing slash, a different spelling of the same cmdlet (`rm -Recurse node_modules`) or different spacing all WARN — they are not in the list, and the valve does not interpret, only compare.",
-    "exact_valve_price": "EXACT EQUALITY, NO PARSER (2026-08-01, round 4, owner directive). The measured cost on a 44-command corpus of genuinely legitimate cleanup: 30 warn, up from 10 — i.e. 20 NEW over-warnings, and only 14 of 44 real cleanup commands stay silent (`rm -rf node_modules` is one of the 14). The new warnings are, by cause: PREFIXED forms (`sudo rm -rf node_modules`, `npx --yes rimraf node_modules`, `pnpm dlx rimraf node_modules`); SUB-PATHS of a safe dir (`rm -rf ./_scratch/run-1`, `rm -rf ./_scratch/run-1 && npm ci`, `rm -rf ./_scratch/run-1;`, `rm -rf ./_scratch/run-1 || true`, `rm -rf ./_scratch/tmp-artifacts`); TEMP paths of every flavour (`rm -rf /tmp/forge-test-123`, `rm -rf /tmp/forge-test-123 && echo done`, `rm -rf /var/tmp/build-cache`, `sudo rm -rf /tmp/stale-lock`, `rm -rf ./temp`, `rm -rf ./temp/build`, `rm -rf ./tmp/cache`, `rm -rf C:/Users/.../Temp/claude/scratchpad/x`, `Remove-Item -Recurse \"C:\\Temp\\a b\"`, `Remove-Item -Recurse -Force \"$env:TEMP\\forge-x\"`); WINDOWS-STYLE paths (`Remove-Item -Recurse -Force .\\node_modules`, `Remove-Item -Recurse -Force .\\_scratch\\run-1`); and the round-3 price that remains (env vars, globs, `~`, command substitution, a glued `;`). This is deliberate. The gate is ADVISORY — it prints a warning, it never blocks — so noise costs a moment's reading, while a bypass cost this project four rounds. Widening the list is a config edit of literal strings, not a code change, and it can never introduce a parsing bug.",
-    "alias_and_pipeline_price": "ROUND 5's OWN PRICE, measured 2026-08-01 by running one corpus through the round-4 pattern and the round-5 pattern in the same process. The round-4 44-command corpus did not move at all: 30 of 30 priced warnings still warn, 14 of 14 priced silences are still silent — the alias arms and pattern_line cost nothing there. The new noise is on a separate 34-command corpus of legitimate alias/pipeline cleanup: 3 warned already (the `/s` DOS forms), 24 warn now, so 21 are NEW over-warnings, and 10 stay silent (`del notes.txt` and `rd emptydir` among them). By cause: ALIAS FORMS OF THE EXCUSED LITERALS (`del -Recurse -Force node_modules`, `rd -Recurse -Force ./_scratch`, `rmdir -Recurse -Force node_modules`, `del -r -force node_modules`, `rd -rf node_modules`, `del -Recurse -Force .\\node_modules`) — the 16-literal valve knows `rm`, `Remove-Item`, `npx rimraf` and `rimraf` only, and it compares, so no alias spelling can ever be excused; SINGLE-FILE ALIAS DELETES carrying `-Force` (`del -Force ./notes.txt`, `rd -Force ./tmpfile`, `erase -Force ./old.log`) — the inherited `-Force`-contains-r-and-f quirk described in `alias_arm_asymmetry`; EMPTY-DIRECTORY RECURSIVE DELETES (`del -r ./emptydir`, `rd -r ./emptydir`) — consistent with `Remove-Item -r` firing since round 4; and PIPELINE CLEANUPS (`Get-ChildItem ./logs -Recurse -Filter *.log | Remove-Item -Force`, `Get-ChildItem ./_scratch -Recurse | Remove-Item -Force`, `gci node_modules -r | ri -force`, `Get-ChildItem . -Recurse -Include *.tmp | Remove-Item`, `Get-ChildItem ./dist -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue`, `dir ./_scratch -Recurse | del`) — pattern_line has no except valve by design, exactly like kill-by-name's. Combined across both corpora: 54 of 78 legitimate cleanup commands warn. The gate is ADVISORY; it prints and never blocks. Widening the valve is a config edit of literal strings, never a code change.",
-    "rm_recurse_arm_price": "ROUND 6's OWN PRICE, measured the way rounds 4 and 5 measured theirs: one corpus through the round-5 pattern and the shipped pattern in the same process, with arm 3 spliced out to make the counterfactual. It is small because the new arm is narrow — arm 3 fires only on `rm` plus a -Recurse abbreviation of at least two letters, so the only commands that can change verdict are the PowerShell-style recursive deletes nobody could spell before. On a 12-command corpus of legitimate `rm`-shaped cleanup: 5 warn, 1 of which already warned in round 5 (`rm -Recurse -Force node_modules`, which arm 1 caught because `-Force` carries both an 'r' and an 'f'), so 4 are NEW — `rm -Recurse node_modules`, `rm -Recurse ./node_modules`, `rm -Recurse ./_scratch`, `rm -rec node_modules`. Every one of the four is an alias spelling the 16-literal valve does not know, which is exactly the cause already priced in `alias_and_pipeline_price`. Seven stay silent and nothing that was quiet for a different reason became noisy: `rm -r ./emptydir`, `rm -rf node_modules`, `rm --force ./notes.txt`, `docker rm -f mycontainer`, `aws s3 rm s3://bucket --recursive`, `rm --recursive ./src` and `rm -r ./src`. The round-4 and round-5 priced silences were re-run and 0 of 24 moved. Total across all three corpora: 59 of 90 legitimate cleanup commands warn.",
+    "exact_valve_price": "EXACT EQUALITY, NO PARSER (2026-08-01, round 4, owner directive). The measured cost on a 44-command corpus of genuinely legitimate cleanup: 30 warn, up from 10 — i.e. 20 NEW over-warnings, and only 14 of 44 real cleanup commands stay silent (`rm -rf node_modules` is one of the 14). The new warnings are, by cause: PREFIXED forms (`sudo rm -rf node_modules`, `npx --yes rimraf node_modules`, `pnpm dlx rimraf node_modules`); SUB-PATHS of a safe dir (`rm -rf ./_scratch/run-1`, `rm -rf ./_scratch/run-1 && npm ci`, `rm -rf ./_scratch/run-1;`, `rm -rf ./_scratch/run-1 || true`, `rm -rf ./_scratch/tmp-artifacts`); TEMP paths of every flavour (`rm -rf /tmp/forge-test-123`, `rm -rf /tmp/forge-test-123 && echo done`, `rm -rf /var/tmp/build-cache`, `sudo rm -rf /tmp/stale-lock`, `rm -rf ./temp`, `rm -rf ./temp/build`, `rm -rf ./tmp/cache`, `rm -rf C:/Users/.../Temp/claude/scratchpad/x`, `Remove-Item -Recurse \"C:\\Temp\\a b\"`, `Remove-Item -Recurse -Force \"$env:TEMP\\forge-x\"`); WINDOWS-STYLE paths (`Remove-Item -Recurse -Force .\\node_modules`, `Remove-Item -Recurse -Force .\\_scratch\\run-1`); and the round-3 price that remains (env vars, globs, `~`, command substitution, a glued `;`). This is deliberate. The classifier is ADVISORY — it prints a warning — so noise used to cost a moment's reading, while a bypass cost this project four rounds. Since 2026-09-24 (WP16) the gate hook turns that warning into a BLOCKED Bash/PowerShell call while `gate-hook` is on, so for a tool call the price of noise is now a question to the owner, not a moment's reading — UNLESS the hook's scratch pass-through (WP16 follow-up, forge-gate-hook.cjs::scratchPassThrough) can prove that every target sits inside _scratch, a node_modules or dist folder, .claude/forge-backups, a gate-output folder, command-center/.data/tmp or the temp dir, in which case the call passes. The CLASSIFIER's verdicts and counts above are unchanged by that: the exception lives in the hook, never in this file. Widening the list is a config edit of literal strings, not a code change, and it can never introduce a parsing bug.",
+    "alias_and_pipeline_price": "ROUND 5's OWN PRICE, measured 2026-08-01 by running one corpus through the round-4 pattern and the round-5 pattern in the same process. The round-4 44-command corpus did not move at all: 30 of 30 priced warnings still warn, 14 of 14 priced silences are still silent — the alias arms and pattern_line cost nothing there. The new noise is on a separate 34-command corpus of legitimate alias/pipeline cleanup: 3 warned already (the `/s` DOS forms), 24 warn now, so 21 are NEW over-warnings, and 10 stay silent (`del notes.txt` and `rd emptydir` among them). By cause: ALIAS FORMS OF THE EXCUSED LITERALS (`del -Recurse -Force node_modules`, `rd -Recurse -Force ./_scratch`, `rmdir -Recurse -Force node_modules`, `del -r -force node_modules`, `rd -rf node_modules`, `del -Recurse -Force .\\node_modules`) — the 16-literal valve knows `rm`, `Remove-Item`, `npx rimraf` and `rimraf` only, and it compares, so no alias spelling can ever be excused; SINGLE-FILE ALIAS DELETES carrying `-Force` (`del -Force ./notes.txt`, `rd -Force ./tmpfile`, `erase -Force ./old.log`) — the inherited `-Force`-contains-r-and-f quirk described in `alias_arm_asymmetry`; EMPTY-DIRECTORY RECURSIVE DELETES (`del -r ./emptydir`, `rd -r ./emptydir`) — consistent with `Remove-Item -r` firing since round 4; and PIPELINE CLEANUPS (`Get-ChildItem ./logs -Recurse -Filter *.log | Remove-Item -Force`, `Get-ChildItem ./_scratch -Recurse | Remove-Item -Force`, `gci node_modules -r | ri -force`, `Get-ChildItem . -Recurse -Include *.tmp | Remove-Item`, `Get-ChildItem ./dist -Recurse | Remove-Item -Force -ErrorAction SilentlyContinue`, `dir ./_scratch -Recurse | del`) — pattern_line has no except valve by design, exactly like kill-by-name's. Combined across both corpora: 54 of 78 legitimate cleanup commands warn. The classifier is advisory; since 2026-09-24 (WP16) the gate hook blocks these on a Bash/PowerShell call while `gate-hook` is on — see exact_valve_price. Widening the valve is a config edit of literal strings, never a code change.",
+    "rm_recurse_arm_price": "ROUND 6's OWN PRICE, measured the way rounds 4 and 5 measured theirs: one corpus through the round-5 pattern and the shipped pattern in the same process, with arm 3 spliced out to make the counterfactual. It is small because the new arm is narrow — arm 3 fires only on `rm` plus a -Recurse abbreviation of at least two letters, so the only commands that can change verdict are the PowerShell-style recursive deletes nobody could spell before. On a 12-command corpus of legitimate `rm`-shaped cleanup: 5 warn, 1 of which already warned in round 5 (`rm -Recurse -Force node_modules`, which arm 1 caught because `-Force` carries both an 'r' and an 'f'), so 4 are NEW — `rm -Recurse node_modules`, `rm -Recurse ./node_modules`, `rm -Recurse ./_scratch`, `rm -rec node_modules`. Every one of the four is an alias spelling the 16-literal valve does not know, which is exactly the cause already priced in `alias_and_pipeline_price`. Seven stay silent and nothing that was quiet for a different reason became noisy: `rm -r ./emptydir`, `rm -rf node_modules`, `rm --force ./notes.txt`, `docker rm -f mycontainer`, `aws s3 rm s3://bucket --recursive`, `rm --recursive ./src` and `rm -r ./src`. The round-4 and round-5 priced silences were re-run and 0 of 24 moved. Total across all three corpora at the end of round 6: 59 of 90 legitimate cleanup commands warned. UPDATE 2026-09-24 (WP16 / security-boss H1): three of those seven round-6 silences now warn BY DESIGN — `rm -r ./emptydir`, `rm --recursive ./src` and `rm -r ./src` — because the seventh arm closes the POSIX recursive-without-force gap; the other four stay silent. That makes 62 of 90. On a Bash/PowerShell tool call the gate hook's scratch pass-through lets a provable scratch or node_modules cleanup through, so the price in practice is lower than the classifier count.",
     "variants_are_not_covered": "Because the valve compares and never interprets, EVERY variant of an allowed command warns: different case (`RM -RF node_modules`), extra spaces (`rm  -rf  node_modules`), a different flag order (`rm -fr node_modules`), quotes (`rm -rf \"node_modules\"`), a trailing slash (`rm -rf node_modules/`). That is the intended shape of the trade, not an oversight.",
     "metachar_outside_the_target": "The invariant sweep covers a metacharacter anywhere in the delete command. A metacharacter injected into the COMMAND WORD or its FLAGS can still mute a gate: `rm| -rf ./src` splits into `rm` (no flags) and `-rf ./src` (no command) and fires nothing, while the ordinary `rm -rf ./src` fires. That muted string is not a runnable delete — `rm` with no target deletes nothing and `-rf ./src` is not a command — so it is a detection gap in the PATTERN, not a hole in the valve. Named here so it is a known gap rather than a silent one.",
     "build_output_deletes": "`rm -rf dist`, `rm -rf build`, `rm -rf .next` and friends DO fire. They are regenerable in principle, but the classifier cannot tell a build directory from a source directory by name, so they are NOT excused. The excuse list holds exactly 16 literal strings — 4 command prefixes x 4 argument tails — covering only two directories, `node_modules` and `_scratch`; see `regenerable_or_temp_deletes` for the full list. (Corrected 2026-08-01: this sentence previously claimed the list was \"the three unambiguous cases above\", which was never true and contradicted `regenerable_or_temp_deletes` in this same file. Found by the sixth witness; outcome-probes cannot catch a wrong justification, only a wrong outcome.)",
-    "non_recursive_deletes": "THE KEY NAME IS A LEGACY MISNOMER AND ROUND 5's JUSTIFICATION WAS FACTUALLY WRONG — corrected in round 6. The old sentence read '… do not fire — they are single/interactive deletes, not tree destruction.' Two of the commands it covered are not single deletes at all: `rm -r ./src` and `rm --recursive ./src` are ORDINARY POSIX TREE DELETES (`rm -r` removes a directory and everything under it; `-f` only suppresses prompts), and both are measured silent. So this entry is really two different things. (1) TRUE SINGLE-FILE / EMPTY-DIRECTORY SILENCES, deliberate, because they destroy exactly one thing: `rm ./notes.txt`, `rm -f ./notes.txt`, `rm --force ./notes.txt`, `Remove-Item ./notes.txt`, `del notes.txt`, `rmdir emptydir`. (2) REAL TREE DELETES THAT STAY SILENT — a gap, not a design: `rm -r ./src` and `rm --recursive ./src`. The bundle arm demands a force flag as well; round 6's `rm`-recurse arm starts at `-re`, because claiming the bare `-r` would break the `rm -r ./emptydir` no_match pin (see `alias_arm_asymmetry`); and `--recursive` was left out so that `aws s3 rm s3://bucket --recursive` does not start warning. Write the same delete as `del -r ./src` and it warns.",
-    "recoverable_git": "`git branch -D feature-x`, `git revert HEAD`, `git reset --soft HEAD~1` and `git stash pop` (any stash other than drop/clear) do not fire — the work is still reachable. `git worktree remove --force ../wt-a` is also NOT covered by this pass, even though this project uses worktrees: it deletes one worktree directory, and the branch/commits behind it survive.",
+    "non_recursive_deletes": "THE KEY NAME IS A LEGACY MISNOMER, and the entry now holds one deliberate silence and one closed gap. (1) TRUE SINGLE-FILE / EMPTY-DIRECTORY SILENCES, deliberate, because they destroy exactly one thing: `rm ./notes.txt`, `rm -f ./notes.txt`, `rm --force ./notes.txt`, `Remove-Item ./notes.txt`, `del notes.txt`, `rmdir emptydir`. (2) REAL TREE DELETES — CLOSED 2026-09-24 (WP16 / security-boss audit H1). Round 6 declared `rm -r ./src` and `rm --recursive ./src` as silent POSIX tree deletes (`rm -r` removes a directory and everything under it; `-f` only suppresses prompts). A seventh arm now fires on a bare recursive flag after `rm`, so both warn exactly like `del -r ./src`. Its price: `rm -r ./emptydir` warns too, because an empty directory cannot be told apart from a tree by text; the gate hook's scratch pass-through lets a provable scratch cleanup through.",
+    "recoverable_git": "`git branch -D feature-x`, `git revert HEAD`, `git reset --soft HEAD~1` and `git stash pop` (any stash other than drop/clear) do not fire — the work is still reachable. Neither do `git restore --staged src/app.js` (it only unstages; the working-tree file is untouched) and `git checkout origin/main --` with no pathspec after the `--` (a branch switch, which git itself refuses when it would overwrite local changes). `git worktree remove --force ../wt-a` is also NOT covered by this pass, even though this project uses worktrees: it deletes one worktree directory, and the branch/commits behind it survive.",
     "out_of_scope_this_pass": "NOT covered by this pass, all measured silent: SQL/DDL destruction (`DROP TABLE users`, `TRUNCATE TABLE leads`), container/cluster deletes (`docker system prune -af`, `kubectl delete namespace prod`), cloud CLIs (`aws s3 rm s3://bucket --recursive`, `gcloud compute instances delete api-1`), package publishing (`npm publish`), disk/host commands (mkfs, dd, `shutdown /r /t 0`), Windows service/registry destruction (`sc delete myservice`, `reg delete HKLM\\Software\\X /f`) and CI/secret-store deletions. Named here so their absence is a known gap, not a silent one.",
-    "prose_over_fire": "The gates are matched against whatever text a caller passes, so PROSE that merely quotes a destructive command fires too: `never run rm -rf on src` and `do not use git reset --hard here` both warn. The same accident happens inside ordinary command text — `kubectl scale deploy/api --replicas=3` fires the DEPLOY gate on the resource short-name, and `git filter-branch --tree-filter rm -rf secrets` fires destructive-delete on the embedded `rm -rf` rather than on the history rewrite (both measured in round 6). Accepted on purpose: an advisory over-warn is cheap, a missed real command is what cost the gateway on 2026-07-29.",
+    "prose_over_fire": "The gates are matched against whatever text a caller passes, so PROSE that merely quotes a destructive command fires too: `never run rm -rf on src` and `do not use git reset --hard here` both warn. The same accident happens inside ordinary command text — `kubectl scale deploy/api --replicas=3` fires the DEPLOY gate on the resource short-name, and `git filter-branch --tree-filter rm -rf secrets` fires destructive-delete on the embedded `rm -rf` rather than on the history rewrite (both measured in round 6). Accepted on purpose: an over-warn is cheap next to a missed real command, which is what cost the gateway on 2026-07-29 — but it is no longer free: with the gate hook on (WP16, 2026-09-24) a prose over-fire inside a real Bash call is BLOCKED, not just printed. Measured live that day: the harmless `echo probe git checkout .` was stopped by the hook in a real session.",
     "no_shell_parser": "splitCommands() honours no quoting/escaping, so a separator inside a quoted argument still splits — `rm -rf \"./_scratch/a|b/../../.claude\"` fires. That direction only ever creates MORE segments to test (fail-safe for detection), and it cannot weaken the valve: splitCommandsDetailed() marks a cut segment `intact:false`, so `rm -rf node_modules$(echo /../.claude)` fires on its stump instead of being excused, while a merely trailing separator is not amputation and `rm -rf node_modules;` stays silent. match.pattern_line is deliberately NOT segment-split and has no except valve — it exists precisely to see across a pipeline, which is why `Get-ChildItem .claude -Recurse | Remove-Item -Force` fires.",
     "_claim_probes": {
       "_doc": "(c) THE VERIFIABLE HALF OF THIS DECLARATION (round 6, owner directive). Every claim above is paired here with concrete example strings that forge-actiongate.test.cjs section 2f really puts through classify(). Three things are asserted per probe: the string behaves as declared (`expect`), the string is quoted verbatim in the claim's own prose (`quote`), and the claim/probe key sets are a bijection. A sentence saying 'X is not caught' therefore goes RED the day X starts firing, and a sentence saying 'X fires' goes RED the day it stops. WHAT THIS DOES NOT CATCH, stated so this block does not repeat the sin it fixes: a probe binds an OUTCOME, not a JUSTIFICATION. Round 5's `non_recursive_deletes` had every outcome right and the reason wrong ('single/interactive deletes' about a command that deletes a whole tree) — no probe would have gone red. Reasons still need a reader.",
@@ -747,6 +805,32 @@
           "text": "taskkill /T /PID 22420",
           "expect": "silent",
           "quote": "taskkill /T /PID 22420"
+        },
+        {
+          "text": "kill $(pgrep node)",
+          "expect": "fires",
+          "gates": [
+            "kill-by-name"
+          ],
+          "quote": "kill $(pgrep node)"
+        },
+        {
+          "text": "pgrep node | xargs kill",
+          "expect": "fires",
+          "gates": [
+            "kill-by-name"
+          ],
+          "quote": "pgrep node | xargs kill"
+        },
+        {
+          "text": "taskkill /FI \"PID eq 22420\"",
+          "expect": "silent",
+          "quote": "taskkill /FI \"PID eq 22420\""
+        },
+        {
+          "text": "kill -n node",
+          "expect": "silent",
+          "quote": "kill -n node"
         }
       ],
       "_gate_coverage.destructive-delete": [
@@ -820,6 +904,45 @@
           "text": "git branch -D feature-x",
           "expect": "silent",
           "quote": "git branch -D feature-x"
+        },
+        {
+          "text": "git checkout src/app.js",
+          "expect": "silent",
+          "quote": "git checkout src/app.js"
+        },
+        {
+          "text": "git switch --discard-changes main",
+          "expect": "fires",
+          "quote": "git switch --discard-changes main",
+          "gates": [
+            "git-destructive"
+          ]
+        },
+        {
+          "text": "git switch -f main",
+          "expect": "fires",
+          "quote": "git switch -f main",
+          "gates": [
+            "git-destructive"
+          ]
+        },
+        {
+          "text": "git restore -S src/app.js",
+          "expect": "fires",
+          "gates": [
+            "git-destructive"
+          ],
+          "quote": "git restore -S src/app.js"
+        },
+        {
+          "text": "git switch main",
+          "expect": "silent",
+          "quote": "git switch main"
+        },
+        {
+          "text": "git switch -c feature",
+          "expect": "silent",
+          "quote": "git switch -c feature"
         }
       ],
       "_gate_coverage.write-outside-root": [
@@ -1137,8 +1260,11 @@
         },
         {
           "text": "rm -r ./emptydir",
-          "expect": "silent",
-          "quote": "rm -r ./emptydir"
+          "expect": "fires",
+          "quote": "rm -r ./emptydir",
+          "gates": [
+            "destructive-delete"
+          ]
         },
         {
           "text": "Remove-Item -Force ./notes.txt",
@@ -1147,8 +1273,11 @@
         },
         {
           "text": "rm --recursive ./src",
-          "expect": "silent",
-          "quote": "rm --recursive ./src"
+          "expect": "fires",
+          "quote": "rm --recursive ./src",
+          "gates": [
+            "destructive-delete"
+          ]
         },
         {
           "text": "aws s3 rm s3://bucket --recursive",
@@ -1211,13 +1340,19 @@
         },
         {
           "text": "gps node | Stop-Process",
-          "expect": "silent",
-          "quote": "gps node | Stop-Process"
+          "expect": "fires",
+          "quote": "gps node | Stop-Process",
+          "gates": [
+            "kill-by-name"
+          ]
         },
         {
           "text": "ps node | kill",
-          "expect": "silent",
-          "quote": "ps node | kill"
+          "expect": "fires",
+          "quote": "ps node | kill",
+          "gates": [
+            "kill-by-name"
+          ]
         }
       ],
       "regenerable_or_temp_deletes": [
@@ -1430,8 +1565,11 @@
         },
         {
           "text": "rm -r ./emptydir",
-          "expect": "silent",
-          "quote": "rm -r ./emptydir"
+          "expect": "fires",
+          "quote": "rm -r ./emptydir",
+          "gates": [
+            "destructive-delete"
+          ]
         },
         {
           "text": "rm -rf node_modules",
@@ -1455,13 +1593,19 @@
         },
         {
           "text": "rm --recursive ./src",
-          "expect": "silent",
-          "quote": "rm --recursive ./src"
+          "expect": "fires",
+          "quote": "rm --recursive ./src",
+          "gates": [
+            "destructive-delete"
+          ]
         },
         {
           "text": "rm -r ./src",
-          "expect": "silent",
-          "quote": "rm -r ./src"
+          "expect": "fires",
+          "quote": "rm -r ./src",
+          "gates": [
+            "destructive-delete"
+          ]
         }
       ],
       "variants_are_not_covered": [
@@ -1580,13 +1724,19 @@
         },
         {
           "text": "rm -r ./src",
-          "expect": "silent",
-          "quote": "rm -r ./src"
+          "expect": "fires",
+          "quote": "rm -r ./src",
+          "gates": [
+            "destructive-delete"
+          ]
         },
         {
           "text": "rm --recursive ./src",
-          "expect": "silent",
-          "quote": "rm --recursive ./src"
+          "expect": "fires",
+          "quote": "rm --recursive ./src",
+          "gates": [
+            "destructive-delete"
+          ]
         },
         {
           "text": "del -r ./src",
@@ -1595,6 +1745,14 @@
             "destructive-delete"
           ],
           "quote": "del -r ./src"
+        },
+        {
+          "text": "rm -r ./emptydir",
+          "expect": "fires",
+          "gates": [
+            "destructive-delete"
+          ],
+          "quote": "rm -r ./emptydir"
         }
       ],
       "recoverable_git": [
@@ -1622,6 +1780,16 @@
           "text": "git worktree remove --force ../wt-a",
           "expect": "silent",
           "quote": "git worktree remove --force ../wt-a"
+        },
+        {
+          "text": "git restore --staged src/app.js",
+          "expect": "silent",
+          "quote": "git restore --staged src/app.js"
+        },
+        {
+          "text": "git checkout origin/main --",
+          "expect": "silent",
+          "quote": "git checkout origin/main --"
         }
       ],
       "out_of_scope_this_pass": [
@@ -1708,6 +1876,14 @@
             "destructive-delete"
           ],
           "quote": "git filter-branch --tree-filter rm -rf secrets"
+        },
+        {
+          "text": "echo probe git checkout .",
+          "expect": "fires",
+          "gates": [
+            "git-destructive"
+          ],
+          "quote": "echo probe git checkout ."
         }
       ],
       "no_shell_parser": [

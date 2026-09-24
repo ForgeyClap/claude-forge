@@ -1,0 +1,1083 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * forge-config.cjs — the ONE resolver / validator / writer for every user-facing Forge setting (v2.7.0,
+ * 2026-09-24). WHY: the owner wants beginners to see every setting with its value and a plain-language
+ * explanation, change any of them with one command, and have Forge notice a change and act on it — with
+ * everything ON by default (usage guard pausing at 98 %). The catalogue is
+ * config/orchestration/FORGE_CONFIG_SCHEMA.json (keys, types, defaults, nl+en descriptions, disclosures,
+ * consumers, locked items); THIS file is the only code that resolves, validates or writes it. Consumers
+ * require() it as a soft sibling and degrade to the schema default when it is absent — the same
+ * single-source discipline as hard-gates.json + forge-actiongate.cjs. Zero-dependency
+ * (fs/path/os/crypto/child_process).
+ *
+ * MODEL
+ *   Files   global  <FORGE_CONFIG_HOME, else ~/.claude>/FORGE_CONFIG.json            (seams: opts.configHome, opts.globalPath)
+ *           project <FORGE_PROJECT_ROOT, else two levels up>/.claude/FORGE_CONFIG.json (seams: opts.projectRoot, opts.projectPath)
+ *           shape { "version": 1, "settings": { "<key>": { "value", "set_at", "set_by" } } }; unknown top-level
+ *           keys survive every write. A MISSING file means "all defaults" (normal, noted). A PRESENT but
+ *           malformed file (bad JSON, wrong shape, an invalid value for a known key) THROWS / exits 2 and
+ *           nothing is written — never silently treated as "no settings" (fail-closed, like forge-prefs.cjs).
+ *   Order   per-run flag (opts.flags / --flag k=v, never written) > project file > global file >
+ *           product-default (owner-profile pref via forge-prefs.cjs, READ-ONLY, schema product_default_map)
+ *           > schema default. A scope:"global" key ignores a project-file value with a visible note.
+ *   Locked  schema.locked[] + forge-actiongate KNOWN_GATES + FORGE_AUTONOMY.json always_interrupt are never
+ *           settable: set/unset/--flag on one exits 3 with file bytes unchanged; one found inside a file is
+ *           ignored with a note; a schema whose settings collide with one is rejected as malformed.
+ *   Changes diff() compares the current values with FORGE_SESSION_STATE.json.config_seen {hash, at, values}
+ *           (seam opts.sessionStatePath); markSeen() merge-writes only that field. With a run id and a real
+ *           change, diff() logs ONE config_changed event through the real log-event.cjs (never appends to
+ *           events.jsonl itself) and marks the state seen only when that log succeeded, so a change is never
+ *           dropped silently. Per-run flags are compared but never stored as "seen".
+ *   Writes  atomic: a unique temp file in the same directory, then rename.
+ *   Bridge  a bool setting whose schema entry carries "bridge": "<project-relative file>:<field>" (ecc-full-test ->
+ *           .claude/FORGE_ECC_MODE.json:ecc_full_test_mode) is mirrored into that legacy file as "on"/"off" by
+ *           set/unset/reset, other keys preserved; a damaged legacy file is refused before any write (exit 2).
+ *           get/list/explain add a note when the legacy file (or its ECC_TEST_MODE.md marker) disagrees.
+ *           Seam: opts.bridgePaths { key: file }.
+ *   Privacy this file never opens the Claude account login file and makes no network calls; the usage-guard
+ *           disclosure it prints is schema text.
+ *   Safe    safeGet(key) is what CONSUMERS call (review-boss M3): it never throws, and when the settings cannot be
+ *           read a key with a disclosure flag (C N X $ U D) comes back at its SAFE value (bool off; enum off /
+ *           report / on-request) — never silently ON — with degraded:true and a plain reason. The CLI stays
+ *           fail-closed (a damaged file still exits 2); `reset --yes` moves a damaged file aside as a backup.
+ *   One-off `set gate-hook off --once "<owner's words>"` (ONCE_KEYS only, project file only) carries expires_at =
+ *           now + 10 min; an expired one-off counts as absent (noted), a normal `set` clears it.
+ *
+ * API  resolve, get, safeGet, list, set, unset, reset, explain, diff, markSeen, parseValue, SCHEMA, DEFAULT_PATHS,
+ *      LOCKED_IDS — plus helpers ConfigError, validateSchema, parseSentence, normLang, detectLang, safeValueOf,
+ *      ONCE_KEYS, ONCE_MS, FAILSAFE_FLAGGED.
+ * CLI  node .claude/forge-bin/forge-config.cjs <list|get|set|unset|reset|explain|diff|parse> ... (--help on each);
+ *      the argv/output layer is forge-config-cli.cjs, the nl/en wording is forge-config-text.cjs.
+ * Exit 0 ok · 1 not found (get/explain on an unknown key) · 2 usage / validation / malformed file (nothing
+ *      written) · 3 act on this (diff found changes · reset without --yes · a locked id refused · parse
+ *      ambiguous or unmatched).
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
+const text = require('./forge-config-text.cjs');
+
+const PROJECT_ROOT_DEFAULT = path.resolve(__dirname, '..', '..');
+const SCHEMA_PATH_DEFAULT = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json');
+const FILE_NAME = 'FORGE_CONFIG.json';
+const TYPES = ['bool', 'int', 'number', 'enum', 'int-or-auto'];
+const SCOPES = ['global', 'project'];
+const FLAGS = ['C', 'N', '$', 'U', 'X', 'D'];
+const RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
+const VERB_BOOL = { aanzetten: 'aan', inschakelen: 'aan', activeren: 'aan', uitzetten: 'uit', uitschakelen: 'uit', deactiveren: 'uit' };
+// One-off approvals (review-boss M4 + the wp16 hook contract): `set gate-hook off --once "<owner's words>"` writes a
+// project-file entry carrying expires_at = now + 10 min; an entry whose expires_at has passed counts as absent.
+const ONCE_KEYS = ['gate-hook'];
+const ONCE_MS = 10 * 60 * 1000;
+const ONCE_QUOTE_MAX = 200;
+// Fail-safe reads (review-boss M3): when the settings cannot be read, a key with a disclosure flag resolves to its
+// SAFE value — bool false, an enum's first off-like word below, else its default. FAILSAFE_FLAGGED is the last resort
+// when even the schema is unreadable; forge-config.test.cjs pins it to the schema's flagged keys.
+const SAFE_ENUM_WORDS = ['off', 'report', 'on-request'];
+const FAILSAFE_FLAGGED = { 'usage-guard': false, 'codex-review': 'off', nvidia: false, portfolio: false, mcp: false, paperclip: false, cleanup: 'report' };
+
+const hasOwn = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const stripBom = (s) => s.replace(/^\ufeff/, '');
+
+class ConfigError extends Error {
+  constructor(code, message, exitCode, extra) {
+    super(message);
+    this.name = 'ConfigError';
+    this.code = code;
+    this.exitCode = exitCode;
+    if (extra) Object.assign(this, extra);
+  }
+}
+
+// ---- paths (env read at call time, so a test or CI job can point everything at temp dirs) ----
+function pathsFor(opts) {
+  opts = opts || {};
+  const root = path.resolve(opts.projectRoot || process.env.FORGE_PROJECT_ROOT || PROJECT_ROOT_DEFAULT);
+  const home = path.resolve(opts.configHome || process.env.FORGE_CONFIG_HOME || path.join(os.homedir(), '.claude'));
+  return {
+    projectRoot: root,
+    configHome: home,
+    schema: opts.schemaPath || SCHEMA_PATH_DEFAULT,
+    global: opts.globalPath || path.join(home, FILE_NAME),
+    project: opts.projectPath || path.join(root, '.claude', FILE_NAME),
+    sessionState: opts.sessionStatePath || path.join(root, '.claude', 'FORGE_SESSION_STATE.json'),
+    setupMarker: opts.setupMarkerPath || path.join(root, '.claude', '.forge-setup.json'),
+    logEvent: opts.logEventPath || path.join(root, '.claude', 'forge-dashboard', 'log-event.cjs'),
+  };
+}
+function prettyPath(p, P) {
+  const abs = path.resolve(p);
+  const inside = (base) => { const r = path.relative(base, abs); return r && !r.startsWith('..') && !path.isAbsolute(r) ? r.split(path.sep).join('/') : null; };
+  const inProject = inside(P.projectRoot);
+  if (inProject) return inProject;
+  const inHome = inside(os.homedir());
+  return inHome ? '~/' + inHome : abs;
+}
+
+// ---- schema ----
+const _schemaCache = new Map();
+function bothLangs(o) { return isObj(o) && typeof o.nl === 'string' && o.nl.trim() !== '' && typeof o.en === 'string' && o.en.trim() !== ''; }
+function typeOk(spec, v) {
+  switch (spec.type) {
+    case 'bool': return typeof v === 'boolean';
+    case 'int': return Number.isInteger(v) && v >= spec.min && v <= spec.max;
+    case 'number': return typeof v === 'number' && Number.isFinite(v) && v >= spec.min && v <= spec.max;
+    case 'enum': return Array.isArray(spec.allowed) && spec.allowed.includes(v);
+    case 'int-or-auto': return v === 'auto' || (Number.isInteger(v) && v >= spec.min && v <= spec.max);
+    default: return false;
+  }
+}
+/** validateSchema(schema, extraLockedIds) -> [problem, ...] (empty = valid). extraLockedIds are the hard-gate
+ *  and always_interrupt ids: a setting with one of those names would make a gate configurable (fc-5). */
+function validateSchema(schema, extraLockedIds) {
+  const problems = [];
+  if (!isObj(schema)) return ['the schema must be one JSON object'];
+  if (!isObj(schema.settings) || !Object.keys(schema.settings).length) problems.push('"settings" must be a non-empty object');
+  const syn = schema.value_synonyms;
+  if (!isObj(syn) || !Array.isArray(syn.true) || !Array.isArray(syn.false)) problems.push('"value_synonyms" needs "true" and "false" arrays');
+  if (!isObj(schema.groups)) problems.push('"groups" must be an object');
+  if (!Array.isArray(schema.locked)) problems.push('"locked" must be an array');
+  if (problems.length) return problems;
+  for (const g of Object.keys(schema.groups)) if (!bothLangs(schema.groups[g])) problems.push('group "' + g + '" needs nl + en titles');
+  const locked = new Set(extraLockedIds || []);
+  for (const l of schema.locked) {
+    if (!isObj(l) || typeof l.id !== 'string' || !l.id || !bothLangs(l)) problems.push('every locked item needs an id plus nl + en text');
+    else locked.add(l.id);
+  }
+  for (const [key, s] of Object.entries(schema.settings)) {
+    const bad = (m) => problems.push('setting "' + key + '": ' + m);
+    if (!isObj(s)) { bad('must be an object'); continue; }
+    if (locked.has(key)) bad('collides with a locked id — a hard gate or locked item can never be a setting');
+    if (!TYPES.includes(s.type)) bad('unknown type ' + JSON.stringify(s.type));
+    if (!SCOPES.includes(s.scope)) bad('scope must be "global" or "project"');
+    if (!hasOwn(schema.groups, s.group)) bad('unknown group ' + JSON.stringify(s.group));
+    if (!bothLangs(s.desc)) bad('desc needs nl + en');
+    if (!Array.isArray(s.consumers) || !s.consumers.length) bad('consumers must be a non-empty array');
+    if (s.type === 'enum' && !(Array.isArray(s.allowed) && s.allowed.length && s.allowed.every((a) => typeof a === 'string' && a))) bad('enum needs a non-empty "allowed" list');
+    if (['int', 'number', 'int-or-auto'].includes(s.type) && !(typeof s.min === 'number' && typeof s.max === 'number' && s.min <= s.max)) bad('needs numeric min <= max');
+    if (!hasOwn(s, 'default')) bad('missing "default"');
+    else if (TYPES.includes(s.type) && !typeOk(s, s.default)) bad('default ' + JSON.stringify(s.default) + ' does not fit its own type');
+    for (const f of ['off_means', 'disclosure']) if (hasOwn(s, f) && !bothLangs(s[f])) bad(f + ' needs nl + en');
+    if (hasOwn(s, 'flags') && !(Array.isArray(s.flags) && s.flags.every((f) => FLAGS.includes(f)))) bad('flags must be a subset of ' + FLAGS.join(' '));
+    if (hasOwn(s, 'aliases') && !(isObj(s.aliases) && ['nl', 'en'].every((l) => !hasOwn(s.aliases, l) || Array.isArray(s.aliases[l])))) bad('aliases must look like {"nl": [...], "en": [...]}');
+  }
+  const pdm = schema.product_default_map;
+  if (pdm != null && !isObj(pdm)) problems.push('"product_default_map" must be an object');
+  else if (pdm) {
+    for (const [k, m] of Object.entries(pdm)) {
+      if (k.startsWith('_')) continue;
+      if (!hasOwn(schema.settings, k)) problems.push('product_default_map: unknown setting "' + k + '"');
+      else if (!isObj(m) || typeof m.pref !== 'string' || !m.pref) problems.push('product_default_map.' + k + ' needs a "pref" name');
+    }
+  }
+  return problems;
+}
+/** gateIds(opts) -> { ids, notes } — every hard-gate id (forge-actiongate KNOWN_GATES) and every
+ *  always_interrupt id (FORGE_AUTONOMY.json via forge-autonomy.cjs; seam opts.autonomyPath). Best effort:
+ *  a sibling that fails to load is reported as a note, and the schema's own locked list stays enforced. */
+function gateIds(opts) {
+  const ids = [];
+  const notes = [];
+  try { ids.push(...require('./forge-actiongate.cjs').KNOWN_GATES); }
+  catch (e) { notes.push('forge-actiongate: ' + e.message); }
+  try {
+    const cfg = require('./forge-autonomy.cjs').getConfig(opts && opts.autonomyPath ? { configPath: opts.autonomyPath } : undefined);
+    ids.push(...cfg.always_interrupt);
+  } catch (e) { notes.push('forge-autonomy: ' + e.message); }
+  return { ids, notes };
+}
+function loadSchema(schemaPath, opts) {
+  const p = schemaPath || SCHEMA_PATH_DEFAULT;
+  let st;
+  try { st = fs.statSync(p); }
+  catch (e) { throw new ConfigError('malformed', 'forge-config: schema not readable (' + p + '): ' + e.message, 2); }
+  const stamp = st.mtimeMs + ':' + st.size;
+  const cached = _schemaCache.get(p);
+  if (cached && cached.stamp === stamp) return cached.schema;
+  let schema;
+  try { schema = JSON.parse(stripBom(fs.readFileSync(p, 'utf8'))); }
+  catch (e) { throw new ConfigError('malformed', 'forge-config: schema is not valid JSON (' + p + '): ' + e.message, 2); }
+  const problems = validateSchema(schema, gateIds(opts).ids);
+  if (problems.length) throw new ConfigError('malformed', 'forge-config: schema ' + p + ' is invalid: ' + problems.join('; '), 2, { problems });
+  _schemaCache.set(p, { stamp, schema });
+  return schema;
+}
+function lockedIds(schema, opts) {
+  const g = gateIds(opts);
+  const ids = new Set(schema.locked.map((l) => l.id));
+  for (const id of g.ids) ids.add(id);
+  return { ids, notes: g.notes };
+}
+function lockedItem(key, schema) {
+  return schema.locked.find((l) => l.id === key) || schema.locked.find((l) => l.id === 'hard-gates') || null;
+}
+function lockedError(key, schema, lang) {
+  const item = lockedItem(key, schema);
+  return new ConfigError('locked', text.t(lang).locked(key, item ? item[lang] || item.en : ''), 3, { key });
+}
+
+// ---- language ----
+function normLang(x) {
+  if (typeof x !== 'string') return null;
+  const s = x.trim().toLowerCase();
+  if (/^nl([-_].*)?$/.test(s) || s === 'dutch' || s === 'nederlands') return 'nl';
+  if (/^en([-_].*)?$/.test(s) || s === 'english' || s === 'engels') return 'en';
+  return null;
+}
+function markerLang(P) {
+  try {
+    const d = JSON.parse(stripBom(fs.readFileSync(P.setupMarker, 'utf8')));
+    const a = isObj(d) && isObj(d.answers) ? d.answers : {};
+    return normLang(d.lang) || normLang(d.language) || normLang(a.lang) || normLang(a.language) || null;
+  } catch { return null; /* no marker, or an unreadable one: the language simply falls back to English */ }
+}
+/** detectLang — cheap best-effort language for messages produced before (or without) a full resolve:
+ *  --lang > the `language` value in the global file > .forge-setup.json > en. Never throws. */
+function detectLang(opts, P) {
+  const flag = normLang(opts && opts.lang);
+  if (flag) return flag;
+  try {
+    const d = JSON.parse(stripBom(fs.readFileSync(P.global, 'utf8')));
+    const l = normLang(d && d.settings && d.settings.language && d.settings.language.value);
+    if (l) return l;
+  } catch { /* a missing or damaged global file is reported by resolve(); here it only means "no preference" */ }
+  return markerLang(P) || 'en';
+}
+
+// ---- values ----
+function synonyms(schema, which) { return schema.value_synonyms[which].map((s) => String(s).toLowerCase()); }
+function shortWord(spec, v, lang) {
+  if (spec.type === 'bool') return v ? (lang === 'nl' ? 'aan' : 'on') : (lang === 'nl' ? 'uit' : 'off');
+  return String(v);
+}
+function displayValue(spec, v, lang) {
+  if (spec.type === 'bool') return shortWord(spec, v, lang);
+  return typeof v === 'number' && spec.unit ? v + ' ' + spec.unit : String(v);
+}
+function toNumber(raw, spec) {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+  if (typeof raw !== 'string') return null;
+  let s = raw.trim();
+  if (spec.unit && s.toLowerCase().endsWith(spec.unit.toLowerCase())) s = s.slice(0, s.length - spec.unit.length).trim();
+  if (spec.unit === 'USD' && s.startsWith('$')) s = s.slice(1).trim();
+  if (spec.type === 'number') s = s.replace(',', '.');
+  return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : null;
+}
+function levenshtein(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function aliasesOf(key, spec) {
+  const a = isObj(spec.aliases) ? spec.aliases : {};
+  return [key, key.replace(/[.-]/g, ' ')].concat(a.nl || [], a.en || []);
+}
+function suggestKey(input, schema) {
+  const q = String(input || '').toLowerCase().trim();
+  if (!q) return null;
+  let best = null;
+  let bestD = Infinity;
+  for (const [key, spec] of Object.entries(schema.settings)) {
+    for (const c of aliasesOf(key, spec)) {
+      const cl = String(c).toLowerCase();
+      let d = levenshtein(q, cl);
+      if (q.length >= 3 && cl.length >= 3 && (cl.includes(q) || q.includes(cl))) d = Math.min(d, 1);
+      if (d < bestD) { bestD = d; best = key; }
+    }
+  }
+  return bestD <= Math.max(2, Math.floor(q.length * 0.4)) ? best : null;
+}
+function unknownKeyError(key, schema, lang, exitCode) {
+  const suggestion = suggestKey(key, schema);
+  return new ConfigError('unknown_key', text.t(lang).unknownKey(key, suggestion), exitCode, { key, suggestion });
+}
+
+/** parseValue(key, raw, schema?, lang?) -> the canonical typed value, or throws ConfigError (exit 2) with a
+ *  beginner-plain message. Accepts typed values (from JSON) and CLI strings: bool synonyms (on/off, aan/uit,
+ *  ja/nee, true/false, 1/0 ...), a unit suffix ("98 %", "120s", "$5"), a Dutch decimal comma, and for an enum
+ *  that has an "off" value any off-synonym ("uit" -> "off"). */
+function parseValue(key, raw, schema, lang) {
+  schema = schema || loadSchema();
+  lang = normLang(lang) || 'en';
+  if (!hasOwn(schema.settings, key)) throw unknownKeyError(key, schema, lang, 2);
+  const spec = schema.settings[key];
+  const fail = () => {
+    const ex = shortWord(spec, spec.default, lang);
+    const shown = String(raw === undefined ? '' : typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, 60);
+    throw new ConfigError('invalid_value', text.t(lang).invalid[spec.type](key, shown, ex, spec), 2, { key });
+  };
+  if (raw === undefined || raw === null) return fail();
+  const s = typeof raw === 'string' ? raw.trim() : raw;
+  if (spec.type === 'bool') {
+    if (typeof s === 'boolean') return s;
+    const w = String(s).toLowerCase();
+    if (synonyms(schema, 'true').includes(w)) return true;
+    if (synonyms(schema, 'false').includes(w)) return false;
+    return fail();
+  }
+  if (spec.type === 'enum') {
+    if (typeof s !== 'string') return fail();
+    const w = s.toLowerCase();
+    const hit = spec.allowed.find((a) => a.toLowerCase() === w);
+    if (hit) return hit;
+    if (spec.allowed.includes('off') && synonyms(schema, 'false').includes(w)) return 'off';
+    return fail();
+  }
+  if (spec.type === 'int-or-auto' && typeof s === 'string' && s.toLowerCase() === 'auto') return 'auto';
+  const n = toNumber(s, spec);
+  if (n === null || (spec.type !== 'number' && !Number.isInteger(n)) || n < spec.min || n > spec.max) return fail();
+  return n;
+}
+
+// ---- files ----
+function malformedError(file, reason, lang, P) {
+  return new ConfigError('malformed', text.t(lang).malformed(prettyPath(file, P), reason), 2, { file });
+}
+function readJsonObject(file, lang, P) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (e) {
+    if (e.code === 'ENOENT') return { present: false, data: null };
+    throw malformedError(file, e.message, lang, P);
+  }
+  let data;
+  try { data = JSON.parse(stripBom(raw)); }
+  catch (e) { throw malformedError(file, 'not valid JSON: ' + e.message, lang, P); }
+  if (!isObj(data)) throw malformedError(file, 'the file must be one JSON object', lang, P);
+  return { present: true, data };
+}
+function readRaw(file, lang, P) {
+  const r = readJsonObject(file, lang, P);
+  if (!r.present) return r;
+  if (hasOwn(r.data, 'version') && r.data.version !== 1) throw malformedError(file, 'unsupported "version" ' + JSON.stringify(r.data.version) + ' (expected 1)', lang, P);
+  if (!isObj(r.data.settings)) throw malformedError(file, 'missing a "settings" object', lang, P);
+  return r;
+}
+/** onceState(entry, nowMs) -> null (a normal entry) | {expired:true} | {expired:false, expires_at, minutesLeft}.
+ *  An unparseable expires_at counts as expired: a broken one-off never keeps anything switched off. */
+function onceState(ent, nowMs) {
+  if (!isObj(ent) || !hasOwn(ent, 'expires_at')) return null;
+  const ms = typeof ent.expires_at === 'string' ? Date.parse(ent.expires_at) : NaN;
+  if (!Number.isFinite(ms) || ms <= nowMs) return { expired: true };
+  return { expired: false, expires_at: new Date(ms).toISOString(), minutesLeft: Math.max(1, Math.ceil((ms - nowMs) / 60000)) };
+}
+function onceQuote(ent) {
+  if (typeof ent.once_quote === 'string' && ent.once_quote) return ent.once_quote; // the field the gate hook reads first
+  return typeof ent.set_by === 'string' && ent.set_by.startsWith(text.ONCE_BY) ? ent.set_by.slice(text.ONCE_BY.length) : '';
+}
+function readConfigFile(file, schema, locked, lang, P, nowMs) {
+  const r = readRaw(file, lang, P);
+  const out = { present: r.present, entries: {}, notes: [], keyNotes: {} };
+  if (!r.present) return out;
+  const pretty = prettyPath(file, P);
+  const T = text.t(lang);
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const note = (key, n) => { out.notes.push(n); (out.keyNotes[key] = out.keyNotes[key] || []).push(n); };
+  for (const [key, ent] of Object.entries(r.data.settings)) {
+    if (locked.has(key)) { out.notes.push(T.fileLockedIgnored(key, pretty)); continue; }
+    if (!hasOwn(schema.settings, key)) { out.notes.push(T.fileUnknownIgnored(key, pretty)); continue; }
+    if (!isObj(ent) || !hasOwn(ent, 'value')) throw malformedError(file, '"' + key + '" must look like {"value": ...}', lang, P);
+    const once = onceState(ent, now);
+    if (once && once.expired) { note(key, T.onceExpired(key, pretty)); continue; }
+    let value;
+    try { value = parseValue(key, ent.value, schema, lang); }
+    catch (e) { throw malformedError(file, e.message, lang, P); }
+    out.entries[key] = { value, set_at: typeof ent.set_at === 'string' ? ent.set_at : null, set_by: typeof ent.set_by === 'string' ? ent.set_by : null, expires_at: once ? once.expires_at : null };
+    if (once) note(key, T.onceActive(key, once.minutesLeft, onceQuote(ent)));
+  }
+  return out;
+}
+function renameWithRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(from, to); return; }
+    catch (e) {
+      // Windows: a reader holding the target open for a moment gives EPERM/EBUSY; retry briefly, then fail loudly.
+      if (i >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (i + 1));
+    }
+  }
+}
+function atomicWriteJson(file, obj) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+    renameWithRetry(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* the temp file was never created or is already gone */ }
+    throw e;
+  }
+}
+
+// ---- product defaults (owner profile, read-only) ----
+function productDefaults(schema, opts, P, lang) {
+  const values = {};
+  const notes = [];
+  const map = isObj(schema.product_default_map) ? schema.product_default_map : {};
+  let prefs;
+  try { prefs = require('./forge-prefs.cjs'); }
+  catch (e) { return { values, notes: [text.t(lang).prefsSkipped(e.message)] }; }
+  const prefsOpts = opts.prefsOpts || {
+    profilePath: path.join(P.projectRoot, '.claude', 'FORGE_OWNER_PROFILE.json'),
+    globalProfilePath: path.join(P.configHome, 'FORGE_OWNER_PROFILE.json'),
+  };
+  for (const [key, m] of Object.entries(map)) {
+    if (key.startsWith('_') || !isObj(m) || !hasOwn(schema.settings, key)) continue;
+    let r;
+    try { r = prefs.get(m.pref, prefsOpts); }
+    catch (e) { notes.push(text.t(lang).prefsSkipped(e.message)); break; }
+    if (!r.found) continue;
+    let v = r.entry.value;
+    if (isObj(m.map) && typeof v === 'string' && hasOwn(m.map, v)) v = m.map[v];
+    try { values[key] = { value: parseValue(key, v, schema, lang), pref: m.pref }; }
+    catch { notes.push(text.t(lang).prefUnfit(m.pref, key, JSON.stringify(v))); }
+  }
+  return { values, notes };
+}
+
+function parseFlags(flags, schema, locked, lang) {
+  const out = {};
+  if (flags == null) return out;
+  const pairs = [];
+  if (Array.isArray(flags)) {
+    for (const f of flags) {
+      const s = String(f);
+      const i = s.indexOf('=');
+      if (i <= 0) throw new ConfigError('usage', text.t(lang).badFlag(s), 2);
+      pairs.push([s.slice(0, i).trim(), s.slice(i + 1)]);
+    }
+  } else if (isObj(flags)) {
+    for (const k of Object.keys(flags)) pairs.push([k, flags[k]]);
+  } else throw new ConfigError('usage', text.t(lang).badFlag(String(flags)), 2);
+  for (const [k, v] of pairs) {
+    if (locked.has(k)) throw lockedError(k, schema, lang);
+    out[k] = parseValue(k, v, schema, lang);
+  }
+  return out;
+}
+
+/** status of a setting for the list's Status column: 'on' | 'off' | null ('-'). bool -> its value. enum ->
+ *  'off' for the values its off_means text names ("ask-each-phase: ...", "l4-only: ...; always: ...") or,
+ *  failing that, the literal "off"; an enum without either (language, cleanup) has no on/off state. A
+ *  dotted key under a bool parent (usage-guard.pause-at) follows its parent. Other numbers: no state. */
+function statusOf(key, spec, value, schema, values) {
+  if (spec.type === 'bool') return value ? 'on' : 'off';
+  if (spec.type === 'enum') {
+    const om = spec.off_means ? spec.off_means.en : '';
+    const named = spec.allowed.filter((v) => new RegExp('(^|;\\s*)' + v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':').test(om));
+    const offs = named.length ? named : spec.allowed.includes('off') ? ['off'] : [];
+    return offs.length ? (offs.includes(value) ? 'off' : 'on') : null;
+  }
+  const dot = key.lastIndexOf('.');
+  const parent = dot > 0 ? key.slice(0, dot) : null;
+  if (parent && schema.settings[parent] && schema.settings[parent].type === 'bool') return values[parent] ? 'on' : 'off';
+  return null;
+}
+function entryOf(key, value, source, setAt, setBy, expiresAt) {
+  const e = { key, value, source, set_at: setAt || null, set_by: setBy || null };
+  if (expiresAt) e.expires_at = expiresAt; // a live one-off approval (see ONCE_KEYS)
+  return e;
+}
+const fileEntry = (key, f, source) => entryOf(key, f.entries[key].value, source, f.entries[key].set_at, f.entries[key].set_by, f.entries[key].expires_at);
+function valuesOf(settings) { const o = {}; for (const k of Object.keys(settings)) o[k] = settings[k].value; return o; }
+function hashValues(values) {
+  const sorted = {};
+  for (const k of Object.keys(values).sort()) sorted[k] = values[k];
+  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+}
+function nowMsOf(opts) {
+  const n = opts && opts.now;
+  const ms = n instanceof Date ? n.getTime() : typeof n === 'string' ? Date.parse(n) : typeof n === 'number' ? n : NaN;
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
+// ---- resolve / get / list ----
+function resolve(opts) {
+  opts = opts || {};
+  const P = pathsFor(opts);
+  const schema = loadSchema(P.schema, opts);
+  const lk = lockedIds(schema, opts);
+  const lang0 = detectLang(opts, P);
+  const same = path.resolve(P.global) === path.resolve(P.project); // Forge installed in the home dir itself
+  const nowMs = nowMsOf(opts);
+  const g = readConfigFile(P.global, schema, lk.ids, lang0, P, nowMs);
+  const p = same ? { present: false, entries: {}, notes: [], keyNotes: {} } : readConfigFile(P.project, schema, lk.ids, lang0, P, nowMs);
+  const flags = parseFlags(opts.flags, schema, lk.ids, lang0);
+  const pd = productDefaults(schema, opts, P, lang0);
+  const settings = {};
+  const ignored = [];
+  for (const [key, spec] of Object.entries(schema.settings)) {
+    let e = entryOf(key, spec.default, 'default');
+    if (hasOwn(pd.values, key)) e = entryOf(key, pd.values[key].value, 'product-default', null, 'owner profile: ' + pd.values[key].pref);
+    if (hasOwn(g.entries, key)) e = fileEntry(key, g, 'global');
+    if (hasOwn(p.entries, key)) {
+      if (spec.scope === 'global') ignored.push(key);
+      else e = fileEntry(key, p, 'project');
+    }
+    if (hasOwn(flags, key)) e = entryOf(key, flags[key], 'flag', null, '--flag');
+    settings[key] = e;
+  }
+  const lang = normLang(opts.lang) || normLang(settings.language && settings.language.value) || markerLang(P) || 'en';
+  const values = valuesOf(settings);
+  for (const [key, e] of Object.entries(settings)) {
+    const spec = schema.settings[key];
+    Object.assign(e, { display: displayValue(spec, e.value, lang), status: statusOf(key, spec, e.value, schema, values), scope: spec.scope, group: spec.group, type: spec.type, unit: spec.unit || null });
+  }
+  const T = text.t(lang);
+  const notes = [];
+  if (lk.notes.length) notes.push(T.lockSourceNote(lk.notes.join('; ')));
+  notes.push(...g.notes, ...p.notes);
+  for (const k of ignored) notes.push(T.scopeIgnored(k));
+  notes.push(...pd.notes);
+  const gp = prettyPath(P.global, P);
+  const pp = prettyPath(P.project, P);
+  if (!g.present && !p.present && !same) notes.push(T.noFiles(gp, pp));
+  else {
+    if (!g.present) notes.push(T.missingFile('global', gp));
+    if (!p.present && !same) notes.push(T.missingFile('project', pp));
+  }
+  const keyNotes = {};
+  for (const f of [g, p]) for (const [k, ns] of Object.entries(f.keyNotes)) keyNotes[k] = (keyNotes[k] || []).concat(ns);
+  return {
+    settings,
+    files: { global: { path: P.global, present: g.present, pretty: gp }, project: { path: P.project, present: p.present, pretty: pp } },
+    notes,
+    key_notes: keyNotes,
+    lang,
+    ignored_project_values: ignored,
+  };
+}
+
+function lookupKey(key, opts) {
+  const P = pathsFor(opts);
+  const schema = loadSchema(P.schema, opts);
+  if (hasOwn(schema.settings, key)) return { P, schema, locked: false };
+  const lang = detectLang(opts, P);
+  if (lockedIds(schema, opts).ids.has(key)) return { P, schema, locked: true, lang };
+  throw unknownKeyError(key, schema, lang, 1);
+}
+
+/** get(key, opts) -> the resolved entry {key, value, source, set_at, set_by, display, status, ..., desc}.
+ *  Throws ConfigError 'unknown_key' (exit 1) or 'locked' (exit 3). */
+function get(key, opts) {
+  opts = opts || {};
+  const k = lookupKey(key, opts);
+  if (k.locked) throw lockedError(key, k.schema, k.lang);
+  const r = resolve(opts);
+  const out = Object.assign({}, r.settings[key], { desc: k.schema.settings[key].desc[r.lang], lang: r.lang });
+  const kn = r.key_notes[key] || []; // a live or expired one-off approval for this key
+  const b = bridgeStatus(key, k.schema, k.P, opts, r.settings[key].value, r.lang);
+  if (b) return Object.assign(out, { bridge: b, notes: kn.concat(b.notes) });
+  return kn.length ? Object.assign(out, { notes: kn }) : out;
+}
+
+// ---- fail-safe read (review-boss M3) ----
+function isFlagged(spec) { return isObj(spec) && Array.isArray(spec.flags) && spec.flags.some((f) => FLAGS.includes(f)); }
+/** safeValueOf(spec) -> the value a flagged setting falls back to when the settings cannot be read. */
+function safeValueOf(spec) {
+  if (spec.type === 'bool') return false;
+  if (spec.type === 'enum' && Array.isArray(spec.allowed)) {
+    const off = SAFE_ENUM_WORDS.find((w) => spec.allowed.includes(w));
+    if (off !== undefined) return off;
+  }
+  return spec.default;
+}
+function specForSafety(key, P, opts) {
+  try { return loadSchema(P.schema, opts).settings[key] || null; } catch { /* the schema itself is damaged: read it raw below */ }
+  try {
+    const raw = JSON.parse(stripBom(fs.readFileSync(P.schema, 'utf8')));
+    return isObj(raw) && isObj(raw.settings) && isObj(raw.settings[key]) ? raw.settings[key] : null;
+  } catch { return null; /* no schema at all: FAILSAFE_FLAGGED and opts.fallback decide */ }
+}
+/** safeGet(key, opts) -> { key, value, source, degraded, reason, notes } — the read every consumer uses. Never
+ *  throws. A readable config gives get()'s value with degraded:false. When the settings cannot be read (a damaged
+ *  FORGE_CONFIG.json, a missing/invalid schema, an internal error) a key carrying any disclosure flag (C N X $ U D)
+ *  resolves to its SAFE value (safeValueOf) and every other key to its schema default — both degraded:true with a
+ *  plain one-line reason naming the file and the way back. opts = get()'s opts plus opts.fallback: the caller's own
+ *  copy of the default, used only when the schema is unreadable and the key is not a known flagged key. */
+function safeGet(key, opts) {
+  opts = opts || {};
+  try {
+    const e = get(key, opts);
+    return { key, value: e.value, source: e.source, degraded: false, reason: null, notes: e.notes || [] };
+  } catch (err) {
+    let P;
+    try { P = pathsFor(opts); } catch { P = null; }
+    const spec = P ? specForSafety(key, P, opts) : null;
+    const flagged = hasOwn(FAILSAFE_FLAGGED, key) || isFlagged(spec);
+    let value;
+    if (flagged) value = spec && (spec.type === 'bool' || spec.type === 'enum') ? safeValueOf(spec) : hasOwn(FAILSAFE_FLAGGED, key) ? FAILSAFE_FLAGGED[key] : false;
+    else value = spec && hasOwn(spec, 'default') ? spec.default : opts.fallback;
+    let lang = 'en';
+    try { lang = P ? detectLang(opts, P) : 'en'; } catch { lang = 'en'; }
+    const T = text.t(lang);
+    const why = err instanceof ConfigError ? err.message : T.internalError(err && err.message ? err.message : String(err));
+    const settingsFile = P && err && err.code === 'malformed' && err.file && [P.global, P.project].some((f) => path.resolve(f) === path.resolve(err.file));
+    const fix = settingsFile ? T.degradedFix('/forge config reset' + (path.resolve(err.file) === path.resolve(P.global) ? ' --global' : '') + ' --yes') : '';
+    const word = spec && TYPES.includes(spec.type) ? shortWord(spec, value, lang) : JSON.stringify(value);
+    return { key, value, source: flagged ? 'safe-fallback' : 'default', degraded: true, reason: [why, T.degradedUse(key, word, flagged), fix].filter(Boolean).join(' '), notes: [] };
+  }
+}
+
+/** list(opts) -> { settings: [entries in schema order], hidden, locked, files, notes, lang, groups, project }.
+ *  Without opts.all the "advanced" group is left out (and counted in `hidden`). */
+function list(opts) {
+  opts = opts || {};
+  const P = pathsFor(opts);
+  const schema = loadSchema(P.schema, opts);
+  const r = resolve(opts);
+  const lang = r.lang;
+  const all = Object.keys(schema.settings).map((key) => {
+    const spec = schema.settings[key];
+    return Object.assign({}, r.settings[key], {
+      default: spec.default,
+      desc: spec.desc[lang],
+      off_means: spec.off_means ? spec.off_means[lang] : null,
+      disclosure: spec.disclosure ? spec.disclosure[lang] : null,
+      flags: (spec.flags || []).slice(),
+    });
+  });
+  const settings = opts.all ? all : all.filter((s) => s.group !== 'advanced');
+  return {
+    settings,
+    hidden: all.length - settings.length,
+    locked: schema.locked.map((l) => ({ id: l.id, text: l[lang] || l.en, source: l.source || null })),
+    files: r.files,
+    notes: r.notes.concat(bridgeNotes(schema, P, opts, r)),
+    lang,
+    groups: Object.keys(schema.groups).map((id) => ({ id, title: schema.groups[id][lang] || schema.groups[id].en })),
+    project: path.basename(P.projectRoot),
+  };
+}
+
+// ---- writes ----
+function noFlags(opts) { return Object.assign({}, opts, { flags: undefined }); }
+function writableKey(key, opts) {
+  const P = pathsFor(opts);
+  const schema = loadSchema(P.schema, opts);
+  const lang = detectLang(opts, P);
+  if (lockedIds(schema, opts).ids.has(key)) throw lockedError(key, schema, lang);
+  return { P, schema, lang };
+}
+
+/** set(key, rawValue, opts) — validates, then atomically writes the value into the project file (or the global
+ *  file for opts.global and for every scope:"global" key). Returns { key, from, to, file, scope, entry, ... }.
+ *  Throws (nothing written): 'locked' exit 3 · 'unknown_key' / 'invalid_value' / 'malformed' exit 2. */
+function set(key, rawValue, opts) {
+  opts = opts || {};
+  if (opts.once != null) return setOnce(key, rawValue, opts);
+  const { P, schema, lang } = writableKey(key, opts);
+  if (!hasOwn(schema.settings, key)) throw unknownKeyError(key, schema, lang, 2);
+  const spec = schema.settings[key];
+  const value = parseValue(key, rawValue, schema, lang);
+  const bridge = bridgeOf(key, schema, P, opts);
+  if (bridge) readBridge(bridge, lang, P); // fail closed BEFORE any write: a damaged legacy file is refused (exit 2)
+  const before = resolve(noFlags(opts));
+  const toGlobal = !!opts.global || spec.scope === 'global';
+  const file = toGlobal ? P.global : P.project;
+  const cur = readRaw(file, lang, P);
+  const data = cur.present ? cur.data : { version: 1, settings: {} };
+  const old = data.settings[key];
+  let unchanged = false;
+  let clearedOnce = false;
+  if (onceState(old, nowMsOf(opts))) {
+    // A normal set always ends a one-off approval ("set gate-hook on" clears it): drop that entry first, and keep a
+    // permanent value only when the layer beneath does not already give the requested one.
+    const settings = Object.assign({}, data.settings);
+    delete settings[key];
+    atomicWriteJson(file, Object.assign({}, data, { settings }));
+    clearedOnce = true;
+    unchanged = resolve(noFlags(opts)).settings[key].value === value;
+  } else if (isObj(old) && hasOwn(old, 'value')) {
+    try { unchanged = parseValue(key, old.value, schema, lang) === value; } catch { unchanged = false; /* an invalid old value is simply replaced */ }
+  }
+  if (!unchanged) {
+    const entry = { value, set_at: new Date(nowMsOf(opts)).toISOString(), set_by: text.SET_BY };
+    const settings = Object.assign({}, data.settings, { [key]: entry });
+    atomicWriteJson(file, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings }));
+  }
+  const after = resolve(noFlags(opts)).settings[key];
+  const bridged = bridge ? applyBridge(bridge, after.value, schema, lang, P) : null;
+  let shadow = null;
+  if (after.value !== value) shadow = { source: after.source, display: after.display, undo: '/forge config unset ' + key + (after.source === 'global' ? ' --global' : '') };
+  return {
+    key, from: before.settings[key].value, to: value, file, file_pretty: prettyPath(file, P),
+    scope: toGlobal ? 'global' : 'project', auto_global: !opts.global && spec.scope === 'global', unchanged,
+    from_word: shortWord(spec, before.settings[key].value, lang), to_word: shortWord(spec, value, lang),
+    entry: after, shadow, disclosure: spec.disclosure && after.status === 'on' && !unchanged ? spec.disclosure[lang] : null, lang,
+    bridge: bridged, cleared_once: clearedOnce,
+  };
+}
+
+/** setOnce(key, rawValue, opts) — `set gate-hook off --once "<owner's words>"`: switches a ONCE_KEYS key off for
+ *  ONE approved command. Writes { value:false, set_at, set_by:"owner one-off approval: <quote>", once_quote,
+ *  expires_at: now+10 min } into the PROJECT file only (once_quote is the field forge-gate-hook.cjs reads first);
+ *  get/list/resolve ignore it once expired, `set <key> on` clears it. Refused (exit 2, nothing written): another
+ *  key, --global, a value other than off, or no quote. */
+function setOnce(key, rawValue, opts) {
+  const { P, schema, lang } = writableKey(key, opts);
+  const T = text.t(lang);
+  if (!ONCE_KEYS.includes(key)) throw new ConfigError('usage', T.onceOnlyFor(key, ONCE_KEYS), 2, { key });
+  if (opts.global) throw new ConfigError('usage', T.onceNoGlobal(key), 2, { key });
+  if (parseValue(key, rawValue, schema, lang) !== false) throw new ConfigError('usage', T.onceOnlyOff(key), 2, { key });
+  const quote = Array.from(String(opts.once)).map((c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? ' ' : c)).join('').replace(/\s+/g, ' ').trim().slice(0, ONCE_QUOTE_MAX);
+  if (!quote) throw new ConfigError('usage', T.onceNeedsQuote(key), 2, { key });
+  const spec = schema.settings[key];
+  const before = resolve(noFlags(opts));
+  const cur = readRaw(P.project, lang, P);
+  const data = cur.present ? cur.data : { version: 1, settings: {} };
+  const nowMs = nowMsOf(opts);
+  const entry = { value: false, set_at: new Date(nowMs).toISOString(), set_by: text.ONCE_BY + quote, once_quote: quote, expires_at: new Date(nowMs + ONCE_MS).toISOString() };
+  atomicWriteJson(P.project, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings: Object.assign({}, data.settings, { [key]: entry }) }));
+  const after = resolve(noFlags(opts)).settings[key];
+  return {
+    key, from: before.settings[key].value, to: false, file: P.project, file_pretty: prettyPath(P.project, P),
+    scope: 'project', auto_global: false, unchanged: false,
+    from_word: shortWord(spec, before.settings[key].value, lang), to_word: shortWord(spec, false, lang),
+    entry: after, shadow: null, disclosure: null, lang, bridge: null, cleared_once: false,
+    once: { quote, expires_at: entry.expires_at, minutes: ONCE_MS / 60000 },
+  };
+}
+
+/** unset(key, opts) — removes the owner's own value. --global: the global file only. Otherwise a project-scope
+ *  key leaves the project file; a global-scope key leaves the global file AND any (ignored) stray copy in the
+ *  project file. A key unknown to the schema may still be removed when it literally sits in a target file. */
+function unset(key, opts) {
+  opts = opts || {};
+  const { P, schema, lang } = writableKey(key, opts);
+  const known = hasOwn(schema.settings, key);
+  const wanted = opts.global ? [P.global] : known && schema.settings[key].scope === 'global' ? [P.global, P.project] : [P.project];
+  const targets = [...new Set(wanted.map((f) => path.resolve(f)))];
+  const raws = targets.map((f) => ({ f, r: readRaw(f, lang, P) }));
+  if (!known && !raws.some((x) => x.r.present && hasOwn(x.r.data.settings, key))) throw unknownKeyError(key, schema, lang, 2);
+  const bridge = known ? bridgeOf(key, schema, P, opts) : null;
+  if (bridge) readBridge(bridge, lang, P); // fail closed before any write
+  const before = known ? resolve(noFlags(opts)).settings[key].value : null;
+  const removed = [];
+  for (const { f, r } of raws) {
+    if (!r.present || !hasOwn(r.data.settings, key)) continue;
+    const settings = Object.assign({}, r.data.settings);
+    delete settings[key];
+    atomicWriteJson(f, Object.assign({}, r.data, { settings }));
+    removed.push(f);
+  }
+  const entry = known ? resolve(noFlags(opts)).settings[key] : null;
+  const bridged = bridge && entry ? applyBridge(bridge, entry.value, schema, lang, P) : null;
+  return { key, removed: removed.length > 0, files: removed, files_pretty: removed.map((f) => prettyPath(f, P)), from: before, to: entry ? entry.value : null, entry, lang, bridge: bridged };
+}
+
+/** reset(opts) — removes every owner value from the project file (opts.global: the global file). Without
+ *  opts.yes nothing is written and { confirmed:false, would_remove } comes back (CLI exit 3). A DAMAGED target
+ *  file is the one way back from degraded mode (forge.md §0): { damaged:true, moved_to } — with opts.yes it is
+ *  renamed to <file>.damaged-<time> (kept as a backup, never deleted) and a fresh empty settings file takes its
+ *  place; without opts.yes nothing moves. Any other damaged file (the other settings file, a legacy bridge file)
+ *  still refuses the reset (exit 2). */
+function reset(opts) {
+  opts = opts || {};
+  const P = pathsFor(opts);
+  const schema = loadSchema(P.schema, opts);
+  const lang = detectLang(opts, P);
+  const file = opts.global ? P.global : P.project;
+  try { readConfigFile(file, schema, lockedIds(schema, opts).ids, lang, P, nowMsOf(opts)); } // full validation first
+  catch (e) {
+    if (!(e instanceof ConfigError) || e.code !== 'malformed') throw e;
+    const aside = file + '.damaged-' + new Date(nowMsOf(opts)).toISOString().replace(/[:.]/g, '-');
+    const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: [], removed: [], lang, damaged: true, reason: e.message, moved_to: aside, moved_to_pretty: prettyPath(aside, P) };
+    if (!opts.yes) return Object.assign(base, { confirmed: false });
+    renameWithRetry(file, aside);
+    atomicWriteJson(file, { version: 1, settings: {} });
+    return Object.assign(base, { confirmed: true, bridges: [] });
+  }
+  const r = readRaw(file, lang, P);
+  const keys = r.present ? Object.keys(r.data.settings) : [];
+  const base = { file, file_pretty: prettyPath(file, P), global: !!opts.global, would_remove: keys, lang };
+  if (!opts.yes) return Object.assign(base, { confirmed: false, removed: [] });
+  const bridges = keys.filter((k) => hasOwn(schema.settings, k)).map((k) => bridgeOf(k, schema, P, opts)).filter(Boolean);
+  for (const b of bridges) readBridge(b, lang, P); // fail closed before any write
+  if (keys.length) atomicWriteJson(file, Object.assign({}, r.data, { settings: {} }));
+  const now = bridges.length ? resolve(noFlags(opts)).settings : null;
+  return Object.assign(base, { confirmed: true, removed: keys, bridges: bridges.map((b) => applyBridge(b, now[b.key].value, schema, lang, P)) });
+}
+
+// ---- bridges: legacy mirror files (see the header) ----
+// The wording sits here, not in forge-config-text.cjs, because that file belonged to another work package when
+// this landed; move it there with the next edit of that file.
+const BRIDGE_TEXT = {
+  en: {
+    differs: (key, pretty, legacy, now) => 'Note: ' + pretty + ' says ' + legacy + ', but ' + key + ' is ' + now + '. Older parts of Forge (the dashboard, /forge) follow that file. Make them agree with: /forge config set ' + key + ' ' + now,
+    marker: (key, marker) => 'Note: ' + marker + ' exists and forces ECC test mode ON for older parts of Forge, while ' + key + ' is off. Delete that file, or turn the setting on: /forge config set ' + key + ' on',
+    unreadable: (key, pretty, msg) => 'Note: ' + pretty + ' could not be read (' + msg + '), so it was not compared with ' + key + '.',
+    failed: (key, pretty, msg) => key + ' was saved, but ' + pretty + ' could not be updated (' + msg + '). Run the same command again.',
+    unset: 'off (not set)',
+  },
+  nl: {
+    differs: (key, pretty, legacy, now) => 'Let op: ' + pretty + ' zegt ' + legacy + ', maar ' + key + ' staat op ' + now + '. Oudere onderdelen van Forge (het dashboard, /forge) volgen dat bestand. Zet ze gelijk met: /forge config set ' + key + ' ' + now,
+    marker: (key, marker) => 'Let op: ' + marker + ' bestaat en zet de ECC-testmodus voor oudere onderdelen van Forge altijd AAN, terwijl ' + key + ' op uit staat. Verwijder dat bestand, of zet de instelling aan: /forge config set ' + key + ' aan',
+    unreadable: (key, pretty, msg) => 'Let op: ' + pretty + ' is niet leesbaar (' + msg + '), dus niet vergeleken met ' + key + '.',
+    failed: (key, pretty, msg) => key + ' is opgeslagen, maar ' + pretty + ' kon niet worden bijgewerkt (' + msg + '). Voer hetzelfde commando nog eens uit.',
+    unset: 'uit (niet ingesteld)',
+  },
+};
+const BRIDGE_MARKERS = { 'ecc-full-test': ['.claude', 'ECC_TEST_MODE.md'] }; // its presence forces the legacy reader ON (server.cjs eccMode)
+function bridgeOf(key, schema, P, opts) {
+  const spec = schema.settings[key];
+  if (!spec || spec.type !== 'bool' || typeof spec.bridge !== 'string') return null;
+  const i = spec.bridge.lastIndexOf(':');
+  const rel = i > 0 ? spec.bridge.slice(0, i) : '';
+  const field = spec.bridge.slice(i + 1);
+  const abs = path.resolve(P.projectRoot, rel);
+  const inside = path.relative(P.projectRoot, abs);
+  if (!rel || path.isAbsolute(rel) || !inside || inside.startsWith('..') || !/^[A-Za-z0-9_]+$/.test(field)) return null; // project-local files only
+  const seam = opts && isObj(opts.bridgePaths) && typeof opts.bridgePaths[key] === 'string' ? opts.bridgePaths[key] : null;
+  const file = seam || abs;
+  const marker = BRIDGE_MARKERS[key] ? path.join(P.projectRoot, ...BRIDGE_MARKERS[key]) : null;
+  return { key, file, field, marker, pretty: prettyPath(file, P) + ' ' + field, defaultWord: spec.default ? 'on' : 'off' };
+}
+/** readBridge -> { present, data, raw, marker } — throws ConfigError 'malformed' (exit 2) on a damaged file. */
+function readBridge(b, lang, P) {
+  const r = readJsonObject(b.file, lang, P);
+  return { present: r.present, data: r.data, raw: r.present ? r.data[b.field] : undefined, marker: !!(b.marker && fs.existsSync(b.marker)) };
+}
+/** bridgeStatus -> null (no bridge) | { file_pretty, field, legacy, marker, agrees, notes } — never throws. */
+function bridgeStatus(key, schema, P, opts, value, lang) {
+  const b = bridgeOf(key, schema, P, opts);
+  if (!b) return null;
+  const T = BRIDGE_TEXT[lang] || BRIDGE_TEXT.en;
+  let cur;
+  try { cur = readBridge(b, lang, P); }
+  catch (e) { return { file_pretty: b.pretty, field: b.field, legacy: null, marker: false, agrees: null, notes: [T.unreadable(key, b.pretty, e.message)] }; }
+  const legacyOn = cur.raw === 'on' || cur.marker; // exactly what forge-dashboard/server.cjs eccMode() concludes
+  const agrees = legacyOn === (value === true);
+  const now = shortWord(schema.settings[key], value, lang);
+  let notes = [];
+  if (!agrees && cur.marker && value !== true) notes = [T.marker(key, prettyPath(b.marker, P))];
+  else if (!agrees) notes = [T.differs(key, b.pretty, cur.raw === undefined ? T.unset : JSON.stringify(cur.raw), now)];
+  return { file_pretty: b.pretty, field: b.field, legacy: cur.raw === undefined ? null : cur.raw, marker: cur.marker, agrees, notes };
+}
+/** applyBridge — writes "on"/"off" for the resolved value into the legacy file when it differs (a missing file
+ *  already means the default, so the default is not written into it). An I/O failure after the settings file
+ *  was saved is reported as 'bridge_failed' (exit 2) naming both files — never swallowed. */
+function applyBridge(b, value, schema, lang, P) {
+  const want = value ? 'on' : 'off';
+  let written = false;
+  try {
+    const cur = readBridge(b, lang, P);
+    if (!(cur.present ? cur.raw === want : want === b.defaultWord)) {
+      atomicWriteJson(b.file, Object.assign({}, cur.data || {}, { [b.field]: want }));
+      written = true;
+    }
+  } catch (e) {
+    throw new ConfigError('bridge_failed', (BRIDGE_TEXT[lang] || BRIDGE_TEXT.en).failed(b.key, b.pretty, e.message), 2, { key: b.key, file: b.file });
+  }
+  const st = bridgeStatus(b.key, schema, P, { bridgePaths: { [b.key]: b.file } }, value, lang);
+  return { file: b.file, file_pretty: b.pretty, field: b.field, value: want, written, agrees: st.agrees, notes: st.notes };
+}
+/** bridgeNotes -> the disagreement notes of every bridged setting (or only onlyKey) for list/explain. */
+function bridgeNotes(schema, P, opts, r, onlyKey) {
+  const out = [];
+  for (const key of Object.keys(schema.settings)) {
+    if (onlyKey && key !== onlyKey) continue;
+    const st = bridgeStatus(key, schema, P, opts, r.settings[key].value, r.lang);
+    if (st) out.push(...st.notes);
+  }
+  return out;
+}
+
+// ---- explain ----
+function exampleValue(spec, current, lang) {
+  if (spec.type === 'bool') return shortWord(spec, !current, lang);
+  if (spec.type === 'enum') return spec.allowed.find((a) => a !== current) || spec.allowed[0];
+  if (spec.type === 'int-or-auto') return current === 'auto' ? String(spec.max) : 'auto';
+  if (current !== spec.default) return String(spec.default);
+  return String(spec.default !== spec.max ? spec.max : spec.min);
+}
+/** explain(key, opts) -> everything a beginner needs about one setting (or {locked:true, text} for a locked id). */
+function explain(key, opts) {
+  opts = opts || {};
+  const k = lookupKey(key, opts);
+  if (k.locked) {
+    const item = lockedItem(key, k.schema);
+    return { key, locked: true, lang: k.lang, text: item ? item[k.lang] || item.en : '', source: item ? item.source || null : null };
+  }
+  const r = resolve(opts);
+  const lang = r.lang;
+  const spec = k.schema.settings[key];
+  const e = r.settings[key];
+  const T = text.t(lang);
+  let undo = { command: null, text: T.undoDefault };
+  if (e.source === 'project') undo = { command: '/forge config unset ' + key, text: null };
+  else if (e.source === 'global') undo = { command: '/forge config unset ' + key + ' --global', text: null };
+  else if (e.source === 'flag') undo = { command: null, text: T.undoFlag };
+  return {
+    key, locked: false, lang,
+    type: spec.type, allowed: spec.allowed || null, min: hasOwn(spec, 'min') ? spec.min : null, max: hasOwn(spec, 'max') ? spec.max : null, unit: spec.unit || null,
+    default: spec.default, default_display: displayValue(spec, spec.default, lang),
+    scope: spec.scope, group: spec.group, group_title: k.schema.groups[spec.group][lang],
+    desc: spec.desc[lang], off_means: spec.off_means ? spec.off_means[lang] : null, disclosure: spec.disclosure ? spec.disclosure[lang] : null,
+    flags: (spec.flags || []).map((f) => ({ flag: f, meaning: T.flag[f] })),
+    consumers: spec.consumers.slice(),
+    aliases: isObj(spec.aliases) ? { nl: (spec.aliases.nl || []).slice(), en: (spec.aliases.en || []).slice() } : { nl: [], en: [] },
+    current: e,
+    change_example: '/forge config set ' + key + ' ' + exampleValue(spec, e.value, lang),
+    undo,
+    notes: r.notes.concat(bridgeNotes(k.schema, k.P, opts, r, key)),
+  };
+}
+
+// ---- change detection ----
+function readSessionState(file, lang, P) {
+  const r = readJsonObject(file, lang, P);
+  return r.present ? r : { present: false, data: {} };
+}
+function writeSeen(P, values, nowMs, lang) {
+  const fresh = readSessionState(P.sessionState, lang, P); // re-read: never clobber a field another tool just wrote
+  const seen = { hash: hashValues(values), at: new Date(nowMs).toISOString(), values };
+  atomicWriteJson(P.sessionState, Object.assign({}, fresh.data, { config_seen: seen }));
+  return Object.assign({ path: P.sessionState }, seen);
+}
+/** markSeen(opts) -> { hash, at, values, path } — records the current persistent values (per-run flags are
+ *  never stored) as FORGE_SESSION_STATE.json.config_seen, preserving every other field of that file. */
+function markSeen(opts) {
+  opts = opts || {};
+  const P = pathsFor(opts);
+  const r = resolve(noFlags(opts));
+  return writeSeen(P, valuesOf(r.settings), nowMsOf(opts), r.lang);
+}
+function logEvent(logEventPath, runId, eventType, extra) {
+  if (!fs.existsSync(logEventPath)) return { status: null, stdout: '', stderr: 'log-event.cjs not found at ' + logEventPath };
+  const r = spawnSync(process.execPath, [logEventPath, runId, eventType, JSON.stringify(extra)], { encoding: 'utf8', timeout: 60000, windowsHide: true });
+  return { status: r.status, stdout: r.stdout || '', stderr: (r.stderr || '') + (r.error ? r.error.message : '') };
+}
+/** diff(opts) -> { changed:[{key, from, to, source, set_at, set_by}], first_run, seen_hash, current_hash, count,
+ *  lines, logged, status, stdout, stderr, seen_marked, ... }. opts.flags are part of the comparison. With
+ *  opts.run and at least one change, ONE config_changed event is logged via the real log-event.cjs.
+ *  opts.markSeen records the persistent values afterwards — skipped when a requested log did not succeed. */
+function diff(opts) {
+  opts = opts || {};
+  const P = pathsFor(opts);
+  if (opts.run != null && !RUN_ID_RE.test(String(opts.run))) throw new ConfigError('usage', text.t(detectLang(opts, P)).badRun(opts.run), 2);
+  const cur = resolve(opts);
+  const lang = cur.lang;
+  const persistent = opts.flags ? resolve(noFlags(opts)) : cur;
+  const schema = loadSchema(P.schema, opts);
+  const state = readSessionState(P.sessionState, lang, P);
+  const cs = state.data.config_seen;
+  const seen = isObj(cs) && isObj(cs.values) ? cs : null;
+  const current = valuesOf(cur.settings);
+  const nowMs = nowMsOf(opts);
+  const changed = [];
+  if (seen) {
+    for (const key of Object.keys(current)) {
+      const e = cur.settings[key];
+      const had = hasOwn(seen.values, key);
+      if (had ? seen.values[key] === current[key] : e.source === 'default') continue;
+      const c = { key, from: had ? seen.values[key] : null, to: current[key], source: e.source, set_at: e.set_at, set_by: e.set_by };
+      changed.push(e.expires_at ? Object.assign(c, { expires_at: e.expires_at }) : c);
+    }
+  }
+  const word = (key, v) => (v == null ? null : shortWord(schema.settings[key], v, lang));
+  const lines = (arrow) => changed.map((c) => text.changeLine(Object.assign({}, c, { from_word: word(c.key, c.from), to_word: word(c.key, c.to) }), lang, nowMs, arrow));
+  const result = {
+    changed, first_run: !seen, seen_hash: seen && typeof seen.hash === 'string' ? seen.hash : null, current_hash: hashValues(current),
+    count: Object.keys(current).length, lines: lines('→'), lang, run: opts.run || null,
+    logged: false, status: null, stdout: '', stderr: '', seen_marked: false,
+  };
+  if (opts.run && changed.length) {
+    const extra = { agent: 'orchestrator', role: 'lead', runtime: 'internal', note: lines('->').join('; '), changed, count: changed.length };
+    const r = logEvent(P.logEvent, String(opts.run), 'config_changed', extra);
+    Object.assign(result, { logged: r.status === 0, status: r.status, stdout: r.stdout, stderr: r.stderr, logEventPath: P.logEvent });
+  }
+  if (opts.markSeen && (!opts.run || !changed.length || result.logged)) {
+    result.seen = writeSeen(P, valuesOf(persistent.settings), nowMs, lang);
+    result.seen_marked = true;
+  }
+  return result;
+}
+
+// ---- plain sentence -> exact set command (never writes) ----
+function normText(s) {
+  const folded = String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return ' ' + folded.replace(/[^a-z0-9%.,$ -]+/g, ' ').replace(/[.,](?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+}
+function valueWords(spec, lang) {
+  if (spec.type === 'bool') return lang === 'nl' ? 'aan, uit' : 'on, off';
+  if (spec.type === 'enum') return spec.allowed.join(', ');
+  return (spec.type === 'int-or-auto' ? 'auto, ' : '') + spec.min + ' - ' + spec.max + (spec.unit ? ' ' + spec.unit : '');
+}
+function valueCandidates(spec, schema, hay) {
+  const tokens = hay.trim().split(' ').filter(Boolean);
+  const yes = synonyms(schema, 'true');
+  const no = synonyms(schema, 'false');
+  const out = [];
+  if (spec.type === 'bool') {
+    for (const tok of tokens) { const w = VERB_BOOL[tok] || tok; if (yes.includes(w)) out.push(true); else if (no.includes(w)) out.push(false); }
+  } else if (spec.type === 'enum') {
+    for (const tok of tokens) {
+      const hit = spec.allowed.find((a) => a.toLowerCase() === tok || normLang(tok) === a);
+      if (hit) out.push(hit);
+      else if (spec.allowed.includes('off') && no.includes(VERB_BOOL[tok] || tok)) out.push('off');
+    }
+  } else {
+    if (spec.type === 'int-or-auto' && tokens.includes('auto')) out.push('auto');
+    for (const m of hay.matchAll(/(?:\s|\$)(\d+(?:[.,]\d+)?)(?=\s|%)/g)) out.push(m[1]);
+  }
+  return [...new Set(out.map((v) => JSON.stringify(v)))].map((v) => JSON.parse(v));
+}
+/** parseSentence(sentence, opts) -> { ok, key?, value?, command?, reason?, candidates?, message }. Matches the
+ *  schema aliases (nl + en) and the value words; the longest matching alias wins, a tie between two settings
+ *  is "ambiguous". A sentence about a locked item is answered with its locked text. Never writes. */
+function parseSentence(sentence, opts) {
+  opts = opts || {};
+  const P = pathsFor(opts);
+  const schema = loadSchema(P.schema, opts);
+  const lang = detectLang(opts, P);
+  const T = text.t(lang);
+  const hay = normText(sentence);
+  const hits = [];
+  const consider = (key, alias, locked) => { const a = normText(alias); if (a.trim() && hay.includes(a)) hits.push({ key, len: a.trim().length, locked }); };
+  for (const [key, spec] of Object.entries(schema.settings)) for (const a of aliasesOf(key, spec)) consider(key, a, false);
+  for (const id of lockedIds(schema, opts).ids) { consider(id, id, true); consider(id, id.replace(/-/g, ' '), true); }
+  if (!hits.length) return { ok: false, reason: 'no_key', message: T.parseNoKey };
+  const maxLen = Math.max(...hits.map((h) => h.len));
+  const keys = [...new Set(hits.filter((h) => h.len === maxLen).map((h) => h.key))];
+  if (keys.length > 1) return { ok: false, reason: 'ambiguous', candidates: keys, message: T.parseAmbiguous(keys) };
+  const key = keys[0];
+  if (!hasOwn(schema.settings, key)) {
+    const item = lockedItem(key, schema);
+    return { ok: false, reason: 'locked', key, message: T.parseLocked(key, item ? item[lang] || item.en : '') };
+  }
+  const spec = schema.settings[key];
+  const cands = valueCandidates(spec, schema, hay);
+  let value;
+  try {
+    if (cands.length !== 1) throw new Error('no single value');
+    value = parseValue(key, cands[0], schema, lang);
+  } catch {
+    return { ok: false, reason: 'no_value', key, candidates: cands, message: T.parseNoValue(key, valueWords(spec, lang)) };
+  }
+  const command = '/forge config set ' + key + ' ' + shortWord(spec, value, lang);
+  return { ok: true, key, value, command, message: T.parseOk(command) };
+}
+
+module.exports = {
+  resolve, get, safeGet, list, set, unset, reset, explain, diff, markSeen, parseValue,
+  ConfigError, validateSchema, parseSentence, normLang, safeValueOf,
+  detectLang: (opts) => detectLang(opts, pathsFor(opts)),
+  ONCE_KEYS, ONCE_MS, FAILSAFE_FLAGGED,
+};
+Object.defineProperty(module.exports, 'SCHEMA', { enumerable: true, get: () => loadSchema() });
+Object.defineProperty(module.exports, 'DEFAULT_PATHS', { enumerable: true, get: () => pathsFor({}) });
+Object.defineProperty(module.exports, 'LOCKED_IDS', { enumerable: true, get: () => [...lockedIds(loadSchema()).ids] });
+
+// ---- CLI: the command-line layer lives in forge-config-cli.cjs (argv, dispatch, output, exit codes) ----
+if (require.main === module) {
+  process.exitCode = require('./forge-config-cli.cjs').main(process.argv.slice(2));
+}

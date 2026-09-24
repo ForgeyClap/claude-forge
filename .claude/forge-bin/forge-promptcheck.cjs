@@ -46,7 +46,17 @@
  * Exit codes: 0 = advisory pass-through (default, regardless of score) · 1 = --strict threshold not met
  * (passed < 6) · 2 = usage error (no file argument, or the prompt could not be read).
  *
- * Module API: { DIMENSIONS, checkPrompt, formatReport, hasKeyword, hasPathOrFileToken, countVagueHits }
+ * `ask` SUBCOMMAND (wp6; completed in wp18, 2026-09-24) — prompt-doctor on the RAW owner request, before Forge
+ *   plans anything. The implementation lives in ./forge-promptcheck-ask.cjs (full contract in its header); this
+ *   file only dispatches to it and re-exports its API so existing imports keep working:
+ *   node forge-promptcheck.cjs ask "<raw request text>" [--file <path|->] [--json] [--lang nl|en] [--midrun] [--run <id>]
+ *   5 dimensions + failure-mode gaps F1–F13 ranked as the forge-prompt-coach skill (F13 > F9 > F8 > F5 > F7 > F3 >
+ *   F4 > F1 > F11 > F10 > F6 > F2; F12 mid-run only), at most ONE bilingual `nextQuestion`, the rest recorded as
+ *   bilingual `assumptions`. Exit: 0 CLEAR/OK · 3 VAGUE · 2 usage. `ask` as the FIRST argument selects this mode;
+ *   to lint a dispatch-prompt file that is literally named "ask", pass it as ./ask.
+ *
+ * Module API: { DIMENSIONS, checkPrompt, formatReport, hasKeyword, hasPathOrFileToken, countVagueHits,
+ *   ASK_DIMENSION_IDS, scoreAsk, formatAskReport, detectAskLang } (the last four re-exported from the ask module)
  * FORGE_PROJECT_ROOT overrides the project root used to locate log-event.cjs for --run (same convention
  * as forge-reflect.cjs / forge-memory.cjs). Deterministic; no LLM; no network.
  */
@@ -145,7 +155,13 @@ function formatReport(result) {
   return lines.join('\n');
 }
 
-module.exports = { DIMENSIONS, checkPrompt, formatReport, hasKeyword, hasPathOrFileToken, countVagueHits };
+// ---- `ask` mode: the raw owner request — implemented in ./forge-promptcheck-ask.cjs (wp18 split) ----------
+const ASK = require('./forge-promptcheck-ask.cjs');
+
+module.exports = {
+  DIMENSIONS, checkPrompt, formatReport, hasKeyword, hasPathOrFileToken, countVagueHits,
+  ASK_DIMENSION_IDS: ASK.ASK_DIMENSION_IDS, scoreAsk: ASK.scoreAsk, formatAskReport: ASK.formatAskReport, detectAskLang: ASK.detectAskLang,
+};
 
 // ---- CLI ----
 function readInput(fileArg) {
@@ -182,22 +198,19 @@ if (require.main === module) {
     if (opts.json) console.log(JSON.stringify(result));
     else console.log(formatReport(result));
 
-    if (opts.run) {
-      if (!/^[A-Za-z0-9_-]+$/.test(opts.run)) {
-        console.error('forge-promptcheck: invalid --run id (allowed: A-Z a-z 0-9 _ -)');
-      } else {
-        const logEventPath = path.join(PROJECT_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs');
-        const payload = {
-          agent: 'orchestrator', role: 'lead',
-          note: 'forge-promptcheck: ' + result.passed + '/' + result.total + ' ' + result.verdict,
-          evidence: 'dispatch prompt lint',
-        };
-        const r = spawnSync(process.execPath, [logEventPath, opts.run, 'agent_note', JSON.stringify(payload)], { encoding: 'utf8' });
-        if (r.status !== 0) console.error('forge-promptcheck: log-event warning: ' + ((r.stderr || r.stdout || r.error && r.error.message || '').trim() || 'non-zero exit'));
-      }
-    }
+    if (opts.run) logRunNote(opts.run, 'forge-promptcheck: ' + result.passed + '/' + result.total + ' ' + result.verdict, 'dispatch prompt lint');
 
     process.exitCode = (opts.strict && result.passed < 6) ? 1 : 0;
   };
-  try { main(); } catch (e) { console.error('forge-promptcheck: ' + e.message); process.exitCode = 1; }
+  if (process.argv[2] === 'ask') ASK.runAsk(process.argv.slice(3), { logRunNote });
+  else { try { main(); } catch (e) { console.error('forge-promptcheck: ' + e.message); process.exitCode = 1; } }
+}
+
+/** ONE `agent_note` for the run's dashboard. A failure to log is a warning, never fatal (both modes). */
+function logRunNote(runId, note, evidence) {
+  if (!/^[A-Za-z0-9_-]+$/.test(runId)) { console.error('forge-promptcheck: invalid --run id (allowed: A-Z a-z 0-9 _ -)'); return; }
+  const logEventPath = path.join(PROJECT_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs');
+  const payload = { agent: 'orchestrator', role: 'lead', note, evidence };
+  const r = spawnSync(process.execPath, [logEventPath, runId, 'agent_note', JSON.stringify(payload)], { encoding: 'utf8' });
+  if (r.status !== 0) console.error('forge-promptcheck: log-event warning: ' + ((r.stderr || r.stdout || r.error && r.error.message || '').trim() || 'non-zero exit'));
 }

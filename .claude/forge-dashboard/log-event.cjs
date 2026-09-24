@@ -21,6 +21,8 @@
  *     apply to this run, per config/orchestration/precedence.md's ordering. Informational/one-shot, like
  *     profile_loaded/memory_loaded — see forge-verify.cjs TERMINAL_TYPES and forge-dashboard/app.js taskStatus()
  *     for its mirrored registration (same 3-place discipline every event type here follows).
+ *   config_changed (v2.7.0, 2026-09-24) — forge-bin/forge-config.cjs::diff({run}) logs ONE when an owner setting changed
+ *     since the last run (changed[] + count); one-shot fact like owner_prefs_loaded, mirrored in the same places.
  *   VISIBLE-REASONING (NOT hidden chain-of-thought): agent_note · agent_output · agent_decision_summary · agent_next_action · agent_evidence_added
  *   SWARM EXECUTION (Lead-Agent studio): mission_packet_created · mission_blueprint_created · role_map_created ·
  *     skill_discovery · skill_map_created · custom_skill_created · skill_assigned ·
@@ -156,6 +158,13 @@
  *   decision_summary, next_action, evidence, files_read[], files_changed[], artifact, handoff/to, severity, iteration, custom (bool),
  *   work-package fields (mission, inputs[], allowed_actions[], not_allowed[], output_artifact, evidence_required[], handoff, success_criteria, rework_criteria),
  *   skill-routing fields (skill, skill_source: ecc-skill|forge-skill|project-local|native|internal|unavailable), and rework fields (target/to, issue, reason, required_fix).
+ * WP23 (2026-09-24) heartbeat/evidence-closure fields, read by forge-verify.cjs::verifyRun() and
+ *   forge-dashboard/app.js::buildNodes() (mirrored 1:1, never enforced here — plain optional extra fields):
+ *   `wp_id` on an `agent_progress` heartbeat AND on the matching `subagent_completed`/`subagent_failed` lets
+ *   the completion close that heartbeat (falls back to matching `role` when the completion has no `wp_id`);
+ *   `closes_event_id` on a `fix_completed`/`check_passed` names the EARLIER event's own `event_id` it closes —
+ *   only takes effect together with a non-empty `evidence` string, otherwise it is ignored with a printed
+ *   advisory (no evidence / unknown event_id / forward reference) and closes nothing.
  * STATUS legend: running=orange · completed=green · waiting=cyan · previewing=blue (work package logged, not executed) ·
  *   failed=red · internal=gray (INTERNAL ROLE ONLY). VISIBLE summaries/outputs only — never hidden chain-of-thought.
  *
@@ -299,7 +308,8 @@ const KNOWN_EVENT_TYPES = new Set([
   'agent_selected', 'agent_started', 'agent_progress', 'agent_completed', 'agent_failed', 'skill_loaded',
   'command_run', 'file_read', 'file_changed', 'check_started', 'check_passed', 'check_failed', 'report_generated', 'run_completed',
   // OWNER GOVERNANCE (WAVE B / B4): the applied-prefs ECHO — see header comment above.
-  'owner_prefs_loaded',
+  // config_changed (v2.7.0): forge-config.cjs diff with a run id logs one line per batch of owner setting changes.
+  'owner_prefs_loaded', 'config_changed',
   'agent_note', 'agent_output', 'agent_decision_summary', 'agent_next_action', 'agent_evidence_added',
   'mission_packet_created', 'mission_blueprint_created', 'role_map_created', 'skill_discovery', 'skill_map_created',
   'custom_skill_created', 'skill_assigned', 'agent_work_package_created', 'custom_subagent_created',

@@ -3,7 +3,7 @@
 ## The 12 permanent Bosses (names are FIXED across every project)
 | Agent | Role | Runtime (Claude) | NVIDIA tool-model | Core skills |
 |---|---|---|---|---|
-| **Boss** | Lead/orchestrator, owns quality + fix strategy | opus | reasoning | forge-router, make-plan, brainstorming, forge-report |
+| **Boss** | Lead/orchestrator, owns quality + fix strategy | opus | reasoning | forge-router, make-plan, brainstorming, forge-report, forge-prompt-coach, grill-me, grilling |
 | **Head Chef** | Exact work packages, completion control | sonnet (↑opus on complex) | reasoning | make-plan, writing-plans, dispatching-parallel-agents |
 | **Review Boss** | Final QA vs the user goal | opus | review (2nd opinion only) | code-review-excellence, verification-before-completion |
 | **Test Boss** | Automated tests (Playwright for web; fitting strategy otherwise) | sonnet | coding | TDD, e2e-runner, systematic-debugging |
@@ -12,11 +12,13 @@
 | **Security Boss** | Secrets/auth/validation/production safety | opus (always) | reasoning (extra lens) | security-reviewer, security-review |
 | **Skill Boss** | Global skill registry + auto-attach validation | haiku | fast | skill-builder, global-skills registry |
 | **Search Boss** | Source-grounded research | sonnet | default | deep-research, WebSearch/WebFetch |
-| **Build Boss** | Implementation | sonnet (↑opus hard) | coding | TDD, systematic-debugging, git worktrees |
+| **Build Boss** | Implementation | sonnet (↑opus hard) | coding | TDD, systematic-debugging, git worktrees, resolving-merge-conflicts, setup-pre-commit (alleen op verzoek van de owner) |
 | **Integration Boss** | APIs/n8n/webhooks/NVIDIA | sonnet (↑opus auth/data) | default | forge-integration, n8n-mcp-tools-expert, nvidia-provider |
-| **Docs Boss** | Docs + handoff | haiku (↑sonnet complex) | fast | forge-report, writing-plans |
+| **Docs Boss** | Docs + handoff | haiku (↑sonnet complex) | fast | forge-report, writing-plans, teach, wait-what, claude-md-improver |
 
 *De Core-skills kolom is een verkorte greep — de **source of truth** is `config/agents/agent-skill-map.json` (volledige lijsten) + `config/agents/agent-model-map.json` (volledige model-mappings incl. escalaties).*
+
+*v2.7.0 (2026-09-24): de meegeleverde (gevendorde) skills zijn aan drie Bosses gekoppeld — Boss: `forge-prompt-coach` (bij elk ruw verzoek tijdens de intake), `grill-me`/`grilling` (alleen bij intake `interview` of op verzoek); Build Boss: `resolving-merge-conflicts` (bij een merge-conflict), `setup-pre-commit` (alleen als de owner er expliciet om vraagt — draait npm/npx); Docs Boss: `teach`/`wait-what` (uitleg-modus), `claude-md-improver` (`/revise-claude-md`). Wanneer welke skill vuurt staat in `agent-skill-map.json` → `invocationNotes`. Let op: enkele namen in deze kolom (make-plan, e2e-runner, design-is, seo-specialist, security-reviewer, …) staan niet (meer) in de core-map; voor de meeste staat de reden daar in `_unshipped_removed_2026_09_23`. Herkomst en licenties: `.claude/skills/VENDORED-SKILLS.md`.*
 
 Extra agents: alleen met permanente naam + rol + skill-bundle + model-mapping + self-review + loop-positie → toevoegen in `config/agents/agent-registry.json` (template-first, dan syncen). Nooit ad-hoc namen voor werk dat een Boss al dekt.
 

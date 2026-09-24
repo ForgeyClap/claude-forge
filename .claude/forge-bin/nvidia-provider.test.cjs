@@ -9,6 +9,16 @@ const path = require('path');
 delete process.env.NVIDIA_API_KEY;
 process.env.NVIDIA_API_KEY = ''; // loader skips empty; CONFIG.key stays ''
 const P = require('./nvidia-provider.cjs');
+const os = require('os');
+const { spawnSync } = require('child_process');
+
+// Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home,
+// never ~/.claude, and FORGE_PROJECT_ROOT points at an EMPTY fixture so every existing chat() test below runs
+// on the schema default (nvidia ON) no matter what the real project settings say.
+const CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-cfghome-'));
+const EMPTY_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-cfgproj-'));
+process.env.FORGE_CONFIG_HOME = CONFIG_HOME;
+process.env.FORGE_PROJECT_ROOT = EMPTY_PROJECT;
 
 let pass = 0, fail = 0;
 const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } else { fail++; console.error('  FAIL ' + name); } };
@@ -137,7 +147,7 @@ const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } 
   t('chat(func:test-sketch, agent:build-boss) → resolves to the configured coding model', funcRouted.model === functionFit.functions['test-sketch'].model);
   t('chat(func:test-sketch, agent:build-boss) → stamped bulkOffload + codeGateRequired (coding-family function)', funcRouted.bulkOffload === true && funcRouted.codeGateRequired === true && funcRouted.func === 'test-sketch');
   const docRouted = await P.chat({ func: 'doc-draft', prompt: 'hi', agent: 'docs-boss' });
-  t('chat(func:doc-draft, agent:docs-boss) → resolves to the fast/nano model, NO codeGateRequired (non-coding function)', docRouted.model === functionFit.functions['doc-draft'].model && docRouted.bulkOffload === true && docRouted.codeGateRequired === undefined);
+  t('chat(func:doc-draft, agent:docs-boss) → resolves to the configured doc-draft model, NO codeGateRequired (non-coding function)', docRouted.model === functionFit.functions['doc-draft'].model && docRouted.bulkOffload === true && docRouted.codeGateRequired === undefined);
   // 9b) unknown function → hard ERROR, never a silent default
   const unknownFunc = await P.chat({ func: 'not-a-real-function', prompt: 'hi', agent: 'build-boss' });
   t('chat(func:"not-a-real-function") → ERROR, no silent fallback model', !!unknownFunc.error && /unknown function/.test(unknownFunc.error) && unknownFunc.model === undefined);
@@ -163,21 +173,184 @@ const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } 
 
   // 10) WP-NVIDIA-CONSOLIDATE (2026-07-26): cross-probe consolidation reassigned 3 functions + 1 role.
   // Regression-locks the consolidated picks so a future config edit can't silently drift them back.
-  t('function-model-fit: summarize now resolves to nemotron-3-nano (was minimax-m3, correct-but-slow)',
-    functionFit.functions['summarize'].model === 'nvidia/nemotron-3-nano-30b-a3b' && functionFit.functions['summarize'].fit === 'correct');
+  // wp19 (2026-09-24): nemotron-3-nano-30b-a3b answers HTTP 410 Gone — summarize/doc-draft/data-extract were re-pointed by same-task cross-probes.
+  t('function-model-fit: summarize now resolves to nemotron-3-super (was nemotron-3-nano, now HTTP 410 Gone)',
+    functionFit.functions['summarize'].model === 'nvidia/nemotron-3-super-120b-a12b' && functionFit.functions['summarize'].fit === 'correct');
+  t('function-model-fit: doc-draft -> nemotron-3-super and data-extract -> glm-5.3 (2026-09-24 cross-probes); no function still points at the dead nano model',
+    functionFit.functions['doc-draft'].model === 'nvidia/nemotron-3-super-120b-a12b' && functionFit.functions['data-extract'].model === 'z-ai/glm-5.3'
+    && Object.values(functionFit.functions).every((f) => f.model !== 'nvidia/nemotron-3-nano-30b-a3b'));
   t('function-model-fit: research-digest now resolves to nemotron-3-super (was deepseek-v4-flash, correct-but-slower)',
     functionFit.functions['research-digest'].model === 'nvidia/nemotron-3-super-120b-a12b' && functionFit.functions['research-digest'].fit === 'correct');
   t('function-model-fit: translate-rewrite now resolves to nemotron-3-super, fit=correct (was mistral-small, fit=partial)',
     functionFit.functions['translate-rewrite'].model === 'nvidia/nemotron-3-super-120b-a12b' && functionFit.functions['translate-rewrite'].fit === 'correct');
   t('function-model-fit consolidation: exactly 2 distinct models now cover all 7 functions',
     new Set(Object.values(functionFit.functions).map((f) => f.model)).size === 2);
-  t('model-capability-matrix: default role remapped to nemotron-3-nano (was minimax-m3)',
-    P.modelForRole('default') === 'nvidia/nemotron-3-nano-30b-a3b');
+  // wp19 (2026-09-24): nemotron-3-nano-30b-a3b answers HTTP 410 Gone (end of life) — the default role moved again.
+  t('model-capability-matrix: default role remapped to mistral-nemotron (was nemotron-3-nano, now HTTP 410 Gone)',
+    P.modelForRole('default') === 'mistralai/mistral-nemotron');
+  // wp19 regression lock: the live re-validated role map (every id answered a live chat probe on 2026-09-24).
+  const WP19_ROLES = { default: 'mistralai/mistral-nemotron', fast: 'mistralai/mistral-nemotron', 'coding-fast': 'mistralai/mistral-nemotron',
+    reasoning: 'nvidia/nemotron-3-super-120b-a12b', coding: 'nvidia/nemotron-3-super-120b-a12b', review: 'z-ai/glm-5.3', vision: 'meta/llama-3.2-11b-vision-instruct' };
+  t('model-capability-matrix: all 7 role slots pinned to the 2026-09-24 live re-validated map',
+    Object.entries(WP19_ROLES).every(([r, m]) => matrix.roles[r] && matrix.roles[r].model === m) && Object.keys(matrix.roles).length === 7);
   // REGRESSION: the claudeWinsSkipNvidia hard-block survives the role remap — a skip-listed agent must
   // still be hard-blocked on the (now-nano) default role, exactly as it was on the old minimax default.
   const skipStillBlockedAfterRemap = await P.chat({ role: 'default', prompt: 'hi', agent: 'boss' });
   t('chat(role:default, agent:boss) → STILL hard-blocked after the default-role remap to nano',
     skipStillBlockedAfterRemap.skipped === true && skipStillBlockedAfterRemap.policy === 'claude-first-skip');
+
+  // 11) owner setting `nvidia` (forge-config.cjs, v2.7.0) — OFF refuses chat() before anything else
+  console.log('11) owner setting nvidia (forge-config.cjs)');
+  const writeCfg = (settings) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-cfg-'));
+    fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+    if (settings) fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }));
+    return root;
+  };
+  const OFF_ROOT = writeCfg({ nvidia: { value: false } });
+  const ON_ROOT = writeCfg({ nvidia: { value: true } });
+  const withRoot = async (root, fn) => { const prev = process.env.FORGE_PROJECT_ROOT; process.env.FORGE_PROJECT_ROOT = root; try { return await fn(); } finally { process.env.FORGE_PROJECT_ROOT = prev; } };
+  const offOut = await withRoot(OFF_ROOT, () => P.chat({ role: 'coding', prompt: 'hi', agent: 'build-boss' }));
+  t('nvidia=false → chat() returns exactly {skipped:true, reason:"owner config nvidia=off"}', JSON.stringify(offOut) === JSON.stringify({ skipped: true, reason: 'owner config nvidia=off' }));
+  const offUnknown = await withRoot(OFF_ROOT, () => P.chat({ role: 'default', prompt: 'hi', agent: 'not-a-boss-typo' }));
+  t('nvidia=false is the FIRST check: even an unknown agent is skipped, not errored (nothing else resolved)', offUnknown.skipped === true && offUnknown.error === undefined && offUnknown.reason === P.NVIDIA_OFF_REASON);
+  const offForced = await withRoot(OFF_ROOT, () => P.chat({ role: 'default', prompt: 'hi', agent: 'boss', forceOverride: true, overrideReason: 'test' }));
+  t('nvidia=false also beats a usagePolicy forceOverride (no NVIDIA call, no mock)', offForced.skipped === true && offForced.mock === undefined && offForced.policyOverridden === undefined);
+  const onOut = await withRoot(ON_ROOT, () => P.chat({ role: 'coding', prompt: 'hi', agent: 'build-boss' }));
+  t('nvidia=true → unchanged: the call proceeds (mock, stamped bulkOffload)', onOut.mock === true && onOut.bulkOffload === true && onOut.skipped === undefined);
+  // M3 fail-safe (2026-09-24): an unreadable setting is OFF — never a silent fall-back to ON.
+  const absentOut = await withRoot(ON_ROOT, () => P.chat({ role: 'default', prompt: 'hi' }, { configModule: null }));
+  t('M3: config module absent (null) → OFF with the unreadable reason, even when the file says ON (no mock, no call)',
+    absentOut.skipped === true && absentOut.reason === P.NVIDIA_UNREADABLE_REASON && absentOut.mock === undefined);
+  const throwOut = await withRoot(ON_ROOT, () => P.chat({ role: 'default', prompt: 'hi' }, { configModule: { get() { throw new Error('boom'); } } }));
+  t('M3: a throwing config module (malformed FORGE_CONFIG.json) → OFF: "config unreadable → safe default off"',
+    throwOut.skipped === true && throwOut.reason === 'config unreadable → safe default off');
+  t('M3: nvidiaState — wrong-typed value is OFF (unreadable), a real true is ON, a real false is OFF (owner reason)',
+    P.nvidiaState({ configModule: { get: () => ({ value: 'uit' }) } }).on === false
+    && P.nvidiaState({ configModule: { get: () => ({ value: true }) } }).on === true
+    && P.nvidiaState({ configModule: { get: () => ({ value: false }) } }).reason === P.NVIDIA_OFF_REASON);
+  const absentHealth = await P.health({ configModule: null });
+  t('M3+M4: health() with the config module absent → {ok:false, mode:"off", reason: unreadable}',
+    JSON.stringify(absentHealth) === JSON.stringify({ ok: false, mode: 'off', reason: P.NVIDIA_UNREADABLE_REASON }));
+  t('configOn ignores a wrong-typed value and honours a real boolean',
+    P.configOn('nvidia', true, { configModule: { get: () => ({ value: 'uit' }) } }) === true && P.configOn('nvidia', true, { configModule: { get: () => ({ value: false }) } }) === false);
+
+  const CLI = path.join(__dirname, 'nvidia-provider.cjs');
+  const cliEnv = (root) => { const e = Object.assign({}, process.env, { FORGE_PROJECT_ROOT: root, NVIDIA_SKIP_ENV_FILES: '1' }); delete e.NVIDIA_API_KEY; return e; };
+  const cliChatOff = spawnSync(process.execPath, [CLI, 'chat', '--role', 'default', '--prompt', 'hi'], { encoding: 'utf8', env: cliEnv(OFF_ROOT) });
+  t('CLI chat with nvidia=false → "SKIPPED (config) — owner config nvidia=off", exit 3', cliChatOff.status === 3 && /^SKIPPED \(config\) — owner config nvidia=off/.test(cliChatOff.stdout));
+  const cliChatOn = spawnSync(process.execPath, [CLI, 'chat', '--role', 'default', '--prompt', 'hi'], { encoding: 'utf8', env: cliEnv(writeCfg(null)) });
+  t('CLI chat with no settings file → unchanged mock answer, exit 0 (no key, no network)', cliChatOn.status === 0 && /^\[MOCK\]/.test(cliChatOn.stdout));
+  // M4 (2026-09-24): OFF means health/models make NO request — one plain line, exit 3; --force runs them anyway.
+  const OFF_LINE = 'NVIDIA OFF — owner config nvidia=off — no NVIDIA request made (check anyway: --force; turn it back on: /forge config set nvidia aan)';
+  const cliHealthOff = spawnSync(process.execPath, [CLI, 'health', '--allow-mock'], { encoding: 'utf8', env: cliEnv(OFF_ROOT) });
+  t('M4: CLI health with nvidia=false → exactly the one OFF line, exit 3, no MOCK/live output', cliHealthOff.status === 3 && cliHealthOff.stdout.trim() === OFF_LINE && cliHealthOff.stderr === '');
+  const cliHealthOffForced = spawnSync(process.execPath, [CLI, 'health', '--allow-mock', '--force'], { encoding: 'utf8', env: cliEnv(OFF_ROOT) });
+  t('M4: CLI health --force with nvidia=false runs the check anyway (mock here) and prints the off note', cliHealthOffForced.status === 0 && /MOCK MODE/.test(cliHealthOffForced.stdout) && /note: owner config nvidia=off — .*--force: this health contacts NVIDIA anyway/.test(cliHealthOffForced.stdout));
+  const cliModelsOff = spawnSync(process.execPath, [CLI, 'models'], { encoding: 'utf8', env: cliEnv(OFF_ROOT) });
+  t('M4: CLI models with nvidia=false → exactly the one OFF line, exit 3', cliModelsOff.status === 3 && cliModelsOff.stdout.trim() === OFF_LINE);
+  const cliModelsOffForced = spawnSync(process.execPath, [CLI, 'models', '--force'], { encoding: 'utf8', env: cliEnv(OFF_ROOT) });
+  t('M4: CLI models --force with nvidia=false lists (mock: the matrix) and prints the off note', cliModelsOffForced.status === 0 && /configured matrix models/.test(cliModelsOffForced.stdout) && /note: owner config nvidia=off/.test(cliModelsOffForced.stdout));
+  const BROKEN_ROOT = writeCfg(null);
+  fs.writeFileSync(path.join(BROKEN_ROOT, '.claude', 'FORGE_CONFIG.json'), '{ "version": 1, "settings": { "nvidia": ');
+  const cliHealthBroken = spawnSync(process.execPath, [CLI, 'health'], { encoding: 'utf8', env: cliEnv(BROKEN_ROOT) });
+  t('M3: CLI health with a malformed FORGE_CONFIG.json → "NVIDIA OFF — config unreadable → safe default off", exit 3', cliHealthBroken.status === 3 && /^NVIDIA OFF — config unreadable → safe default off — no NVIDIA request made/.test(cliHealthBroken.stdout));
+  const cliChatBroken = spawnSync(process.execPath, [CLI, 'chat', '--role', 'default', '--prompt', 'hi'], { encoding: 'utf8', env: cliEnv(BROKEN_ROOT) });
+  t('M3: CLI chat with a malformed FORGE_CONFIG.json → SKIPPED (config), exit 3', cliChatBroken.status === 3 && /^SKIPPED \(config\) — config unreadable → safe default off/.test(cliChatBroken.stdout));
+  const cliRouteOff = spawnSync(process.execPath, [CLI, 'route', 'build-boss'], { encoding: 'utf8', env: cliEnv(OFF_ROOT) });
+  let routeJson = null; try { routeJson = JSON.parse(cliRouteOff.stdout); } catch { routeJson = null; }
+  t('CLI route with nvidia=false keeps stdout parseable JSON and puts the off note on stderr', cliRouteOff.status === 0 && !!routeJson && /note: owner config nvidia=off/.test(cliRouteOff.stderr));
+  const cliHealthOn = spawnSync(process.execPath, [CLI, 'health', '--allow-mock'], { encoding: 'utf8', env: cliEnv(ON_ROOT) });
+  t('CLI health with nvidia=true prints NO off note (unchanged output)', cliHealthOn.status === 0 && !/owner config nvidia=off/.test(cliHealthOn.stdout));
+
+  // 12) fetch-spy probes: a child process installs a spy as global.fetch BEFORE requiring a provider, then reports
+  // every request it saw. The spy answers 200 itself, so nothing ever reaches a network.
+  console.log('12) M4/M5 fetch-spy probes (no network)');
+  const FAKE_KEY = 'nvapi-FAKEwp20probeKEY0123456789';
+  const probe = (providerPath, env) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-probe-'));
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'const calls = [];',
+      'global.fetch = async (url, init) => { const h = (init && init.headers) || {};',
+      '  calls.push({ url: String(url), keyInAuth: String(h.authorization || "").includes(' + JSON.stringify(FAKE_KEY) + ') });',
+      '  return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify({ data: [{ id: "m1" }] }) }; };',
+      'const P = require(' + JSON.stringify(providerPath) + ');',
+      '(async () => {',
+      '  const out = {};',
+      '  out.health = await P.health(); out.healthCalls = calls.length;',
+      '  out.list = await P.listModels(); out.listCalls = calls.length;',
+      '  out.forced = await P.health({ force: true }); out.forcedCalls = calls.length;',
+      '  const E = process.env;',
+      '  out.env = { base: E.NVIDIA_BASE_URL || null, allow: E.NVIDIA_ALLOW_CUSTOM_BASE_URL || null, nodeOptions: E.NODE_OPTIONS || null,',
+      '    other: E.WP20_OTHER_SECRET || null, fastModel: E.NVIDIA_FAST_MODEL || null, hasKey: !!E.NVIDIA_API_KEY };',
+      '  out.config = { baseUrl: P.CONFIG.baseUrl, baseUrlError: P.CONFIG.baseUrlError };',
+      '  out.calls = calls;',
+      '  process.stdout.write(JSON.stringify(out));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { return JSON.parse(r.stdout); } catch { return { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  };
+  const baseEnv = (extra) => {
+    const e = Object.assign({}, process.env, extra);
+    for (const k of Object.keys(e)) if (/^NVIDIA_/.test(k) && !(k in (extra || {}))) delete e[k];
+    delete e.NODE_OPTIONS; delete e.WP20_OTHER_SECRET;
+    return e;
+  };
+  // M4: the REAL provider + the real forge-config, with a key present — so ON really calls fetch (the control arm).
+  const realEnv = (root) => baseEnv({ NVIDIA_API_KEY: FAKE_KEY, NVIDIA_SKIP_ENV_FILES: '1', FORGE_PROJECT_ROOT: root, FORGE_CONFIG_HOME: CONFIG_HOME });
+  const offProbe = probe(CLI, realEnv(OFF_ROOT));
+  t('M4 spy: nvidia=false + a key → health() is {ok:false, mode:"off", reason} with ZERO fetch calls',
+    !!offProbe.health && JSON.stringify(offProbe.health) === JSON.stringify({ ok: false, mode: 'off', reason: P.NVIDIA_OFF_REASON }) && offProbe.healthCalls === 0);
+  t('M4 spy: nvidia=false + a key → listModels() is off with ZERO fetch calls', !!offProbe.list && offProbe.list.mode === 'off' && offProbe.list.ok === false && offProbe.listCalls === 0);
+  t('M4 spy: health({force:true}) with nvidia=false does contact the endpoint (force really overrides)', !!offProbe.forced && offProbe.forced.ok === true && offProbe.forcedCalls >= 1);
+  const onProbe = probe(CLI, realEnv(ON_ROOT));
+  t('M4 spy control: nvidia=true + a key → health() really calls fetch (the spy sees live-shaped calls)', !!onProbe.health && onProbe.health.ok === true && onProbe.healthCalls >= 1 && onProbe.calls.every((c) => c.keyInAuth));
+
+  // M5: a COPY of the provider in a temp project, so a project .env and a global nvidia.env can be staged for real.
+  // The copy has no forge-config.cjs next to it (switch = unreadable = OFF), so the assertions use health({force}).
+  const m5 = (files, extra) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nvidia-m5-'));
+    const bin = path.join(root, 'proj', '.claude', 'forge-bin');
+    const home = path.join(root, 'home');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.copyFileSync(CLI, path.join(bin, 'nvidia-provider.cjs'));
+    if (files.project) fs.writeFileSync(path.join(root, 'proj', '.env'), files.project);
+    if (files.global) fs.writeFileSync(path.join(home, '.claude', 'nvidia.env'), files.global);
+    const out = probe(path.join(bin, 'nvidia-provider.cjs'), baseEnv(Object.assign({ HOME: home, USERPROFILE: home, FORGE_CONFIG_HOME: path.join(home, '.claude'), FORGE_PROJECT_ROOT: path.join(root, 'proj') }, extra || {})));
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
+    return out;
+  };
+  const globalKey = 'NVIDIA_API_KEY=' + FAKE_KEY + '\n';
+  const k1 = m5({ project: 'NVIDIA_BASE_URL=https://evil.example/v1\nNVIDIA_ALLOW_CUSTOM_BASE_URL=1\nNODE_OPTIONS=--inspect\nWP20_OTHER_SECRET=x\nNVIDIA_FAST_MODEL=proj/model\n', global: globalKey });
+  t('M5: a project .env base URL + allow flag is IGNORED — the global key only ever goes to integrate.api.nvidia.com',
+    !!k1.forced && k1.forced.ok === true && k1.calls.length >= 1 && k1.calls.every((c) => c.url.startsWith('https://integrate.api.nvidia.com/v1/') && c.keyInAuth) && !k1.calls.some((c) => /evil\.example/.test(c.url)));
+  t('M5: a project .env can set only NVIDIA_API_KEY / NVIDIA_*_MODEL (base URL, allow flag, NODE_OPTIONS, other names never reach process.env)',
+    !!k1.env && k1.env.base === null && k1.env.allow === null && k1.env.nodeOptions === null && k1.env.other === null && k1.env.fastModel === 'proj/model' && k1.env.hasKey === true);
+  const k2 = m5({ global: globalKey + 'NVIDIA_BASE_URL=http://127.0.0.1:9/v1\n' });
+  t('M5: a plain-http base URL (even from the global file) is REFUSED with a plain reason and ZERO requests',
+    !!k2.forced && k2.forced.ok === false && k2.forced.mode === 'refused' && /must use https:/.test(k2.forced.reason) && k2.calls.length === 0 && k2.config.baseUrl === '');
+  const k3 = m5({ global: globalKey + 'NVIDIA_BASE_URL=https://evil.example/v1\n' });
+  t('M5: an https base URL on a non-nvidia.com host is REFUSED with ZERO requests', !!k3.forced && k3.forced.mode === 'refused' && /not an nvidia\.com host/.test(k3.forced.reason) && k3.calls.length === 0);
+  const k4 = m5({ global: globalKey + 'NVIDIA_BASE_URL=http://127.0.0.1:9/v1\nNVIDIA_ALLOW_CUSTOM_BASE_URL=1\n' });
+  t('M5: the GLOBAL file allow flag permits a custom endpoint (the spy sees the request go there)', !!k4.forced && k4.forced.ok === true && k4.calls.length >= 1 && k4.calls.every((c) => c.url.startsWith('http://127.0.0.1:9/v1/')));
+  const k5 = m5({ project: 'NVIDIA_ALLOW_CUSTOM_BASE_URL=1\n', global: globalKey }, { NVIDIA_BASE_URL: 'http://127.0.0.1:9/v1' });
+  t('M5: an allow flag in the PROJECT .env does not count — a real-env http base URL stays refused, ZERO requests', !!k5.forced && k5.forced.mode === 'refused' && k5.calls.length === 0);
+  const k6 = m5({ global: globalKey }, { NVIDIA_BASE_URL: 'http://127.0.0.1:9/v1', NVIDIA_ALLOW_CUSTOM_BASE_URL: '1' });
+  t('M5: the allow flag from the REAL environment permits a custom endpoint', !!k6.forced && k6.forced.ok === true && k6.calls.every((c) => c.url.startsWith('http://127.0.0.1:9/v1/')));
+  const k7 = m5({ global: globalKey + 'NVIDIA_BASE_URL=https://custom.api.nvidia.com/v1/\n' });
+  t('M5: an https *.nvidia.com base URL from the global file is accepted (trailing slash normalised)', !!k7.forced && k7.forced.ok === true && k7.calls.every((c) => c.url.startsWith('https://custom.api.nvidia.com/v1/models')));
+  const cb = P.checkBaseUrl;
+  t('M5 checkBaseUrl: default ok; http, foreign host, look-alike hosts and junk refused; allowCustom lifts both checks',
+    cb('https://integrate.api.nvidia.com/v1', false).ok === true && cb('http://integrate.api.nvidia.com/v1', false).ok === false
+    && cb('https://evilnvidia.com/v1', false).ok === false && cb('https://nvidia.com.evil.io/v1', false).ok === false
+    && cb('https://integrate.api.nvidia.com.evil.io/v1', false).ok === false && cb('not a url', false).ok === false
+    && cb('http://127.0.0.1:9/v1', true).ok === true && cb('https://integrate.api.nvidia.com/v1/', false).url === 'https://integrate.api.nvidia.com/v1');
+  for (const d of [CONFIG_HOME, EMPTY_PROJECT, OFF_ROOT, ON_ROOT, BROKEN_ROOT]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
 
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exitCode = fail ? 1 : 0;

@@ -122,6 +122,7 @@ function actTag(e) { const t = e.event_type;
   if (t.indexOf('retest') === 0) return 'retest'; if (t.indexOf('quality') === 0) return 'gate'; if (t === 'memory_loaded' || t === 'memory_updated') return 'memory';
   if (t === 'ecc_inventory') return 'ecc'; if (t === 'agent_selected') return 'routing'; if (t === 'agent_work_package_created') return 'work pkg'; if (t === 'agent_artifact_created') return 'artifact'; if (t === 'agent_handoff') return 'handoff';
   if (t === 'owner_prefs_loaded') return 'prefs'; // WAVE B / B4: the applied-prefs ECHO
+  if (t === 'config_changed') return 'config'; // v2.7.0: owner settings changed since the last run (forge-config.cjs diff)
   return e.role ? String(e.role).split('/')[0] : 'event'; }
 function actMsg(e) { return e.note || e.output || e.task || e.issue || e.command || e.artifact || (e.files_changed && e.files_changed.map(fileName).join(', ')) || (e.files_read && e.files_read.map(fileName).join(', ')) || e.decision_summary || e.event_type; }
 function renderActivity() {

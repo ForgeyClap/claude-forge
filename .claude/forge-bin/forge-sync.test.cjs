@@ -2749,5 +2749,148 @@ console.log('\n69) copyNoFollow: leaf-TOCTOU dicht');
   t('69c een tweede kopie over een bestaand doel slaagt (rename vervangt)', fs.readFileSync(path.join(dstC, 'forge-bin', 's.cjs'), 'utf8') === 'BYTES-69-éü');
 }
 
+// 70) v2.7.0 settings — the catalogue must ship with the reader that resolves it (forge-config.cjs falls back to
+// nothing without its schema), while the owner's OWN values (.claude/FORGE_CONFIG.json) are user data and must
+// never be planned, overwritten or pruned by a sync. Same payload-pairing discipline as section 59.
+console.log('\n70) v2.7.0 settings payload (schema synced, the owner\'s FORGE_CONFIG.json never)');
+{
+  const tplDir = path.resolve(__dirname, '..');
+  const files = sync.listSystemFiles(tplDir);
+  t('70a FORGE_CONFIG_SCHEMA.json is in the synced SYSTEM file list', files.includes('config/orchestration/FORGE_CONFIG_SCHEMA.json'));
+  t('70b the pinned schema really exists in this template (no dangling pin)', fs.existsSync(path.join(tplDir, 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json')));
+  t('70c the reader (forge-config.cjs + its -text/-cli helpers) is synced too', ['forge-config.cjs', 'forge-config-text.cjs', 'forge-config-cli.cjs'].every((f) => files.includes('forge-bin/' + f)));
+  t('70d the owner\'s own FORGE_CONFIG.json is NOT in the synced list', !files.includes('FORGE_CONFIG.json'));
+  const src = fs.readFileSync(path.join(__dirname, 'forge-sync.cjs'), 'utf8');
+  const protect = src.match(/const PROTECT = new Set\(\[([\s\S]*?)\]\);/);
+  t('70e FORGE_CONFIG.json is pinned in the PROTECT set', !!protect && protect[1].includes("'FORGE_CONFIG.json'"));
+  // behavioural: even a template that (wrongly) carries a FORGE_CONFIG.json never plans to touch a project's own copy
+  const tpl = freshDir('t70-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'v1');
+  fs.writeFileSync(path.join(tpl, 'FORGE_CONFIG.json'), '{"version":1,"settings":{"nvidia":{"value":true}}}');
+  const p70 = makeProject(freshDir('t70-root'), 'projA', null);
+  const own = path.join(p70, '.claude', 'FORGE_CONFIG.json');
+  fs.writeFileSync(own, '{"version":1,"settings":{"nvidia":{"value":false}}}');
+  const plan = sync.buildPlan(tpl, p70, {});
+  t('70f the dry-run plan is real (it does plan the template tool)', plan.toChange.some((x) => x.rel === 'forge-bin/tool.cjs'));
+  t('70g the plan never mentions the project\'s own FORGE_CONFIG.json', !JSON.stringify(plan).includes('FORGE_CONFIG.json'));
+  t('70h the project\'s own FORGE_CONFIG.json bytes are untouched', fs.readFileSync(own, 'utf8').includes('"value":false'));
+}
+
+// 71) vendored public skills (2026-09-24). skills/ has no SYSTEM_GLOB, so each vendored file is pinned one path at a
+// time; a skill whose files are not all pinned would reach a synced project half-copied (a SKILL.md pointing at a
+// helper or LICENSE that never arrived). The shipped set is DERIVED from skills/VENDORED-SKILLS.md's "Meegeleverd"
+// table — never a hard-coded count — so a newly vendored skill turns this red with the missing paths named. If that
+// table cannot be parsed, the fallback is every skills/<dir> whose SKILL.md carries a "Pinned commit:" line, and the
+// test name says so.
+console.log('\n71) vendored public skills are pinned (derived from skills/VENDORED-SKILLS.md)');
+{
+  const tplDir = path.resolve(__dirname, '..');
+  const files = new Set(sync.listSystemFiles(tplDir));
+  const docPath = path.join(tplDir, 'skills', 'VENDORED-SKILLS.md');
+  const doc = fs.existsSync(docPath) ? fs.readFileSync(docPath, 'utf8') : '';
+  // wp5 (2026-09-24): scan EVERY "Meegeleverd" section (ronde 1 AND ronde 2+), not just the first —
+  // VENDORED-SKILLS.md now has two such sections. A command row (round 2's `soort` column) never matches the
+  // strict `| `name` |` pattern below because its first table cell also carries a parenthetical file path
+  // (e.g. `` `/commit` (`.claude/commands/commit.md`) ``), so command rows are naturally excluded with no
+  // extra filtering needed.
+  const shippedSections = doc.split(/\r?\n## /).filter((s) => /^Meegeleverd\b/.test(s)).map((s) => s.split(/\r?\n### /)[0]);
+  let names = shippedSections.flatMap((s) => [...s.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map((m) => m[1]));
+  let how = 'the "Meegeleverd" table(s) of VENDORED-SKILLS.md';
+  if (!names.length) {
+    how = 'FALLBACK (table unparseable): skills/<dir>/SKILL.md carrying a "Pinned commit:" line';
+    const skillsDir = path.join(tplDir, 'skills');
+    names = fs.readdirSync(skillsDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+      .filter((n) => { try { return /^Pinned commit:/m.test(fs.readFileSync(path.join(skillsDir, n, 'SKILL.md'), 'utf8')); } catch { return false; } });
+  }
+  const walk71 = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk71(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const rel71 = (f) => path.relative(tplDir, f).split(path.sep).join('/');
+  const absentDirs = names.filter((n) => !fs.existsSync(path.join(tplDir, 'skills', n)));
+  const shipped = names.filter((n) => !absentDirs.includes(n)).flatMap((n) => walk71(path.join(tplDir, 'skills', n)).map(rel71));
+  const missing = shipped.filter((f) => !files.has(f));
+  const noLicense = names.filter((n) => !files.has('skills/' + n + '/SKILL.md') || !(files.has('skills/' + n + '/LICENSE') || files.has('skills/' + n + '/LICENSE.txt')));
+  const dangling = [...files].filter((f) => names.some((n) => f.startsWith('skills/' + n + '/')) && !fs.existsSync(path.join(tplDir, f)));
+  t('71a VENDORED-SKILLS.md exists and is itself synced', fs.existsSync(docPath) && files.has('skills/VENDORED-SKILLS.md'));
+  t('71b the shipped set was derived from ' + how + ' (' + names.length + ' skills, ' + shipped.length + ' files)', names.length > 0 && shipped.length > 0);
+  t('71c every listed skill dir really exists' + (absentDirs.length ? ' — ABSENT: ' + absentDirs.join(', ') : ''), absentDirs.length === 0);
+  t('71d every shipped skill ships its SKILL.md AND its upstream LICENSE' + (noLicense.length ? ' — INCOMPLETE: ' + noLicense.join(', ') : ''), noLicense.length === 0);
+  t('71e every file of every shipped vendored skill is in SYSTEM' + (missing.length ? ' — MISSING: ' + missing.join(', ') : ''), missing.length === 0);
+  t('71f no pinned vendored path is dangling (every pin exists in this template)' + (dangling.length ? ' — DANGLING: ' + dangling.join(', ') : ''), dangling.length === 0);
+}
+
+// 72) forge-prompt-coach (Forge-native) + the two vendored commands are pinned (wp13b/wp6b, 2026-09-24).
+// Neither is covered by test 71: forge-prompt-coach is not third-party content in VENDORED-SKILLS.md's
+// "Meegeleverd" tables, and commands/ carries no SYSTEM_GLOB (only forge-bin/forge-dashboard/agents are
+// globbed — see the SYSTEM_GLOB block in forge-sync.cjs), so both need their own explicit pin test instead of
+// relying on the vendored-skill scan above.
+console.log('\n72) forge-prompt-coach + vendored commands are pinned');
+{
+  const tplDir = path.resolve(__dirname, '..');
+  const files = new Set(sync.listSystemFiles(tplDir));
+  const walk72 = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk72(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const rel72 = (f) => path.relative(tplDir, f).split(path.sep).join('/');
+  const promptCoachDir = path.join(tplDir, 'skills', 'forge-prompt-coach');
+  const promptCoachFiles = fs.existsSync(promptCoachDir) ? walk72(promptCoachDir).map(rel72) : [];
+  const promptCoachMissing = promptCoachFiles.filter((f) => !files.has(f));
+  const commandFiles = ['commands/commit.md', 'commands/revise-claude-md.md'];
+  const commandsMissingOnDisk = commandFiles.filter((f) => !fs.existsSync(path.join(tplDir, f)));
+  const commandsMissingPin = commandFiles.filter((f) => !files.has(f));
+  t('72a forge-prompt-coach dir exists on disk with real files', fs.existsSync(promptCoachDir) && promptCoachFiles.length > 0);
+  t('72b every file of forge-prompt-coach is in SYSTEM' + (promptCoachMissing.length ? ' — MISSING: ' + promptCoachMissing.join(', ') : ''), promptCoachMissing.length === 0);
+  t('72c both vendored commands exist on disk' + (commandsMissingOnDisk.length ? ' — ABSENT: ' + commandsMissingOnDisk.join(', ') : ''), commandsMissingOnDisk.length === 0);
+  t('72d both vendored commands are pinned in SYSTEM' + (commandsMissingPin.length ? ' — MISSING: ' + commandsMissingPin.join(', ') : ''), commandsMissingPin.length === 0);
+}
+
+// 73) WP22 (owner directive 2026-09-24, "alles standaard aan"): forge-sync now merges the template's
+// settings.json into a synced project instead of leaving it for install.sh/install.ps1's old
+// "settings.forge-recommended.json — merge by hand" path. Proves the wiring end-to-end via the same
+// safeSyncProject() the `install` CLI and sync-all's lockedSync() both call.
+console.log('\n73) WP22 — settings.json merge wired into forge-sync install');
+{
+  const tpl = freshDir('t73-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'console.log("v1");\n');
+  fs.writeFileSync(path.join(tpl, 'settings.json'), JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'node .claude/forge-bin/forge-gate-hook.cjs', timeout: 10 }] }] },
+    permissions: { deny: ['Read(./.env)'] },
+  }, null, 2) + '\n');
+
+  // (a) a fresh project (no settings.json yet) -> created (a copy of the template's)
+  const rootA = freshDir('t73-root-a');
+  const pA = makeProject(rootA, 'projA', 0);
+  const r1 = sync.safeSyncProject(tpl, pA, { batchId: 't73a', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('73a install into a fresh project succeeds', r1.ok === true);
+  t('73a settings.json is created for a fresh project', fs.existsSync(path.join(pA, '.claude', 'settings.json')));
+  const createdSettings = JSON.parse(fs.readFileSync(path.join(pA, '.claude', 'settings.json'), 'utf8'));
+  t('73a created settings.json carries the gate hook', JSON.stringify(createdSettings).includes('forge-gate-hook.cjs'));
+  t('73a settingsMerge result is reported on the sync result (status: created)', !!r1.settingsMerge && r1.settingsMerge.status === 'created');
+
+  // (b) an EXISTING project with a FOREIGN hook + a foreign allow rule -> merged, foreign entries kept
+  const rootB = freshDir('t73-root-b');
+  const pB = makeProject(rootB, 'projB', 0);
+  fs.writeFileSync(path.join(pB, '.claude', 'settings.json'), JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: 'Write|Edit', hooks: [{ type: 'command', command: 'node "owner-hook.cjs"', timeout: 5 }] }] },
+    permissions: { allow: ['Bash(npm test)'] },
+  }, null, 2) + '\n');
+  const r2 = sync.safeSyncProject(tpl, pB, { batchId: 't73b', nowIso: '2026-01-01T00:00:00.000Z' });
+  t('73b install into a project with an existing settings.json still succeeds', r2.ok === true);
+  t('73b settingsMerge status is merged', !!r2.settingsMerge && r2.settingsMerge.status === 'merged');
+  const mergedSettings = JSON.parse(fs.readFileSync(path.join(pB, '.claude', 'settings.json'), 'utf8'));
+  t('73b the foreign hook survives', mergedSettings.hooks.PreToolUse.some((e) => e.hooks[0].command === 'node "owner-hook.cjs"'));
+  t('73b the foreign allow rule survives', JSON.stringify(mergedSettings.permissions.allow) === JSON.stringify(['Bash(npm test)']));
+  t('73b the template\'s gate hook was added', mergedSettings.hooks.PreToolUse.some((e) => e.hooks[0].command.includes('forge-gate-hook.cjs')));
+  t('73b the template\'s deny rule was added', (mergedSettings.permissions.deny || []).includes('Read(./.env)'));
+  const backupFiles = fs.readdirSync(path.join(pB, '.claude')).filter((f) => f.includes('.forge-bak-'));
+  t('73b a settings.json backup was written before the merge', backupFiles.length === 1);
+
+  // (c) a SECOND install on the same already-merged project -> no change at all
+  const before = fs.readFileSync(path.join(pB, '.claude', 'settings.json'), 'utf8');
+  const r3 = sync.safeSyncProject(tpl, pB, { batchId: 't73c', nowIso: '2026-01-01T00:00:01.000Z' });
+  t('73c a second install reports settingsMerge status noop', !!r3.settingsMerge && r3.settingsMerge.status === 'noop');
+  t('73c settings.json bytes are unchanged on the second run', fs.readFileSync(path.join(pB, '.claude', 'settings.json'), 'utf8') === before);
+  const backupFilesAfter = fs.readdirSync(path.join(pB, '.claude')).filter((f) => f.includes('.forge-bak-'));
+  t('73c no new backup is taken on the no-op run', backupFilesAfter.length === backupFiles.length);
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

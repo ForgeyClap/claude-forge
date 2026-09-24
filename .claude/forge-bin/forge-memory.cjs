@@ -8,6 +8,13 @@
  *
  * This is the NATIVE-memory companion, not a replacement: Bosses with `memory: project` still get their
  * harness MEMORY.md; this adds a queryable, redaction-guaranteed lesson store the Lead can recall from.
+ *
+ * OWNER SETTING `agent-memory` (v2.7.0, forge-config.cjs; default ON): OFF -> addLesson() writes NOTHING and
+ * returns { skipped: true, reason: 'owner config agent-memory=off' } (CLI `add`: "SKIPPED (config) — ...",
+ * exit 3). Reads (listLessons/recall/scan) are unchanged: existing memory stays usable. The setting is read
+ * for the same root the lesson would be written to (FORGE_PROJECT_ROOT, the resolver's own seam, wins when
+ * set). forge-config.cjs is soft-required and read through its fail-safe safeGet(): absent, throwing or a damaged
+ * settings file -> the schema default (ON; no data flag) plus a one-line `config_note` (CLI: on stderr).
  */
 const fs = require('fs');
 const path = require('path');
@@ -26,7 +33,45 @@ function scrub(s) { s = baseRedact(String(s == null ? '' : s)); for (const re of
 function memDir(boss, root) { const slug = String(boss).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown'; return path.join(root || PROJECT_ROOT, '.claude', 'agent-memory', slug); }
 function lessonsFile(boss, root) { return path.join(memDir(boss, root), 'lessons.jsonl'); }
 
-function addLesson(boss, lesson, root) {
+// Owner settings (forge-config.cjs, v2.7.0) — soft-required, see the header.
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default, used only when forge-config.cjs is absent or broken; an older copy without safeGet is read
+ *  through get(). Never throws. opts.projectRoot = the root this tool acts on (ignored when FORGE_PROJECT_ROOT is
+ *  set); opts.configModule injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfg;
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
+
+/** addLesson(boss, lesson, root, opts) -> the stored record, or { skipped, reason } when the owner switched
+ *  agent-memory off (nothing written). A degraded settings read adds `config_note` to the RETURNED object only
+ *  (never to the stored line). opts.configModule injects a config module (tests). */
+function addLesson(boss, lesson, root, opts) {
+  opts = opts || {};
+  const sc = configRead('agent-memory', true, { projectRoot: root || PROJECT_ROOT, configModule: opts.configModule });
+  const note = sc.degraded ? { config_note: sc.reason } : {};
+  if (sc.value === false) {
+    return Object.assign({ skipped: true, reason: 'owner config agent-memory=off' }, note);
+  }
   lesson = lesson || {};
   const type = TYPES.has(lesson.type) ? lesson.type : 'semantic';
   const rec = {
@@ -39,7 +84,7 @@ function addLesson(boss, lesson, root) {
   rec.id = crypto.createHash('sha1').update(rec.type + rec.text + rec.ts + Math.random()).digest('hex').slice(0, 12);
   const dir = memDir(boss, root); fs.mkdirSync(dir, { recursive: true });
   fs.appendFileSync(lessonsFile(boss, root), JSON.stringify(rec) + '\n', 'utf8');
-  return rec;
+  return Object.assign(rec, note);
 }
 function listLessons(boss, root) { let raw; try { raw = fs.readFileSync(lessonsFile(boss, root), 'utf8'); } catch { return []; } return raw.split(/\r?\n/).filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
 function recall(boss, query, k, root) {
@@ -67,12 +112,17 @@ function scanMemory(root) {
 // its own redaction (forge-harvest.cjs's cross-project secret guard) can reuse this exact pattern set
 // instead of maintaining a second, drifting copy — this file stays the single source of truth for what
 // "redacted" means for a lesson's text.
-module.exports = { addLesson, listLessons, recall, scanMemory, memDir, scrub, TYPES, SECRET_RE };
+module.exports = { addLesson, listLessons, recall, scanMemory, memDir, scrub, configOn, configRead, TYPES, SECRET_RE };
 
 if (require.main === module) {
   const [boss, cmd, ...rest] = process.argv.slice(2);
   if (!boss || !cmd) { console.log('usage: forge-memory.cjs <boss> add "<text>" [tag,tag] [type] | recall "<query>" | list | scan'); process.exit(1); }
-  if (cmd === 'add') { const rec = addLesson(boss, { text: rest[0], tags: (rest[1] || '').split(',').filter(Boolean), type: rest[2] }); console.log('lesson ' + rec.id + ' (' + rec.type + ') stored for ' + boss); }
+  if (cmd === 'add') {
+    const rec = addLesson(boss, { text: rest[0], tags: (rest[1] || '').split(',').filter(Boolean), type: rest[2] });
+    if (rec.config_note) console.error('NOTE (settings): ' + rec.config_note);
+    if (rec.skipped) { console.log('SKIPPED (config) — ' + rec.reason + ': no lesson stored for ' + boss + ' (turn it back on: /forge config set agent-memory aan)'); process.exitCode = 3; }
+    else console.log('lesson ' + rec.id + ' (' + rec.type + ') stored for ' + boss);
+  }
   else if (cmd === 'recall') { console.log(JSON.stringify(recall(boss, rest[0], 5), null, 2)); }
   else if (cmd === 'list') { console.log(JSON.stringify(listLessons(boss), null, 2)); }
   else if (cmd === 'scan') { const r = scanMemory(); console.log(r.ok ? 'agent-memory clean' : 'SECRETS FOUND: ' + JSON.stringify(r.hits)); process.exit(r.ok ? 0 : 1); }

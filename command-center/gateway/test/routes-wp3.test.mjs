@@ -94,7 +94,7 @@ test('GET /api/models returns the real capability matrix + a truthful nvidia sta
   const res = await request(port, '/api/models');
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.matrix_available, true);
-  assert.ok(['CONNECTED', 'DISCONNECTED', 'NOT CONFIGURED', 'UNKNOWN'].includes(res.json.nvidia.state));
+  assert.ok(['CONNECTED', 'DISCONNECTED', 'NOT CONFIGURED', 'OFF', 'UNKNOWN'].includes(res.json.nvidia.state));
 });
 
 test('GET /api/proof returns the real evidence chain for the full-audit run (2 registered artifacts)', { skip: NEEDS_AUDIT_PROOF }, async () => {

@@ -12,6 +12,14 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { spawnSync } = require('child_process');
+// CONFIG + GUARD SANDBOX (v2.7.0, 2026-09-24): the mode now also comes from `/forge config` (forge-config.cjs) and
+// decideLive() reads the usage guard's state file. Point both at throwaway dirs BEFORE the require, so no test here
+// reads the owner's real FORGE_CONFIG.json or ~/.claude state — and every CLI child inherits the sandbox.
+const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'autonomy-cfg-'));
+process.env.FORGE_CONFIG_HOME = path.join(SANDBOX, 'home');
+process.env.FORGE_PROJECT_ROOT = path.join(SANDBOX, 'project');
+process.env.FORGE_USAGE_GUARD_HOME = path.join(SANDBOX, 'guard-home');
+delete process.env.FORGE_USAGE_GUARD_STATE;
 const autonomy = require('./forge-autonomy.cjs');
 const actiongate = require('./forge-actiongate.cjs');
 
@@ -294,6 +302,205 @@ t('CLI decide with an unknown --mode exits 2 (config/usage error, not a silent d
   assert.strictEqual(r.status, 2);
 });
 
+// ---------------------------------------------------------------------------
+// 8) v2.7.0 — the mode comes from `/forge config`; decideLive() reads the real usage-guard pause
+// ---------------------------------------------------------------------------
+console.log('\n8) owner config + live usage-limit (v2.7.0, sandboxed)');
+
+function configFixture(settings) {
+  const root = freshDir('autonomy-root');
+  const home = freshDir('autonomy-home');
+  const entries = {};
+  for (const [k, v] of Object.entries(settings || {})) entries[k] = { value: v, set_at: '2026-09-24T00:00:00Z', set_by: 'test' };
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  // project-scope keys (autonomy) live in the project file, global-scope keys (usage-guard) in the global file
+  const projectSettings = {}; const globalSettings = {};
+  for (const [k, e] of Object.entries(entries)) (k.startsWith('usage-guard') ? globalSettings : projectSettings)[k] = e;
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: projectSettings }));
+  fs.writeFileSync(path.join(home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: globalSettings }));
+  return { root, home, configOpts: { projectRoot: root, configHome: home } };
+}
+function guardState(state) {
+  const dir = freshDir('autonomy-guard');
+  const statePath = path.join(dir, 'FORGE_USAGE_GUARD_STATE.json');
+  if (state) fs.writeFileSync(statePath, JSON.stringify(state));
+  return { dir, statePath };
+}
+
+t('config autonomy=ask-each-phase: a plain phase transition stops (normal re-ask, not a hard interrupt)', () => {
+  const fx = configFixture({ autonomy: 'ask-each-phase' });
+  const r = autonomy.decide({ text: 'moving on to phase 2', phaseTransition: true }, { configOpts: fx.configOpts });
+  assert.strictEqual(r.proceed, false);
+  assert.strictEqual(r.interruptedBy, null);
+  assert.strictEqual(r.mode, 'ask-each-phase');
+  assert.match(r.modeSource, /forge-config/);
+});
+t('config autonomy=full-auto-within-mission still stops on a hard gate', () => {
+  const fx = configFixture({ autonomy: 'full-auto-within-mission' });
+  const r = autonomy.decide({ text: 'git push to origin main', phaseTransition: true }, { configOpts: fx.configOpts });
+  assert.strictEqual(r.proceed, false);
+  assert.strictEqual(r.interruptedBy, 'git-push');
+});
+t('opts.mode (the current instruction) beats the config value', () => {
+  const fx = configFixture({ autonomy: 'ask-each-phase' });
+  const r = autonomy.decide({ text: 'moving on', phaseTransition: true }, { configOpts: fx.configOpts, mode: 'continue-within-mission' });
+  assert.strictEqual(r.proceed, true);
+  assert.strictEqual(r.modeSource, 'opts.mode');
+});
+t('no config file: the config default (continue-within-mission) proceeds on a phase transition', () => {
+  const fx = configFixture({});
+  const r = autonomy.decide({ text: 'moving on', phaseTransition: true }, { configOpts: fx.configOpts });
+  assert.strictEqual(r.proceed, true);
+  assert.strictEqual(r.mode, 'continue-within-mission');
+});
+t('forge-config.cjs absent: falls back to FORGE_AUTONOMY.json default', () => {
+  const r = autonomy.decide({ text: 'moving on', phaseTransition: true }, { configModule: null });
+  assert.strictEqual(r.mode, autonomy.loadConfig().default);
+  assert.match(r.modeSource, /FORGE_AUTONOMY\.json/);
+});
+t('a malformed config file never throws out of decide(): it falls back to the FORGE_AUTONOMY.json default', () => {
+  const fx = configFixture({});
+  fs.writeFileSync(path.join(fx.root, '.claude', 'FORGE_CONFIG.json'), '{ "settings": ');
+  const r = autonomy.decide({ text: 'moving on', phaseTransition: true }, { configOpts: fx.configOpts });
+  assert.strictEqual(r.mode, autonomy.loadConfig().default);
+  assert.strictEqual(r.proceed, true);
+  assert.strictEqual(r.modeSource, 'FORGE_AUTONOMY.json default');
+  assert.ok(/damaged/.test(r.config_note || '') && !/\n/.test(r.config_note), 'M3: the degraded read is named: ' + r.config_note);
+});
+t('M3: a damaged GLOBAL settings file that said usage-guard ON -> the flagged key reads OFF (guard-off) + config_note, even with a paused state', () => {
+  const fx = configFixture({ 'usage-guard': true });
+  fs.writeFileSync(path.join(fx.home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { 'usage-guard': { value: true }, 'usage-guard.pause-at': { value: 'banana' } } }));
+  const g = guardState({ mode: 'paused' });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: fx.configOpts });
+  assert.deepStrictEqual([u.active, u.source], [false, 'guard-off']);
+  assert.ok(/damaged/.test(u.config_note || '') && /usage-guard = off/.test(u.config_note), 'config_note: ' + u.config_note);
+  assert.ok(/settings unreadable/.test(u.reason), u.reason);
+  const fine = configFixture({ 'usage-guard': true });
+  const ok = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: fine.configOpts });
+  assert.deepStrictEqual([ok.active, ok.config_note], [true, undefined], 'a readable ON still honours the pause');
+});
+t('usageLimitActive: a paused state file (no reset time reached) is an active usage limit', () => {
+  const g = guardState({ mode: 'paused', percents: { session: 99, week: 40 } });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true);
+  assert.match(u.reason, /paused/);
+});
+t('decideLive: a paused guard interrupts by usage-limit, even at full-auto-within-mission', () => {
+  const fx = configFixture({ autonomy: 'full-auto-within-mission' });
+  const g = guardState({ mode: 'paused' });
+  const r = autonomy.decideLive({ text: 'moving on', phaseTransition: true }, { statePath: g.statePath, configOpts: fx.configOpts });
+  assert.strictEqual(r.proceed, false);
+  assert.strictEqual(r.interruptedBy, 'usage-limit');
+  assert.strictEqual(r.usageLimit.active, true);
+});
+t('decideLive: a missing state file proceeds (no pause was ever recorded)', () => {
+  const g = guardState(null);
+  const r = autonomy.decideLive({ text: 'moving on', phaseTransition: true }, { statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(r.proceed, true);
+  assert.strictEqual(r.usageLimit.active, false);
+  assert.strictEqual(r.usageLimit.source, 'no-state');
+});
+t('decideLive: guard state mode ok proceeds', () => {
+  const g = guardState({ mode: 'ok' });
+  const r = autonomy.decideLive({ text: 'moving on', phaseTransition: true }, { statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(r.proceed, true);
+});
+t('usageLimitActive: with usage-guard OFF in the config the state file is not consulted', () => {
+  const g = guardState({ mode: 'paused' });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({ 'usage-guard': false }).configOpts });
+  assert.strictEqual(u.active, false);
+  assert.strictEqual(u.source, 'guard-off');
+});
+t('usageLimitActive: a pause whose reset time has passed is not active (mirrors the hook self-heal)', () => {
+  const g = guardState({ mode: 'paused', resumeAtEpoch: 1000 });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, now: 2000, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, false);
+});
+t('usageLimitActive: a state file saved with a byte-order mark still reads as paused (Windows editors add one)', () => {
+  const g = guardState(null);
+  fs.writeFileSync(g.statePath, String.fromCharCode(0xFEFF) + JSON.stringify({ mode: 'paused' }));
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true, u.reason);
+});
+t('usageLimitActive: the default state path is <FORGE_USAGE_GUARD_HOME>/FORGE_USAGE_GUARD_STATE.json', () => {
+  const home = freshDir('autonomy-guardhome');
+  fs.writeFileSync(path.join(home, 'FORGE_USAGE_GUARD_STATE.json'), JSON.stringify({ mode: 'paused' }));
+  const u = autonomy.usageLimitActive({ guardHome: home, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true);
+  assert.strictEqual(path.resolve(u.file), path.resolve(path.join(home, 'FORGE_USAGE_GUARD_STATE.json')));
+});
+t('decide() itself stays pure of the live state: a paused state file never changes plain decide()', () => {
+  const g = guardState({ mode: 'paused' });
+  const prev = process.env.FORGE_USAGE_GUARD_STATE;
+  process.env.FORGE_USAGE_GUARD_STATE = g.statePath;
+  try {
+    const r = autonomy.decide({ text: 'moving on', phaseTransition: true }, { configOpts: configFixture({}).configOpts });
+    assert.strictEqual(r.proceed, true);
+  } finally { if (prev === undefined) delete process.env.FORGE_USAGE_GUARD_STATE; else process.env.FORGE_USAGE_GUARD_STATE = prev; }
+});
+t('CLI decide --live with a paused guard state exits 3 and names usage-limit', () => {
+  const home = freshDir('autonomy-cli-guard');
+  fs.writeFileSync(path.join(home, 'FORGE_USAGE_GUARD_STATE.json'), JSON.stringify({ mode: 'paused' }));
+  const r = spawnSync(process.execPath, [CLI, 'decide', 'moving on', '--phase', '--live', '--json'], { encoding: 'utf8', env: Object.assign({}, process.env, { FORGE_USAGE_GUARD_HOME: home }) });
+  assert.strictEqual(r.status, 3, r.stdout + r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout.trim()).interruptedBy, 'usage-limit');
+});
+t('CLI decide without --live ignores the state file (exit 0 on a plain phase)', () => {
+  const home = freshDir('autonomy-cli-guard2');
+  fs.writeFileSync(path.join(home, 'FORGE_USAGE_GUARD_STATE.json'), JSON.stringify({ mode: 'paused' }));
+  const r = spawnSync(process.execPath, [CLI, 'decide', 'moving on', '--phase'], { encoding: 'utf8', env: Object.assign({}, process.env, { FORGE_USAGE_GUARD_HOME: home }) });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+});
+t('CLI decide honours the project config (autonomy=ask-each-phase -> exit 3 on --phase)', () => {
+  const fx = configFixture({ autonomy: 'ask-each-phase' });
+  const r = spawnSync(process.execPath, [CLI, 'decide', 'moving on', '--phase'], { encoding: 'utf8', env: Object.assign({}, process.env, { FORGE_PROJECT_ROOT: fx.root, FORGE_CONFIG_HOME: fx.home }) });
+  assert.strictEqual(r.status, 3, r.stdout + r.stderr);
+  assert.ok(r.stdout.includes('STOP'));
+});
+
+// ---- wp20 L8 (2026-09-24): a paused state without a reset time from a watcher that stopped checking is STALE ----
+const L8_NOW = Date.parse('2026-09-24T12:00:00Z');
+const agoIso = (sec) => new Date(L8_NOW - sec * 1000).toISOString();
+t('L8: a FRESH paused state (last check 60 s ago, no reset time) is still an active usage limit', () => {
+  const g = guardState({ mode: 'paused', lastCheckAt: agoIso(60) });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, now: L8_NOW, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true, u.reason);
+  assert.strictEqual(u.source, 'state');
+});
+t('L8: a STALE paused state (last check older than 3 x 120 s, no reset time) is NOT active and says why', () => {
+  const g = guardState({ mode: 'paused', lastCheckAt: agoIso(361), heartbeatAt: agoIso(400) });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, now: L8_NOW, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, false);
+  assert.strictEqual(u.source, 'stale');
+  assert.match(u.reason, /361 s ago \(more than 3 x the 120 s interval\).*NOT treated as active/);
+});
+t('L8: exactly 3 x the interval is still fresh; a newer heartbeat keeps an old lastCheckAt fresh', () => {
+  const edge = guardState({ mode: 'paused', lastCheckAt: agoIso(360) });
+  assert.strictEqual(autonomy.usageLimitActive({ statePath: edge.statePath, now: L8_NOW, configOpts: configFixture({}).configOpts }).active, true);
+  const hb = guardState({ mode: 'paused', lastCheckAt: agoIso(5000), heartbeatAt: agoIso(30) });
+  assert.strictEqual(autonomy.usageLimitActive({ statePath: hb.statePath, now: L8_NOW, configOpts: configFixture({}).configOpts }).active, true);
+});
+t('L8: the owner interval (usage-guard.interval 300) moves the stale line to 900 s', () => {
+  const fx = configFixture({ 'usage-guard.interval': 300 });
+  const fresh = guardState({ mode: 'paused', lastCheckAt: agoIso(800) });
+  assert.strictEqual(autonomy.usageLimitActive({ statePath: fresh.statePath, now: L8_NOW, configOpts: fx.configOpts }).active, true);
+  const stale = guardState({ mode: 'paused', lastCheckAt: agoIso(901) });
+  const u = autonomy.usageLimitActive({ statePath: stale.statePath, now: L8_NOW, configOpts: fx.configOpts });
+  assert.deepStrictEqual([u.active, u.source], [false, 'stale'], u.reason);
+});
+t('L8: a pause WITH a future reset time stays active even when the last check is old (the reset rule decides)', () => {
+  const g = guardState({ mode: 'paused', lastCheckAt: agoIso(5000), resumeAtEpoch: L8_NOW + 3600 * 1000 });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, now: L8_NOW, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true, u.reason);
+});
+t('L8: decideLive on a stale pause proceeds instead of stopping every phase forever', () => {
+  const g = guardState({ mode: 'paused', lastCheckAt: agoIso(3600) });
+  const r = autonomy.decideLive({ text: 'moving on', phaseTransition: true }, { statePath: g.statePath, now: L8_NOW, configOpts: configFixture({ autonomy: 'full-auto-within-mission' }).configOpts });
+  assert.strictEqual(r.proceed, true, r.reason);
+  assert.strictEqual(r.usageLimit.source, 'stale');
+});
+
+try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch { /* best effort */ }
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

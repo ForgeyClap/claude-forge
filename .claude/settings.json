@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "node .claude/forge-bin/forge-snapshot-marker.cjs",
-            "timeout": 5000
+            "timeout": 15
           }
         ]
       },
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "node .claude/forge-bin/forge-snapshot-marker.cjs",
-            "timeout": 5000
+            "timeout": 15
           }
         ]
       }
@@ -29,7 +29,7 @@
           {
             "type": "command",
             "command": "node .claude/forge-bin/forge-snapshot-reinject.cjs",
-            "timeout": 5000
+            "timeout": 15
           }
         ]
       }
@@ -40,12 +40,52 @@
           {
             "type": "command",
             "command": "node .claude/forge-bin/forge-toolhook.cjs",
-            "timeout": 8000
+            "timeout": 10
           }
         ],
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
         "_matcher_doc": "2026-09-23 (external audit II-D): shipped without a matcher, so it fired on EVERY tool call of every agent (461 in one audited session, ~56 ms each) and logged 320 paths outside the project. The ledger exists to record what CHANGED; reads are noise. Opt out entirely by deleting this entry — nothing else depends on it."
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs\"",
+            "timeout": 10
+          }
+        ],
+        "_doc": "2026-09-24 (v2.7.0, WP16 + security wp9b + review wp9a): the GATE HOOK. Before every Bash or PowerShell tool call it asks forge-actiongate.cjs whether the command trips a COMMAND hard gate — destructive-delete (rm -rf, rm -r, Remove-Item -Recurse, rd /s, rimraf), kill-by-name (taskkill /IM or a non-PID /FI, Stop-Process -Name, pkill, kill $(pgrep …)) or git-destructive (reset --hard, clean -f, checkout -f / . / -- <path>, restore <path>, switch -f, stash drop/clear) — or tries to switch the gate itself off. Exit 2 = blocked with a plain NL+EN reason and Claude must ask the owner; exit 1 = not blocked but VISIBLE (gate is off, or the hook could not check the call); exit 0 = allowed. Quoted data (writer heredocs, echo/commit-message/log-event/search-tool literals) is not treated as a command, and a delete whose every target is provably inside _scratch/, node_modules/, dist/ or the temp dir passes. The owner-approved one-off off-switch is `node .claude/forge-bin/forge-config.cjs set gate-hook off --once \"<owner's words>\"` (10 minutes); the owner can also run a command himself with `!`. Timeouts in this file are SECONDS (Claude Code hook contract). The permissions.deny block keeps .env variants, keys and secrets out of Claude's Read tool; .env.example stays readable. Details and honest limits: config/orchestration/HOOKS_OPT_IN.md section 6."
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)",
+      "Read(./.env.development)",
+      "Read(./.env.production)",
+      "Read(./.env.staging)",
+      "Read(./.env.test)",
+      "Read(./secrets/**)",
+      "Read(./**/.env)",
+      "Read(./**/.env.local)",
+      "Read(./**/.env.*.local)",
+      "Read(./**/.env.production)",
+      "Read(./**/.env.prod)",
+      "Read(./**/.env.bak)",
+      "Read(./**/.env.backup)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./**/id_rsa*)",
+      "Read(./**/id_ed25519*)",
+      "Read(./**/secrets/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude/nvidia.env)",
+      "Read(~/.ssh/**)"
     ]
   }
 }

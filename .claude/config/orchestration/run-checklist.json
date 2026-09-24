@@ -10,7 +10,7 @@
     },
     {
       "id": "load-owner-prefs",
-      "label": "Load owner-profile prefs (forge-prefs.cjs) + active standing-rules (forge-standing.cjs) and emit the applied-prefs ECHO (Step 0-owner, precedence.md order)",
+      "label": "Load owner-profile prefs (forge-prefs.cjs) + active standing-rules (forge-standing.cjs) and emit the applied-prefs ECHO (Step 0-owner, precedence.md order) + owner config diff (forge-config.cjs)",
       "required": true,
       "produces_event": "owner_prefs_loaded"
     },

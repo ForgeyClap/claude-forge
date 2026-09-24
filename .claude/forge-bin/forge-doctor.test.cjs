@@ -22,7 +22,8 @@ const skip = (name, reason) => { skipped++; console.log('  SKIP ' + name + ' —
  *  third-party skills, so the same assertion fails there for a reason that is not a defect. It runs strictly
  *  when the tree is the development tree and is visibly skipped, with the detector's own reason, when it is
  *  not. Deliberately NOT solved with a tolerance or a list of acceptable counts — a count that accepts two
- *  answers has stopped guarding drift. See D.installationProfile(). */
+ *  answers has stopped guarding drift. See D.installationProfile() — since wp17 (2026-09-24) it keys on the
+ *  .claude/config/forge-dev-tree.json marker, because the distribution now ships vendored skills too. */
 const makePinned = (profile) => (name, fn) => {
   if (profile.profile === 'development') { fn(); return true; }
   skip(name, 'installation-dependent assertion · ' + profile.reason);
@@ -942,10 +943,13 @@ const REAL_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 // The vendor-pin based `pinned()` gate above cannot express this (installs DO ship the vendored skills), so
 // these guards key on the dev-tree marker file instead — present only in the canonical checkout, never in
 // forge-sync's FILES manifest. Strict where the sets are real; visibly skipped everywhere else.
-const IS_DEV_TREE = fs.existsSync(path.join(REAL_PROJECT_ROOT, '.claude', 'config', 'forge-dev-tree.json'));
+// wp17 (2026-09-24): ONE discriminator for both gates — installationProfile() now keys on this same marker
+// (and additionally requires it to parse as {"dev_tree": true}), so pinned() and devTreeOnly() can no
+// longer disagree about which tree this is.
+const IS_DEV_TREE = DEV_TREE.profile === 'development';
 const devTreeOnly = (name, fn) => {
   if (IS_DEV_TREE) { fn(); return true; }
-  skip(name, 'canonical dev-tree regression guard · .claude/config/forge-dev-tree.json absent — the exact sets this pins are deliberately not shipped to installed projects');
+  skip(name, 'canonical dev-tree regression guard · ' + DEV_TREE.reason + ' — the exact sets this pins are deliberately not shipped to installed projects');
   return false;
 };
 const realSuiteFiles = fs.readdirSync(path.join(REAL_PROJECT_ROOT, '.claude', 'forge-bin')).filter((f) => f.endsWith('.test.cjs'));
@@ -1782,8 +1786,33 @@ const realSkillHygiene = D.skillHygiene(REAL_PROJECT_ROOT);
 // simply made the 8 gsap sub-skills VISIBLE to a check that had never once looked at them. Measured both
 // ways on this project the same day: `ls .claude/skills/*/SKILL.md | wc -l` = 49 vs
 // `find .claude/skills -name SKILL.md | wc -l` = 57.
-pinned('skillHygiene: the real project has exactly 59 skills evaluated — all 8 NESTED ones included (no drift)', () =>
-  t('skillHygiene: the real project has exactly 59 skills evaluated — all 8 NESTED ones included (no drift)', realSkillHygiene.checked === 59, 'checked=' + realSkillHygiene.checked));
+// DERIVED, NOT LITERAL (wp17, 2026-09-24): 59 -> 74 in one day as wp6/wp6b/wp13b vendored and wrote skills,
+// and every literal went stale mid-run. The expectation is now read off the disk by an INDEPENDENT walk (not
+// D.listSkillFiles — deriving the answer from the function under test would prove nothing) and compared as a
+// SET of skill ids, which is stricter than the old count: a walk that stops one level too shallow, or skips a
+// directory, now names the exact skill it lost.
+function onDiskSkillIds(skillsDir) {
+  const out = [];
+  (function walk(dir, rel) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) walk(path.join(dir, e.name), r);
+      else if (e.isFile() && e.name === 'SKILL.md' && rel) out.push(rel);
+    }
+  })(skillsDir, '');
+  return out.sort();
+}
+const REAL_SKILLS_DIR = path.join(REAL_PROJECT_ROOT, '.claude', 'skills');
+const diskSkillIds = onDiskSkillIds(REAL_SKILLS_DIR);
+const diskNestedIds = diskSkillIds.filter((id) => id.includes('/'));
+const evaluatedSkillIds = realSkillHygiene.skills.map((s) => s.skill).sort();
+console.log('  info derived skill counts: ' + diskSkillIds.length + ' SKILL.md on disk (' + diskNestedIds.length + ' nested) · ' + realSkillHygiene.checked + ' evaluated by skillHygiene');
+pinned('skillHygiene: evaluates exactly the SKILL.md set on disk (derived count, nested included — no drift)', () =>
+  t('skillHygiene: evaluates exactly the ' + diskSkillIds.length + ' SKILL.md files on disk, all ' + diskNestedIds.length + ' NESTED ones included (derived set, no drift)',
+    realSkillHygiene.checked === diskSkillIds.length && evaluatedSkillIds.join(',') === diskSkillIds.join(','),
+    'missing from doctor: ' + JSON.stringify(diskSkillIds.filter((id) => !evaluatedSkillIds.includes(id))) + ' · extra in doctor: ' + JSON.stringify(evaluatedSkillIds.filter((id) => !diskSkillIds.includes(id)))));
 // FINDINGS (2026-08-01, second revision): 10 -> 1. The 9 that left are ALL third-party skills copied at a
 // recorded pin (humanizer @1b48564, the 8 gsap sub-skills @aed9cfd) and they did NOT disappear — they moved
 // to `vendored_style`, numbers intact, because their shape is upstream's editorial choice while their
@@ -1801,11 +1830,22 @@ pinned('skillHygiene: the real project has exactly 59 skills evaluated — all 8
 // as a broken link. Guard (c) below asserts that reclassification really happened, so an empty findings
 // list can never be reached by simply switching the check off.
 const KNOWN_HYGIENE_FINDINGS = [].sort();
-const KNOWN_VENDORED_EXEMPT = [
-  'humanizer',         // 626-line body — github.com/blader/humanizer @1b48564
-  'gsap/gsap-core', 'gsap/gsap-frameworks', 'gsap/gsap-performance', 'gsap/gsap-plugins',
-  'gsap/gsap-react', 'gsap/gsap-scrolltrigger', 'gsap/gsap-timeline', 'gsap/gsap-utils', // @aed9cfd
-].sort();
+// wp17 (2026-09-24): the vendored_style set is DERIVED too (it was a literal of 9; wp6 made it 14 and wp6b
+// adds more). The derivation deliberately re-implements the rule from the raw files instead of reading the
+// doctor's own verdict: a skill is expected in vendored_style exactly when the doctor's pin detector finds a
+// Source: + Pinned commit: header AND the file breaks a shape budget (description > 200 chars or body > 500
+// lines). Guard (b)'s intent survives both ways: an exemption that widens to one of OUR skills (no pin) makes
+// the doctor's set larger than this one, and an unpinned skill breaking a budget must still show up as an
+// ordinary finding (the complementary assertion right after guard (b) below).
+const shapeBreaks = (text) => {
+  const fm = D.parseFrontmatter(text);
+  const desc = fm && fm.description;
+  return !!(desc && desc.length > D.SKILL_DESCRIPTION_MAX_CHARS) || text.split(/\r?\n/).length > D.SKILL_BODY_MAX_LINES;
+};
+const diskSkillText = (id) => { try { return fs.readFileSync(path.join(REAL_SKILLS_DIR, ...id.split('/'), 'SKILL.md'), 'utf8'); } catch { return ''; } };
+const KNOWN_VENDORED_EXEMPT = diskSkillIds.filter((id) => { const tx = diskSkillText(id); return D.detectVendorPin(tx) && shapeBreaks(tx); }).sort();
+const OURS_BREAKING_SHAPE = diskSkillIds.filter((id) => { const tx = diskSkillText(id); return !D.detectVendorPin(tx) && shapeBreaks(tx); }).sort();
+console.log('  info derived vendored_style set: ' + KNOWN_VENDORED_EXEMPT.length + ' pinned skill(s) over a shape budget · ' + OURS_BREAKING_SHAPE.length + ' unpinned skill(s) over a shape budget');
 devTreeOnly('skillHygiene: the real project carries exactly the KNOWN findings — never a silent NEW regression', () =>
   t('skillHygiene: the real project carries exactly the KNOWN findings — never a silent NEW regression', realSkillHygiene.skills.filter((s) => !s.ok).map((s) => s.skill).sort().join(',') === KNOWN_HYGIENE_FINDINGS.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => !s.ok))));
 // (c) the empty findings list above must be earned by RECLASSIFICATION, not by a check that stopped
@@ -1838,8 +1878,20 @@ devTreeOnly('skillHygiene: forge-router REPORTS the /setup-forge marker as a gen
 // vendored skills they would not fail, they would pass VACUOUSLY over an empty list — a silent green that
 // looks like coverage and is none. Being visibly skipped is the honest outcome there; being strict is the
 // honest outcome here.
-pinned('skillHygiene: exactly the 9 pinned upstream skills carry a vendored_style entry', () =>
-  t('skillHygiene: exactly the 9 pinned upstream skills carry a vendored_style entry (the exemption did not widen to cover one of ours)', realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => s.skill).sort().join(',') === KNOWN_VENDORED_EXEMPT.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => ({ skill: s.skill, vendored: s.vendored, vendored_style: s.vendored_style })))));
+pinned('skillHygiene: exactly the pinned upstream skills over a shape budget carry a vendored_style entry (derived set)', () =>
+  t('skillHygiene: exactly the ' + KNOWN_VENDORED_EXEMPT.length + ' pinned upstream skills over a shape budget carry a vendored_style entry (derived; the exemption did not widen to cover one of ours)', realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => s.skill).sort().join(',') === KNOWN_VENDORED_EXEMPT.join(','), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored && s.vendored_style.length).map((s) => ({ skill: s.skill, vendored: s.vendored, vendored_style: s.vendored_style })))));
+pinned('skillHygiene: a skill WITHOUT a pin never gets vendored_style, and one over a budget stays an ordinary finding', () =>
+  t('skillHygiene (wp17): no unpinned skill carries vendored_style, and each of the ' + OURS_BREAKING_SHAPE.length + ' unpinned skill(s) over a shape budget is still reported as an issue',
+    realSkillHygiene.skills.every((s) => s.vendored || s.vendored_style === undefined)
+      && OURS_BREAKING_SHAPE.every((id) => realSkillHygiene.skills.some((s) => s.skill === id && !s.ok && s.issues.some((i) => /chars \(max|lines \(max/.test(i)))),
+    JSON.stringify(OURS_BREAKING_SHAPE)));
+// wp13b (2026-09-24) writes forge-prompt-coach as FORGE-NATIVE content: it must never carry a vendoring pin (a
+// pin would quietly buy it the upstream-shape exemption). Absent -> a visible skip, never a silent pass.
+if (fs.existsSync(path.join(REAL_SKILLS_DIR, 'forge-prompt-coach', 'SKILL.md'))) {
+  t('skillHygiene (wp17): forge-prompt-coach is Forge-native — no vendoring pin, so no shape exemption', D.detectVendorPin(diskSkillText('forge-prompt-coach')) === null && !realSkillHygiene.skills.some((s) => s.skill === 'forge-prompt-coach' && s.vendored));
+} else {
+  skip('skillHygiene (wp17): forge-prompt-coach is Forge-native', '.claude/skills/forge-prompt-coach/SKILL.md is not on disk in this tree');
+}
 pinned('skillHygiene: every exempted skill really does carry BOTH an upstream source and a commit pin', () =>
   t('skillHygiene: every exempted skill really does carry BOTH an upstream source and a commit pin (evidence, not a label)', realSkillHygiene.skills.filter((s) => s.vendored).every((s) => /^https?:\/\/\S+/.test(s.vendored.source) && /^[0-9a-f]{7,40}$/.test(s.vendored.pin)), JSON.stringify(realSkillHygiene.skills.filter((s) => s.vendored).map((s) => s.vendored))));
 pinned('skillHygiene: the 8 gsap findings are still MEASURED, just filed as upstream shape', () =>
@@ -1942,9 +1994,18 @@ if (!gitOk(SOLO_ROOT, 'init', '-q') || !gitOk(SOLO_ROOT, 'add', '-A')) {
 // or a list of acceptable counts — a count that accepts two answers has stopped guarding anything. It is
 // a detector, and the thing it detects has to be evidence rather than a label.
 // =====================================================================================================
+// wp17 (2026-09-24): the verdict now keys on .claude/config/forge-dev-tree.json, not on "has vendored skills"
+// — the public distribution ships vendored skills since wp6, so vendoring stopped telling the trees apart.
+// IP_DIST_VENDORED is the case that forced the change: vendored skills on disk, no marker.
 const IP_DEV = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-dev-'));
 const IP_DIST = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-dist-'));
-for (const [base, withVendor] of [[IP_DEV, true], [IP_DIST, false]]) {
+const IP_DIST_VENDORED = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-distvend-'));
+const writeDevMarker = (base, body) => {
+  fs.mkdirSync(path.join(base, '.claude', 'config'), { recursive: true });
+  fs.writeFileSync(path.join(base, '.claude', 'config', 'forge-dev-tree.json'), body);
+};
+for (const [base, withVendor, withMarker] of [[IP_DEV, true, true], [IP_DIST, false, false], [IP_DIST_VENDORED, true, false]]) {
+  if (withMarker) writeDevMarker(base, '{\n  "dev_tree": true\n}\n');
   fs.mkdirSync(path.join(base, '.claude', 'skills', 'ours'), { recursive: true });
   fs.writeFileSync(path.join(base, '.claude', 'skills', 'ours', 'SKILL.md'), '---\nname: ours\ndescription: a skill we wrote ourselves\n---\n\nbody\n');
   if (withVendor) {
@@ -1958,15 +2019,29 @@ for (const [base, withVendor] of [[IP_DEV, true], [IP_DIST, false]]) {
 }
 const ipDev = D.installationProfile(IP_DEV);
 const ipDist = D.installationProfile(IP_DIST);
-t('installationProfile: a tree carrying a pinned upstream skill is the development tree', ipDev.profile === 'development' && ipDev.vendored.join(',') === 'upstream', JSON.stringify(ipDev));
-t('installationProfile: a tree with the vendored skills stripped is a redistribution', ipDist.profile === 'redistribution' && ipDist.vendored.length === 0, JSON.stringify(ipDist));
-t('installationProfile: both verdicts state a reason with the real counts, so a skip can quote it', /1 of 2 skills/.test(ipDev.reason) && /none of the 1 skills/.test(ipDist.reason), ipDev.reason + ' || ' + ipDist.reason);
+const ipDistVend = D.installationProfile(IP_DIST_VENDORED);
+t('installationProfile: a tree carrying the dev-tree marker is the development tree', ipDev.profile === 'development' && ipDev.marker_present === true && ipDev.vendored.join(',') === 'upstream', JSON.stringify(ipDev));
+t('installationProfile: a tree with neither marker nor vendored skills is a redistribution', ipDist.profile === 'redistribution' && ipDist.vendored.length === 0, JSON.stringify(ipDist));
+t('installationProfile (wp17): vendored skill dirs WITHOUT forge-dev-tree.json are a distribution, not the dev tree', ipDistVend.profile === 'redistribution' && ipDistVend.marker_present === false && ipDistVend.vendored.join(',') === 'upstream', JSON.stringify(ipDistVend));
+t('installationProfile: both verdicts state a reason with the real counts and name the marker, so a skip can quote it', /1 of 2 skills/.test(ipDev.reason) && /0 of 1 skills/.test(ipDist.reason) && /forge-dev-tree\.json/.test(ipDev.reason) && /forge-dev-tree\.json[^;]*absent/.test(ipDist.reason), ipDev.reason + ' || ' + ipDist.reason);
+// the marker alone decides — a dev checkout with zero vendored skills is still the dev tree
+const IP_MARKER_ONLY = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-markeronly-'));
+writeDevMarker(IP_MARKER_ONLY, '{"dev_tree": true}');
+t('installationProfile (wp17): the marker alone makes the development tree, vendored skills or not', D.installationProfile(IP_MARKER_ONLY).profile === 'development', JSON.stringify(D.installationProfile(IP_MARKER_ONLY)));
+// a marker has to be EARNED too: garbled or dev_tree:false is reported, never promoted
+const IP_BADMARK = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-badmark-'));
+writeDevMarker(IP_BADMARK, '{ not json');
+const ipBad = D.installationProfile(IP_BADMARK);
+t('installationProfile (wp17): a malformed marker is NOT the dev tree, and the reason says why', ipBad.profile === 'redistribution' && ipBad.marker_present === true && /not a valid/.test(ipBad.reason), JSON.stringify(ipBad));
+const IP_FALSEMARK = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-falsemark-'));
+writeDevMarker(IP_FALSEMARK, '{"dev_tree": false}');
+t('installationProfile (wp17): a marker saying dev_tree:false is NOT the dev tree', D.installationProfile(IP_FALSEMARK).profile === 'redistribution', JSON.stringify(D.installationProfile(IP_FALSEMARK)));
 // provenance must be EARNED: a half-marker (a Source: line with no pin) is not vendoring, or "vendored"
 // becomes a word anyone can type to silence a check.
 const IP_HALF = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ip-half-'));
 fs.mkdirSync(path.join(IP_HALF, '.claude', 'skills', 'claimed'), { recursive: true });
 fs.writeFileSync(path.join(IP_HALF, '.claude', 'skills', 'claimed', 'SKILL.md'), '---\nname: claimed\ndescription: claims vendoring, proves nothing\nvendored: |\n  Source: https://github.com/someone/upstream\n---\n\nbody\n');
-t('installationProfile: a Source: line with no commit pin does NOT make a tree "development"', D.installationProfile(IP_HALF).profile === 'redistribution', JSON.stringify(D.installationProfile(IP_HALF)));
+t('installationProfile: a Source: line with no commit pin is NOT counted as vendored (and no marker = not the dev tree)', D.installationProfile(IP_HALF).vendored.length === 0 && D.installationProfile(IP_HALF).profile === 'redistribution', JSON.stringify(D.installationProfile(IP_HALF)));
 // THE SKIP CONTRACT — the whole point of the mechanism. In the development tree a pinned assertion runs
 // strictly; anywhere else it must be VISIBLY skipped and must NOT run. A pin that quietly stops asserting
 // is worse than one that fails: the output looks identical to success.
@@ -1978,6 +2053,9 @@ pinnedRan = false;
 const ranDist = makePinned(ipDist)('§10 probe (redistribution) — expected to be skipped, this line is the proof', () => { pinnedRan = true; });
 t('pinned: in a redistribution the assertion body does NOT run', ranDist === false && pinnedRan === false);
 t('pinned: and the skip is counted + printed, never a silent green', skipped === skippedBefore + 1);
+pinnedRan = false;
+const ranDistVend = makePinned(ipDistVend)('§10 probe (distribution WITH vendored skills) — expected to be skipped, this line is the proof', () => { pinnedRan = true; });
+t('pinned (wp17): a distribution that ships vendored skills runs NO exact-count assertion either', ranDistVend === false && pinnedRan === false && skipped === skippedBefore + 2);
 
 // --- the fixture exemption was JavaScript-only (found while widening the scan, 2026-08-02) --------------
 // The rule "test fixtures legitimately hold fake secrets" has always existed; its implementation was
@@ -1996,6 +2074,199 @@ t('leakScan: *.test.ts / *.test.tsx are test fixtures too — the exemption is n
   !tsfixLeak.hits.some((h) => /\.test\.(ts|tsx|mjs|cjs)$/.test(h.file)), JSON.stringify(tsfixLeak.hits));
 t('leakScan: and an ordinary .ts SOURCE file is still scanned (the exemption did not widen to all TypeScript)',
   tsfixLeak.hits.some((h) => h.file.endsWith('real-source.ts')), JSON.stringify(tsfixLeak.hits));
+
+// =====================================================================================================
+// §11 BEGINNER SETUP (wp17, 2026-09-24) — six ADVISORY checks for the setup traps a first-time user hits.
+// Hermetic: temp roots, a fake PATH holding stub tools (.cmd on Windows, sh scripts elsewhere), an injected
+// platform for the WSL case. The real `claude` is never probed here; the stubs stand in for it.
+// =====================================================================================================
+const BS_WIN = process.platform === 'win32';
+const bsTmp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-bs-' + tag + '-'));
+function bsStub(dir, name, winBody, shBody) {
+  if (BS_WIN) { fs.writeFileSync(path.join(dir, name + '.cmd'), winBody.split('\n').join('\r\n')); return path.join(dir, name + '.cmd'); }
+  const p = path.join(dir, name);
+  fs.writeFileSync(p, shBody);
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+const bsVersionStub = (dir, name, version) => bsStub(dir, name, '@echo off\necho ' + version + '\n', '#!/bin/sh\necho "' + version + '"\n');
+const BS_DOCTOR_WIN = '@echo off\nif "%~1"=="doctor" goto doctor\necho 0.0.1-stub\nexit /b 0\n:doctor\necho Claude Code doctor\necho.\necho Running: stub 0.0.1\necho Line three\necho Line four\necho Line five\necho Line six must be cut\nexit /b 0\n';
+const BS_DOCTOR_SH = '#!/bin/sh\nif [ "$1" = "doctor" ]; then\n  printf \'Claude Code doctor\\n\\nRunning: stub 0.0.1\\nLine three\\nLine four\\nLine five\\nLine six must be cut\\n\'\n  exit 0\nfi\necho 0.0.1-stub\n';
+function bsEnv(dir) {
+  const env = { PATH: dir };
+  if (BS_WIN) { env.PATHEXT = '.COM;.EXE;.BAT;.CMD'; env.SystemRoot = process.env.SystemRoot; env.ComSpec = process.env.ComSpec; }
+  return env;
+}
+
+// --- claude-md-size ---
+const BS_MD = bsTmp('md');
+const mdAbsent = D.claudeMdSize(BS_MD);
+t('beginner claude-md-size: no CLAUDE.md -> ok, and it says so', mdAbsent.level === 'ok' && mdAbsent.ok === true && /no project CLAUDE\.md/.test(mdAbsent.detail), JSON.stringify(mdAbsent));
+fs.writeFileSync(path.join(BS_MD, 'CLAUDE.md'), 'line\n'.repeat(200));
+const mdEdge = D.claudeMdSize(BS_MD);
+t('beginner claude-md-size: exactly 200 lines -> info (the limit itself is fine)', mdEdge.level === 'info' && mdEdge.ok === true && mdEdge.files[0].lines === 200, JSON.stringify(mdEdge));
+fs.writeFileSync(path.join(BS_MD, 'CLAUDE.md'), 'line\r\n'.repeat(250));
+const mdLong = D.claudeMdSize(BS_MD);
+t('beginner claude-md-size: a 250-line CLAUDE.md (CRLF) -> warn, counted as 250', mdLong.level === 'warn' && mdLong.ok === false && mdLong.files[0].lines === 250, JSON.stringify(mdLong));
+t('beginner claude-md-size: the warn carries the beginner explanation', /Anthropic: long CLAUDE\.md files get ignored; move procedures into skills/.test(mdLong.detail), mdLong.detail);
+const BS_MD_DOT = bsTmp('mddot');
+fs.mkdirSync(path.join(BS_MD_DOT, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(BS_MD_DOT, '.claude', 'CLAUDE.md'), 'x\n'.repeat(201));
+t('beginner claude-md-size: .claude/CLAUDE.md is measured too', D.claudeMdSize(BS_MD_DOT).level === 'warn' && D.claudeMdSize(BS_MD_DOT).files[0].file === '.claude/CLAUDE.md', JSON.stringify(D.claudeMdSize(BS_MD_DOT)));
+const BS_MD_BAD = bsTmp('mdbad');
+fs.mkdirSync(path.join(BS_MD_BAD, 'CLAUDE.md')); // a DIRECTORY named CLAUDE.md: present but unreadable
+let mdBad;
+try { mdBad = D.claudeMdSize(BS_MD_BAD); } catch (e) { mdBad = { threw: e.message }; }
+t('beginner claude-md-size: an unreadable CLAUDE.md -> warn UNREADABLE, never a throw', mdBad.level === 'warn' && mdBad.files[0].lines === null && /UNREADABLE/.test(mdBad.detail), JSON.stringify(mdBad));
+
+// --- path-tools ---
+const BS_ALL = bsTmp('pathall');
+bsVersionStub(BS_ALL, 'node', 'v99.1.0-stub');
+bsVersionStub(BS_ALL, 'git', 'git version 9.9.9-stub');
+bsStub(BS_ALL, 'claude', BS_DOCTOR_WIN, BS_DOCTOR_SH);
+const ptAll = D.pathTools(BS_ALL, { env: bsEnv(BS_ALL) });
+t('beginner path-tools: all three on PATH -> ok, each with the first line of its --version', ptAll.level === 'ok' && ptAll.ok === true && ptAll.tools.node.version === 'v99.1.0-stub' && ptAll.tools.git.version === 'git version 9.9.9-stub' && ptAll.tools.claude.version === '0.0.1-stub', JSON.stringify(ptAll));
+const BS_PART = bsTmp('pathpart');
+bsVersionStub(BS_PART, 'node', 'v99.1.0-stub');
+bsVersionStub(BS_PART, 'git', 'git version 9.9.9-stub');
+const ptPart = D.pathTools(BS_PART, { env: bsEnv(BS_PART) });
+t('beginner path-tools: claude missing -> warn naming it MISSING with the reopen-your-terminal line', ptPart.level === 'warn' && ptPart.ok === false && ptPart.missing.join(',') === 'claude' && /claude: MISSING/.test(ptPart.detail) && /Close and reopen your terminal; if it is still missing, the install folder is not on PATH/.test(ptPart.detail), JSON.stringify(ptPart));
+t('beginner path-tools: node present -> no Node explanation in the warn', !/Node 18/.test(ptPart.detail), ptPart.detail);
+const BS_NONODE = bsTmp('pathnonode');
+bsVersionStub(BS_NONODE, 'git', 'git version 9.9.9-stub');
+const ptNoNode = D.pathTools(BS_NONODE, { env: bsEnv(BS_NONODE) });
+t('beginner path-tools: node missing -> says plainly that Forge needs Node 18+ although Claude Code does not', ptNoNode.missing.includes('node') && /need Node 18 or newer, even though Claude Code itself does not/.test(ptNoNode.detail), ptNoNode.detail);
+let ptEmpty;
+try { ptEmpty = D.pathTools(BS_NONODE, { env: {} }); } catch (e) { ptEmpty = { threw: e.message }; }
+t('beginner path-tools: an EMPTY/absent PATH -> all three missing, never a throw', Array.isArray(ptEmpty.missing) && ptEmpty.missing.length === 3 && ptEmpty.level === 'warn', JSON.stringify(ptEmpty));
+const garbledPath = (BS_WIN ? ['', '"' + BS_ALL + '"', 'Z:\\no\\such\\dir', ';;'] : ['', '/no/such/dir', BS_ALL, '']).join(BS_WIN ? ';' : ':');
+let ptGarbled;
+try { ptGarbled = D.pathTools(BS_ALL, { env: Object.assign(bsEnv(BS_ALL), { PATH: garbledPath }) }); } catch (e) { ptGarbled = { threw: e.message }; }
+t('beginner path-tools: a garbled PATH (empty segments, missing dirs' + (BS_WIN ? ', a quoted entry' : '') + ') still resolves the real entries', ptGarbled.level === 'ok' && ptGarbled.missing.length === 0, JSON.stringify(ptGarbled));
+const BS_SILENT = bsTmp('pathsilent');
+bsStub(BS_SILENT, 'git', '@echo off\n', '#!/bin/sh\nexit 0\n');
+const ptSilent = D.pathTools(BS_SILENT, { env: bsEnv(BS_SILENT) });
+t('beginner path-tools: a tool whose --version prints nothing is FOUND with an honest note, never a made-up version', ptSilent.tools.git.found === true && ptSilent.tools.git.version === null && /printed nothing/.test(ptSilent.tools.git.version_note), JSON.stringify(ptSilent.tools.git));
+// the node on PATH that IS this process reports process.version without a spawn (same string --version prints)
+const ptSelf = D.pathTools(BS_ALL, { env: Object.assign(bsEnv(BS_ALL), { PATH: path.dirname(process.execPath) }) });
+t('beginner path-tools: when PATH node is this very binary, its version is process.version (no extra spawn)', ptSelf.tools.node.found === true && ptSelf.tools.node.version === process.version && ptSelf.tools.node.version_source === 'this doctor process', JSON.stringify(ptSelf.tools.node));
+t('beginner path-tools: a stub node that is NOT this binary is still really probed', ptAll.tools.node.version_source === undefined && ptAll.tools.node.version === 'v99.1.0-stub');
+// the shell only runs what it can execute: the extension-less npm sh shim on Windows, a 0644 file elsewhere
+const BS_NOEXEC = bsTmp('pathnoexec');
+fs.writeFileSync(path.join(BS_NOEXEC, 'claude'), '#!/bin/sh\necho nope\n');
+if (!BS_WIN) fs.chmodSync(path.join(BS_NOEXEC, 'claude'), 0o644);
+t('beginner path-tools: a non-executable "claude" file is NOT counted as on PATH (' + (BS_WIN ? 'no PATHEXT extension' : 'no execute bit') + ')', D.resolveOnPath('claude', bsEnv(BS_NOEXEC), process.platform) === null);
+
+// --- bypass-mode ---
+const BS_BY = bsTmp('bypass');
+t('beginner bypass-mode: no project settings -> info', D.bypassMode(BS_BY).level === 'info' && D.bypassMode(BS_BY).ok === true, JSON.stringify(D.bypassMode(BS_BY)));
+fs.mkdirSync(path.join(BS_BY, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(BS_BY, '.claude', 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }));
+const byOk = D.bypassMode(BS_BY);
+t('beginner bypass-mode: another defaultMode -> info, and it names the mode it saw', byOk.level === 'info' && /defaultMode acceptEdits/.test(byOk.detail), JSON.stringify(byOk));
+fs.writeFileSync(path.join(BS_BY, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }));
+const byWarn = D.bypassMode(BS_BY);
+t('beginner bypass-mode: bypassPermissions in settings.local.json -> warn naming that file', byWarn.level === 'warn' && byWarn.ok === false && /settings\.local\.json sets permissions\.defaultMode "bypassPermissions"/.test(byWarn.detail), JSON.stringify(byWarn));
+const BS_BY_BAD = bsTmp('bypassbad');
+fs.mkdirSync(path.join(BS_BY_BAD, '.claude'), { recursive: true });
+fs.writeFileSync(path.join(BS_BY_BAD, '.claude', 'settings.json'), '{ "permissions": { "defaultMode": ');
+let byBad;
+try { byBad = D.bypassMode(BS_BY_BAD); } catch (e) { byBad = { threw: e.message }; }
+t('beginner bypass-mode: malformed settings JSON -> warn "settings unreadable", never a throw', byBad.level === 'warn' && /settings unreadable: \.claude\/settings\.json/.test(byBad.detail), JSON.stringify(byBad));
+fs.writeFileSync(path.join(BS_BY_BAD, '.claude', 'settings.json'), 'null');
+fs.writeFileSync(path.join(BS_BY_BAD, '.claude', 'settings.local.json'), '[1,2]');
+let byOdd;
+try { byOdd = D.bypassMode(BS_BY_BAD); } catch (e) { byOdd = { threw: e.message }; }
+t('beginner bypass-mode: valid-but-odd JSON (null, an array) -> info, never a throw', byOdd.level === 'info', JSON.stringify(byOdd));
+
+// --- wsl-mnt-c --- (the rule is a pure string check, so the Linux cases run on every OS via the injected platform)
+const wslWarn = D.wslMntC('/mnt/c/Users/someone/project', { platform: 'linux' });
+t('beginner wsl-mnt-c: linux + a /mnt/c root -> warn with the keep-it-in-the-Linux-home advice', wslWarn.level === 'warn' && wslWarn.ok === false && /WSL: keep the project inside the Linux home for speed/.test(wslWarn.detail), JSON.stringify(wslWarn));
+t('beginner wsl-mnt-c: linux + a Linux-filesystem root -> ok', D.wslMntC('/home/someone/project', { platform: 'linux' }).level === 'ok');
+t('beginner wsl-mnt-c: win32 / darwin -> n-a', D.wslMntC('/mnt/c/x', { platform: 'win32' }).level === 'n-a' && D.wslMntC('/mnt/c/x', { platform: 'darwin' }).level === 'n-a');
+let wslOdd;
+try { wslOdd = D.wslMntC(null, { platform: 'linux' }); } catch (e) { wslOdd = { threw: e.message }; }
+t('beginner wsl-mnt-c: a missing root never throws', wslOdd.level === 'ok', JSON.stringify(wslOdd));
+const wslReal = D.wslMntC(BS_MD);
+if (process.platform === 'linux') t('beginner wsl-mnt-c: on this real Linux host a temp-dir root is not under /mnt -> ok', wslReal.level === (BS_MD.startsWith('/mnt/') ? 'warn' : 'ok'), JSON.stringify(wslReal));
+else t('beginner wsl-mnt-c: on this real ' + process.platform + ' host the check is n-a', wslReal.level === 'n-a', JSON.stringify(wslReal));
+
+// --- claude-doctor ---
+const cdAbsent = D.claudeDoctorProbe(BS_ALL, { claudePath: null, probe: true });
+t('beginner claude-doctor: claude absent -> info "not run (claude CLI absent ...)"', cdAbsent.level === 'info' && cdAbsent.ran === false && /not run \(claude CLI absent/.test(cdAbsent.detail), JSON.stringify(cdAbsent));
+const cdLib = D.claudeDoctorProbe(BS_ALL, { claudePath: ptAll.tools.claude.path, probe: false });
+t('beginner claude-doctor: a library call without the probe flag never spawns it, and says so', cdLib.ran === false && /not run \(library call/.test(cdLib.detail), JSON.stringify(cdLib));
+const cdRun = D.claudeDoctorProbe(BS_ALL, { claudePath: ptAll.tools.claude.path, probe: true, env: bsEnv(BS_ALL) });
+t('beginner claude-doctor: probe runs the stub and shows exactly the first 5 NON-EMPTY lines verbatim', cdRun.ran === true && cdRun.exit === 0 && cdRun.lines.length === 5 && cdRun.lines[0] === 'Claude Code doctor' && cdRun.lines[1] === 'Running: stub 0.0.1' && !cdRun.lines.includes('Line six must be cut'), JSON.stringify(cdRun));
+t('beginner claude-doctor: always info, never a warn — it is shown, not parsed', cdRun.level === 'info' && cdRun.ok === true);
+const BS_CD_FAIL = bsTmp('cdfail');
+const cdFailStub = bsStub(BS_CD_FAIL, 'claude', '@echo off\necho ERROR something is broken\nexit /b 3\n', '#!/bin/sh\necho "ERROR something is broken"\nexit 3\n');
+const cdFail = D.claudeDoctorProbe(BS_CD_FAIL, { claudePath: cdFailStub, probe: true, env: bsEnv(BS_CD_FAIL) });
+t('beginner claude-doctor: a non-zero exit is reported with its code, still info (never parsed into a verdict)', cdFail.level === 'info' && cdFail.exit === 3 && cdFail.lines[0] === 'ERROR something is broken', JSON.stringify(cdFail));
+const BS_CD_SLOW = bsTmp('cdslow');
+const cdSlowStub = bsStub(BS_CD_SLOW, 'claude', '@echo off\nif "%~1"=="doctor" "%SystemRoot%\\System32\\ping.exe" -n 3 127.0.0.1 >nul\necho late\n', '#!/bin/sh\nif [ "$1" = "doctor" ]; then /bin/sleep 2; fi\necho late\n'); // absolute: the fake PATH holds only the stub dir, and sleep is not a shell builtin
+const cdSlow = D.claudeDoctorProbe(BS_CD_SLOW, { claudePath: cdSlowStub, probe: true, env: bsEnv(BS_CD_SLOW), timeoutMs: 400 });
+t('beginner claude-doctor: a CLI that hangs (e.g. wants a TTY) -> info "not run (timed out ...)", honestly', cdSlow.level === 'info' && cdSlow.ran === false && cdSlow.timed_out === true && /not run \(timed out/.test(cdSlow.detail), JSON.stringify(cdSlow));
+
+// --- prompt-coach-present ---
+const BS_PC = bsTmp('coach');
+t('beginner prompt-coach-present: no forge-intake -> n-a', D.promptCoachPresent(BS_PC).level === 'n-a');
+fs.mkdirSync(path.join(BS_PC, '.claude', 'skills', 'forge-intake'), { recursive: true });
+fs.writeFileSync(path.join(BS_PC, '.claude', 'skills', 'forge-intake', 'SKILL.md'), '---\nname: forge-intake\ndescription: x\n---\n');
+const pcWarn = D.promptCoachPresent(BS_PC);
+t('beginner prompt-coach-present: intake WITHOUT the coach -> warn (incomplete install)', pcWarn.level === 'warn' && pcWarn.ok === false && /forge-prompt-coach\/SKILL\.md is missing/.test(pcWarn.detail), JSON.stringify(pcWarn));
+fs.mkdirSync(path.join(BS_PC, '.claude', 'skills', 'forge-prompt-coach'), { recursive: true });
+fs.writeFileSync(path.join(BS_PC, '.claude', 'skills', 'forge-prompt-coach', 'SKILL.md'), '---\nname: forge-prompt-coach\ndescription: x\n---\n');
+t('beginner prompt-coach-present: intake + coach -> ok', D.promptCoachPresent(BS_PC).level === 'ok');
+// the REAL tree: reported as whatever the disk says — a missing coach is a real warn here, never a skip
+const pcReal = D.promptCoachPresent(REAL_PROJECT_ROOT);
+const realHasCoach = fs.existsSync(path.join(REAL_SKILLS_DIR, 'forge-prompt-coach', 'SKILL.md'));
+const realHasIntake = fs.existsSync(path.join(REAL_SKILLS_DIR, 'forge-intake', 'SKILL.md'));
+t('beginner prompt-coach-present: the real project is reported exactly as on disk (intake ' + realHasIntake + ', coach ' + realHasCoach + ' -> ' + pcReal.level + ')', pcReal.level === (!realHasIntake ? 'n-a' : (realHasCoach ? 'ok' : 'warn')), JSON.stringify(pcReal));
+
+// --- aggregate: shape, speed, override, and THE core guarantee (never flips the doctor verdict) ---
+const bsAgg = D.beginnerSetup(BS_ALL, { env: bsEnv(BS_ALL) });
+const BS_KEYS = ['claude_md_size', 'path_tools', 'bypass_mode', 'wsl_mnt_c', 'claude_doctor', 'prompt_coach_present'];
+t('beginner setup: exactly the six checks, each {id, ok, level, detail, ms}, ok false exactly when level is warn', Object.keys(bsAgg.checks).join(',') === BS_KEYS.join(',') && Object.values(bsAgg.checks).every((c) => typeof c.id === 'string' && typeof c.detail === 'string' && typeof c.ms === 'number' && ['ok', 'info', 'warn', 'n-a'].includes(c.level) && c.ok === (c.level !== 'warn')), JSON.stringify(bsAgg));
+t('beginner setup: the claude found by path-tools is the one the probe would run (not-run in a library call, but not "absent")', /library call/.test(bsAgg.checks.claude_doctor.detail), bsAgg.checks.claude_doctor.detail);
+t('beginner setup: every filesystem-only check stays under 300 ms', ['claude_md_size', 'bypass_mode', 'wsl_mnt_c', 'prompt_coach_present'].every((k) => bsAgg.checks[k].ms < 300), JSON.stringify(BS_KEYS.map((k) => k + '=' + bsAgg.checks[k].ms + 'ms')));
+const bsProbed = D.beginnerSetup(BS_ALL, { env: bsEnv(BS_ALL), probeClaudeDoctor: true });
+t('beginner setup: with probeClaudeDoctor the stub claude found on the fake PATH is really probed', bsProbed.checks.claude_doctor.ran === true && bsProbed.checks.claude_doctor.lines[0] === 'Claude Code doctor', JSON.stringify(bsProbed.checks.claude_doctor));
+
+const BS_VERDICT = makeCompletenessBase('forge-doctor-bs-verdict-');
+fs.writeFileSync(path.join(BS_VERDICT, 'CLAUDE.md'), 'line\n'.repeat(250));
+fs.mkdirSync(path.join(BS_VERDICT, '.claude', 'skills', 'forge-intake'), { recursive: true });
+fs.writeFileSync(path.join(BS_VERDICT, '.claude', 'skills', 'forge-intake', 'SKILL.md'), '---\nname: forge-intake\ndescription: A short, valid description.\n---\n');
+fs.writeFileSync(path.join(BS_VERDICT, '.claude', 'settings.json'), '{ broken');
+fs.writeFileSync(path.join(BS_VERDICT, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }));
+const bsVerdictRep = D.runDoctor(BS_VERDICT, { env: bsEnv(BS_NONODE) });
+const bsv = bsVerdictRep.advisory.beginner_setup;
+t('beginner setup verdict fixture: every warn really fires (md 250 lines, bypass + unreadable settings, node/claude missing, coach missing)', bsv.checks.claude_md_size.level === 'warn' && bsv.checks.bypass_mode.level === 'warn' && /settings unreadable/.test(bsv.checks.bypass_mode.detail) && bsv.checks.path_tools.level === 'warn' && bsv.checks.prompt_coach_present.level === 'warn' && bsv.ok === false, JSON.stringify(bsv));
+t('beginner setup verdict fixture: the warns do NOT flip doctor.ok (advisory, like every other advisory)', bsVerdictRep.ok === true, JSON.stringify(Object.entries(bsVerdictRep.checks).filter(([, c]) => !c.ok).map(([k, c]) => [k, c.reason || c])));
+t('beginner setup: it lives under `advisory`, never under `checks`', !Object.keys(bsVerdictRep.checks).some((k) => /beginner|claude_md|path_tools|bypass|wsl|claude_doctor|prompt_coach/.test(k)));
+const bsSummary = D.printSummary(bsVerdictRep);
+t('printSummary: each beginner warn is a ⚠ line labelled advisory, non-blocking', ['claude-md-size', 'path-tools', 'bypass-mode', 'prompt-coach-present'].every((id) => new RegExp('⚠ setup ' + id + ' \\(advisory, non-blocking\\)').test(bsSummary)), bsSummary.split('\n').filter((l) => /setup /.test(l)).join('\n'));
+t('printSummary: non-warn beginner lines are labelled advisory too, and no beginner line is ever a ✗', /✓ setup wsl-mnt-c \(advisory\)|⚠ setup wsl-mnt-c/.test(bsSummary) && /ℹ setup claude-doctor \(advisory\)/.test(bsSummary) && !/✗ setup/.test(bsSummary), bsSummary.split('\n').filter((l) => /setup /.test(l)).join('\n'));
+t('printSummary: with beginner warns present the verdict still reads ALL GREEN', /⇒ ALL GREEN/.test(bsSummary));
+// the owner can acknowledge a deliberate warn (a throwaway VM) with the SAME override mechanism the enforced checks use
+fs.mkdirSync(path.join(BS_VERDICT, '.claude', 'config', 'orchestration'), { recursive: true });
+fs.writeFileSync(path.join(BS_VERDICT, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({ doctor_check_overrides: [{ check: 'bypass-mode', reason: 'disposable CI VM, bypass is intended', by: 'owner', ts: '2026-09-24T00:00:00Z' }] }));
+const bsOv = D.beginnerSetup(BS_VERDICT, { env: bsEnv(BS_NONODE), overrideMap: new Map(D.loadDoctorCheckOverrides(BS_VERDICT).map((o) => [o.check, o])) });
+t('beginner setup: a doctor_check_overrides entry for "bypass-mode" turns that warn into a VISIBLE override, level unchanged', bsOv.checks.bypass_mode.ok === true && bsOv.checks.bypass_mode.overridden === true && bsOv.checks.bypass_mode.level === 'warn', JSON.stringify(bsOv.checks.bypass_mode));
+t('beginner setup: the override covers only the check it names', bsOv.checks.claude_md_size.ok === false && !bsOv.checks.claude_md_size.overridden);
+const bsOvSummary = D.printSummary(D.runDoctor(BS_VERDICT, { env: bsEnv(BS_NONODE) }));
+t('printSummary: an overridden beginner warn prints ✓ with the [OVERRIDDEN by ...] tag, never silently', /✓ setup bypass-mode \(advisory\): .*\[OVERRIDDEN by owner: disposable CI VM, bypass is intended\]/.test(bsOvSummary), bsOvSummary.split('\n').filter((l) => /bypass-mode/.test(l)).join('\n'));
+
+// --- static guards: nothing new reads the real home; the probe can never become interactive; the CLI opts in ---
+const DOCTOR_SRC_TEXT = fs.readFileSync(path.join(__dirname, 'forge-doctor.cjs'), 'utf8');
+const bsStart = DOCTOR_SRC_TEXT.indexOf('// BEGINNER SETUP (wp17, 2026-09-24) — ADVISORY-ONLY');
+const bsEnd = DOCTOR_SRC_TEXT.indexOf('function runDoctor(');
+const bsSection = bsStart > 0 && bsEnd > bsStart ? DOCTOR_SRC_TEXT.slice(bsStart, bsEnd) : '';
+t('beginner setup static: the section was located in the doctor source (guards below are not vacuous)', bsSection.length > 2000, 'length=' + bsSection.length);
+t('beginner setup static: no new code touches os.homedir() or a HOME/USERPROFILE variable', !/homedir|USERPROFILE|env\.HOME\b/.test(bsSection) && !/homedir/.test(D.installationProfile.toString()) && !/homedir/.test(D.readDevTreeMarker.toString()));
+t('beginner setup static: every spawned tool gets stdin closed (ignore) — nothing can wait for a keypress', /stdio: \['ignore', 'pipe', 'pipe'\]/.test(bsSection) && (bsSection.match(/spawnSync\(/g) || []).length === 2);
+t('beginner setup static: no shell:true anywhere in the section', !/shell:\s*true/.test(bsSection));
+t('beginner setup static: the forge-doctor CLI is the caller that opts in to the claude doctor probe', /runDoctor\(root, \{ probeClaudeDoctor: true \}\)/.test(DOCTOR_SRC_TEXT));
 
 console.log(pass + ' passed, ' + fail + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 process.exitCode = fail ? 1 : 0;

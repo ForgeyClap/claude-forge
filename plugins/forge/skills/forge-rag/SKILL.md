@@ -1,6 +1,6 @@
 ---
 name: forge-rag
-description: "Forge playbook for AI chatbots and RAG systems. Use when building a chatbot, assistant, RAG, or knowledge-base Q&A over documents — keywords: chatbot, RAG, retrieval, embeddings, vector search, ingestion, system prompt, knowledge base, assistant, hallucination, source-aware, lead capture. Covers retrieval logic, grounding, fallback behavior, and safety."
+description: Forge playbook for AI chatbots and RAG systems. Use for chatbot, RAG, retrieval, embeddings, vector search, knowledge base, hallucination, source-aware, lead capture.
 ---
 
 # Forge playbook — AI chatbot / RAG

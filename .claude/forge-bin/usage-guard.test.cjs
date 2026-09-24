@@ -21,6 +21,13 @@ const path = require('path');
 const assert = require('assert');
 const { execFileSync, spawn } = require('child_process');
 
+// CONFIG SANDBOX (v2.7.0, 2026-09-24): usage-guard.cjs now reads its thresholds and its on/off switch through
+// forge-config.cjs when it loads. Point that resolver at a throwaway home + project root BEFORE the first
+// require, so no test here reads the owner's real FORGE_CONFIG.json — and every child process inherits the sandbox.
+const CONFIG_SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-cfg-'));
+process.env.FORGE_CONFIG_HOME = path.join(CONFIG_SANDBOX, 'home');
+process.env.FORGE_PROJECT_ROOT = path.join(CONFIG_SANDBOX, 'project');
+
 let pass = 0, fail = 0;
 // PROMISE-AWARE (2026-08-06): an async test used to be counted PASS the moment fn() returned a pending
 // promise — its assertions ran later as unhandled rejections and could never fail the suite. Async tests
@@ -936,6 +943,9 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-hs2-'));
   const isolatedHome = path.join(tmp, '.claude');
   fs.mkdirSync(isolatedHome, { recursive: true });
+  // wp20 M6: `start` now refuses without a login FILE (macOS keeps it in the Keychain). A login file WITHOUT an
+  // access token lets the real start proceed while readToken() still throws before any fetch — no network call.
+  fs.writeFileSync(path.join(isolatedHome, '.credentials.json'), JSON.stringify({ claudeAiOauth: {} }));
   const pidFile = path.join(tmp, 'guard.pid');
   const isolatedEnv = Object.assign({}, process.env, {
     HOME: tmp,
@@ -947,6 +957,7 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
     FORGE_USAGE_PRESSURE_FILE: path.join(tmp, 'FORGE_USAGE_PRESSURE.json'),
     FORGE_USAGE_GUARD_JOURNAL: path.join(tmp, 'paused.jsonl'),
     FORGE_USAGE_GUARD_IDENTITY: path.join(tmp, 'claude-identity.json'), // deliberately absent
+    FORGE_CONFIG_HOME: isolatedHome, // no FORGE_CONFIG.json here -> usage-guard is ON by default (v2.7.0)
     // a slow CI runner (windows-latest/Node 18) needed more than the 10 s default before the child claimed; the
     // suite went red inside the doctor and green on the immediate re-run — timing, not logic
     FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000',
@@ -994,6 +1005,12 @@ test('H3.2b start-handshake end-to-end: een decoy-kind dat nooit claimt geeft ee
   const claimed = res.status === 0 && /claim geverifieerd/.test(res.stdout || '');
   assert.ok(claimed, 'een echte start hoort pas "started" te melden NA een geverifieerde claim: ' + (res.stdout || '') + (res.stderr || ''));
   assert.ok(res2.status !== 0 || /already running/.test(res2.stdout || ''), 'een bezet slot hoort een eerlijke weigering of already-running te geven: status=' + res2.status + ' out=' + (res2.stdout || '').slice(0, 120));
+  // v2.7.0 DISCLOSURE: a REAL start tells the owner what the guard reads and how to switch it off (schema text);
+  // a start that did not start a new watcher (already running / refused) prints none of it.
+  const disc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), 'utf8')).settings['usage-guard'].disclosure;
+  assert.ok((res.stdout || '').includes(disc.nl) && (res.stdout || '').includes(disc.en), 'a real start prints the schema disclosure (nl + en): ' + (res.stdout || '').slice(0, 300));
+  assert.ok(/Uit: \/forge config set usage-guard uit/.test(res.stdout || ''), 'a real start ends with the one-command way to switch it off');
+  assert.ok(!/Uit: \/forge config set usage-guard uit/.test(res2.stdout || '') && !(res2.stdout || '').includes(disc.nl), 'no disclosure when no NEW watcher started: ' + (res2.stdout || '').slice(0, 200));
   if (realChildPid) assert.ok(!G.pidAlive(realChildPid), 'het echte gedetacheerde kind (pid ' + realChildPid + ') moet dood zijn na cleanup — geen wees-watcher achterlaten');
 
   // REGRESSION PROOF (F1): het ECHTE ~/.claude/FORGE_USAGE_PRESSURE.json moet volledig onaangeroerd
@@ -1129,6 +1146,325 @@ test('H3.3 logrotatie: een log boven de grens roteert naar .1 en verliest de rec
   delete process.env.FORGE_USAGE_GUARD_PID;
   delete require.cache[require.resolve('./usage-guard.cjs')];
   try { fs4.rmSync(dir4, { recursive: true, force: true }); } catch { }
+}
+
+// ============================================================================================
+// H5 — v2.7.0 (2026-09-24): the guard's settings come from /forge config. Precedence: CLI flag > forge-config
+//      value > the hard default (pause-at 98 — the only pause literal left; the 93/95 drift is gone). `start`
+//      refuses when the owner switched the guard off, and prints the disclosure only on a REAL start.
+//      Every CLI call runs in a sandbox home: never the real ~/.claude, never a real login file.
+// ============================================================================================
+{
+  const G5 = require('./usage-guard.cjs');
+  const SCHEMA5 = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), 'utf8'));
+  const t5 = (name, fn) => test('H5 ' + name, fn);
+  const pick = (s, k) => [s[k].value, s[k].source];
+
+  t5('no flag + no config -> pause-at 98 (standaard), resume-at 0, interval 120, nvidia-shift-at 80', () => {
+    const s = G5.resolveGuardSettings([], null);
+    assert.deepStrictEqual(pick(s, 'pause-at'), [98, 'standaard']);
+    assert.deepStrictEqual(pick(s, 'resume-at'), [0, 'standaard']);
+    assert.deepStrictEqual(pick(s, 'interval'), [120, 'standaard']);
+    assert.deepStrictEqual(pick(s, 'nvidia-shift-at'), [80, 'standaard']);
+    assert.deepStrictEqual(pick(s, 'enabled'), [true, 'standaard']);
+    assert.strictEqual(s.force, false);
+  });
+  t5('the hard defaults agree with the schema defaults (one number, no drift)', () => {
+    const s = G5.resolveGuardSettings([], null);
+    for (const k of ['pause-at', 'resume-at', 'interval', 'nvidia-shift-at']) {
+      assert.strictEqual(s[k].value, SCHEMA5.settings['usage-guard.' + k].default, k);
+    }
+    assert.strictEqual(s.enabled.value, SCHEMA5.settings['usage-guard'].default);
+  });
+  t5('a config value beats the default and is labelled instelling', () => {
+    const s = G5.resolveGuardSettings(['status'], { 'usage-guard.pause-at': { value: 97, source: 'global' }, 'usage-guard.nvidia-shift-at': { value: 70, source: 'project' } });
+    assert.deepStrictEqual(pick(s, 'pause-at'), [97, 'instelling']);
+    assert.deepStrictEqual(pick(s, 'nvidia-shift-at'), [70, 'instelling']);
+    assert.deepStrictEqual(pick(s, 'resume-at'), [0, 'standaard']);
+  });
+  t5('a config entry that only carries the schema default is labelled standaard', () => {
+    const s = G5.resolveGuardSettings([], { 'usage-guard.pause-at': { value: 98, source: 'default' } });
+    assert.deepStrictEqual(pick(s, 'pause-at'), [98, 'standaard']);
+  });
+  t5('a CLI flag beats the config value and is labelled vlag', () => {
+    const s = G5.resolveGuardSettings(['watch', '--pause-at', '90', '--interval', '60'], { 'usage-guard.pause-at': { value: 97, source: 'project' }, 'usage-guard.interval': { value: 300, source: 'global' } });
+    assert.deepStrictEqual(pick(s, 'pause-at'), [90, 'vlag']);
+    assert.deepStrictEqual(pick(s, 'interval'), [60, 'vlag']);
+  });
+  t5('an unparseable flag is ignored with a warning and never becomes NaN (NaN would never pause)', () => {
+    const s = G5.resolveGuardSettings(['--pause-at', 'abc'], { 'usage-guard.pause-at': { value: 97, source: 'global' } });
+    assert.deepStrictEqual(pick(s, 'pause-at'), [97, 'instelling']);
+    assert.strictEqual(s.warnings.length, 1);
+    assert.match(s.warnings[0], /--pause-at/);
+  });
+  t5('the on/off switch: config off is reported as instelling; --force is detected', () => {
+    const s = G5.resolveGuardSettings(['start', '--force'], { 'usage-guard': { value: false, source: 'global' } });
+    assert.deepStrictEqual(pick(s, 'enabled'), [false, 'instelling']);
+    assert.strictEqual(s.force, true);
+  });
+  t5('pure: the same input gives the same output and the input is not mutated', () => {
+    const argvIn = ['--pause-at', '91'];
+    const cfgIn = { 'usage-guard.pause-at': { value: 97, source: 'global' } };
+    const snap = JSON.stringify([argvIn, cfgIn]);
+    assert.deepStrictEqual(G5.resolveGuardSettings(argvIn, cfgIn), G5.resolveGuardSettings(argvIn, cfgIn));
+    assert.strictEqual(JSON.stringify([argvIn, cfgIn]), snap);
+  });
+  t5('drift canary: the source has one pause default (98) and no 93/95 left in the argv default, usage text or header', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'usage-guard.cjs'), 'utf8');
+    assert.ok(!/argv\('pause-at',\s*\d+\)/.test(src), 'pause-at must not carry its own argv() default any more');
+    assert.ok(!/--pause-at 9[0-7]\b/.test(src), 'the usage text must not advertise another pause default');
+    assert.ok(!/pause-at\s*%?\s*\(default 9[0-7]\)/.test(src), 'the header must not document another pause default');
+    assert.ok(/'pause-at': 98\b/.test(src), 'the hard default 98 is the one literal');
+  });
+  t5('loadGuardConfig reads a real FORGE_CONFIG.json through forge-config.cjs (sandbox home)', () => {
+    const home = process.env.FORGE_CONFIG_HOME;
+    fs.mkdirSync(home, { recursive: true });
+    const f = path.join(home, 'FORGE_CONFIG.json');
+    fs.writeFileSync(f, JSON.stringify({ version: 1, settings: { 'usage-guard.pause-at': { value: 97, set_at: '2026-09-24T00:00:00Z', set_by: 'test' } } }));
+    try {
+      const r = G5.loadGuardConfig();
+      assert.deepStrictEqual([r.cfg['usage-guard.pause-at'].value, r.cfg['usage-guard.pause-at'].source], [97, 'global']);
+      assert.strictEqual(r.cfg['usage-guard'].value, true);
+      assert.strictEqual(r.disclosure.nl, SCHEMA5.settings['usage-guard'].disclosure.nl);
+      assert.strictEqual(r.note, null);
+      assert.deepStrictEqual(pick(G5.resolveGuardSettings([], r.cfg), 'pause-at'), [97, 'instelling']);
+    } finally { fs.rmSync(f, { force: true }); }
+  });
+  t5('loadGuardConfig without forge-config.cjs falls back to the schema defaults (98, standaard)', () => {
+    const r = G5.loadGuardConfig({ configModule: null });
+    assert.deepStrictEqual([r.cfg['usage-guard.pause-at'].value, r.cfg['usage-guard.pause-at'].source], [98, 'default']);
+    assert.strictEqual(r.cfg['usage-guard'].value, true);
+    assert.strictEqual(r.disclosure.en, SCHEMA5.settings['usage-guard'].disclosure.en);
+    assert.deepStrictEqual(pick(G5.resolveGuardSettings([], r.cfg), 'pause-at'), [98, 'standaard']);
+  });
+  t5('M3: a malformed FORGE_CONFIG.json is UNREADABLE — thresholds at the defaults, a visible note, unreadable:true (never a silent ON)', () => {
+    const home = process.env.FORGE_CONFIG_HOME;
+    fs.mkdirSync(home, { recursive: true });
+    const f = path.join(home, 'FORGE_CONFIG.json');
+    fs.writeFileSync(f, '{ "version": 1, "settings": { "usage-guard": ');
+    try {
+      const r = G5.loadGuardConfig();
+      assert.ok(typeof r.note === 'string' && r.note.length > 0, 'a visible note, not silence');
+      assert.strictEqual(r.unreadable, true, 'the caller must be able to tell unreadable from on');
+      assert.match(r.note, /usage guard start niet \(veilige standaard: uit\)/);
+      assert.strictEqual(r.cfg['usage-guard.pause-at'].value, 98);
+      assert.deepStrictEqual(G5.readGuardSwitch(), { on: false, unreadable: true }, 'the switch reads as OFF');
+    } finally { fs.rmSync(f, { force: true }); }
+  });
+  t5('M3: a missing forge-config.cjs is unreadable too (switch OFF); a readable file is not', () => {
+    assert.strictEqual(G5.loadGuardConfig({ configModule: null }).unreadable, true);
+    assert.deepStrictEqual(G5.readGuardSwitch({ configModule: null }), { on: false, unreadable: true });
+    assert.strictEqual(G5.loadGuardConfig().unreadable, false);
+    assert.deepStrictEqual(G5.readGuardSwitch(), { on: true, unreadable: false });
+  });
+
+  // ---- CLI, real subprocess, sandbox home (no login file -> the usage fetch fails before any network call) ----
+  function sandbox5(configSettings) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-h5-'));
+    const home = path.join(dir, '.claude');
+    fs.mkdirSync(home, { recursive: true });
+    if (configSettings) fs.writeFileSync(path.join(home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: configSettings }));
+    const env = Object.assign({}, process.env, {
+      HOME: dir, USERPROFILE: dir,
+      FORGE_USAGE_GUARD_HOME: home, FORGE_CONFIG_HOME: home, FORGE_PROJECT_ROOT: path.join(dir, 'project'),
+      FORGE_USAGE_GUARD_PID: path.join(dir, 'guard.pid'), FORGE_USAGE_GUARD_LOG: path.join(dir, 'guard.log'),
+      FORGE_USAGE_GUARD_STATE: path.join(dir, 'state.json'), FORGE_USAGE_PRESSURE_FILE: path.join(dir, 'pressure.json'),
+      FORGE_USAGE_GUARD_JOURNAL: path.join(dir, 'paused.jsonl'), FORGE_USAGE_GUARD_IDENTITY: path.join(dir, 'identity.json'),
+    });
+    return { dir, home, env };
+  }
+  const runGuard = (argv5, env) => require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'usage-guard.cjs'), ...argv5], { encoding: 'utf8', timeout: 30000, env });
+  const val = (v) => ({ value: v, set_at: '2026-09-24T00:00:00Z', set_by: 'test' });
+
+  t5('CLI status (no config) prints "pause-at 98% (bron: standaard)"', () => {
+    const sb = sandbox5(null);
+    const r = runGuard(['status'], sb.env);
+    assert.match(r.stdout || '', /pause-at 98% \(bron: standaard\)/, (r.stdout || '') + (r.stderr || ''));
+  });
+  t5('CLI status with a config value prints bron: instelling; a --pause-at flag prints bron: vlag', () => {
+    const sb = sandbox5({ 'usage-guard.pause-at': val(97) });
+    const a = runGuard(['status'], sb.env);
+    assert.match(a.stdout || '', /pause-at 97% \(bron: instelling\)/, (a.stdout || '') + (a.stderr || ''));
+    const b = runGuard(['status', '--pause-at', '91'], sb.env);
+    assert.match(b.stdout || '', /pause-at 91% \(bron: vlag\)/, (b.stdout || '') + (b.stderr || ''));
+  });
+  t5('CLI start with usage-guard OFF in the config exits 3 with the plain message and spawns nothing', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    const r = runGuard(['start'], sb.env);
+    // REGRESSION SAFETY: if a broken build DID start a watcher, kill exactly the pid its own sandbox pid file names
+    // (only a child spawned by this call can have written it) before asserting — never leave an orphan behind.
+    try {
+      const leaked = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid;
+      if (leaked && G5.pidAlive(leaked)) process.kill(leaked);
+    } catch { /* no pid file = nothing was spawned, which is the expected outcome */ }
+    assert.strictEqual(r.status, 3, 'exit 3 = act on this: ' + (r.stdout || '') + (r.stderr || ''));
+    assert.ok((r.stdout || '').includes('usage-guard staat UIT in je instellingen (aanzetten: /forge config set usage-guard aan) / usage guard is OFF in your settings'), r.stdout);
+    assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'no watcher claimed a slot');
+    assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_LOG), 'no watcher log was opened (nothing was spawned)');
+    assert.ok(!(r.stdout || '').includes(SCHEMA5.settings['usage-guard'].disclosure.nl), 'no disclosure when nothing started');
+  });
+
+  // ---- wp20 security fixes (2026-09-24): L1 credential errors · M6 no login file · M3 unreadable settings · L2 switch
+  // re-read per check. Every CLI call runs in a sandbox home; a login file here never holds a usable token, so
+  // readToken() throws before any fetch — no network call anywhere in this block.
+  const credFile = (sb) => path.join(sb.home, '.credentials.json');
+  const readIf = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+  const hasPath = (text, p) => text.includes(p) || text.includes(p.split(path.sep).join('/')) || text.includes(JSON.stringify(p).slice(1, -1));
+  const nap = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { } };
+  // REGRESSION SAFETY: a broken build could leave a watcher behind — kill exactly the pid ITS OWN sandbox pid file names.
+  const killLeak = (sb) => {
+    try {
+      const p = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid;
+      if (p && p !== process.pid && G5.pidAlive(p)) process.kill(p);
+    } catch { /* no pid file = nothing was spawned */ }
+  };
+  const NO_CRED = 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (macOS keeps the login in the Keychain) — ';
+
+  t5('L1: a torn/malformed login file never puts token fragments or the home path into state, log or output', () => {
+    const sb = sandbox5(null);
+    // a damaged file whose token lost its opening quote: V8's JSON.parse message then quotes the input around the error
+    const torn = '{"claudeAiOauth":{"accessToken":sk-ant-oat01-SECRETFRAGMENTqz9}}';
+    fs.writeFileSync(credFile(sb), torn);
+    let raw = ''; try { JSON.parse(torn); } catch (e) { raw = e.message; }
+    assert.ok(/sk-ant-oat/.test(raw), 'control: a raw JSON.parse message quotes the login file around the error: ' + raw);
+    const r = runGuard(['watch', '--once'], sb.env);
+    const state = readIf(sb.env.FORGE_USAGE_GUARD_STATE);
+    const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);
+    assert.ok(state.length > 0 && logText.length > 0, 'the failed check was recorded: ' + (r.stdout || '') + (r.stderr || ''));
+    assert.strictEqual(JSON.parse(state).lastError, 'credentials file unreadable (SyntaxError)');
+    for (const [name, text] of [['state', state], ['log', logText], ['stdout', r.stdout || ''], ['stderr', r.stderr || '']]) {
+      assert.ok(!/sk-ant|oat01|essToken|qz9|FRAGMENT|SECRET/.test(text), name + ' must not carry any part of the login file: ' + text.slice(0, 300));
+      assert.ok(!hasPath(text, sb.home), name + ' must not carry the absolute home path');
+    }
+  });
+  t5('L1: a login file without a token, and a missing login file, give fixed messages without any path', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
+    runGuard(['watch', '--once'], sb.env);
+    assert.strictEqual(JSON.parse(readIf(sb.env.FORGE_USAGE_GUARD_STATE) || '{}').lastError, 'no OAuth token in the credentials file (.credentials.json)');
+    fs.rmSync(credFile(sb));
+    runGuard(['watch', '--once'], sb.env);
+    const stText = readIf(sb.env.FORGE_USAGE_GUARD_STATE);
+    assert.strictEqual(JSON.parse(stText || '{}').lastError, 'credentials file unreadable (ENOENT)');
+    assert.ok(!hasPath(stText, sb.home) && !hasPath(readIf(sb.env.FORGE_USAGE_GUARD_LOG), sb.home), 'no absolute path in state or log');
+  });
+  t5('M6: start without a login file prints one honest line, exits 3 and spawns nothing — --force does not change that', () => {
+    const sb = sandbox5(null);
+    for (const argv5 of [['start'], ['start', '--force']]) {
+      const r = runGuard(argv5, sb.env);
+      killLeak(sb);
+      assert.strictEqual(r.status, 3, argv5.join(' ') + ': ' + (r.stdout || '') + (r.stderr || ''));
+      assert.strictEqual((r.stdout || '').trim(), NO_CRED + 'not started');
+      assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID) && !fs.existsSync(sb.env.FORGE_USAGE_GUARD_LOG), 'nothing was spawned');
+    }
+  });
+  t5('M6: status without a login file says the same, not a raw file error', () => {
+    const sb = sandbox5(null);
+    const r = runGuard(['status'], sb.env);
+    assert.ok((r.stdout || '').includes(NO_CRED + 'no measurement'), r.stdout);
+    assert.ok(!/ENOENT|usage fetch failed/.test((r.stdout || '') + (r.stderr || '')), (r.stdout || '') + (r.stderr || ''));
+  });
+  t5('M3: start with an unreadable FORGE_CONFIG.json refuses (exit 3, plain message) and spawns nothing', () => {
+    const sb = sandbox5(null);
+    fs.writeFileSync(path.join(sb.home, 'FORGE_CONFIG.json'), '{ "version": 1, "settings": ');
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} })); // login file present: M6 is not the reason
+    const r = runGuard(['start'], sb.env);
+    killLeak(sb);
+    assert.strictEqual(r.status, 3, (r.stdout || '') + (r.stderr || ''));
+    assert.ok((r.stdout || '').includes('instellingen onleesbaar — usage guard start niet; herstel of reset met /forge config reset --yes'), r.stdout);
+    assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'no watcher claimed a slot');
+  });
+  t5('L2: a real watcher whose switch is OFF at its check logs one line, releases its pid file and exits 0 — no check made', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    const r = runGuard(['watch', '--interval', '60'], sb.env);
+    killLeak(sb);
+    const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);
+    assert.strictEqual(r.status, 0, 'a clean exit: ' + (r.stdout || '') + (r.stderr || ''));
+    assert.ok(/usage-guard staat nu UIT in je instellingen — de watcher stopt/.test(logText), logText);
+    assert.ok(!/CHECK FAILED|REAL usage/.test(logText), 'no usage check after the switch went off: ' + logText);
+    assert.ok(!fs.existsSync(sb.env.FORGE_USAGE_GUARD_PID), 'the pid file was released');
+  });
+  t5('L2: start --force with the switch OFF forwards --force — the watcher is not undone by its own first check', () => {
+    const sb = sandbox5({ 'usage-guard': val(false) });
+    fs.writeFileSync(credFile(sb), JSON.stringify({ claudeAiOauth: {} }));
+    const r = runGuard(['start', '--force', '--interval', '60'], Object.assign({}, sb.env, { FORGE_USAGE_GUARD_CLAIM_TIMEOUT_MS: '30000' }));
+    let pid = null;
+    try { pid = JSON.parse(fs.readFileSync(sb.env.FORGE_USAGE_GUARD_PID, 'utf8')).pid; } catch { pid = null; }
+    try {
+      assert.strictEqual(r.status, 0, (r.stdout || '') + (r.stderr || ''));
+      assert.ok(pid && G5.pidAlive(pid), 'the forced watcher claimed its slot');
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && !/CHECK FAILED/.test(readIf(sb.env.FORGE_USAGE_GUARD_LOG))) nap(200);
+      const logText = readIf(sb.env.FORGE_USAGE_GUARD_LOG);
+      assert.ok(/CHECK FAILED \(no action taken — fail-safe\): no OAuth token/.test(logText), 'the forced watcher made its first check: ' + logText);
+      nap(300);
+      assert.ok(G5.pidAlive(pid), 'still running after its first check');
+      assert.ok(!/de watcher stopt/.test(readIf(sb.env.FORGE_USAGE_GUARD_LOG)), 'it did not stop itself');
+    } finally {
+      // exact-PID cleanup of the child THIS test started (from its own sandbox pid file), then wait for the exit
+      if (pid && pid !== process.pid) {
+        try { process.kill(pid); } catch { }
+        for (let i = 0; i < 30 && G5.pidAlive(pid); i++) nap(100);
+        if (G5.pidAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { } }
+        for (let i = 0; i < 50 && G5.pidAlive(pid); i++) nap(100);
+      }
+    }
+  });
+  t5('L2: watchStep re-reads the REAL settings file before every check — flipping it to OFF stops the watcher and releases its pid file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-l2-'));
+    const home = path.join(dir, 'home');
+    const proj = path.join(dir, 'project');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
+    const setSwitch = (on) => fs.writeFileSync(path.join(home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { 'usage-guard': val(on) } }));
+    const pidFile = path.join(dir, 'watcher.pid');
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid }) + '\n');
+    const calls = { ticks: 0, exits: [], logs: [] };
+    const deps = {
+      readSwitch: () => G5.readGuardSwitch({ configOpts: { configHome: home, projectRoot: proj } }),
+      tick: async () => { calls.ticks++; },
+      log: (m) => calls.logs.push(m),
+      release: () => G5.releaseWatcherSlot({ pidFile, pid: process.pid }),
+      exit: (c) => calls.exits.push(c),
+    };
+    try {
+      setSwitch(true);
+      const s1 = await G5.watchStep({ forced: false, seenOn: false }, deps);
+      assert.deepStrictEqual([s1.outcome, s1.seenOn, calls.ticks, calls.exits.length], ['ticked', true, 1, 0]);
+      setSwitch(false);
+      const s2 = await G5.watchStep({ forced: false, seenOn: s1.seenOn }, deps);
+      assert.strictEqual(s2.outcome, 'switched-off');
+      assert.strictEqual(calls.ticks, 1, 'no check after the switch went off');
+      assert.deepStrictEqual(calls.exits, [0]);
+      assert.ok(!fs.existsSync(pidFile), 'the pid file was removed');
+      assert.strictEqual(calls.logs.length, 1);
+      assert.match(calls.logs[0], /UIT in je instellingen/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  t5('L2: forced watcher runs while OFF until it has seen ON; unreadable stops a normal watcher; a lost slot exits 1 first', async () => {
+    const run = async (ctx, sw, owns) => {
+      const calls = { ticks: 0, exits: [], logs: [], reads: 0 };
+      const step = await G5.watchStep(ctx, {
+        stillOwnsSlot: () => owns !== false, readSwitch: () => { calls.reads++; return sw; }, tick: async () => { calls.ticks++; },
+        log: (m) => calls.logs.push(m), release: () => {}, exit: (c) => calls.exits.push(c),
+      });
+      return Object.assign(calls, step);
+    };
+    const OFF = { on: false, unreadable: false };
+    const ON = { on: true, unreadable: false };
+    const a = await run({ forced: true, seenOn: false }, OFF);
+    assert.deepStrictEqual([a.outcome, a.seenOn, a.ticks, a.exits.length], ['ticked', false, 1, 0], 'forced + never on: keeps checking');
+    const b = await run({ forced: true, seenOn: a.seenOn }, ON);
+    assert.deepStrictEqual([b.outcome, b.seenOn], ['ticked', true]);
+    const c = await run({ forced: true, seenOn: b.seenOn }, OFF);
+    assert.deepStrictEqual([c.outcome, c.ticks, c.exits], ['switched-off', 0, [0]], 'on -> off stops even a forced watcher');
+    const d = await run({ forced: false, seenOn: true }, { on: false, unreadable: true });
+    assert.deepStrictEqual([d.outcome, d.exits], ['switched-off', [0]]);
+    assert.match(d.logs[0], /instellingen onleesbaar/);
+    const e = await run({ forced: false, seenOn: true }, ON, false);
+    assert.deepStrictEqual([e.outcome, e.exits, e.reads, e.ticks], ['lost-slot', [1], 0, 0]);
+  });
+  try { fs.rmSync(CONFIG_SANDBOX, { recursive: true, force: true }); } catch { }
 }
 
 Promise.all(asyncQueue).then(() => {

@@ -35,6 +35,9 @@ if /I "%~1"=="assign-only" ( "%NODE_CMD%" "%DASH%\server.cjs" --assign-only & go
 if /I "%~1"=="log-event"   goto logevent
 if /I "%~1"=="resume"      goto resume
 if /I "%~1"=="learn"       goto learn
+if /I "%~1"=="config"      goto config
+if /I "%~1"=="sweep"       goto sweep
+if /I "%~1"=="promptcheck" goto promptcheck
 goto help
 :dashboard_or_start
 REM WP7d: if THIS project has a Command Center (command-center/gateway/bin.mjs), it is now the
@@ -88,8 +91,26 @@ REM Usage: forge.cmd learn --scan DIR [--global-store FILE] [--dry-run] [--json]
 shift
 "%NODE_CMD%" "%BIN%forge-harvest.cjs" %1 %2 %3 %4 %5 %6 %7 %8 %9
 goto end
+:config
+REM the ONE settings tool: list/get/set/unset/reset/explain/diff/parse (forge-config.cjs, --help on each).
+REM Usage: forge.cmd config list, get, set, unset, reset, explain, diff or parse [args]
+shift
+"%NODE_CMD%" "%BIN%forge-config.cjs" %1 %2 %3 %4 %5 %6 %7 %8 %9
+goto end
+:sweep
+REM resumable, checkpointed YouTube research sweep - captions/metadata only, never media (forge-sweep.cjs).
+REM Usage: forge.cmd sweep enumerate, filter, transcripts, extract, aggregate or status [args]
+shift
+"%NODE_CMD%" "%BIN%forge-sweep.cjs" %1 %2 %3 %4 %5 %6 %7 %8 %9
+goto end
+:promptcheck
+REM Prompt Master dispatch-prompt linter, advisory only (forge-promptcheck.cjs); the ask subcommand scores
+REM the raw owner request before Forge plans anything. Usage: forge.cmd promptcheck promptFile (or a dash for stdin) [args]
+shift
+"%NODE_CMD%" "%BIN%forge-promptcheck.cjs" %1 %2 %3 %4 %5 %6 %7 %8 %9
+goto end
 :help
-echo Forge commands: dashboard ^| start ^| legacy-dashboard ^| status ^| runs ^| open-report ^| health ^| assign-only ^| log-event ^| resume ^| learn
+echo Forge commands: dashboard ^| start ^| legacy-dashboard ^| status ^| runs ^| open-report ^| health ^| assign-only ^| log-event ^| resume ^| learn ^| config ^| sweep ^| promptcheck
 :end
 REM Propagate the tool's real exit code. The batch used to fall off the end and return 0 to the caller
 REM even when node had failed (external audit II-G): a scheduled task or CI saw success on a failure.

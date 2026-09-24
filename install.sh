@@ -197,25 +197,35 @@ forge_copy_file() {
   return 0
 }
 
-# Special-cased merge for <project>/.claude/settings.json (security #4, review #10): a user's own
-# settings.json carries their own permissions/hooks and must never be silently backed-up-and-replaced
-# like an ordinary payload file. A differing file is left completely untouched; the payload version is
-# written alongside as settings.forge-recommended.json so the user can merge what they want by hand.
-# Identical or missing files behave exactly like forge_copy_file.
+# Merge handling for <project>/.claude/settings.json (security #4, review #10; MERGED instead of
+# "kept, merge by hand" since wp22 / owner directive 2026-09-24 "alles standaard aan" — Forge does the
+# merge itself). A user's own settings.json carries their own permissions/hooks and must never be silently
+# backed-up-and-REPLACED like an ordinary payload file — but leaving it completely untouched next to a
+# settings.forge-recommended.json (the pre-wp22 behaviour) meant the owner's new default hooks (the gate
+# hook, the deny rules) never reached an existing project either. Real merge, via the dedicated
+# forge-settings-merge.cjs tool (foreign hooks/rules/keys kept byte-for-byte, backed up first): only when
+# `node` is on PATH. Without `node`, this falls back to the OLD recommended-file behaviour and says why —
+# never silently drops the merge.
 forge_copy_settings_file() {
   local src_file="$1"
   local dst_file="$2"
-  local dst_dir rec_file
+  local dst_dir rec_file merge_tool merge_out
 
   dst_dir=$(dirname -- "$dst_file")
   rec_file="$dst_dir/settings.forge-recommended.json"
+  merge_tool="$SOURCE_DIR/.claude/forge-bin/forge-settings-merge.cjs"
 
   if [ "$DRY_RUN" = "1" ]; then
     if [ -f "$dst_file" ]; then
       if cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
         forge_log "  [dry-run] unchanged: $dst_file"
+      elif forge_have_cmd node && [ -f "$merge_tool" ]; then
+        # guarded via `if` (not a bare assignment / not piped) — see the real-run branch below for why
+        # `set -e`/`set -o pipefail` make that unsafe with a tool that can legitimately exit non-zero.
+        if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" --dry-run 2>&1); then :; fi
+        forge_log "  [dry-run] $merge_out"
       else
-        forge_log "  [dry-run] would keep your settings.json; would write: $rec_file"
+        forge_log "  [dry-run] node not found — would keep your settings.json unmerged; would write: $rec_file"
       fi
     else
       forge_log "  [dry-run] would create: $dst_file"
@@ -232,6 +242,18 @@ forge_copy_settings_file() {
     if cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
       # identical, no-op
       return 0
+    fi
+    if forge_have_cmd node && [ -f "$merge_tool" ]; then
+      # `if var=$(cmd)` (not a bare `var=$(cmd)`) is deliberate: under this script's `set -e`, a bare
+      # assignment whose command substitution exits non-zero would abort the WHOLE installer the moment the
+      # merge tool refuses (exit 1) — using it as an `if` condition is the one form `set -e` does not apply to.
+      if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" 2>&1); then
+        forge_log "  $merge_out"
+        return 0
+      fi
+      forge_err "settings.json merge refused ($merge_out) — falling back to settings.forge-recommended.json"
+    else
+      forge_log "  node not found on PATH — cannot merge settings.json automatically; writing $rec_file instead"
     fi
     if ! cp -- "$src_file" "$rec_file"; then
       forge_err "failed to write: $rec_file"

@@ -162,14 +162,22 @@ const ALLOWED_ENV_EXACT = new Set([
 // CC_EXEC_MOCK_DELAY_MS, read by the mock child script in `exec-argv.mjs` and required for the
 // concurrency/stop-execution tests in `test/exec-bridge.test.mjs` to behave deterministically).
 const ALLOWED_ENV_PREFIXES = ['programfiles', 'claude_', 'cc_'];
+// wp20 env hygiene (2026-09-24): the `claude_` prefix also matches CLAUDE_CODE_OAUTH_TOKEN. The real
+// `claude` child (exec-lifecycle.mjs) may genuinely authenticate with it, so the DEFAULT stays unchanged;
+// a child that needs no credential (config.mjs's forge-config.cjs) asks for { credentialFree: true },
+// which additionally drops every credential-shaped name (*_TOKEN / *_SECRET / *_KEY, any case).
+const CREDENTIAL_SHAPED_NAME = /_(token|secret|key)$/i;
 // Exported so a direct unit test can assert exactly which names pass through, without needing to
 // spawn a real child and inspect its environment indirectly.
-export function filteredEnv() {
+export function filteredEnv(opts) {
+  const credentialFree = !!(opts && opts.credentialFree);
   const out = {};
   for (const [k, v] of Object.entries(process.env)) {
     const lower = k.toLowerCase();
     const allowed = ALLOWED_ENV_EXACT.has(lower) || ALLOWED_ENV_PREFIXES.some((p) => lower.startsWith(p));
-    if (allowed) out[k] = v;
+    if (!allowed) continue;
+    if (credentialFree && CREDENTIAL_SHAPED_NAME.test(k)) continue;
+    out[k] = v;
   }
   return out;
 }

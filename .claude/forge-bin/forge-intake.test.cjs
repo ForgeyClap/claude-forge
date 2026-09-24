@@ -271,5 +271,92 @@ function runCli(args, root) {
   t('CLI usage: nothing printed to stdout on usage error', rUsage.stdout.trim() === '');
 }
 
+// ===================================================================================
+// GROUP K — beginner layer pass-through, --lang nl, --beginner, --trigger (wp18, 2026-09-24)
+// Fixture banks + a COPY of the real bank in a temp root (the real bank is never written or read in place).
+// ===================================================================================
+const BEGINNER_KEYS = ['question_nl', 'options_nl', 'why_nl', 'beginner', 'triggers'];
+const CLASSIC_KEYS = ['n', 'group', 'dimension', 'question', 'why', 'options', 'tier'];
+const BEGINNER_BANK = {
+  version: 'wp18-test',
+  universal: [
+    { dimension: 'goal', question: 'What should this do?', why: 'Anchors the build.', options: ['Leads', 'Sales'], tier: 'required',
+      question_nl: 'Wat moet dit doen?', options_nl: ['Aanvragen', 'Verkopen'], why_nl: 'Het doel bepaalt de bouw.',
+      beginner: { options: ['People get in touch', 'People can buy', 'Work goes by itself', 'Something else'],
+        options_nl: ['Mensen nemen contact op', 'Mensen kunnen kopen', 'Werk gaat vanzelf', 'Iets anders'], recommended: 1, assume: 'Smallest demo.', assume_nl: 'Kleinste demo.' },
+      triggers: ['F1', 'F3'] },
+    { dimension: 'state', question: 'Is there something already?', why: 'Existing work changes the plan.', options: ['New', 'Existing'], tier: 'required',
+      question_nl: 'Is er al iets?', options_nl: ['Nieuw', 'Bestaand'], why_nl: 'Bestaand werk verandert het plan.',
+      beginner: { options: ['Start fresh', 'Keep building on what exists', 'Something else'], options_nl: ['Nieuw beginnen', 'Verder bouwen op wat er is', 'Iets anders'],
+        recommended: null, assume: 'New.', assume_nl: 'Nieuw.' },
+      triggers: ['F8', 'F9'] },
+    { dimension: 'plain', question: 'Any deadline?', why: 'w', options: ['Soon'], tier: 'recommended' },
+  ],
+  byType: {
+    website: [{ dimension: 'pages', question: 'Which pages?', why: 'Scope.', options: ['One', 'Few', 'Many', 'Lots', 'All'], tier: 'recommended',
+      question_nl: 'Welke paginas?', options_nl: ['Een', 'Paar', 'Veel', 'Heel veel', 'Alles'], why_nl: 'Omvang.',
+      beginner: { options: ['One page', 'A few pages', 'Many pages', 'Lots of pages', 'Something else'],
+        options_nl: ['Een pagina', 'Een paar paginas', 'Veel paginas', 'Heel veel paginas', 'Iets anders'], recommended: 0, assume: 'One page.', assume_nl: 'Een pagina.' },
+      triggers: ['F5', 'F7'] }],
+  },
+  byTypePending: { bugfix: [{ dimension: 'symptom', question: 'What do you see?', why: 'w', options: ['Error'], tier: 'required', triggers: ['F9'] }] },
+};
+function bankRoot(bank) {
+  const d = path.join(TMP, 'case' + (++caseN));
+  fs.mkdirSync(path.join(d, '.claude', 'config', 'intake'), { recursive: true });
+  fs.writeFileSync(path.join(d, '.claude', 'config', 'intake', 'question-bank.json'), typeof bank === 'string' ? bank : JSON.stringify(bank, null, 2));
+  return d;
+}
+const REAL_BANK_TEXT = fs.readFileSync(path.join(__dirname, '..', 'config', 'intake', 'question-bank.json'), 'utf8');
+const REAL_BANK = JSON.parse(REAL_BANK_TEXT);
+const jsonOf = (r) => { try { return JSON.parse(r.stdout); } catch { return null; } };
+{
+  const root = bankRoot(BEGINNER_BANK);
+  const p = jsonOf(runCli(['--type', 'website', '--json'], root));
+  const byDim = (d) => p && p.questions.find((q) => q.dimension === d);
+  t('K1 --json passes question_nl/options_nl/why_nl/beginner/triggers through unchanged (universal + byType)', !!p
+    && ['goal', 'state'].every((d) => BEGINNER_KEYS.every((k) => JSON.stringify(byDim(d)[k]) === JSON.stringify(BEGINNER_BANK.universal.find((q) => q.dimension === d)[k])))
+    && BEGINNER_KEYS.every((k) => JSON.stringify(byDim('pages')[k]) === JSON.stringify(BEGINNER_BANK.byType.website[0][k])));
+  t('K1 additive: every question keeps the classic fields; a classic-only bank item gets no invented beginner keys', !!p
+    && p.questions.every((q) => CLASSIC_KEYS.every((k) => k in q)) && BEGINNER_KEYS.every((k) => !(k in byDim('plain'))));
+
+  const realRoot = bankRoot(REAL_BANK_TEXT);
+  const real = jsonOf(runCli(['--type', 'website', '--json'], realRoot));
+  t('K2 real bank (copy): website intake JSON carries all 5 beginner fields on every question', !!real && real.count === REAL_BANK.universal.length + REAL_BANK.byType.website.length
+    && real.questions.every((q) => BEGINNER_KEYS.every((k) => k in q) && Array.isArray(q.triggers) && Array.isArray(q.beginner.options_nl)));
+
+  const f9 = jsonOf(runCli(['--type', 'bugfix', '--trigger', 'F9', '--json'], realRoot));
+  const bugDims = f9 ? f9.questions.filter((q) => q.group === 'bugfix').map((q) => q.dimension).sort().join() : '';
+  t('K3 --trigger F9 on the promoted bugfix set returns ONLY questions whose triggers contain F9', !!f9 && f9.trigger === 'F9' && f9.count > 0
+    && f9.questions.every((q) => q.triggers.includes('F9')) && f9.count === f9.questions.length);
+  t('K3 --trigger F9: the bugfix symptom/steps/error-text/since-when/expected questions, plus only universal existing-state', bugDims === 'error-text,expected,since-when,steps,symptom'
+    && !!f9 && f9.questions.filter((q) => q.group === 'universal').map((q) => q.dimension).join() === 'existing-state');
+  t('K3 --trigger numbers the filtered list 1..N', !!f9 && f9.questions.every((q, i) => q.n === i + 1));
+
+  const pending = jsonOf(runCli(['--type', 'bugfix', '--trigger', 'F9', '--json'], root));
+  t('K4 before promotion (bugfix only under byTypePending): --trigger F9 never reads the pending set — only the universal F9 question, type note kept', !!pending
+    && pending.questions.map((q) => q.group + '/' + q.dimension).join() === 'universal/state' && /unknown\/again type 'bugfix'/.test(pending.note));
+  const empty = jsonOf(runCli(['--type', 'bugfix', '--trigger', 'F13', '--json'], root));
+  t('K4 a trigger no question carries -> an honest empty list, exit 0', !!empty && empty.count === 0 && empty.questions.length === 0 && empty.trigger === 'F13');
+  const emptyHuman = runCli(['--type', 'bugfix', '--trigger', 'F13'], root);
+  t('K4 human output says the filtered list is empty instead of printing nothing', emptyHuman.status === 0 && /trigger F13/.test(emptyHuman.stdout) && /geen vragen/i.test(emptyHuman.stdout));
+  t('K4 --trigger normalises case (f7 -> F7) and filters byType too', (() => { const x = jsonOf(runCli(['--type', 'website', '--trigger', 'f7', '--json'], root)); return !!x && x.trigger === 'F7' && x.questions.map((q) => q.dimension).join() === 'pages'; })());
+  t('K5 --trigger with a bad id (F14 / X9 / missing value) -> usage error exit 2', runCli(['--trigger', 'F14'], root).status === 2 && runCli(['--trigger', 'X9'], root).status === 2 && runCli(['--trigger'], root).status === 2);
+
+  const nl = runCli(['--type', 'website', '--lang', 'nl'], root);
+  const nlOut = nl.stdout;
+  t('K6 --lang nl prints the Dutch question text, not the English one', nl.status === 0 && /1\. \[verplicht\] \(goal\) Wat moet dit doen\?/.test(nlOut) && !/What should this do\?/.test(nlOut));
+  t('K6 --lang nl: the recommended beginner option comes FIRST, with its one-line reason from why_nl', /\n {6}A\) Mensen kunnen kopen — aanbevolen: Het doel bepaalt de bouw\.\n {6}B\) Mensen nemen contact op\n {6}C\) Werk gaat vanzelf\n {6}D\) Iets anders/.test(nlOut));
+  t('K6 --lang nl: at most 3 options plus "Iets anders" (a 4-option beginner block is capped)', /A\) Een pagina — aanbevolen: Omvang\.\n {6}B\) Een paar paginas\n {6}C\) Veel paginas\n {6}D\) Iets anders/.test(nlOut) && !/Heel veel paginas/.test(nlOut));
+  t('K6 --lang nl: recommended null -> no "aanbevolen" marker, the reason is shown as "waarom:"', /Is er al iets\?\n {6}A\) Nieuw beginnen\n {6}B\) Verder bouwen op wat er is\n {6}C\) Iets anders\n {6}waarom: Bestaand werk verandert het plan\./.test(nlOut));
+  t('K6 --lang nl: a classic-only item falls back to its own question/options (never invents Dutch)', /\(plain\) Any deadline\?/.test(nlOut) && /opties: Soon/.test(nlOut));
+  const enB = runCli(['--type', 'website', '--beginner'], root).stdout;
+  t('K7 --beginner forces the beginner block in English (recommended first + reason from why)', /1\. \[required\] \(goal\) What should this do\?\n {6}A\) People can buy — recommended: Anchors the build\.\n {6}B\) People get in touch\n {6}C\) Work goes by itself\n {6}D\) Something else/.test(enB));
+  t('K7 default English human output is unchanged (why/opties lines, no beginner block)', /\n {6}why: Anchors the build\.\n {6}opties: Leads · Sales/.test(runCli(['--type', 'website'], root).stdout));
+  t('K8 --lang xx -> usage error exit 2', runCli(['--lang', 'xx'], root).status === 2);
+  t('K8 --json output is identical with and without --lang nl / --beginner (they only change the human print)', runCli(['--type', 'website', '--json'], root).stdout === runCli(['--type', 'website', '--json', '--lang', 'nl', '--beginner'], root).stdout);
+  t('K9 real bank (copy) --lang nl prints Dutch beginner options with "Iets anders"', (() => { const o = runCli(['--type', 'website', '--lang', 'nl'], realRoot).stdout; return /Wat moet dit project in één zin opleveren, en voor wie\?/.test(o) && /— aanbevolen: /.test(o) && /\) Iets anders/.test(o) && !/In one sentence, what should this project accomplish/.test(o); })());
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

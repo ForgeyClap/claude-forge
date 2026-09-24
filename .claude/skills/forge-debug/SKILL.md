@@ -5,7 +5,7 @@ description: Forge systematic-debugging playbook. Use for ANY bug, crash, stack 
 
 # Forge playbook — Systematic debugging
 
-**Do not duplicate ECC skills — defer to:** `systematic-debugging` (the deep methodology reference). This
+**Do not duplicate ECC skills — defer to:** `systematic-debugging` (the deep methodology reference; it ships with Forge as a pinned vendored skill). This
 file is the Forge-specific orchestration wrapper: it binds that methodology to the honesty core and to
 which Boss does what.
 

@@ -1,6 +1,6 @@
 ---
 name: forge-deeplearn
-description: On-demand, READ-ONLY full-codebase priming scanner (Forge Mission Control Phase 2, WP2 "Deep Learn Mode"). Use before generating a PRD, before a big refactor, or whenever the Lead is dropped into a new/unfamiliar project and needs an honest project-summary + risk-list before planning. Trigger on "deep learn", "prime the codebase", "scan the project", "learn this codebase before we plan".
+description: Read-only full-codebase priming scanner. Use before a PRD or big refactor, or onboarding into an unfamiliar project — deep learn, prime the codebase, scan the project, risk list.
 ---
 
 # Deep Learn Mode (WP2 — full-codebase priming scan)

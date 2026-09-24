@@ -22,13 +22,16 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 
 import {
   EMPTY_GATEWAY_CAPABILITIES,
+  EMPTY_GATEWAY_FORGE_CONFIG,
   EMPTY_GATEWAY_MCP,
   EMPTY_GATEWAY_MODELS,
   EMPTY_GATEWAY_TOOLS,
   parseGatewayCapabilities,
+  parseGatewayForgeConfig,
   parseGatewayMcp,
   parseGatewayModels,
   parseGatewayTools,
+  useGatewayForgeConfig,
   useGatewayModels,
   useGatewayTools,
 } from '@/prototype/state/gateway-capabilities';
@@ -374,5 +377,164 @@ describe('useGatewayTools — GET /api/tools?project=', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/* ========================================================================== */
+/*  3. Forge settings — GET /api/config?project= (wp12, read-only). The      */
+/*     payload is a trimmed copy of the real response this WP read from      */
+/*     this project's own forge-config.cjs (36 settings, 7 locked ids).      */
+/* ========================================================================== */
+
+const REAL_CONFIG_PAYLOAD = {
+  ok: true,
+  available: true,
+  state: 'OK',
+  settings: [
+    {
+      key: 'usage-guard.pause-at',
+      value: 98,
+      source: 'default',
+      set_at: null,
+      set_by: null,
+      display: '98 %',
+      status: 'on',
+      scope: 'global',
+      group: 'core',
+      type: 'int',
+      unit: '%',
+      default: 98,
+      desc: 'Forge pauses at this percentage of your usage limit.',
+      off_means: null,
+      disclosure: null,
+      flags: [],
+    },
+    {
+      key: 'language',
+      value: 'auto',
+      source: 'default',
+      set_at: null,
+      set_by: null,
+      display: 'auto',
+      status: null,
+      scope: 'project',
+      group: 'core',
+      type: 'enum',
+      unit: null,
+      default: 'auto',
+      desc: 'Language Forge answers in.',
+      off_means: null,
+      disclosure: null,
+      flags: ['N', 'C'],
+    },
+  ],
+  hidden: 0,
+  locked: [{ id: 'hard-gates', text: 'Forge ALWAYS asks first.', source: '.claude/config/orchestration/hard-gates.json via forge-actiongate.cjs' }],
+  files: {
+    global: { path: 'C:\\Users\\me\\.claude\\FORGE_CONFIG.json', present: false, pretty: '~/.claude/FORGE_CONFIG.json' },
+    project: { path: 'C:\\work\\p\\.claude\\FORGE_CONFIG.json', present: true, pretty: '.claude/FORGE_CONFIG.json' },
+  },
+  notes: ['No settings of your own saved yet — everything is at its default, that is normal.'],
+  lang: 'en',
+  groups: [{ id: 'core', title: 'On by default — Forge uses this on every run' }],
+  project: 'my project (v2)!',
+  captured_at: '2026-09-24T02:43:47.949Z',
+  age_ms: 0,
+  provenance: 'DERIVED',
+};
+
+describe('parseGatewayForgeConfig — GET /api/config?project=', () => {
+  it('maps every real field 1:1, keeping each raw value type', () => {
+    const result = parseGatewayForgeConfig(REAL_CONFIG_PAYLOAD);
+    expect(result.available).toBe(true);
+    expect(result.state).toBe('OK');
+    expect(result.settings[0]).toEqual({
+      key: 'usage-guard.pause-at',
+      value: 98,
+      defaultValue: 98,
+      display: '98 %',
+      status: 'on',
+      source: 'default',
+      scope: 'global',
+      group: 'core',
+      type: 'int',
+      unit: '%',
+      desc: 'Forge pauses at this percentage of your usage limit.',
+      offMeans: null,
+      disclosure: null,
+      flags: [],
+      setAt: null,
+      setBy: null,
+    });
+    expect(result.settings[1].value).toBe('auto');
+    expect(result.settings[1].status).toBeNull();
+    expect(result.settings[1].flags).toEqual(['N', 'C']);
+    expect(result.locked).toEqual([
+      { id: 'hard-gates', text: 'Forge ALWAYS asks first.', source: '.claude/config/orchestration/hard-gates.json via forge-actiongate.cjs' },
+    ]);
+    expect(result.groups).toEqual([{ id: 'core', title: 'On by default — Forge uses this on every run' }]);
+    expect(result.globalFile).toEqual({ path: 'C:\\Users\\me\\.claude\\FORGE_CONFIG.json', pretty: '~/.claude/FORGE_CONFIG.json', present: false });
+    expect(result.projectFile?.present).toBe(true);
+    expect(result.notes).toHaveLength(1);
+    expect(result.hidden).toBe(0);
+    expect(result.project).toBe('my project (v2)!');
+    expect(result.provenance).toBe('DERIVED');
+  });
+
+  it('a boolean false value stays false and a missing value is null — never a coerced stand-in', () => {
+    const result = parseGatewayForgeConfig({ settings: [{ key: 'paperclip', value: false }, { key: 'team-max' }] });
+    expect(result.settings[0].value).toBe(false);
+    expect(result.settings[1].value).toBeNull();
+    expect(result.settings[1].flags).toEqual([]);
+  });
+
+  it('UNAVAILABLE (no forge-config.cjs) reports honestly: available:false, no settings, the real note', () => {
+    const result = parseGatewayForgeConfig({
+      ok: true,
+      available: false,
+      state: 'UNAVAILABLE',
+      note: 'forge-config.cjs not found for this project',
+      settings: [],
+      locked: [],
+      groups: [],
+      files: null,
+      notes: [],
+    });
+    expect(result.available).toBe(false);
+    expect(result.state).toBe('UNAVAILABLE');
+    expect(result.note).toBe('forge-config.cjs not found for this project');
+    expect(result.settings).toEqual([]);
+    expect(result.globalFile).toBeNull();
+    expect(result.projectFile).toBeNull();
+  });
+
+  it('an empty object resolves to the module constant shape', () => {
+    expect(parseGatewayForgeConfig({})).toEqual(EMPTY_GATEWAY_FORGE_CONFIG);
+  });
+});
+
+describe('useGatewayForgeConfig — GET /api/config?project=', () => {
+  it('never fetches while no project is selected', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const { result } = renderHook(() => useGatewayForgeConfig(''));
+    expect(result.current.loading).toBe(true);
+    expect(result.current.data).toEqual(EMPTY_GATEWAY_FORGE_CONFIG);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('asks the selected project and resolves its real settings', async () => {
+    const fetchMock = stubFetchJson(REAL_CONFIG_PAYLOAD);
+
+    const { result } = renderHook(() => useGatewayForgeConfig('my project (v2)!'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/config?project=68%20agents%20works!'),
+      { method: 'GET' },
+    );
+    expect(result.current.error).toBeNull();
+    expect(result.current.data.settings.map((setting) => setting.key)).toEqual(['usage-guard.pause-at', 'language']);
   });
 });

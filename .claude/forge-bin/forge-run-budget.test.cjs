@@ -5,7 +5,7 @@
  *
  * WHY THIS SUITE EXISTS. forge-cost.cjs says so itself in its own header: it is a "cost/token sampler"
  * that LOGS a cost_sampled event. It measures; it cannot stop anything. usage-guard.cjs watches the
- * subscription WINDOW (5h session / weekly) and pauses everything at 95% — it knows nothing about one
+ * subscription WINDOW (5h session / weekly) and pauses everything at the configured threshold (default 98%) — it knows nothing about one
  * single run running away inside a window that still has room. So a headless wrapper that loses the plot
  * had, before this file existed, no brake at all.
  *
@@ -25,6 +25,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const B = require('./forge-run-budget.cjs');
+const { spawnSync } = require('child_process');
+
+// Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home,
+// never ~/.claude, and FORGE_PROJECT_ROOT is cleared so each fixture ROOT decides which project file is read.
+const CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-run-budget-cfghome-'));
+process.env.FORGE_CONFIG_HOME = CONFIG_HOME;
+delete process.env.FORGE_PROJECT_ROOT;
 
 let passed = 0, failed = 0;
 function t(name, fn) { try { fn(); passed++; console.log('  ok   ' + name); } catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); } }
@@ -401,7 +408,93 @@ t('the cap change touches ONLY unattended wrappers — no interactive entry poin
   assert.deepStrictEqual(offenders, [], 'unexpected files carry the cap flag: ' + offenders.join(', '));
 });
 
+// ======================================================================================================
+// 8) the owner setting budget-usd (forge-config.cjs, v2.7.0) — replaces the DEFAULT only, never a more
+//    specific rule, and only when the owner actually set it
+// ======================================================================================================
+function withOwner(root, settings) {
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }), 'utf8');
+  return root;
+}
+t('owner budget-usd set in the project file, no wrapper/level -> that amount, sourced from forge-config', () => {
+  const r = B.resolveCap({}, { root: withOwner(tmpRoot(CFG), { 'budget-usd': { value: 2 } }), env: {} });
+  assert.strictEqual(r.cap_usd, 2);
+  assert.strictEqual(r.source, 'forge-config.budget-usd (project)');
+  assert.strictEqual(r.degraded, false);
+});
+t('a wrapper entry still beats the owner setting, and the reason says the setting was not used', () => {
+  const r = B.resolveCap({ wrapper: 'tiny-thing' }, { root: withOwner(tmpRoot(CFG), { 'budget-usd': { value: 2 } }), env: {} });
+  assert.strictEqual(r.cap_usd, 1);
+  assert.strictEqual(r.source, 'config.wrappers.tiny-thing');
+  assert.ok(/budget-usd=2 \(project\) is not used/.test(r.reason || ''), 'reason: ' + r.reason);
+});
+t('the env override and a level entry also beat the owner setting (documented precedence)', () => {
+  const root = withOwner(tmpRoot(CFG), { 'budget-usd': { value: 2 } });
+  assert.strictEqual(B.resolveCap({}, { root, env: { FORGE_RUN_BUDGET_USD: '7' } }).source, 'env.FORGE_RUN_BUDGET_USD');
+  assert.strictEqual(B.resolveCap({ level: 'L3' }, { root, env: {} }).source, 'config.levels.L3');
+});
+t('a settings file WITHOUT budget-usd (schema default) leaves the configured default untouched', () => {
+  const r = B.resolveCap({}, { root: withOwner(tmpRoot(Object.assign({}, CFG, { default_usd: 3 })), { council: { value: 'off' } }), env: {} });
+  assert.strictEqual(r.cap_usd, 3);
+  assert.strictEqual(r.source, 'config.default');
+  assert.strictEqual(r.reason, null);
+});
+t('the owner value is still clamped by FORGE_RUN_BUDGET.json limits (belt-and-braces)', () => {
+  const tight = Object.assign({}, CFG, { limits: { min_usd: 0.5, max_usd: 3 } });
+  const r = B.resolveCap({}, { root: withOwner(tmpRoot(tight), { 'budget-usd': { value: 10 } }), env: {} });
+  assert.strictEqual(r.cap_usd, 3);
+  assert.strictEqual(r.clamped, 'max');
+  assert.strictEqual(r.source, 'forge-config.budget-usd (project)');
+});
+t('a missing FORGE_RUN_BUDGET.json with an owner value: degraded, but the owner amount is kept and named', () => {
+  const r = B.resolveCap({}, { root: withOwner(tmpRoot(undefined), { 'budget-usd': { value: 2 } }), env: {} });
+  assert.strictEqual(r.cap_usd, 2);
+  assert.strictEqual(r.degraded, true);
+  assert.ok(/forge-config\.budget-usd \(project\)/.test(r.reason || ''), 'reason: ' + r.reason);
+});
+t('the GLOBAL settings file supplies budget-usd when the project sets nothing', () => {
+  const home = fs.mkdtempSync(path.join(TMP, 'home-'));
+  fs.writeFileSync(path.join(home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { 'budget-usd': { value: 4 } } }), 'utf8');
+  process.env.FORGE_CONFIG_HOME = home;
+  try {
+    const r = B.resolveCap({}, { root: tmpRoot(CFG), env: {} });
+    assert.strictEqual(r.cap_usd, 4);
+    assert.strictEqual(r.source, 'forge-config.budget-usd (global)');
+  } finally { process.env.FORGE_CONFIG_HOME = CONFIG_HOME; }
+});
+t('config module absent (null) or throwing -> the configured default, as before', () => {
+  for (const configModule of [null, { get() { throw new Error('boom'); } }]) {
+    const r = B.resolveCap({}, { root: withOwner(tmpRoot(CFG), { 'budget-usd': { value: 2 } }), env: {}, configModule });
+    assert.strictEqual(r.cap_usd, 5);
+    assert.strictEqual(r.source, 'config.default');
+  }
+});
+t('M3: a damaged settings file that set budget-usd=2 -> not used (a degraded read is never an owner value); reason says why', () => {
+  const root = tmpRoot(CFG);
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { 'budget-usd': { value: 2 }, nvidia: { value: 'banana' } } }), 'utf8');
+  const r = B.resolveCap({}, { root, env: {} });
+  assert.strictEqual(r.cap_usd, 5);
+  assert.strictEqual(r.source, 'config.default');
+  assert.ok(/budget-usd not used/.test(r.reason || '') && /damaged/.test(r.reason), 'reason: ' + r.reason);
+  const e = B.configRead('budget-usd', 5, { projectRoot: root });
+  assert.deepStrictEqual([e.value, e.degraded], [5, true]);
+});
+t('configOn ignores a wrong-typed value and returns a real number', () => {
+  assert.strictEqual(B.configOn('budget-usd', 5, { configModule: { get: () => ({ value: '9' }) } }), 5);
+  assert.strictEqual(B.configOn('budget-usd', 5, { configModule: { get: () => ({ value: 9 }) } }), 9);
+});
+t('CLI cap --root <fixture>: stdout is only the owner amount, stderr names the forge-config source', () => {
+  const root = withOwner(tmpRoot(CFG), { 'budget-usd': { value: 2.5 } });
+  const env = Object.assign({}, process.env);
+  delete env.FORGE_RUN_BUDGET_USD;
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'forge-run-budget.cjs'), 'cap', '--root', root], { encoding: 'utf8', env });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout.trim(), '2.5');
+  assert.ok(/source forge-config\.budget-usd \(project\)/.test(r.stderr), r.stderr);
+});
+
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
+try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch {}
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

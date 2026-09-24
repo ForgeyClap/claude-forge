@@ -359,6 +359,48 @@ t('CLI with no command at all exits 2', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 6b) discovery sources — skills.sh is listed, and ALWAYS as an uncurated source (wp6, 2026-09-24)
+// ---------------------------------------------------------------------------
+console.log('\n6b) terms() discovery sources (skills.sh is uncurated, never a trust signal)');
+
+const SKILLS_SH = 'skills.sh (vercel-labs/skills, npx skills search)';
+
+t('terms() lists skills.sh as a discovery source, flagged curated:false with its no-review note', () => {
+  const r = scout.terms({ domain: 'website' }, {});
+  assert.ok(Array.isArray(r.sources), 'terms() must return a sources array');
+  const s = r.sources.find((x) => x.name === SKILLS_SH);
+  assert.ok(s, 'skills.sh source missing: ' + JSON.stringify(r.sources));
+  assert.strictEqual(s.url, 'https://skills.sh');
+  assert.strictEqual(s.curated, false, 'skills.sh must be flagged uncurated');
+  assert.ok(/never a trust signal/.test(s.note) && /APPROVE\/HARD-PASS still applies/.test(s.note), 'note must say it is no trust signal and vetting still applies: ' + s.note);
+});
+
+t('the uncurated source is present for curated AND fallback domains alike (not domain-dependent)', () => {
+  for (const d of ['slides', 'beekeeping']) {
+    const s = scout.terms({ domain: d }, {}).sources.find((x) => x.name === SKILLS_SH);
+    assert.ok(s && s.curated === false, d + ': ' + JSON.stringify(s));
+  }
+});
+
+t('editing a returned source cannot flip the shared list to curated (callers get copies)', () => {
+  const first = scout.terms({ domain: 'website' }, {});
+  first.sources[0].curated = true;
+  const again = scout.terms({ domain: 'website' }, {}).sources.find((x) => x.name === SKILLS_SH);
+  assert.strictEqual(again.curated, false);
+  assert.strictEqual(scout.DISCOVERY_SOURCES.find((x) => x.name === SKILLS_SH).curated, false);
+});
+
+t('CLI terms --json carries the uncurated skills.sh source; the human output labels it [UNCURATED]', () => {
+  const j = runCLI(['terms', '--domain', 'website', '--json']);
+  assert.strictEqual(j.status, 0);
+  const parsed = JSON.parse(j.stdout.trim());
+  assert.ok(parsed.sources.some((x) => x.url === 'https://skills.sh' && x.curated === false), JSON.stringify(parsed.sources));
+  const h = runCLI(['terms', '--domain', 'website']);
+  assert.strictEqual(h.status, 0);
+  assert.ok(/https:\/\/skills\.sh \[UNCURATED\]/.test(h.stdout), h.stdout);
+});
+
+// ---------------------------------------------------------------------------
 // 7) real repo integration — the actual project ledger path resolves and is either absent
 //    (fresh project, honest) or well-formed (never malformed) — read-only check, no writes here.
 // ---------------------------------------------------------------------------

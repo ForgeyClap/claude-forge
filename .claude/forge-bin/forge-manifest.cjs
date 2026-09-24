@@ -214,6 +214,11 @@ function logManifestArmed(input, opts) {
   const ev = {
     run_id: input.run_id,
     event_type: 'manifest_armed',
+    // 2026-09-24 (run forge-2026-09-24-config-v250): the proof used to carry NO agent. forge-runcontract.cjs's
+    // independent-verification rule (N-01) treats anonymous work as "undeterminable, fail-closed", so the arm
+    // tool's own proof event silently blocked every finalize of a run that had used `--log-event`. Arming is
+    // the Lead's act — stamp it as such, exactly like forge-prd.cjs stamps `prd_generated`.
+    agent: 'orchestrator', role: 'lead', runtime: 'internal',
     note: 'forge-manifest arm: ' + wps.length + ' work package(s) armed [' + wps.map((w) => w.wp_id).join(', ') + ']',
   };
   let res;

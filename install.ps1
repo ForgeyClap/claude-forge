@@ -125,20 +125,35 @@ function Copy-ForgeFile {
   Write-ForgeLog "  wrote: $DestFile"
 }
 
-# Special-cased merge for <project>\.claude\settings.json (security #4, review #10): a user's own
-# settings.json carries their own permissions/hooks and must never be silently backed-up-and-replaced
-# like an ordinary payload file. A differing file is left completely untouched; the payload version is
-# written alongside as settings.forge-recommended.json so the user can merge what they want by hand.
-# Identical or missing files behave exactly like Copy-ForgeFile.
+# Merge handling for <project>\.claude\settings.json (security #4, review #10; MERGED instead of
+# "kept, merge by hand" since wp22 / owner directive 2026-09-24 "alles standaard aan" -- Forge does the
+# merge itself). A user's own settings.json carries their own permissions/hooks and must never be silently
+# backed-up-and-REPLACED like an ordinary payload file -- but leaving it completely untouched next to a
+# settings.forge-recommended.json (the pre-wp22 behaviour) meant the owner's new default hooks (the gate
+# hook, the deny rules) never reached an existing project either. Real merge, via the dedicated
+# forge-settings-merge.cjs tool (foreign hooks/rules/keys kept byte-for-byte, backed up first): only when
+# `node` is on PATH. Without `node`, this falls back to the OLD recommended-file behaviour and says why --
+# never silently drops the merge.
 function Copy-ForgeSettingsFile {
   param(
     [Parameter(Mandatory = $true)][string]$SourceFile,
     [Parameter(Mandatory = $true)][string]$DestFile,
-    [Parameter(Mandatory = $true)][bool]$IsDryRun
+    [Parameter(Mandatory = $true)][bool]$IsDryRun,
+    # MergeToolPath is passed explicitly rather than read from an ambient $sourceDir/$SourceDir variable:
+    # PowerShell variable names are CASE-INSENSITIVE, and this function is invoked from inside
+    # Copy-ForgeTree, which has its OWN `[string]$SourceDir` parameter (already the .claude subdir, not
+    # the top-level source root). Reading an unqualified `$sourceDir` here silently resolved to THAT
+    # parameter instead of the script-level variable of the same name, producing a doubled
+    # `...\.claude\.claude\forge-bin\...` path and a false "node not found" fallback (caught by a real
+    # end-to-end run during wp22, not by inspection alone).
+    [string]$MergeToolPath = $null
   )
 
   $destDir = Split-Path -Parent -Path $DestFile
   $recommendedFile = Join-Path $destDir 'settings.forge-recommended.json'
+  $mergeTool = $MergeToolPath
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  $haveMergeTool = $nodeCmd -and $mergeTool -and (Test-Path -LiteralPath $mergeTool -PathType Leaf)
 
   if ($IsDryRun) {
     if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
@@ -146,8 +161,15 @@ function Copy-ForgeSettingsFile {
       $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
       if ($srcHash -eq $dstHash) {
         Write-ForgeLog "  [dry-run] unchanged: $DestFile"
+      } elseif ($haveMergeTool) {
+        # $ErrorActionPreference is 'Stop' script-wide; a native tool's stderr line captured via 2>&1 can be
+        # wrapped as a terminating ErrorRecord under that setting, so it is relaxed for this one call only.
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile --dry-run 2>&1 }
+        finally { $ErrorActionPreference = $prevEap }
+        Write-ForgeLog "  [dry-run] $mergeOut"
       } else {
-        Write-ForgeLog "  [dry-run] would keep your settings.json; would write: $recommendedFile"
+        Write-ForgeLog "  [dry-run] node not found -- would keep your settings.json unmerged; would write: $recommendedFile"
       }
     } else {
       Write-ForgeLog "  [dry-run] would create: $DestFile"
@@ -166,6 +188,18 @@ function Copy-ForgeSettingsFile {
       # identical, no-op
       return
     }
+    if ($haveMergeTool) {
+      $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile 2>&1 }
+      finally { $ErrorActionPreference = $prevEap }
+      if ($LASTEXITCODE -eq 0) {
+        Write-ForgeLog "  $mergeOut"
+        return
+      }
+      Write-ForgeLog "  settings.json merge refused ($mergeOut) -- falling back to settings.forge-recommended.json"
+    } else {
+      Write-ForgeLog "  node not found on PATH -- cannot merge settings.json automatically; writing $recommendedFile instead"
+    }
     Copy-Item -LiteralPath $SourceFile -Destination $recommendedFile -Force
     Write-ForgeLog "  kept your settings.json; Forge's hooks are in $recommendedFile -- merge what you want"
     return
@@ -183,7 +217,10 @@ function Copy-ForgeTree {
     [Parameter(Mandatory = $true)][string]$SourceDir,
     [Parameter(Mandatory = $true)][string]$DestDir,
     [Parameter(Mandatory = $true)][bool]$IsDryRun,
-    [bool]$ProtectSettings = $false
+    [bool]$ProtectSettings = $false,
+    # Passed straight through to Copy-ForgeSettingsFile — see that function's own param comment for why this
+    # must be an explicit parameter rather than an ambient `$sourceDir`/`$SourceDir` variable lookup.
+    [string]$MergeToolPath = $null
   )
 
   if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
@@ -196,7 +233,7 @@ function Copy-ForgeTree {
     $rel = $file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')
     $dest = Join-Path -Path $DestDir -ChildPath $rel
     if ($ProtectSettings -and $rel -eq 'settings.json') {
-      Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+      Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun -MergeToolPath $MergeToolPath
     } else {
       Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
     }
@@ -528,7 +565,7 @@ function Main {
       if (-not (Test-Path -LiteralPath $projectDir -PathType Container)) {
         New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
       }
-      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true
+      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs')
       # Seed the two project-root files Forge documents but the payload copy never delivered.
       # Added 2026-08-13 after a real fresh-install measurement: without them three suites
       # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and the

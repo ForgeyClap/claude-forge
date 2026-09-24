@@ -4,7 +4,7 @@
 
 # claude-forge
 
-Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **19 agents, 50 skills, one command: `/forge`.**
+Turn Claude Code into a coordinated **team of agents** that builds, automates, reviews and ships — with a live per-project dashboard. **19 agents, 72 skills, one command: `/forge`.** Everything is on by default; **`/forge config`** shows and changes any setting.
 
 [![Works with Claude Code](https://img.shields.io/badge/Works%20with-Claude%20Code-8A2BE2?style=for-the-badge)](https://claude.com/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -16,9 +16,20 @@ Turn Claude Code into a coordinated **team of agents** that builds, automates, r
 
 <br>
 
-**[How it works](docs/HOW-IT-WORKS.md)**  ·  **[Quickstart](#-quickstart-60-second-setup)**  ·  **[Features](docs/FEATURES.md)**  ·  **[Agents](AGENTS.md)**  ·  **[Cost](docs/TOKEN-USAGE.md)**  ·  **[Commands](COMMANDS-QUICK-REF.md)**  ·  **[Troubleshooting](TROUBLESHOOTING.md)**
+**[How it works](docs/HOW-IT-WORKS.md)**  ·  **[Quickstart](#-quickstart-60-second-setup)**  ·  **[Settings](docs/SETTINGS.md)**  ·  **[New to Claude Code?](docs/CLAUDE-CODE-BASICS.md)**  ·  **[How to ask](docs/HOW-TO-ASK.md)**  ·  **[Features](docs/FEATURES.md)**  ·  **[Agents](AGENTS.md)**  ·  **[Cost](docs/TOKEN-USAGE.md)**  ·  **[Commands](COMMANDS-QUICK-REF.md)**  ·  **[Troubleshooting](TROUBLESHOOTING.md)**
 
 </div>
+
+---
+
+## 🤝 The beginner promise
+
+Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. The only things it always stops for are the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and a real usage-limit pause. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat.
+
+**Nederlands:** Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt alleen altijd voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en een echte gebruikslimiet-pauze. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat.
+
+> [!NOTE]
+> **New to Claude Code itself?** Forge runs inside it, and installing Claude Code is the one step Forge cannot do for you. [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md) explains, in English and Dutch, the paid plan, the install line for your shell, permission prompts, undo, usage limits and `/clear`.
 
 ---
 
@@ -46,7 +57,7 @@ Inside Claude Code:
 /forge:setup-forge
 ```
 
-This gives you the commands, 18 agents and 31 curated skills (the LITE plugin is fully featured but smaller; see the comparison table below). It runs read-only from the plugin cache — no dashboard and no key setup.
+This gives you the commands, 18 agents and 22 curated skills (the LITE plugin is fully featured but smaller; see the comparison table below). It runs read-only from the plugin cache — no dashboard, no key setup, no `/forge config` settings file, no safety hook and none of the vendored public skills. Those come with Path B.
 
 ### Path B — One-line installer *(full system)*
 
@@ -110,7 +121,7 @@ Then run `/setup-forge` once. With Path A or B you are ready; with Path C, expec
 ---
 
 > [!TIP]
-> **New to Forge?** You do **not** need to learn 50 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it.
+> **New to Forge?** You do **not** need to learn 72 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it. Not sure how to phrase it? See [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md).
 
 ---
 
@@ -120,10 +131,12 @@ The plugin is **LITE**; the installer is **FULL**. This split is architectural, 
 
 | | 🔌 **Plugin (LITE)** | 🛠️ **Installer (FULL)** |
 |---|---|---|
-| **What you get** | Commands + 18 agents + 31 curated skills | Full system: 19 agents, 50 skills, 93 tools |
+| **What you get** | Commands + 18 agents + 22 curated skills (incl. the prompt coach) | Full system: 19 agents, 72 skills (incl. 21 vendored public skills), 102 tools |
 | **Files written** | None (read-only cache) | `./.claude` + `~/.claude` core |
 | **Live dashboard** | No | ✅ Yes, localhost:4100 |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
+| **Settings (`/forge config`)** | No | ✅ Yes, 36 settings, everything on by default |
+| **Safety stop + `.env` deny rules** | No | ✅ Yes, in the shipped `.claude/settings.json` |
 | **Commands** | Namespaced `/forge:forge` | Bare `/forge` |
 | **Best for** | Quick trial, prototyping | Real projects, long-term |
 
@@ -151,35 +164,113 @@ Honest and non-adversarial — only rows that actually ship.
 | | |
 |---|---|
 | 🤖 **19 agents in the full install** | 12 permanent Bosses + 7 specialists — see [AGENTS.md](AGENTS.md). The LITE plugin carries 18 agents. |
-| 🧠 **50 skills (full), 31 (LITE)** | routing, 7 domain playbooks, reporting, verification, ship-readiness — see [docs/FEATURES.md](docs/FEATURES.md). Nine third-party skills the maintainer uses in development (GSAP, humanizer) are deliberately **not** redistributed — see [.claude/skills/VENDORED-SKILLS.md](.claude/skills/VENDORED-SKILLS.md) for source and pinned commit. |
+| 🧠 **72 skills (full), 22 (LITE)** | 51 Forge skills (routing, domain playbooks, the prompt coach, reporting, verification, ship-readiness) plus 21 well-known public skills that ship with Forge — see [docs/FEATURES.md](docs/FEATURES.md) and [the section below](#-public-skills-that-ship-with-forge). The GSAP and humanizer skills the maintainer uses in development are still deliberately **not** redistributed — see [.claude/skills/VENDORED-SKILLS.md](.claude/skills/VENDORED-SKILLS.md). |
+| ⚙️ **`/forge config`** | every setting in one list, with its value, where it comes from and what it does; change any of them with one command or one sentence — see [docs/SETTINGS.md](docs/SETTINGS.md) |
+| 🛡️ **A real safety stop** | a hook blocks mass deletes, killing programs by name and git commands that throw away work until you say yes; Claude's file-reading tool cannot open your `.env` secret files (a shell command still can — see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md)) |
 | 📊 **Command Center dashboard** | one localhost app on `127.0.0.1:4100` that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |
-| 🪶 **Zero dependencies** | plain Node `.cjs` — no `npm install`, ever |
+| 🪶 **Zero dependencies** | Forge's own tools are plain Node `.cjs` — nothing to `npm install`. The optional dashboard's one-time build is the only npm step, and it is run for you (see [The dashboard](#-the-dashboard)). |
 
 > [!NOTE]
 > Forge ships **19 agents** in the full install (12 permanent Bosses + 7 specialists); the LITE plugin carries **18 agents** (all Bosses + 6 specialists, missing verify-boss). Both are driven as real Claude Code Agent-tool subagents. Forge can also **route to your wider agent ecosystem** (any ECC / Claude Code agent types you have installed) when a task calls for it — but only Forge's own agents are claimed as "shipped".
 
 ---
 
-## 🆕 What's new — v2.4.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
+## 🆕 What's new — v2.7.0 (see [CHANGELOG.md](CHANGELOG.md) for every release, including 2.4.0)
 
 <details>
-<summary><b>Major release — measured on a clean machine</b> — click to expand</summary>
+<summary><b>Beginner release — everything on, one settings command, a real safety stop</b> — click to expand</summary>
 
-This release fixed 9 issues found in an independent deep audit of v2.3.0 on a blank Windows/Linux machine with an empty `~/.claude`. The audit run is now part of CI (`fresh-install.yml`), so this class of "works on the author's machine, fails elsewhere" cannot recur.
+This release is built for people who are new to AI coding. It is based on three read-only research tracks (35, 75 and 89 sources) into how beginners steer an AI, which mistakes they make and which public skills help them.
 
-- **`/setup-forge` engine restored.** The core was deleted in 2.1.0 but 35 references kept calling it; only fresh installs noticed. Restored and now part of the canonical payload so it cannot disappear again.
-- **Canonical template created on install.** Both installers now build `~/.claude/forge/template/` from the payload, so the "stay current" rule and `forge-sync status` have something to compare against.
-- **Hook matcher added.** The `PostToolUse` hook shipped without a matcher and fired on every tool call (461 in one audit session, 56 ms each). Now carries `Write|Edit|MultiEdit|NotebookEdit|Bash` and is disclosed in AI-INSTALL.md.
-- **Build by default.** `/forge <goal>` no longer waits at a plan gate — it posts one line and continues. Hard gates (deploy, production, credentials, outbound) still interrupt. Full interview is opt-in via `/forge interview`.
-- **Silent intake.** The 21–24-question questionnaire is auto-answered from the mission text, project scan, and saved setup. At most one clarifying question is asked instead of 20+.
-- **Payload-safe wrappers.** The `.cmd` / `.ps1` scripts handle JSON payloads safely and return the real exit code.
-- **CI job added:** fresh install into an empty directory with an empty HOME (Ubuntu + Windows, Node 18 + 22) with full doctor green.
-
-See [CHANGELOG.md](CHANGELOG.md) for the complete 2.4.0 audit results, measurements, and new test coverage.
+- **`/forge config`** — one command lists all 36 settings with their value, where the value comes from and what it does, and changes any of them. Or just say it in chat ("pause at 95 percent"). Forge notices a change at the start of the next run and tells you. See [docs/SETTINGS.md](docs/SETTINGS.md).
+- **Everything on by default** — including the usage guard, which now pauses at **98 %** (it was opt-in in 2.4.0; see below why that changed). Three things stay off or report-only on purpose: `paperclip`, `cleanup` and `ecc-full-test`.
+- **The beginner promise** — Forge runs every command itself, never asks you to run code, and never asks "shall I continue?" between phases (see [the promise above](#-the-beginner-promise)).
+- **A real safety stop** — a hook now *blocks* mass deletes, killing programs by name and git commands that throw away uncommitted work, including `git checkout .` and `git restore <path>`, which were not caught before. Claude can no longer read your `.env` secret files.
+- **21 public skills ship with Forge** — 13 from obra/superpowers, frontend-design and claude-md-improver from Anthropic, and 6 from mattpocock/skills, each pinned and with its licence. Plus two commands: `/commit` and `/revise-claude-md`.
+- **Prompt coach** — Forge checks your request for the classic gaps, fills small ones itself and asks at most one easy multiple-choice question. Guide: [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md).
+- **Doctor beginner checks** — the health check now warns about a CLAUDE.md over 200 lines, `claude`/`git`/`node` missing from PATH, bypass mode as a default and a WSL project under `/mnt/c`, and shows a read-only summary of `claude doctor`.
+- **Command Center** — a read-only "Forge settings" section in Settings, served by a new `GET /api/config`.
+- **New page for beginners:** [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md) (English and Dutch).
 
 </details>
+
+---
+
+## ⚙️ Settings in one command
+
+Everything is **on** by default. **`/forge config list`** shows every setting; **`/forge config set <setting> <value>`** changes one; **`/forge config explain <setting>`** tells you exactly what it does. You can also just say it: *"zet de usage guard op 97%"*, *"vraag me niet meer bij elke fase"*, *"codex review off"* — Forge runs the command itself and repeats the result in one line.
+
+This is the real output of `/forge config list` on a fresh 2.7.0 install (project folder `proj`, empty home), trimmed to the first eight settings of the core group. Each row: on/off, the setting, its value, where the value comes from, and what it does:
+
+```text
+Forge settings - project "proj" (everything is ON by default; change it with one command)
+
+Status  Setting                      Value                    From             What it does
+------  ---------------------------  -----------------------  ---------------  ----------------------------------------
+
+== On by default - Forge uses this on every run ==
+ON      usage-guard                  on                       default          Pauses Forge automatically just before
+                                                                               your Claude usage limit so a task is
+                                                                               never cut off mid-way. [1]
+ON      usage-guard.pause-at         98 %                     default          Forge pauses at this percentage of your
+                                                                               usage limit.
+ON      autonomy                     continue-within-mission  product-default  Keeps working across phases without
+                                                                               asking 'continue?' each time. STOP always
+                                                                               works; deploy/push/spend/DNS/production
+                                                                               always ask first.
+ON      start-gate                   off                      default          Does not wait for a START before building
+                                                                               - the plan is posted and work continues
+                                                                               immediately (say STOP to pause).
+ON      gate-hook                    on                       default          A real stop (not advice) on dangerous
+                                                                               commands: recursive deletes, killing
+                                                                               processes by name, git commands that
+                                                                               throw away uncommitted work. Forge asks
+                                                                               first.
+ON      git-checkpoint               on                       default          Creates a local git safety point (commit
+                                                                               or branch, never pushed) before a bigger
+                                                                               build so everything can be undone.
+ON      intake                       silent                   default          Answers the intake questions itself from
+                                                                               your request and the project; asks at
+                                                                               most one multiple-choice question (2-3
+                                                                               options), only when two readings would
+                                                                               lead to materially different builds or
+                                                                               when something must be sent, paid or
+                                                                               deployed.
+ON      prompt-doctor                on                       default          Checks your request for the classic traps
+                                                                               (vague goal, no definition of done, no
+                                                                               context) and fills the gaps itself or
+                                                                               asks the one targeted question.
+... (8 of the 36 settings; the full list, with the where-from column and every group: /forge config list --all)
+```
+
+The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %** before your limit), **`gate-hook`** (on, the safety stop below), **`git-checkpoint`** (on, a local safety point before a bigger build), **`intake`** (`silent`: at most one question) and **`explain-mode`** (on: one plain sentence per phase). The full list of all 36 settings (core, when-needed and advanced) with every default, the 7 locked rules that can never be switched off, and where your choices are saved: **[docs/SETTINGS.md](docs/SETTINGS.md)**.
+
+---
+
+## 🛡️ A real safety stop
+
+Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks three dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), and git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`). Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder) still pass, and quoted text (a heredoc, an `echo`, a `grep` pattern) is never mistaken for a command. If the check cannot judge a command it says so instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files, `secrets/` folders, private keys and your own credential files (23 rules); `.env.example` stays readable. Only you can switch the stop off (`/forge config set gate-hook off`): the assistant cannot switch it off itself, a one-off approval expires after 10 minutes, and while it is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay exactly where they are, a timestamped backup is written first, and running it again changes nothing. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
+
+---
+
+## 🧩 Public skills that ship with Forge
+
+So a beginner never has to hunt for skills, Forge now ships **21 well-known public skills** and **2 commands**, and its Bosses use them automatically:
+
+- **13 from obra/superpowers** (MIT) — brainstorming, writing and executing plans, test-driven development, systematic debugging, code review, verification before completion, git worktrees and more.
+- **frontend-design** and **claude-md-improver** from Anthropic (Apache-2.0).
+- **6 from mattpocock/skills** (MIT) — grill-me, grilling, teach, wait-what, resolving-merge-conflicts and setup-pre-commit (that last one only runs when you ask for it).
+- **Commands:** `/commit` (one local commit of your changes; it never pushes) and `/revise-claude-md` (updates your CLAUDE.md with what the session learned).
+
+Each vendored skill is pinned to an exact upstream commit, keeps its upstream `LICENSE` file in its folder and carries a provenance header at the top of its `SKILL.md`. Every change Forge made is listed in [.claude/skills/VENDORED-SKILLS.md](.claude/skills/VENDORED-SKILLS.md). The GSAP skills (no open licence) and humanizer are still **not** shipped. The LITE plugin does not include these vendored skills.
+
+---
+
+## 💬 Not sure how to ask?
+
+You cannot ask wrong. Forge's **prompt coach** checks your request for the classic gaps — a vague goal, no "done when", no example. Small gaps it fills itself with safe choices and writes them in the plan, so you can change them later. If one gap really changes what gets built, Forge asks you **one** question with 2–3 plain choices plus "something else", and then says in one sentence what it will build ("So I'll build: … Is that right?"). A one-page guide with a fill-in sentence and examples, in Dutch and English: **[docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md)**.
 
 ---
 
@@ -214,9 +305,12 @@ Honest answer: **a team of agents uses more tokens than a single chat** — that
 
 - **Tiered models** — Opus only for the hard/critical work, **Sonnet** for most of it, **Haiku** for trivial steps, and pure mechanical edits use **no model at all**.
 - **Right-sized teams** — a one-line fix doesn't summon a swarm; over-spawning is treated as waste, not a feature.
-- **Real cost visibility** — a live dashboard cost meter, plus a usage guard that reads the official `/usage` endpoint and **pauses at 95%** of your window, then resumes after the reset.
+- **Real cost visibility** — a live dashboard cost meter, plus a **usage guard** that reads the same official numbers as `/usage` and **pauses Forge at 98 %** of your 5-hour or weekly limit — *before* the limit, so a task is never cut off halfway. Claude Code itself (version 2.1.234 and later) already waits and continues after a limit reset; the guard's job is the pause before it.
 
 You pay through your existing Claude Code plan (no separate billing), and Forge **never invents a "savings" number**.
+
+> [!NOTE]
+> **The usage guard is on by default since 2.7.0.** In 2.4.0 it was opt-in. The maintainer reversed that so beginners are protected without having to know it exists. The guard reads your Claude login token locally from `~/.claude/.credentials.json` and sends it only to `api.anthropic.com`; it tells you exactly that, once, when it really starts. One command switches it off: `/forge config set usage-guard off`. Change the threshold with `/forge config set usage-guard.pause-at 90`.
 
 💸 **[Full token & cost guide →](docs/TOKEN-USAGE.md)**
 
@@ -236,13 +330,22 @@ Keys are **optional** — Forge runs fine without any.
 
 ## 📊 The dashboard
 
-The **Forge Command Center** is the dashboard — one local app on `http://127.0.0.1:4100` that auto-discovers your Forge projects and shows strictly per-project data. It ships in `command-center/`:
+The **Forge Command Center** is the dashboard — one local app on `http://127.0.0.1:4100` that auto-discovers your Forge projects and shows strictly per-project data. It is **optional**: Forge works fully without it.
+
+**You never type the setup yourself.** The dashboard ships as source in this repository's `command-center/` folder (the installers do not copy it into your project). Its web page needs a one-time build — the only npm step anywhere in Forge. When an AI assistant installs Forge from a clone, it does that build and starts the dashboard for you ([AI-INSTALL.md §6](AI-INSTALL.md)). After that, `/forge dashboard` in any project checks it and gives you the address. If no dashboard is running, Forge says so in one line and keeps working.
+
+<details>
+<summary>What gets run for you (for the curious)</summary>
 
 ```bash
-cd command-center/dashboard && npm install && npm run build   # build the SPA once
+cd command-center/dashboard && npm install && npm run build   # build the web page once
 cd ../.. && node command-center/gateway/supervisor.mjs        # start it (restarts the gateway if it dies)
-# then open http://127.0.0.1:4100 — GET /api/health must answer before you trust it
+# then http://127.0.0.1:4100 — GET /api/health must answer before anyone calls it "running"
 ```
+
+</details>
+
+The **Settings** view has a read-only **Forge settings** section that shows the active project's settings, read from `GET /api/config`; you change them in chat or with `/forge config`.
 
 The gateway is zero-dependency Node and is the **only** layer allowed to spawn the real `claude` CLI. Run events stay per-project: every run writes `.claude/forge-runs/<run_id>/events.jsonl` via `.claude/forge-dashboard/log-event.cjs`, and the Command Center reads those **read-only**. It shows **real activity only** — never fabricated, never shared across projects.
 
@@ -268,12 +371,18 @@ The gateway is zero-dependency Node and is the **only** layer allowed to spawn t
 - **Gitignore invariant:** `.env`, `.env.*` (except `.env.example`) and the temp `.env.forge-setup` are ignored. If a `.env` is already tracked, Forge stops and warns you to `git rm --cached .env` and rotate.
 - **Storage tier:** the honest default is a gitignored `.env` with `0600` perms. An OS keychain (macOS Keychain / Windows Credential Manager / libsecret) is an **optional advanced** upgrade — never required, never faked.
 - **Model tiers** are configurable in `.claude/config/` — route routine work to cheaper models and escalate high-risk work.
+- **Every Forge switch** (usage guard, safety stop, intake, dashboard, Codex review, …) lives in one place: `/forge config` — see [docs/SETTINGS.md](docs/SETTINGS.md). Settings files never hold secrets.
+- **Secret files are off-limits to Claude:** the shipped `.claude/settings.json` denies reading `.env`, `.env.local`, the common `.env.*` variants and `secrets/**`.
 
 ---
 
 ## ❓ FAQ
 
-**Do I need to install dependencies?** No. Forge is plain Node `.cjs` — nothing to `npm install`.
+**Do I need to install dependencies?** No. Forge's tools are plain Node `.cjs` — nothing to `npm install`. The only npm step is the optional dashboard's one-time build, and it is run for you.
+
+**Do I have to type commands or run scripts?** No. Forge runs every command, install and build itself. The one thing it cannot do is install Claude Code, because Forge runs inside it — see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md).
+
+**How do I change a setting?** Say it in chat ("turn off the codex review") or use `/forge config set <setting> <value>`. `/forge config list` shows everything — see [docs/SETTINGS.md](docs/SETTINGS.md).
 
 **Will it touch my other projects?** No. Forge is **project-isolated** and works only in the target folder.
 
@@ -319,6 +428,9 @@ If Forge saves you time, a star helps others find it.
 | Doc | What's in it |
 |---|---|
 | [**docs/HOW-IT-WORKS.md**](docs/HOW-IT-WORKS.md) | **Start here.** Plain-language walkthrough of a task from your sentence to a checked result, with a real example and the QA loop. |
+| [**docs/CLAUDE-CODE-BASICS.md**](docs/CLAUDE-CODE-BASICS.md) | **New to Claude Code?** Paid plan, the install line for your shell, permission prompts, undo, usage limits, `/clear`, CLAUDE.md and three myths — English and Dutch. |
+| [**docs/HOW-TO-ASK.md**](docs/HOW-TO-ASK.md) | How to ask Forge for something: a fill-in sentence, five examples and three common mistakes — Dutch and English. |
+| [**docs/SETTINGS.md**](docs/SETTINGS.md) | Every setting with its default and what it does, how to change it, where it is saved, and the 7 locked rules. |
 | [**docs/TOKEN-USAGE.md**](docs/TOKEN-USAGE.md) | Honest token & cost guide — model tiering, right-sized teams, the usage guard, and how to keep it cheap. |
 | [**docs/FEATURES.md**](docs/FEATURES.md) | The complete catalogue — every skill, playbook, tool and guarantee, explained in depth. |
 | [**AGENTS.md**](AGENTS.md) | All 19 agents (12 permanent Bosses + 7 specialists) — role, when-used, tools, and the QA fix-loop. |
@@ -331,8 +443,8 @@ If Forge saves you time, a star helps others find it.
 
 ## Requirements
 
-- **[Claude Code](https://claude.com/claude-code)** — Forge is a configuration layer for it.
-- **Node.js 18+** — for the `.cjs` tools and the dashboard (no packages to install).
+- **[Claude Code](https://claude.com/claude-code)** — Forge is a configuration layer for it. Claude Code needs a **paid Claude plan** (Pro, Max, Team or Enterprise); see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md).
+- **Node.js 18+** — for Forge's `.cjs` tools and the dashboard (no packages to install). Claude Code itself does not need Node; Forge's doctor tells you when it is missing.
 - **Git** — recommended (leak-scan and safe key setup use it), not strictly required.
 
 ---

@@ -78,6 +78,20 @@ t('the honesty-core-untouchable seed rule exists and carries cannot_override_cor
 t('listActive() returns only status:active rules from the real seed file', () => {
   for (const r of standing.listActive()) assert.strictEqual(r.status, 'active');
 });
+t('the does-it-for-you owner rule (2026-09-24) is active, global, always-on, topic autonomy, with the verbatim owner quote', () => {
+  const r = standing.load().rules.find((x) => x.id === 'does-it-for-you');
+  assert.ok(r, 'seed must include does-it-for-you');
+  assert.strictEqual(r.status, 'active');
+  assert.strictEqual(r.scope, 'global');
+  assert.strictEqual(r.trigger, 'always');
+  assert.strictEqual(r.topic, 'autonomy');
+  assert.strictEqual(r.confidence, 'high');
+  assert.strictEqual(r.cannot_override_core, false);
+  assert.match(r.text, /never asks the user to run a file or code/);
+  assert.match(r.text, /only a hard gate or a real usage-limit pause interrupts/);
+  assert.ok(r.source.includes('ik heb hier ook meegemaakt dat claude zegt dat ik handmatig een code of een bestand moet runnen') && r.source.includes('moet ik verder of moet ik dit'), 'the source quotes the owner verbatim');
+  assert.ok(standing.match({}).active.some((x) => x.id === 'does-it-for-you'), 'an always-trigger rule fires on every run');
+});
 
 // ---------------------------------------------------------------------------
 // 2) trigger matching — always / domain / glob / on-request

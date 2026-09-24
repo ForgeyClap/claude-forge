@@ -4,7 +4,7 @@
 
 Every slash command, sub-flow, dashboard control, natural-language trigger, and zero-dependency terminal tool — in one scannable page.
 
-**2 slash commands · 19 agents · 50 skills · 93 zero-dep `.cjs` tools (full install; the LITE plugin has 18 agents and 31 skills).**
+**4 slash commands · 19 agents · 72 skills · 102 zero-dep `.cjs` tools (full install; the LITE plugin has 2 slash commands, 18 agents and 22 skills).**
 
 </div>
 
@@ -35,6 +35,8 @@ The **same** commands exist under two names, depending on how you installed Forg
 |---|---|---|---|
 | **Run a task** | `/forge <task>` | `/forge:forge <task>` | Classify the task, read project memory, assemble the *smallest relevant* agent team, execute **in this folder only**, log real events to the dashboard, update memory + agent ledger, optionally Codex-review, and deliver an honest report. |
 | **Onboard** | `/setup-forge` | `/forge:setup-forge` | First-run wizard — asks name / goal / project-type / language, does beginner-safe API-key setup, and scaffolds the per-project Forge system. Run once per project. |
+| **Commit** | `/commit` | — (full install only) | Makes **one local git commit** of the changes it sees, with a generated message. It never pushes. Check `git status` first if files are open that do not belong in that commit. Vendored from Anthropic's `commit-commands` plugin (Apache-2.0). |
+| **Update CLAUDE.md** | `/revise-claude-md` | — (full install only) | Updates your project's `CLAUDE.md` with what was learned in this session. Vendored from Anthropic's `claude-md-management` plugin (Apache-2.0); its audit twin is the `claude-md-improver` skill. |
 
 > [!NOTE]
 > **Plugin is LITE.** `/forge:setup-forge` from the read-only plugin cache **cannot** write `~/.claude`, scaffold the dashboard, or run the `.env` key-move flow — it detects this and offers to add the full system via the installer. Only the **installer / manual** route gives you the dashboard and safe key flow.
@@ -61,7 +63,10 @@ Once the full system is installed in a project, `/forge <sub-command>` drives th
 
 | Sub-command | What it does |
 |---|---|
-| `/forge dashboard` | Find/start the **Command Center** (`node command-center/gateway/supervisor.mjs`), health-check `GET http://127.0.0.1:4100/api/health`, and report `http://127.0.0.1:4100`. Never claims a start it can't prove. |
+| `/forge config` | **Every Forge setting in one command** — `list [--all]` · `get <setting>` · `set <setting> <value> [--global]` · `unset <setting>` · `reset` · `explain <setting>` · `diff` · `parse "<sentence>"`. Everything is on by default. Forge runs the tool itself (`node .claude/forge-bin/forge-config.cjs …`) and repeats its OK line; `reset` asks you once first; locked rules (hard gates, honesty, isolation, …) are refused. See [docs/SETTINGS.md](docs/SETTINGS.md). |
+| `/forge help me ask` | Shows the short guide on how to ask Forge for something (Dutch first, then English) — the same text as [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md). |
+| `/forge interview` | The full intake questionnaire, one question at a time. By default Forge answers the intake itself and asks at most one question (setting `intake`). |
+| `/forge dashboard` | Find/start the **Command Center** (`node command-center/gateway/supervisor.mjs`), health-check `GET http://127.0.0.1:4100/api/health`, and report `http://127.0.0.1:4100`. Never claims a start it can't prove, and never hands you a command to type. |
 | `/forge start` | Same as `dashboard`, then begin a new run. |
 | `/forge use` | Load project memory/profile, start (or show how to start) the dashboard, then continue the task. |
 | `/forge status` | Summarize project status, the latest run, and the dashboard URL (reads `FORGE_MEMORY.md` + `DASHBOARD_STATE.json` + newest `run.json`). |
@@ -134,6 +139,31 @@ You don't have to type a slash command. These plain-language phrases activate Fo
 | Say | Effect |
 |---|---|
 | `start Forge dashboard` · `open Forge dashboard` | Find/start the Command Center, health-check it, report the real URL. |
+
+</details>
+
+<details>
+<summary><strong>Settings (<code>/forge config</code>)</strong></summary>
+
+| Say | Effect |
+|---|---|
+| `settings` · `instellingen` · `show my Forge settings` | `/forge config list` — every setting with value, source and explanation. |
+| `zet de usage guard op 97%` · `pause at 95 percent` | `set usage-guard.pause-at 97` (or 95). |
+| `zet <iets> aan` / `uit` · `turn <something> on` / `off` | The matching `set <setting> on` or `off`. |
+| `vraag me niet meer bij elke fase` | `set autonomy continue-within-mission` + `set start-gate off`. |
+| `interview mode aan` | `set intake interview`. |
+| `codex review uit` · `codex review off` | `set codex-review off`. |
+
+Forge maps the sentence to a setting itself (`forge-config.cjs parse` names the exact `set` command without changing anything), runs it, and repeats the result in one line. If a sentence could mean two settings, it offers them as choices.
+
+</details>
+
+<details>
+<summary><strong>How to ask</strong></summary>
+
+| Say | Effect |
+|---|---|
+| `hoe vraag ik Forge iets` · `hoe moet ik dit vragen` · `help me ask` | Shows [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md) — the fill-in sentence, five examples and three common mistakes. |
 
 </details>
 
@@ -212,7 +242,10 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 | `forge-heartbeat.cjs` | Stall watchdog — flags an agent that started but has gone silent past a window. | `node .claude/forge-bin/forge-heartbeat.cjs check <run_id>` |
 | `forge-intake.cjs` | Prompt-Master intake — renders the one big clarifying-question list before a build. `--type` is required. | `node .claude/forge-bin/forge-intake.cjs --type website --task "<task>"` |
 | `forge-runcontract.cjs` | **Run-contract gate** — checks a run against `FORGE_HARD_RULES.json` before it may be called done. Exit 3 = NOT DONE (the listed rules are unfinished work). `--log-event` writes the `gate_evaluated` proof in the same act. | `node .claude/forge-bin/forge-runcontract.cjs check --run <run_id> --log-event` |
-| `usage-guard.cjs` | Subscription usage watchdog — reads the official Anthropic OAuth usage endpoint; pauses at a threshold. | `node .claude/forge-bin/usage-guard.cjs start` |
+| `usage-guard.cjs` | Subscription usage watchdog — reads the official Anthropic OAuth usage endpoint and pauses Forge at **98 %** by default (settings `usage-guard`, `usage-guard.pause-at`, `.resume-at`, `.interval`, `.nvidia-shift-at`). **On by default** since 2.7.0; `/forge` starts it. A real start prints what it reads (your token, locally) and where it sends it (only `api.anthropic.com`), plus the off command. `start` exits 3 without starting anything when you switched it off. `status` prints every value with its source. | `node .claude/forge-bin/usage-guard.cjs status` |
+| `forge-config.cjs` | **The one settings tool** behind `/forge config` — resolves, validates and writes every setting in `FORGE_CONFIG_SCHEMA.json` (36 settings, 7 locked rules). Sub-commands `list [--all] · get · set [--global] · unset · reset --yes · explain · diff [--run <id> --mark-seen] · parse "<sentence>"`; `--lang nl\|en`, `--ascii`, `--json`. Exit 0 ok · 1 unknown setting · 2 invalid input or damaged file (nothing written) · 3 act on this (change found, confirmation needed, locked, sentence ambiguous). | `node .claude/forge-bin/forge-config.cjs list --all --lang en` |
+| `forge-gate-hook.cjs` | **The PreToolUse gate hook** (matcher `Bash\|PowerShell`). Blocks (exit 2) recursive force-deletes, kill-by-name and git commands that discard uncommitted work, with a plain NL/EN reason; deletes provably inside a scratch area pass. Runs automatically — you never call it. Off: `/forge config set gate-hook off`. | *(runs as a hook)* |
+| `forge-promptcheck.cjs ask` | **The prompt-doctor** on your raw request (deterministic, offline, Dutch + English). Returns the ranked gaps (F1–F13), at most ONE `nextQuestion` with 2–3 options, and the safe `assumptions` it filled in. Exit 0 clear/OK · 3 vague. Used by the silent intake (setting `prompt-doctor`). | `node .claude/forge-bin/forge-promptcheck.cjs ask "maak mijn site beter"` |
 
 ### `forge-setup.cjs` sub-actions (used by the wizard)
 
@@ -261,9 +294,21 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 | `forge-integrate.cjs` | Hermetic integration gate. |
 | `forge-evals.cjs` | Deterministic binary-assertion scorer for the skill-refine loop. |
 | `forge-mutate.cjs` | Mutation testing — proves the tests actually pin the logic. |
-| `forge-promptcheck.cjs` | Advisory dispatch-prompt linter (non-blocking). |
+| `forge-promptcheck.cjs` | Advisory dispatch-prompt linter (non-blocking); its `ask` mode is the prompt-doctor on your raw request (see Core engines). |
 | `forge-policy.cjs` | Pure orchestration/security policy helpers (model cascade, etc.). |
 | `forge-bench.cjs` | FORGEBENCH capability scoreboard across the real modules. |
+
+</details>
+
+<details>
+<summary><strong>Settings, prompt coach & beginner research (new in 2.7.0)</strong></summary>
+
+| Tool | Purpose |
+|---|---|
+| `forge-config-cli.cjs` | The command-line layer of `forge-config.cjs` (argument parsing, `--json`/`--ascii` output, exit codes). Running it directly does the same as `forge-config.cjs`. |
+| `forge-config-text.cjs` | The Dutch/English wording and table renderers for `forge-config.cjs`. A module, not a command. |
+| `forge-promptcheck-ask.cjs` | The implementation of `forge-promptcheck.cjs ask` (5 clarity dimensions + failure modes F1–F13, one question at most). Call it through `forge-promptcheck.cjs ask`. |
+| `forge-sweep.cjs` | **Maintainer tool.** A resumable, checkpointed YouTube research sweep on what beginners need (`enumerate · filter · transcripts · extract · aggregate · status`). Needs `yt-dlp` on PATH; the `extract` stage uses NVIDIA models with your own key. Captions only, never media. Helpers: `forge-sweep-core.cjs`, `forge-sweep-extract.cjs`, `forge-sweep-aggregate.cjs`. |
 
 </details>
 
@@ -293,6 +338,9 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 |---|---|
 | Onboard a new project | `/setup-forge` |
 | Build / automate / refactor something | `/forge <task>` |
+| See or change a setting | `/forge config list` — or just say it ("zet de usage guard op 97%") |
+| Learn how to ask Forge | say "help me ask", or read [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md) |
+| Switch off the usage guard or the safety stop | `/forge config set usage-guard off` · `/forge config set gate-hook off` |
 | Add or fix API keys | `/setup-forge keys` |
 | Check Forge's health | `/setup-forge doctor` **or** `node .claude/forge-bin/forge-setup.cjs doctor` |
 | See the live dashboard | `/forge dashboard` |

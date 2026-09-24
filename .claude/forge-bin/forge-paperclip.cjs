@@ -20,6 +20,7 @@
  * Usage:
  *   node .claude/forge-bin/forge-paperclip.cjs status
  *   node .claude/forge-bin/forge-paperclip.cjs up                          # start runtime if down
+ *     (`up` and `ensure` are REFUSED, exit 3, while the owner setting `paperclip` is off — see OWNER SETTING)
  *   node .claude/forge-bin/forge-paperclip.cjs ensure --run <run_id> --goal "<goal>" [--agents <file.json>]
  *   node .claude/forge-bin/forge-paperclip.cjs ticket --run <run_id> --title "<t>" --agent <slug> [--desc "<d>"]
  *   node .claude/forge-bin/forge-paperclip.cjs stop  --run <run_id>        # stop runtime (after proof)
@@ -27,6 +28,16 @@
  * Agents JSON: [{ "slug":"design-agent","name":"Design Agent","role":"designer","title":"UI/UX",
  *   "capabilities":"...", "soul":"personality/values text", "tools":"allowed tools text",
  *   "adapterType":"claude_local"|"process"|"none", "reportsTo":"<slug>" }, ...]
+ *
+ * OWNER SETTING `paperclip` (v2.7.0, forge-config.cjs; default OFF — owner decision 2026-07-04: Paperclip
+ * only on explicit request). While it is off, `up` and `ensure` print one plain refusal line and exit 3
+ * BEFORE any network, git or process work; `--force` (an explicit request right now) or
+ * `/forge config set paperclip aan` lets them run. status/ticket/pause/resume/stop are never gated (stop
+ * must always be able to shut a runtime down). `--with-usage-guard` is unchanged. forge-config.cjs is
+ * soft-required and read through its fail-safe safeGet(): absent, throwing or a damaged settings file -> OFF
+ * (paperclip carries the U and $ flags, so its safe value is off even after the owner switched it on) plus a
+ * one-line `config_note` (CLI: on stderr), so a broken settings file never starts unattended agents.
+ * paperclipGate(command, opts) is the pure, exported decision.
  */
 const http = require('http');
 const fs = require('fs');
@@ -76,6 +87,50 @@ const args = process.argv.slice(2);
 const cmd = args[0] || 'status';
 function arg(name, dflt) { const i = args.indexOf('--' + name); return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : dflt; }
 const RUN_ID = arg('run', null);
+
+// ---- owner setting `paperclip` (forge-config.cjs, v2.7.0) — soft-required, see the header ----
+const PAPERCLIP_OFF_MESSAGE = 'paperclip staat uit (owner-besluit 2026-07-04): /forge config set paperclip aan of vraag expliciet om Paperclip';
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default — for a flagged key like paperclip (U $) the SAFE value, off — used only when
+ *  forge-config.cjs is absent or broken; an older copy without safeGet is read through get(). Never throws.
+ *  opts.projectRoot = the root this tool acts on (ignored when FORGE_PROJECT_ROOT is set); opts.configModule
+ *  injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfg;
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
+/** paperclipGate(command, opts) -> { allowed, reason, message, config_note? }. Pure decision, no I/O beyond reading
+ *  the owner settings. Only `up` and `ensure` (start / provision) are gated. opts: { force, configModule, projectRoot }. */
+function paperclipGate(command, opts) {
+  const o = opts || {};
+  if (command !== 'up' && command !== 'ensure') return { allowed: true, reason: 'not-gated', message: null };
+  if (o.force === true) return { allowed: true, reason: 'force', message: null };
+  const sc = configRead('paperclip', false, { projectRoot: o.projectRoot || PROJECT_DIR, configModule: o.configModule });
+  const note = sc.degraded ? { config_note: sc.reason } : {};
+  if (sc.value === true) {
+    return Object.assign({ allowed: true, reason: 'owner config paperclip=on', message: null }, note);
+  }
+  return Object.assign({ allowed: false, reason: 'owner config paperclip=off', message: PAPERCLIP_OFF_MESSAGE }, note);
+}
 
 // Run-id safety guard: only [A-Za-z0-9_-]+ may ever reach the log-event.cjs subprocess argv (mirrors
 // log-event.cjs's own guard). Extracted as a pure, exported, directly-testable predicate.
@@ -536,16 +591,27 @@ module.exports = {
   resolveClaudeBin,
   agentDocs,
   list,
+  paperclipGate, PAPERCLIP_OFF_MESSAGE,
   ROLE_MAP, LOCAL_ADAPTERS, OPUS_ROLES, HAIKU_ROLES, SKILLS_BY_ROLE,
 };
 
 // CLI entry point — guarded so `require('./forge-paperclip.cjs')` (e.g. from a test) loads the
 // module WITHOUT starting the runtime, touching the network, running git, or exiting the process.
 if (require.main === module) {
-  CLAUDE_BIN = resolveClaudeBin(); // resolve now (guard #3) — only when actually running as the CLI
-  (async () => {
-    const fn = { status: cmdStatus, up: cmdUp, ensure: cmdEnsure, ticket: cmdTicket, pause: cmdPause, resume: cmdResume, stop: cmdStop }[cmd];
-    if (!fn) { console.error('unknown command: ' + cmd + ' (use status|up|ensure|ticket|pause|resume|stop)'); process.exit(1); }
-    process.exit(await fn());
-  })();
+  // Owner setting first: while `paperclip` is off, up/ensure are refused before ANY network/git/process work
+  // (not even the `claude` PATH lookup below runs). exitCode rather than exit(), so the two exit() calls stay
+  // the only ones in this file.
+  const gate = paperclipGate(cmd, { force: args.includes('--force') });
+  if (gate.config_note) console.error('NOTE (settings): ' + gate.config_note);
+  if (!gate.allowed) {
+    console.error(gate.message);
+    process.exitCode = 3;
+  } else {
+    CLAUDE_BIN = resolveClaudeBin(); // resolve now (guard #3) — only when actually running as the CLI
+    (async () => {
+      const fn = { status: cmdStatus, up: cmdUp, ensure: cmdEnsure, ticket: cmdTicket, pause: cmdPause, resume: cmdResume, stop: cmdStop }[cmd];
+      if (!fn) { console.error('unknown command: ' + cmd + ' (use status|up|ensure|ticket|pause|resume|stop)'); process.exit(1); }
+      process.exit(await fn());
+    })();
+  }
 }

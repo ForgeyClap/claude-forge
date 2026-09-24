@@ -72,5 +72,14 @@ switch ($cmd) {
   # read-only cross-project learning harvest into the reserved global lesson namespace (forge-harvest.cjs).
   # Usage: .\forge.ps1 learn --scan <dir> [--global-store <file>] [--dry-run] [--json]
   'learn'       { & $node "$PSScriptRoot\forge-harvest.cjs" @rest }
-  default       { Write-Host 'Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn' }
+  # the ONE settings tool: list/get/set/unset/reset/explain/diff/parse (forge-config.cjs, --help on each).
+  # Usage: .\forge.ps1 config list|get|set|unset|reset|explain|diff|parse [args]
+  'config'      { & $node "$PSScriptRoot\forge-config.cjs" @rest }
+  # resumable, checkpointed YouTube research sweep - captions/metadata only, never media (forge-sweep.cjs).
+  # Usage: .\forge.ps1 sweep enumerate|filter|transcripts|extract|aggregate|status [args]
+  'sweep'       { & $node "$PSScriptRoot\forge-sweep.cjs" @rest }
+  # Prompt Master dispatch-prompt linter, advisory only (forge-promptcheck.cjs); the ask subcommand scores
+  # the raw owner request before Forge plans anything. Usage: .\forge.ps1 promptcheck <promptFile|-> [args]
+  'promptcheck' { & $node "$PSScriptRoot\forge-promptcheck.cjs" @rest }
+  default       { Write-Host 'Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn | config | sweep | promptcheck' }
 }

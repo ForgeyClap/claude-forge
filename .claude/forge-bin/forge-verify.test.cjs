@@ -735,5 +735,97 @@ t('FALSE-PASS pin 2: a token starting with "-" is REJECTED as a run_id, never si
 const cliGhost = runCli('run-that-was-never-created', '--root', TMP);
 t('FALSE-PASS pin 3: a run directory that does not exist is LOUD (non-zero + names the path), never "0 mismatches"', cliGhost.status !== 0 && /does not exist|no such run/i.test(cliGhost.stderr + cliGhost.stdout) && !/0 mismatch/.test(cliGhost.stdout));
 
+// =====================================================================================================
+// WP23 (2026-09-24) — "verify: heartbeats and evidence-closed tasks". Real defect measured on
+// forge-2026-09-24-config-v250: agent_progress heartbeats of already-COMPLETED work packages, and a
+// completed_with_blockers subagent_output the Lead had already fixed, could never close, so finished
+// work read as 67 permanently-open tasks. Fixtures below reproduce the exact shapes.
+// =====================================================================================================
+
+// ---- RULE 1a: a heartbeat closes when the completion shares its wp_id ----
+const hbSameWpDir = writeEvents('run-wp23-hb-same-wp', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'agent_progress', agent: 'Build Boss', wp_id: 'wp1', role: 'build-boss', note: 'working wp1' }),
+  ev({ event_type: 'subagent_completed', agent: 'Build Boss', wp_id: 'wp1', role: 'build-boss', status: 'completed' }),
+]);
+const hbSameWp = V.verifyRun(hbSameWpDir, {});
+const hbSameWpAgent = hbSameWp.agents.find((a) => a.agent === 'Build Boss');
+t('RULE 1a: a heartbeat with the SAME wp_id as the completion closes (0 open tasks)', hbSameWpAgent.tasksOpen.length === 0);
+t('RULE 1a: the closed heartbeat resolves done', hbSameWpAgent.tasksDone === hbSameWpAgent.tasksTotal && hbSameWpAgent.tasksTotal > 0);
+t('RULE 1a: no false mismatch once the heartbeat is genuinely closed', hbSameWpAgent.mismatch === false);
+
+// ---- RULE 1b: a heartbeat of a DIFFERENT wp_id is NOT closed by an unrelated completion ----
+const hbDiffWpDir = writeEvents('run-wp23-hb-diff-wp', [
+  ev({ event_type: 'agent_started', agent: 'Search Boss' }),
+  ev({ event_type: 'agent_progress', agent: 'Search Boss', wp_id: 'wpA', note: 'working wpA' }),
+  ev({ event_type: 'subagent_completed', agent: 'Search Boss', wp_id: 'wpB', status: 'completed' }),
+]);
+const hbDiffWp = V.verifyRun(hbDiffWpDir, {});
+const hbDiffWpAgent = hbDiffWp.agents.find((a) => a.agent === 'Search Boss');
+t('RULE 1b: a heartbeat of a DIFFERENT wp_id stays open (a different WP finishing must not close it)', hbDiffWpAgent.tasksOpen.some((tk) => tk.event_type === 'agent_progress'));
+
+// ---- RULE 1c: heartbeats of a completed_with_blockers completion become FAILED, and still count as open
+// (blockers are never hidden as done) ----
+const hbBlockedDir = writeEvents('run-wp23-hb-blocked', [
+  ev({ event_type: 'agent_started', agent: 'Docs Boss' }),
+  ev({ event_type: 'agent_progress', agent: 'Docs Boss', wp_id: 'wp13b', note: 'drafting docs' }),
+  ev({ event_type: 'subagent_completed', agent: 'Docs Boss', wp_id: 'wp13b', status: 'completed_with_blockers' }),
+]);
+const hbBlocked = V.verifyRun(hbBlockedDir, {});
+const hbBlockedAgent = hbBlocked.agents.find((a) => a.agent === 'Docs Boss');
+const hbBlockedHeartbeat = hbBlockedAgent.tasksOpen.find((tk) => tk.event_type === 'agent_progress');
+t('RULE 1c: a heartbeat closed by a completed_with_blockers completion becomes FAILED, not done', !!hbBlockedHeartbeat && hbBlockedHeartbeat.status === 'failed');
+
+// ---- RULE 2a: closes_event_id + non-empty evidence closes the named EARLIER task ----
+const closeGoodDir = writeEvents('run-wp23-closes-good', [
+  ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-closes-good-1', task: 'lint gate' }),
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-closes-good-1', evidence: 'reran lint, 0 errors' }),
+]);
+const closeGood = V.verifyRun(closeGoodDir, {});
+const closeGoodAgent = closeGood.agents.find((a) => a.agent === 'Review Boss');
+t('RULE 2a: closes_event_id + evidence closes the earlier task (0 open on Review Boss)', closeGoodAgent.tasksOpen.length === 0);
+t('RULE 2a: no advisory line when the closure is valid', closeGood.closesAdvisories.length === 0);
+
+// ---- RULE 2b: closes_event_id WITHOUT evidence closes nothing + logs one advisory ----
+const closeNoEvidenceDir = writeEvents('run-wp23-closes-no-evidence', [
+  ev({ event_type: 'check_failed', agent: 'Review Boss', event_id: 'ev-closes-noev-1', task: 'lint gate' }),
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-closes-noev-1' }),
+]);
+const closeNoEvidence = V.verifyRun(closeNoEvidenceDir, {});
+const closeNoEvidenceAgent = closeNoEvidence.agents.find((a) => a.agent === 'Review Boss');
+t('RULE 2b: closes_event_id WITHOUT evidence closes nothing (task stays open)', closeNoEvidenceAgent.tasksOpen.length === 1);
+t('RULE 2b: exactly one advisory line explains why, naming "no evidence"', closeNoEvidence.closesAdvisories.length === 1 && /no evidence/.test(closeNoEvidence.closesAdvisories[0]));
+
+// ---- RULE 2c: an unknown closes_event_id closes nothing + logs one advisory ----
+const closeUnknownDir = writeEvents('run-wp23-closes-unknown', [
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-never-logged', evidence: 'proof' }),
+]);
+const closeUnknown = V.verifyRun(closeUnknownDir, {});
+t('RULE 2c: an unknown event_id is ignored with an advisory naming it "unknown"', closeUnknown.closesAdvisories.length === 1 && /unknown event_id/.test(closeUnknown.closesAdvisories[0]));
+
+// ---- RULE 2d: a forward/self reference (target not strictly earlier than the closer) is ignored ----
+const closeForwardDir = writeEvents('run-wp23-closes-forward', [
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', event_id: 'ev-self-1', closes_event_id: 'ev-self-1', evidence: 'proof' }),
+]);
+const closeForward = V.verifyRun(closeForwardDir, {});
+t('RULE 2d: a self/forward reference is ignored with an advisory naming "forward reference"', closeForward.closesAdvisories.length === 1 && /forward reference/.test(closeForward.closesAdvisories[0]));
+
+// ---- RULE 1+2 combined: mismatch flips true -> false on a fixture shaped like the real defect run
+// (forge-2026-09-24-config-v250) — a Boss claims done while its own heartbeats and a blocked output are
+// still open; a matching subagent_completed + a Lead fix_completed with evidence close them for real. ----
+const realShapeDir = writeEvents('run-wp23-real-shape', [
+  ev({ event_type: 'agent_started', agent: 'Build Boss' }),
+  ev({ event_type: 'agent_progress', agent: 'Build Boss', wp_id: 'wp1', note: 'heartbeat 1' }),
+  ev({ event_type: 'agent_progress', agent: 'Build Boss', wp_id: 'wp1', note: 'heartbeat 2' }),
+  ev({ event_type: 'subagent_output_created', agent: 'Build Boss', event_id: 'ev-real-shape-blocked', wp_id: 'wp1', status: 'completed_with_blockers', output: 'shipped with 2 known blockers' }),
+  ev({ event_type: 'subagent_completed', agent: 'Build Boss', wp_id: 'wp1', status: 'completed' }),
+  ev({ event_type: 'fix_completed', agent: 'orchestrator', closes_event_id: 'ev-real-shape-blocked', evidence: 'both blockers fixed and retested' }),
+  ev({ event_type: 'agent_completed', agent: 'Build Boss', status: 'done' }),
+]);
+const realShape = V.verifyRun(realShapeDir, {});
+const realShapeAgent = realShape.agents.find((a) => a.agent === 'Build Boss');
+t('RULE 1+2 combined: the real-shape fixture now has ZERO open tasks', realShapeAgent.tasksOpen.length === 0);
+t('RULE 1+2 combined: mismatch is false once heartbeats + the blocked output genuinely close', realShapeAgent.mismatch === false);
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

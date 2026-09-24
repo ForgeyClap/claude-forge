@@ -33,7 +33,11 @@
  *  - cmdStatus/cmdUp/cmdEnsure/cmdTicket/cmdPause/cmdResume/cmdStop: every one of these performs
  *    real network I/O against the Paperclip runtime (and cmdEnsure additionally runs real git
  *    commands + writes real docs into a real PROJECT_DIR derived from `__dirname`). None of these
- *    are exported (asserted below) and none are invoked live by this suite.
+ *    are exported (asserted below) and none are invoked live by this suite. ONE bounded exception
+ *    (v2.7.0, GROUP P): the real CLI `ensure` is spawned against a CLOSED loopback port
+ *    (PAPERCLIP_URL=http://127.0.0.1:1) to prove the owner-setting gate; there cmdEnsure stops at its
+ *    very first health() check ("Paperclip DOWN", exit 1) — before git, docs or any Paperclip API call.
+ *    `up` is never spawned.
  *  - freeEmbeddedPg/killEmbeddedPgByPath/pidsOnPort/killTree/sleepMs: these inspect and can KILL
  *    real OS processes/ports via PowerShell + taskkill. Not exported; never invoked — even in a
  *    test, calling these with a wrong/real PID would be destructive, not merely "unhermetic".
@@ -65,6 +69,14 @@ const SOURCE_TEXT = fs.readFileSync(REAL_FILE, 'utf8'); // read-only, plain text
                                                          // architectural/order guards in GROUP J below
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-paperclip-test-'));
 
+// Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home
+// (never ~/.claude) and FORGE_PROJECT_ROOT points at an EMPTY fixture, so every gate decision below starts from
+// the schema default (paperclip OFF) whatever the real project settings say.
+const CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-paperclip-cfghome-'));
+const EMPTY_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-paperclip-cfgproj-'));
+process.env.FORGE_CONFIG_HOME = CONFIG_HOME;
+process.env.FORGE_PROJECT_ROOT = EMPTY_PROJECT;
+
 // Real paths the module would fall back to if a test ever forgot to pass an explicit argument.
 // Recorded BEFORE requiring/using the module so the final "REAL-PROJECT NON-POLLUTION" section can
 // prove this suite never touched them.
@@ -89,6 +101,8 @@ t('R1 require() of the real module completed and returned a non-null object', ty
 t('R1 requiring the same file twice returns the SAME cached export object (Node module caching — proves require() ran its top-level body exactly once, not once per call)', require(REAL_FILE) === pc);
 const EXPECTED_EXPORT_KEYS = ['pcRole', 'pcAdapter', 'modelFor', 'skillsForRole', 'readBinding', 'writeBinding',
   'toForwardSlashes', 'isSafeRunId', 'resolveClaudeBin', 'agentDocs', 'list',
+  // v2.7.0: the owner-setting gate for up/ensure — a PURE decision (reads settings only, no network/process)
+  'paperclipGate', 'PAPERCLIP_OFF_MESSAGE',
   'ROLE_MAP', 'LOCAL_ADAPTERS', 'OPUS_ROLES', 'HAIKU_ROLES', 'SKILLS_BY_ROLE'].sort();
 t('R2 the export surface is EXACTLY the documented pure/safe set (no accidental extra export, none missing)', JSON.stringify(Object.keys(pc).sort()) === JSON.stringify(EXPECTED_EXPORT_KEYS));
 const NEVER_EXPORTED = ['cmdStatus', 'cmdUp', 'cmdEnsure', 'cmdTicket', 'cmdPause', 'cmdResume', 'cmdStop',
@@ -436,6 +450,59 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
 }
 
 // ===================================================================================
+// GROUP P — owner setting `paperclip` (forge-config.cjs, v2.7.0; default OFF, owner decision 2026-07-04).
+// `up` is NEVER spawned here (it can start a detached runtime and free ports). The CLI proofs use `ensure`
+// against a closed loopback port: even a broken gate could only print "Paperclip DOWN" and exit 1.
+// ===================================================================================
+{
+  const { spawnSync } = require('child_process');
+  const cfgProject = (settings) => {
+    const r = fs.mkdtempSync(path.join(TMP, 'cfg-'));
+    fs.mkdirSync(path.join(r, '.claude'), { recursive: true });
+    if (settings) fs.writeFileSync(path.join(r, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }));
+    return r;
+  };
+  const ON = cfgProject({ paperclip: { value: true } });
+  const OFF = cfgProject({ paperclip: { value: false } });
+  const withRoot = (root, fn) => { const prev = process.env.FORGE_PROJECT_ROOT; process.env.FORGE_PROJECT_ROOT = root; try { return fn(); } finally { process.env.FORGE_PROJECT_ROOT = prev; } };
+  const MSG = 'paperclip staat uit (owner-besluit 2026-07-04): /forge config set paperclip aan of vraag expliciet om Paperclip';
+
+  const upDefault = pc.paperclipGate('up');
+  t('P1 no settings file (schema default OFF) -> up is refused with the exact owner message', upDefault.allowed === false && upDefault.message === MSG && pc.PAPERCLIP_OFF_MESSAGE === MSG);
+  t('P1 ensure is refused the same way', pc.paperclipGate('ensure').allowed === false);
+  t('P2 --force (an explicit request right now) lets up and ensure through', pc.paperclipGate('up', { force: true }).allowed === true && pc.paperclipGate('ensure', { force: true }).reason === 'force');
+  t('P3 paperclip=true in the project settings lets up/ensure through', withRoot(ON, () => pc.paperclipGate('up').allowed === true && pc.paperclipGate('ensure').allowed === true));
+  t('P3 paperclip=false in the project settings refuses', withRoot(OFF, () => pc.paperclipGate('up').allowed === false));
+  t('P4 status/ticket/pause/resume/stop are never gated (stop must always work), even while OFF',
+    ['status', 'ticket', 'pause', 'resume', 'stop'].every((c) => pc.paperclipGate(c).allowed === true));
+  t('P5 config module absent (null) or throwing -> schema default OFF, even when the file says ON',
+    withRoot(ON, () => pc.paperclipGate('up', { configModule: null }).allowed === false && pc.paperclipGate('up', { configModule: { get() { throw new Error('boom'); } } }).allowed === false));
+  t('P5 a wrong-typed value from the module is ignored (default OFF), a real true is honoured',
+    pc.paperclipGate('up', { configModule: { get: () => ({ value: 'on' }) } }).allowed === false && pc.paperclipGate('up', { configModule: { get: () => ({ value: true }) } }).allowed === true);
+  // M3 (review-boss): the owner switched paperclip ON, then the settings file got damaged elsewhere -> the fail-safe
+  // read puts the flagged (U $) key at its SAFE value OFF and says why; before M3 this relied on the default only.
+  const DAMAGED_ON = cfgProject(null);
+  fs.writeFileSync(path.join(DAMAGED_ON, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { paperclip: { value: true }, nvidia: { value: 'banana' } } }));
+  const dmg = withRoot(DAMAGED_ON, () => pc.paperclipGate('up'));
+  t('P5b M3: a damaged settings file that said paperclip ON -> refused (safe value OFF) with a one-line config_note',
+    dmg.allowed === false && /damaged/.test(dmg.config_note || '') && /paperclip = off/.test(dmg.config_note) && !/\n/.test(dmg.config_note), JSON.stringify(dmg));
+  t('P5b a readable file carries no config_note', withRoot(ON, () => pc.paperclipGate('up').config_note === undefined));
+
+  const cliEnv = (root) => Object.assign({}, process.env, { FORGE_PROJECT_ROOT: root, PAPERCLIP_URL: 'http://127.0.0.1:1', FORGE_CLAUDE_BIN: 'claude' });
+  const refused = spawnSync(process.execPath, [REAL_FILE, 'ensure', '--run', 'x'], { encoding: 'utf8', env: cliEnv(EMPTY_PROJECT), timeout: 20000 });
+  t('P6 CLI ensure while OFF -> exit 3, the one refusal line on stderr, nothing on stdout', refused.status === 3 && refused.stderr.trim() === MSG && refused.stdout === '');
+  const forced = spawnSync(process.execPath, [REAL_FILE, 'ensure', '--run', 'x', '--force'], { encoding: 'utf8', env: cliEnv(EMPTY_PROJECT), timeout: 20000 });
+  t('P7 CLI ensure --force passes the gate (then honestly reports the runtime DOWN on a closed port, exit 1)', forced.status === 1 && /Paperclip DOWN/.test(forced.stderr) && !forced.stderr.includes(MSG));
+  const configOnRun = spawnSync(process.execPath, [REAL_FILE, 'ensure', '--run', 'x'], { encoding: 'utf8', env: cliEnv(ON), timeout: 20000 });
+  t('P8 CLI ensure with paperclip=true passes the gate (DOWN on the closed port, exit 1)', configOnRun.status === 1 && /Paperclip DOWN/.test(configOnRun.stderr));
+  const guardStart = SOURCE_TEXT.indexOf('if (require.main === module)');
+  const guardBody = SOURCE_TEXT.slice(guardStart);
+  t('P9 inside the CLI guard the gate runs BEFORE the claude lookup and BEFORE the command dispatch',
+    guardBody.indexOf('paperclipGate(cmd') > -1 && guardBody.indexOf('paperclipGate(cmd') < guardBody.indexOf('resolveClaudeBin()') && guardBody.indexOf('paperclipGate(cmd') < guardBody.indexOf('status: cmdStatus'));
+  t('P9 the --with-usage-guard opt-in is still there and still separate from the gate', /args\.includes\('--with-usage-guard'\)/.test(SOURCE_TEXT));
+}
+
+// ===================================================================================
 // REAL-PROJECT NON-POLLUTION — proves this ENTIRE suite never fell back to (or otherwise touched)
 // the real project's binding file or docs/agents directory, even though several exported functions
 // (readBinding/writeBinding/agentDocs) DO have real-project defaults for their path arguments.
@@ -449,6 +516,8 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
   const realDocsAgentsExistsAfter = fs.existsSync(REAL_DOCS_AGENTS_DIR);
   t('Z2 the real project docs/agents directory existence is unchanged by this whole test run', realDocsAgentsExistedBefore === realDocsAgentsExistsAfter);
 }
+
+for (const d of [CONFIG_HOME, EMPTY_PROJECT]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ } }
 
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

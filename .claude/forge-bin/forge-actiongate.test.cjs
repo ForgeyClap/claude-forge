@@ -829,8 +829,17 @@ t('arm 3 is present in the shipped pattern exactly as this section documents it'
   assert.ok(DD_GATE.match.pattern.includes(R6_ARM),
     'arm 3 was reworded — re-derive the counterfactual below before trusting it');
 });
-const withoutArm3 = () => ({ match: { kind: 'command', pattern: DD_GATE.match.pattern.replace(R6_ARM, ''),
-  flags: DD_GATE.match.flags, pattern_line: DD_GATE.match.pattern_line, except: DD_GATE.match.except } });
+// WP16 / security-boss H1 (2026-09-24) appended a SEVENTH arm (a bare recursive flag on `rm`). It overlaps arm 3
+// (`-Recurse` carries an r), so the round-5 counterfactual and the round-6 price are re-derived against the
+// pattern OF THEIR DAY: arm 3 AND the H1 arm spliced out = round 5; only the H1 arm spliced out = round 6.
+const H1_ARM = '|(?<!\\b(?:s3|git|gsutil)\\s)\\brm\\b(?=[^\\n]*\\s(?:-(?!-)[A-Za-z]*r[A-Za-z]*\\b|--recursive\\b))';
+const ddWith = (pattern) => ({ match: { kind: 'command', pattern, flags: DD_GATE.match.flags,
+  pattern_line: DD_GATE.match.pattern_line, except: DD_GATE.match.except } });
+const withoutArm3 = () => ddWith(DD_GATE.match.pattern.replace(R6_ARM, '').replace(H1_ARM, ''));
+const round6Gate = () => ddWith(DD_GATE.match.pattern.replace(H1_ARM, ''));
+t('the H1 arm is present in the shipped pattern exactly as documented (else the round-6 history below is unanchored)', () => {
+  assert.ok(DD_GATE.match.pattern.endsWith(H1_ARM), 'the H1 arm was reworded or moved — re-derive round6Gate()');
+});
 
 t('COUNTERFACTUAL: splice arm 3 out and every round-6 witness goes silent again', () => {
   const old = withoutArm3();
@@ -842,11 +851,14 @@ t('COUNTERFACTUAL: splice arm 3 out and every round-6 witness goes silent again'
 });
 
 t('ROUND 6 did not break a single no_match pin around it', () => {
-  // The reason arm 3 starts at `-re` instead of `-r`: `rm -r` is ALSO POSIX's ordinary recursive flag, and
-  // `rm -r ./emptydir` has been pinned silent since round 4. The bare two-letter form is genuinely
-  // ambiguous between the two shells, so the pin wins and the residual gap is declared in
-  // _not_caught.non_recursive_deletes instead of being closed by breaking a pin.
-  for (const cmd of ['rm -r ./emptydir', 'rm -r ./src', 'rm --recursive ./src', 'rm ./notes.txt',
+  // HISTORY: arm 3 started at `-re` so the round-4 pin `rm -r ./emptydir` stayed silent. Security-boss H1
+  // (2026-09-24) dropped that pin on purpose — `rm -r ./src`, `rm -r ./emptydir` and `rm --recursive ./src`
+  // now fire (section 2c-decies). The ROUND-6 pattern (H1 arm spliced out) still keeps all three quiet, and
+  // the shipped pattern keeps every other pin below.
+  for (const cmd of ['rm -r ./emptydir', 'rm -r ./src', 'rm --recursive ./src']) {
+    assert.strictEqual(gate.testCommandGate(round6Gate(), cmd), false, 'the round-6 pattern must keep this quiet: ' + cmd);
+  }
+  for (const cmd of ['rm ./notes.txt',
     'rm -f ./notes.txt', 'rm --force ./notes.txt', 'rm -f --verbose ./notes.txt', 'docker rm -f mycontainer',
     'rm -rf node_modules', 'rm -rf ./node_modules', 'rm -rf _scratch', 'rm -rf ./_scratch',
     'aws s3 rm s3://bucket --recursive']) {
@@ -870,8 +882,8 @@ const R6_PRICE = [
   { cmd: 'rm -r ./src', warns: false },
 ];
 for (const c of R6_PRICE) {
-  t('R6 PRICE — "' + c.cmd + '" ' + (c.warns ? 'warns (' + c.why + ')' : 'stays silent'), () => {
-    assert.strictEqual(gate.classify(c.cmd).matched.includes('destructive-delete'), c.warns,
+  t('R6 PRICE (round-6 pattern) — "' + c.cmd + '" ' + (c.warns ? 'warns (' + c.why + ')' : 'stays silent'), () => {
+    assert.strictEqual(gate.testCommandGate(round6Gate(), c.cmd), c.warns,
       c.warns ? 'the price is documented as a warning; if it no longer warns, re-measure and re-quote it: ' + c.cmd
         : 'this must stay silent or arm 3 is too wide: ' + c.cmd);
   });
@@ -973,6 +985,167 @@ t('extra false-alarm neighbours stay silent (an r-bearing flag is not a recursiv
     'Get-Process -Id 22420 | Stop-Process -Force']) {
     const r = gate.classify(cmd);
     assert.strictEqual(r.gate, false, 'expected NO gate at all for: ' + cmd + ' — got ' + JSON.stringify(r.matched));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2c-novies) WP16 (2026-09-24, run forge-2026-09-24-config-v250) — THE WORKING-TREE RESTORE HOLE.
+// Measured live with the real CLI before the fix: `git checkout .`, `git checkout -- src/app.js` and
+// `git restore src/app.js` printed "no gate triggered", while `git reset --hard` and `git checkout -f main`
+// fired. All three overwrite uncommitted edits, and an edit that was never committed has no reflog entry.
+// No new gate id: the existing git-destructive gate got four more arms, so FORGE_AUTONOMY.always_interrupt
+// (and forge-autonomy.test.cjs's drift canary that mirrors it) needs no change. The config's own examples
+// already prove most forms in 2d; the tests here pin, BY NAME, the three measured commands, the decisions
+// on the edge cases, and a counterfactual showing the new arms — not the old ones — carry the fix.
+// forge-gate-hook.cjs enforces this gate for real (exit 2), which is why a false alarm here now costs a
+// blocked tool call and the must-stay-silent list below asserts TOTAL silence, not merely "not this gate".
+// ---------------------------------------------------------------------------
+console.log('\n2c-novies) WP16 — git checkout . / checkout -- <path> / restore <path> now fire git-destructive');
+
+// (read directly: ALL_GATES / NOT_CAUGHT are declared further down, in 2d/2e, and are not yet initialised here)
+const GD_CONFIG = gate.loadGates();
+const GD_GATE = GD_CONFIG.gates.find((g) => g.id === 'git-destructive');
+// Top-level arms of the pattern. Every arm starts with `\bgit(`, so splitting on a `|` that is followed by
+// that prefix is exact — a naive split on `|` would also cut the `(?:\s|$)` alternation inside an arm.
+const GD_ARMS = GD_GATE.match.pattern.split(/\|(?=\\bgit\()/);
+const WP16_ARM = (a) => /restore\\b|switch\\b/.test(a) || a.includes('\\s--\\s+\\S') || a.includes('\\s\\.[');
+const LEAD_MEASURED = ['git checkout .', 'git checkout -- src/app.js', 'git restore src/app.js'];
+
+t('git-destructive stays a COMMAND gate (the PreToolUse gate hook enforces command-kind gates only)', () => {
+  assert.strictEqual(GD_GATE.match.kind, 'command');
+  assert.strictEqual(GD_ARMS.length, 9, 'expected 4 pre-WP16 arms + 5 WP16 arms (incl. the switch follow-up), got ' + GD_ARMS.length);
+  assert.strictEqual(GD_ARMS.filter(WP16_ARM).length, 5, 'the five WP16 arms are not all present');
+});
+
+for (const cmd of LEAD_MEASURED) {
+  t('WP16 measured hole, now gated: "' + cmd + '" fires git-destructive', () => {
+    const r = gate.classify(cmd);
+    assert.strictEqual(r.gate, true, 'expected a gate for: ' + cmd);
+    assert.deepStrictEqual(r.matched, ['git-destructive'], 'expected exactly git-destructive for: ' + cmd);
+  });
+}
+
+t('COUNTERFACTUAL: the pre-WP16 arms alone miss all three measured commands; the full pattern catches them', () => {
+  const flags = GD_GATE.match.flags || 'i';
+  const oldRe = new RegExp(GD_ARMS.filter((a) => !WP16_ARM(a)).join('|'), flags);
+  const fullRe = new RegExp(GD_GATE.match.pattern, flags);
+  for (const cmd of LEAD_MEASURED) {
+    assert.ok(!oldRe.test(cmd), 'the OLD arms already matched "' + cmd + '" — then this was never the hole');
+    assert.ok(fullRe.test(cmd), 'the full pattern does not match "' + cmd + '"');
+  }
+});
+
+t('the two forms that were ALREADY gated stay gated: git reset --hard, git checkout -f main', () => {
+  for (const cmd of ['git reset --hard', 'git checkout -f main']) {
+    assert.ok(gate.classify(cmd).matched.includes('git-destructive'), 'regression: ' + cmd);
+  }
+});
+
+t('global options still do not hide the new forms (git -C / -c / --git-dir / --work-tree)', () => {
+  for (const cmd of ['git -C repo checkout .', 'git -C /repo checkout -- src/app.js', 'git -C ../wt-a restore src/app.js',
+    'git --git-dir=/r/.git --work-tree=/r restore .', 'git -c core.pager=cat checkout HEAD -- src/app.js']) {
+    assert.ok(gate.classify(cmd).matched.includes('git-destructive'), 'expected git-destructive for: ' + cmd);
+  }
+});
+
+t('everyday git stays TOTALLY silent (no gate at all) — branch switches, unstaging, status, add, commit, stash list', () => {
+  for (const cmd of ['git restore --staged src/app.js', 'git restore --staged .', 'git checkout main', 'git checkout -b feature',
+    'git checkout -b feature origin/main', 'git status', 'git add .', 'git commit -m "x"', 'git stash list',
+    'git checkout .claude/settings.json', 'git checkout .gitignore', 'git checkout main --quiet', 'git log -- .',
+    'git diff -- src/app.js', 'git -C /repo checkout main', 'git -C /repo restore --staged src/app.js']) {
+    const r = gate.classify(cmd);
+    assert.deepStrictEqual(r.matched, [], 'expected NO gate at all for: ' + cmd + ' — got ' + JSON.stringify(r.matched));
+  }
+});
+
+t('EDGE DECISION: `git checkout origin/main -- ` (a `--` with no pathspec) is a branch switch and stays silent', () => {
+  // git refuses a branch switch that would overwrite local edits, so nothing uncommitted can be lost here.
+  for (const cmd of ['git checkout origin/main -- ', 'git checkout origin/main --']) {
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'a trailing `--` without a path must not fire: ' + JSON.stringify(cmd));
+  }
+});
+
+t('EDGE DECISION: `git checkout origin/main -- src/app.js` FIRES — a tree-ish before `--` still overwrites the file', () => {
+  for (const cmd of ['git checkout origin/main -- src/app.js', 'git checkout HEAD -- src/app.js', 'git checkout HEAD~1 .']) {
+    assert.ok(gate.classify(cmd).matched.includes('git-destructive'), 'expected git-destructive for: ' + cmd);
+  }
+});
+
+t('restore: default --worktree fires; --staged alone is silent; --staged WITH --worktree/-W fires', () => {
+  for (const cmd of ['git restore .', 'git restore --source=HEAD~2 src/app.js', 'git restore -s main src/app.js',
+    'git restore --staged --worktree src/app.js', 'git restore -SW src/app.js']) {
+    assert.ok(gate.classify(cmd).matched.includes('git-destructive'), 'expected git-destructive for: ' + cmd);
+  }
+  assert.deepStrictEqual(gate.classify('git restore --staged -- src/app.js').matched, []);
+});
+
+t('KNOWN PRICE, pinned so it cannot change silently: `git restore -S <path>` over-fires (case-insensitive gate)', () => {
+  // -S (staged, harmless) and -s (source, destructive) are one character apart and the gate is flags:"i";
+  // the declaration in _not_caught._gate_coverage["git-destructive"] says so, and 2f executes that claim too.
+  assert.ok(gate.classify('git restore -S src/app.js').matched.includes('git-destructive'));
+  assert.ok(GD_CONFIG._not_caught._gate_coverage['git-destructive'].includes('git restore -S src/app.js'),
+    'the over-fire must stay declared in _not_caught, not only pinned here');
+});
+
+t('named gap, pinned: a file restore WITHOUT `--` (`git checkout src/app.js`) is silent — same shape as a branch switch', () => {
+  assert.deepStrictEqual(gate.classify('git checkout src/app.js').matched, []);
+});
+
+t('WP16 follow-up: git switch -f / --force / --discard-changes fire (they discard local changes like checkout -f)', () => {
+  for (const cmd of ['git switch -f main', 'git switch --force main', 'git switch --discard-changes main',
+    'git -C /repo switch -f main', 'git switch main --discard-changes']) {
+    assert.deepStrictEqual(gate.classify(cmd).matched, ['git-destructive'], 'expected exactly git-destructive for: ' + cmd);
+  }
+});
+
+t('WP16 follow-up: ordinary switches stay TOTALLY silent — incl. --force-create (it resets a branch pointer only)', () => {
+  for (const cmd of ['git switch main', 'git switch -c feature', 'git switch -c feature origin/main', 'git switch -',
+    'git switch --detach v1.0', 'git switch --force-create feature', 'git -C /repo switch main']) {
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'expected NO gate for: ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2c-decies) SECURITY-BOSS AUDIT wp9b (2026-09-24) — H1 and M1, pinned by name with counterfactuals.
+// H1: POSIX tree deletes without a force flag (`rm -r ./src`) fired nothing. M1: kill-by-name had five
+// bypasses (a -Name prefix, a non-PID taskkill /FI filter, the gps/ps aliases, pgrep/pidof lookups).
+// ---------------------------------------------------------------------------
+console.log('\n2c-decies) security-boss wp9b — H1 (rm -r without -f) and M1 (kill-by-name bypasses)');
+
+const H1_FIRE = ['rm -r ./src', 'rm -R ./src', 'rm --recursive ./src', 'find . -exec rm -r {} +', 'rm -r ./emptydir', 'del --recursive ./src'];
+for (const cmd of H1_FIRE) {
+  t('H1: "' + cmd + '" fires destructive-delete', () => {
+    assert.ok(gate.classify(cmd).matched.includes('destructive-delete'), 'expected destructive-delete for: ' + cmd);
+  });
+}
+t('H1 COUNTERFACTUAL: the round-6 pattern (H1 arm spliced out) misses the four POSIX forms — the new arm carries them', () => {
+  for (const cmd of H1_FIRE.slice(0, 4)) assert.strictEqual(gate.testCommandGate(round6Gate(), cmd), false, cmd);
+});
+t('H1 keeps the other tools\' own `rm` subcommands TOTALLY silent (aws s3 / git / gsutil)', () => {
+  for (const cmd of ['aws s3 rm s3://b --recursive', 'aws s3 rm s3://bucket --recursive', 'git rm -r dir',
+    'git rm -r --cached dir', 'gsutil rm -r gs://b', 'rm ./notes.txt', 'rm -f ./notes.txt', 'rm --force ./notes.txt']) {
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'expected NO gate for: ' + cmd);
+  }
+});
+t('H1 PRICE: of the 7 round-6 silences exactly 3 now warn (by design) and 4 stay silent — the sentence says 62 of 90', () => {
+  const nowWarn = R6_PRICE.filter((c) => !c.warns).filter((c) => gate.classify(c.cmd).matched.includes('destructive-delete')).map((c) => c.cmd);
+  assert.deepStrictEqual(nowWarn.sort(), ['rm --recursive ./src', 'rm -r ./emptydir', 'rm -r ./src']);
+  assert.ok(NOT_CAUGHT_H1().rm_recurse_arm_price.includes('62 of 90'), 'the price sentence must carry the new total');
+});
+function NOT_CAUGHT_H1() { return gate.loadGates()._not_caught; }
+
+const M1_FIRE = ['kill $(pgrep node)', 'kill -9 `pidof node`', 'pgrep node | xargs kill', 'ps aux | grep node | xargs kill -9',
+  'gps node | Stop-Process', 'ps node | kill', 'Stop-Process -N node', 'Stop-Process -na node', 'spps -Nam chrome',
+  'taskkill /FI "WINDOWTITLE eq x"', 'taskkill /F /FI "USERNAME eq bob"'];
+for (const cmd of M1_FIRE) {
+  t('M1: "' + cmd + '" fires kill-by-name', () => {
+    assert.ok(gate.classify(cmd).matched.includes('kill-by-name'), 'expected kill-by-name for: ' + cmd);
+  });
+}
+t('M1 keeps PID-scoped kills and plain listings TOTALLY silent', () => {
+  for (const cmd of ['taskkill /FI "PID eq 22420"', 'taskkill /PID 22420 /F', 'gps -Id 22420 | Stop-Process', 'ps aux | head',
+    'pgrep node', 'kill -9 $(cat app.pid)', 'kill 1234', 'kill -n 9 1234', 'Stop-Process -Id 22420', 'Get-Process node']) {
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'expected NO gate for: ' + cmd);
   }
 });
 
@@ -1120,7 +1293,7 @@ const DECLARED_BLIND_SPOTS = [
   { cmd: 'git worktree remove --force ../wt-a', topic: '_gate_coverage.git-destructive' },
   { cmd: 'git gc --prune=now', topic: '_gate_coverage.git-destructive' },
   { cmd: 'git branch -D feature-x', topic: '_gate_coverage.git-destructive' },
-  { cmd: 'gps node | Stop-Process', topic: '_gate_coverage.kill-by-name' },
+  { cmd: 'kill -n node', topic: '_gate_coverage.kill-by-name' }, // `gps node | Stop-Process` fires since WP16/M1
   { cmd: 'Stop-Service w3svc', topic: '_gate_coverage.kill-by-name' },
   { cmd: 'docker kill mycontainer', topic: '_gate_coverage.kill-by-name' },
   { cmd: 'vercel --prod', topic: '_gate_coverage.deploy' },

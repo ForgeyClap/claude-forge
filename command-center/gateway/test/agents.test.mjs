@@ -55,11 +55,15 @@ test('build-boss carries its real CORE skill list from agent-skill-map.json', ()
   assert.ok(buildBoss);
   // 2026-09-23 (external audit II-D): the map used to name four skills that exist only in the author's global
   // ~/.claude; they were remapped to the shipped Forge equivalents. This pin follows the real file.
+  // 2026-09-24 (v2.7.0, wp6b/wp13b): two vendored public skills (mattpocock/skills, MIT) now ship with Forge and
+  // are attached to build-boss; setup-pre-commit is user-invoked only (see agent-skill-map.json invocationNotes).
   assert.deepEqual(buildBoss.skills, [
     'forge-skill-testing',
     'forge-debug',
     'forge-code-review',
     'forge-worktrees',
+    'resolving-merge-conflicts',
+    'setup-pre-commit',
   ]);
 });
 

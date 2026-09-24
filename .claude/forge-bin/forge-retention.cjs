@@ -16,16 +16,69 @@
  *   - Rapporteert per kandidaat wat en waarom; een apply zonder voorafgaande dry-run-uitvoer bestaat
  *     niet (de apply print dezelfde lijst).
  *
+ * EIGENAARSINSTELLING `cleanup` (v2.7.0, forge-config.cjs; standaard `report`): zolang die op `report`
+ * staat WEIGERT de CLI `apply` met een gewone zin + exit 3 (er wordt niets verwijderd); `apply --force`
+ * (een expliciete vraag nu) of `/forge config set cleanup auto` laat hem door. `scan` mag altijd. Gelezen
+ * voor de --root die opgeruimd zou worden (FORGE_PROJECT_ROOT, de eigen seam van de resolver, wint als die
+ * gezet is). forge-config.cjs is soft-required: afwezig of een throw -> de schema-default (`report`), dus
+ * een kapot instellingenbestand verwijdert nooit iets. cleanupGate(command, opts) is de pure beslissing;
+ * de module-functie apply() zelf is ongewijzigd (de CLI is het enige ingangspunt).
+ *
  * CLI:
  *   node forge-retention.cjs scan  [--root <projectRoot>] [--keep N] [--days D] [--json]
- *   node forge-retention.cjs apply [--root <projectRoot>] [--keep N] [--days D] [--json]
- * Exit: 0 = ok (ook: niets te doen) · 2 = usage/fout.
+ *   node forge-retention.cjs apply [--root <projectRoot>] [--keep N] [--days D] [--json] [--force]
+ * Exit: 0 = ok (ook: niets te doen) · 1 = apply met gefaalde verwijderingen · 2 = usage/fout ·
+ *       3 = apply geweigerd door de eigenaarsinstelling cleanup=report (niets verwijderd).
  */
 const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_KEEP = 5;
 const DEFAULT_DAYS = 14;
+
+// ---- eigenaarsinstelling `cleanup` (forge-config.cjs, v2.7.0) — soft-required, zie de header ----
+const CLEANUP_REFUSAL = 'opruimen staat op "report" (alleen rapporteren), dus er is niets verwijderd. Automatisch opruimen aanzetten: /forge config set cleanup auto (of eenmalig: apply --force). Eerst zien wat er weg zou gaan: scan';
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default — for a flagged key like cleanup (D) the SAFE value, report — used only when
+ *  forge-config.cjs is absent or broken; an older copy without safeGet is read through get(). Never throws.
+ *  opts.projectRoot = the root this tool acts on (ignored when FORGE_PROJECT_ROOT is set); opts.configModule
+ *  injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfg;
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
+/** cleanupGate(command, opts) -> { allowed, reason, message, config_note? }. `scan` is never gated; `apply` only
+ *  with cleanup=auto or opts.force. opts: { force, projectRoot, configModule }. */
+function cleanupGate(command, opts) {
+  const o = opts || {};
+  if (command !== 'apply') return { allowed: true, reason: 'not-gated', message: null };
+  if (o.force === true) return { allowed: true, reason: 'force', message: null };
+  const sc = configRead('cleanup', 'report', { projectRoot: o.projectRoot, configModule: o.configModule });
+  const note = sc.degraded ? { config_note: sc.reason } : {};
+  if (sc.value === 'auto') {
+    return Object.assign({ allowed: true, reason: 'owner config cleanup=auto', message: null }, note);
+  }
+  return Object.assign({ allowed: false, reason: 'owner config cleanup=report', message: CLEANUP_REFUSAL }, note);
+}
 
 function dirSize(p) {
   let total = 0;
@@ -126,7 +179,7 @@ function apply(root, keep, days) {
   return { ...plan, applied: true, removed_count: removed.length, failed };
 }
 
-module.exports = { scan, apply, backupCandidates, toollogCandidates, DEFAULT_KEEP, DEFAULT_DAYS };
+module.exports = { scan, apply, backupCandidates, toollogCandidates, cleanupGate, configOn, configRead, CLEANUP_REFUSAL, DEFAULT_KEEP, DEFAULT_DAYS };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
@@ -137,9 +190,12 @@ if (require.main === module) {
   const days = get('days') !== null && Number(get('days')) >= 0 ? Number(get('days')) : DEFAULT_DAYS; // Number(null)===0 zou de default stil overrulen
   const asJson = args.includes('--json');
   if (cmd !== 'scan' && cmd !== 'apply') {
-    console.error('usage: node forge-retention.cjs scan|apply [--root <dir>] [--keep N] [--days D] [--json]  (scan = dry-run, DE default-houding)');
+    console.error('usage: node forge-retention.cjs scan|apply [--root <dir>] [--keep N] [--days D] [--json] [--force]  (scan = dry-run, DE default-houding; apply alleen met cleanup=auto of --force)');
     process.exit(2);
   }
+  const gate = cleanupGate(cmd, { force: args.includes('--force'), projectRoot: root });
+  if (gate.config_note) console.error('NOTE (settings): ' + gate.config_note);
+  if (!gate.allowed) { console.error(gate.message); process.exit(3); }
   const r = cmd === 'apply' ? apply(root, keep, days) : scan(root, keep, days);
   if (r.applied && r.failed && r.failed.length) process.exitCode = 1; // Codex ronde-4 #19: falen is nooit exit 0
   if (asJson) console.log(JSON.stringify(r, null, 2));

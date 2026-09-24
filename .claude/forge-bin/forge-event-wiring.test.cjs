@@ -347,6 +347,48 @@ try {
     const seen = doctor.extractKnownEventTypesFromSource(fs.readFileSync(LOG_EVENT, 'utf8'));
     for (const type of NEW_TYPES) assert.ok(seen.has(type), type + ' is invisible to the doctor extractor — move its registration above the comment-apostrophe parity break');
   });
+
+  // =====================================================================================================
+  console.log('\n(e) config_changed (v2.7.0, forge-config.cjs diff --run) — writer, verify, app.js, panels.js, doctor, contract');
+  // =====================================================================================================
+  t('config_changed is ACCEPTED by the real writer (exit 0) and lands without an UNKNOWN-TYPE stamp', () => {
+    const r = log('config_changed', { agent: 'orchestrator', role: 'lead', runtime: 'internal', note: 'council: auto -> off', changed: [{ key: 'council', from: 'auto', to: 'off', source: 'project' }], count: 1 });
+    assert.strictEqual(r.status, 0, 'stderr: ' + r.stderr);
+    assert.ok(!/UNKNOWN-TYPE|STRICT REFUSED/.test((r.stdout || '') + (r.stderr || '')), (r.stdout || '') + (r.stderr || ''));
+    const ev = lastEvent();
+    assert.strictEqual(ev.event_type, 'config_changed');
+    assert.ok(!ev._forge_verify || !ev._forge_verify.event_type_unknown, JSON.stringify(ev._forge_verify));
+    assert.deepStrictEqual([ev.count, ev.changed[0].key], [1, 'council']);
+  });
+  t('forge-verify classifies config_changed as terminal/done and nothing else', () => {
+    assert.ok(verify.TERMINAL_TYPES.has('config_changed'), 'not in TERMINAL_TYPES');
+    assert.ok(!verify.FAILED_TYPES.has('config_changed') && !verify.RUNNING_TYPES.has('config_changed'), 'must be neither failed nor running');
+  });
+  t('app.js taskStatus() puts config_changed in a done bucket and nowhere else', () => {
+    assert.deepStrictEqual(bucketHas('config_changed'), ['done'], 'buckets containing config_changed: ' + JSON.stringify(bucketHas('config_changed')));
+  });
+  t('app.js SYNTH fallback map has an entry for config_changed', () => {
+    const synth = objectBody(appSrc, 'SYNTH');
+    assert.ok(synth && /config_changed:\s*'[a-z-]+'/.test(synth), 'config_changed missing from the SYNTH fallback map');
+  });
+  t('panels.js actTag() really labels config_changed "config" (the shipped function, evaluated)', () => {
+    const src = fs.readFileSync(path.join(CLAUDE, 'forge-dashboard', 'panels.js'), 'utf8');
+    const start = src.indexOf('function actTag(');
+    const end = src.indexOf('function actMsg(', start);
+    assert.ok(start >= 0 && end > start, 'could not locate actTag() in panels.js');
+    const actTag = new Function(src.slice(start, end) + ';return actTag;')();
+    assert.strictEqual(actTag({ event_type: 'config_changed' }), 'config');
+    assert.strictEqual(actTag({ event_type: 'owner_prefs_loaded' }), 'prefs', 'the neighbouring ECHO label must be unchanged');
+  });
+  t('forge-doctor.cjs::extractKnownEventTypesFromSource() sees config_changed (the ENFORCED unregistered_event gate)', () => {
+    const doctor = require('./forge-doctor.cjs');
+    assert.ok(doctor.extractKnownEventTypesFromSource(fs.readFileSync(LOG_EVENT, 'utf8')).has('config_changed'));
+  });
+  t('the run contract counts config_changed as WORK (an owner setting change is not an inert lifecycle event)', () => {
+    const RC = require('./forge-runcontract.cjs');
+    assert.strictEqual(RC.isWorkEventType('config_changed'), true);
+    assert.ok(!RC.NON_WORK_EVENT_TYPES.has('config_changed'));
+  });
 } finally {
   try { fs.rmSync(RUN_DIR, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }

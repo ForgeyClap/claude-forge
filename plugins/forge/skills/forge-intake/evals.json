@@ -1,0 +1,19 @@
+{
+  "skill": "forge-intake",
+  "assertions": [
+    { "id": "skillmd-exists", "type": "file_exists", "path": ".claude/skills/forge-intake/SKILL.md",
+      "why": "the skill file itself must exist for forge-intake to be usable at all" },
+    { "id": "description-budget", "type": "frontmatter_field", "field": "description", "max_length": 200,
+      "why": "2026-07-31 skill-load-budget fix (FORGE_MEMORY.md): every description must stay <=200 chars or the skill picker truncates it" },
+    { "id": "iterative-intake-section", "type": "contains", "path": ".claude/skills/forge-intake/SKILL.md", "needle": "## Iteratieve intake",
+      "why": "one-question-at-a-time intake replaced the single batch-list per YT-SWEEP-2026-07-31 item 4 (10 source videos)" },
+    { "id": "verdiend-advies-rule", "type": "contains", "path": ".claude/skills/forge-intake/SKILL.md", "needle": "verdiend advies",
+      "why": "the per-question recommended-tag must stay evidence-earned, never random (2026-07-30 fix, proven live 2/5 questions tagged)" },
+    { "id": "question-bank-exists", "type": "file_exists", "path": ".claude/config/intake/question-bank.json",
+      "why": "forge-intake.cjs reads this bank; a missing bank means the intake CLI cannot run" },
+    { "id": "intake-cjs-exists", "type": "file_exists", "path": ".claude/forge-bin/forge-intake.cjs",
+      "why": "the actual CLI this skill instructs the Lead to invoke" },
+    { "id": "learnings-wiring", "type": "contains", "path": ".claude/skills/forge-intake/SKILL.md", "needle": "learnings.md",
+      "why": "wp-skill-evals: the skill must instruct reading its own learnings.md before use and appending corrections after" }
+  ]
+}

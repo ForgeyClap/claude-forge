@@ -27,6 +27,14 @@ let pass = 0, fail = 0;
 const t = (name, cond, extra) => { if (cond) { pass++; console.log('  ok  ' + name); } else { fail++; console.error('  FAIL ' + name + (extra ? ' :: ' + extra : '')); } };
 
 const ROOT = path.resolve(__dirname, '..', '..');
+
+// Hermetische eigenaarsinstellingen (forge-config.cjs, v2.7.0): de globale settings uit een wegwerp-home (nooit
+// ~/.claude) en FORGE_PROJECT_ROOT op een LEGE fixture, zodat councilTrigger in elke test hieronder (ook in de
+// gespawnde CLI's, die process.env erven) op de schema-default `auto` draait wat de echte instellingen ook zeggen.
+const CFG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'qi-cfghome-'));
+const CFG_LEEG = fs.mkdtempSync(path.join(os.tmpdir(), 'qi-cfgproj-'));
+process.env.FORGE_CONFIG_HOME = CFG_HOME;
+process.env.FORGE_PROJECT_ROOT = CFG_LEEG;
 let Q = null;
 try { Q = require(path.join(__dirname, 'forge-quality.cjs')); } catch { /* RED: module bestaat nog niet */ }
 
@@ -641,6 +649,47 @@ if (!Q) { console.log('\n' + pass + ' passed, ' + (fail + 30) + ' failed (module
   t('12 F-37 analyze --log-run schrijft EXACT een decision_logged-event via de echte eventwriter', uit37.status === 0 && besluiten37.length === 1, 'exit=' + uit37.status + ' events=' + besluiten37.length + ' :: ' + String(uit37.stderr).slice(0, 150));
   t('12 F-37 het event draagt mode EN trigger_reason', besluiten37.length === 1 && /NONE|LIGHT|FULL/.test(besluiten37[0].note || '') && /informatiewinst|onzekerheid|gebruikerstrigger|latency/.test(besluiten37[0].note || ''), JSON.stringify((besluiten37[0] || {}).note || '').slice(0, 200));
   fs.rmSync(root37, { recursive: true, force: true });
+}
+
+// ---- 13) eigenaarsinstelling `council` (forge-config.cjs, v2.7.0): off -> NONE, behalve bij een expliciete vraag
+{
+  const cfgRoot = (settings) => {
+    const r = fs.mkdtempSync(path.join(os.tmpdir(), 'qi-council-'));
+    fs.mkdirSync(path.join(r, '.claude'), { recursive: true });
+    if (settings) fs.writeFileSync(path.join(r, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }));
+    return r;
+  };
+  const UIT = cfgRoot({ council: { value: 'off' } });
+  const AUTO = cfgRoot({ council: { value: 'auto' } });
+  const zwaarInp = { decision_impact: 'high', uncertainty: 'high', reversibility: 'low', credible_options: 3, criticality: 'high', explicit_request: false };
+  const metRoot = (root, fn) => { const vorig = process.env.FORGE_PROJECT_ROOT; process.env.FORGE_PROJECT_ROOT = root; try { return fn(); } finally { process.env.FORGE_PROJECT_ROOT = vorig; } };
+
+  const uit = metRoot(UIT, () => Q.councilTrigger(zwaarInp));
+  t('13 council=off -> NONE met reason "owner config council=off", zelfs bij hoge impact + onzekerheid', uit.mode === 'NONE' && uit.reason === 'owner config council=off' && /owner config council=off/.test(uit.trigger_reason), JSON.stringify(uit));
+  const uitExpliciet = metRoot(UIT, () => Q.councilTrigger(Object.assign({}, zwaarInp, { explicit_request: true })));
+  t('13 council=off + explicit_request:true -> FULL (de huidige vraag wint van de opgeslagen instelling)', uitExpliciet.mode === 'FULL', JSON.stringify(uitExpliciet));
+  const auto = metRoot(AUTO, () => Q.councilTrigger(zwaarInp));
+  t('13 council=auto -> ongewijzigd gedrag (FULL bij hoge impact + onzekerheid)', auto.mode === 'FULL' && auto.reason === undefined);
+  t('13 de projectRoot-optie leest de instellingen van DIE root als FORGE_PROJECT_ROOT niet gezet is', (() => {
+    const vorig = process.env.FORGE_PROJECT_ROOT; delete process.env.FORGE_PROJECT_ROOT;
+    try { return Q.councilTrigger(zwaarInp, { projectRoot: UIT }).mode === 'NONE' && Q.councilTrigger(zwaarInp, { projectRoot: AUTO }).mode === 'FULL'; }
+    finally { process.env.FORGE_PROJECT_ROOT = vorig; }
+  })());
+  const afwezig = metRoot(UIT, () => Q.councilTrigger(zwaarInp, { configModule: null }));
+  const gooit = metRoot(UIT, () => Q.councilTrigger(zwaarInp, { configModule: { get() { throw new Error('boem'); } } }));
+  t('13 config-module afwezig (null) of gooit -> schema-default auto (FULL), ook als het bestand off zegt', afwezig.mode === 'FULL' && gooit.mode === 'FULL');
+  t('13 configOn negeert een waarde van het verkeerde type', Q.configOn('council', 'auto', { configModule: { get: () => ({ value: false }) } }) === 'auto' && Q.configOn('council', 'auto', { configModule: { get: () => ({ value: 'off' }) } }) === 'off');
+  const KAPOT = cfgRoot(null);
+  fs.writeFileSync(path.join(KAPOT, '.claude', 'FORGE_CONFIG.json'), '{ geen json');
+  const kapot = metRoot(KAPOT, () => Q.councilTrigger(zwaarInp));
+  t('13 M3: een beschadigd FORGE_CONFIG.json -> schema-default auto (geen datavlag, dus FULL) + een config_note van één regel', kapot.mode === 'FULL' && /damaged|beschadigd/.test(kapot.config_note || '') && !/\n/.test(kapot.config_note), JSON.stringify(kapot).slice(0, 300));
+  t('13 M3: zonder schade geen config_note', metRoot(AUTO, () => Q.councilTrigger(zwaarInp)).config_note === undefined);
+  try { fs.rmSync(KAPOT, { recursive: true, force: true }); } catch { /* opruimen is best effort */ }
+  const an = metRoot(UIT, () => Q.analyzeMission('Maak een webshop met checkout en betalingen', {}));
+  t('13 analyzeMission geeft de instelling door: council=off -> council.mode NONE met de eigenaarsreden', an.council.mode === 'NONE' && an.council.reason === 'owner config council=off', JSON.stringify(an.council).slice(0, 200));
+  const anExpliciet = metRoot(UIT, () => Q.analyzeMission('Doe een council pressure-test op deze architectuurkeuze', {}));
+  t('13 analyzeMission: een expliciete council-vraag in de missie wint ook bij council=off', anExpliciet.council.mode === 'FULL', JSON.stringify(anExpliciet.council).slice(0, 200));
+  for (const d of [UIT, AUTO, CFG_HOME, CFG_LEEG]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* opruimen is best effort */ } }
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

@@ -9,6 +9,12 @@ const assert = require('assert');
 const { spawnSync } = require('child_process');
 const reinject = require('./forge-snapshot-reinject.cjs');
 
+// Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home,
+// never ~/.claude, and FORGE_PROJECT_ROOT is cleared so each fixture ROOT decides which project file is read.
+const CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'reinj-cfghome-'));
+process.env.FORGE_CONFIG_HOME = CONFIG_HOME;
+delete process.env.FORGE_PROJECT_ROOT;
+
 let passed = 0, failed = 0;
 function t(name, fn) {
   try { fn(); passed++; console.log('  ok   ' + name); }
@@ -156,6 +162,98 @@ t('CLI with malformed stdin never blocks (still exits 0)', () => {
   });
   assert.strictEqual(r.status, 0);
 });
+
+// ---------------------------------------------------------------------------
+console.log('\n7) owner setting `snapshots` (forge-config.cjs, v2.7.0) — OFF prints nothing and touches nothing');
+function writeConfig(root, settings) {
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }, null, 2));
+}
+const dueFile = (root) => path.join(root, '.claude', '.forge-snapshot-due.json');
+
+t('snapshots=false -> skipped, nothing printed, the due-marker is left untouched (nothing written or deleted)', () => {
+  const root = freshRoot('reinj-off');
+  writeDue(root, {});
+  writeSnapshot(root, {});
+  writeConfig(root, { snapshots: { value: false } });
+  const before = fs.readFileSync(dueFile(root), 'utf8');
+  const r = reinject.run({ projectRoot: root });
+  assert.strictEqual(r.skipped, true);
+  assert.strictEqual(r.reason, 'owner config snapshots=off');
+  assert.strictEqual(r.printed, false);
+  assert.strictEqual(r.text, null);
+  assert.strictEqual(r.dueConsumed, false);
+  assert.strictEqual(fs.readFileSync(dueFile(root), 'utf8'), before);
+});
+
+t('snapshots=true -> the unchanged behaviour (block printed, marker consumed)', () => {
+  const root = freshRoot('reinj-on');
+  writeDue(root, {});
+  writeSnapshot(root, {});
+  writeConfig(root, { snapshots: { value: true } });
+  const r = reinject.run({ projectRoot: root });
+  assert.strictEqual(r.skipped, undefined);
+  assert.strictEqual(r.printed, true);
+  assert.ok(r.text.includes('Build the thing.'));
+  assert.ok(!fs.existsSync(dueFile(root)));
+});
+
+t('config module absent (configModule:null) or throwing -> schema default ON', () => {
+  for (const configModule of [null, { get() { throw new Error('boom'); } }]) {
+    const root = freshRoot('reinj-absent');
+    writeDue(root, {});
+    writeSnapshot(root, {});
+    writeConfig(root, { snapshots: { value: false } });
+    const r = reinject.run({ projectRoot: root, configModule });
+    assert.strictEqual(r.printed, true);
+  }
+});
+
+t('M3: a malformed FORGE_CONFIG.json -> the fail-safe read keeps snapshots ON (no data flag) and returns a one-line config_note', () => {
+  const root = freshRoot('reinj-badcfg');
+  writeDue(root, {});
+  writeSnapshot(root, {});
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), '{ not json');
+  const r = reinject.run({ projectRoot: root });
+  assert.strictEqual(r.printed, true);
+  assert.ok(/damaged/.test(r.config_note || '') && !/\n/.test(r.config_note), 'config_note: ' + r.config_note);
+  const clean = freshRoot('reinj-cleancfg');
+  writeDue(clean, {});
+  writeConfig(clean, { snapshots: { value: true } });
+  assert.strictEqual(reinject.run({ projectRoot: clean }).config_note, undefined, 'no note when the settings are fine');
+});
+
+t('configOn ignores a wrong-typed value and honours a real boolean', () => {
+  assert.strictEqual(reinject.configOn('snapshots', true, { configModule: { get: () => ({ value: 0 }) } }), true);
+  assert.strictEqual(reinject.configOn('snapshots', true, { configModule: { get: () => ({ value: false }) } }), false);
+});
+
+const OFF_BUDGET_MS = Number(process.env.FORGE_HOOK_OFF_BUDGET_MS) || 500;
+t('CLI OFF path (FORGE_PROJECT_ROOT fixture, snapshots=false) with a due-marker present: exit 0, empty stdout/stderr, marker kept, best of 3 under ' + OFF_BUDGET_MS + ' ms', () => {
+  const fixture = freshRoot('reinj-cli-off-fixture');
+  writeConfig(fixture, { snapshots: { value: false } });
+  const acting = freshRoot('reinj-cli-off-acting');
+  writeDue(acting, {});
+  writeSnapshot(acting, {});
+  const times = [];
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    const r = spawnSync(process.execPath, [CLI], {
+      input: sessionStartPayload({}), encoding: 'utf8',
+      env: Object.assign({}, process.env, { FORGE_PROJECT_ROOT: fixture, CLAUDE_PROJECT_DIR: acting }),
+    });
+    times.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '');
+    assert.strictEqual(r.stderr, '');
+  }
+  assert.ok(fs.existsSync(dueFile(acting)), 'the OFF path consumed the marker');
+  times.sort((a, b) => a - b);
+  console.log('       OFF-path timings ms: ' + times.map((x) => x.toFixed(0)).join(', '));
+  assert.ok(times[0] < OFF_BUDGET_MS, 'fastest OFF run took ' + times[0].toFixed(0) + ' ms (budget ' + OFF_BUDGET_MS + ' ms; override FORGE_HOOK_OFF_BUDGET_MS on a slow runner)');
+});
+
+try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ }
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

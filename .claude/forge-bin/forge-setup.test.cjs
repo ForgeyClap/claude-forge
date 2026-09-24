@@ -8,7 +8,9 @@
  * Every fresh install's `/setup-forge` crashed with MODULE_NOT_FOUND for two releases. This suite is the
  * tripwire: it asserts the engine exists, starts, and answers its two read-only subcommands correctly on a
  * throwaway project, so a future deletion or a broken require turns the doctor red immediately.
- * Read-only by design: it never runs `mark`, `init-keys`, `place-keys` or `self-heal` (those write).
+ * Read-only by design: it never runs `mark`, `init-keys`, `place-keys` or `self-heal` (those write). The one
+ * writing command it runs is `gitignore` (the /forge checkpoint pre-step, review-boss M5) — only inside its own
+ * throwaway temp project, which it deletes afterwards.
  */
 const fs = require('fs');
 const os = require('os');
@@ -54,6 +56,38 @@ try {
   t('status and doctor are read-only (the project .claude/ listing is unchanged)', before === after, before + ' -> ' + after);
 } finally {
   try { fs.rmSync(proj, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+// ---- gitignore (M5): the git-checkpoint pre-step keeps secret-shaped names out of git, append-only ----
+const gi = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-gitignore-'));
+try {
+  const giFile = path.join(gi, '.gitignore');
+  const lines = () => fs.readFileSync(giFile, 'utf8').split(/\r?\n/).map((l) => l.trim());
+  const first = run(['gitignore', '--project', gi, '--json']);
+  let j = null; try { j = JSON.parse(first.stdout); } catch { /* not json */ }
+  t('gitignore on a bare folder creates .gitignore with every secret pattern (exit 0)', first.status === 0 && !!j && j.created === true
+    && ['.env', '.env.*', '*.pem', '*.key', 'id_rsa*', 'credentials*.json', 'secrets/', '!.env.example'].every((p) => lines().includes(p)), first.stdout + first.stderr);
+  t('!.env.example comes after the last .env.* line (git: last match wins)', lines().lastIndexOf('!.env.example') > lines().lastIndexOf('.env.*'));
+  const before = fs.readFileSync(giFile, 'utf8');
+  const again = run(['gitignore', '--project', gi]);
+  t('a second run changes nothing (idempotent) and says so', again.status === 0 && fs.readFileSync(giFile, 'utf8') === before && /no changes needed/.test(again.stdout), again.stdout);
+
+  fs.writeFileSync(giFile, 'node_modules/\n!.env.example\n.env\n');
+  run(['gitignore', '--project', gi]);
+  const after = lines();
+  t('an existing .gitignore keeps its own lines first (append-only) and gets the negation re-appended after .env.*',
+    after[0] === 'node_modules/' && after[1] === '!.env.example' && after.lastIndexOf('!.env.example') > after.lastIndexOf('.env.*'), after.join(' | '));
+
+  const git = spawnSync('git', ['init', '-q'], { cwd: gi, encoding: 'utf8' });
+  if (!git.error && git.status === 0) {
+    const ignored = (p) => spawnSync('git', ['check-ignore', '-q', '--', p], { cwd: gi, encoding: 'utf8' }).status === 0;
+    t('git itself agrees: .env.production, server.pem, id_rsa, credentials-prod.json, secrets/x are ignored; .env.example is not',
+      ['.env.production', 'server.pem', 'api.key', 'id_rsa', 'credentials-prod.json', 'secrets/x.txt', '.env'].every(ignored) && !ignored('.env.example'));
+  } else {
+    console.log('  skip git check-ignore probe (git not available: ' + (git.error ? git.error.code : 'exit ' + git.status) + ')');
+  }
+} finally {
+  try { fs.rmSync(gi, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

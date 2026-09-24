@@ -1,6 +1,6 @@
 ---
 name: forge-registry
-description: Build the GLOBAL, opt-in, read-only Forge Project Registry — a cross-project index of every Forge project (status, last run, open tickets, port) plus a self-contained home-view HTML. Use when the owner wants a bird's-eye view across all their Forge projects.
+description: Builds the global, opt-in, read-only Forge Project Registry across all projects. Use when the owner wants a bird's-eye view of status, last run, tickets, and ports.
 ---
 
 # forge-registry — global project registry (opt-in, read-only)

@@ -4,7 +4,7 @@
  * Forge Usage Guard — REAL subscription usage watchdog (zero-dependency).
  *
  * Reads the OFFICIAL Anthropic OAuth usage endpoint (the same source as /usage in Claude Code —
- * no estimates, no log-counting). At >= pause-at % (default 95) on the 5h session window OR the
+ * no estimates, no log-counting). At >= pause-at % (default 98, see SETTINGS) on the 5h session window OR the
  * weekly window it PAUSES all Paperclip agents (runtime/dashboard stays UP) and writes a global
  * state file that the global usage-guard hook uses to (a) tell active Claude sessions to PAUSE
  * (in-chat, via PreToolUse deny + UserPromptSubmit context) and (b) after reset, tell them to
@@ -17,11 +17,12 @@
  *
  * Usage:
  *   node .claude/forge-bin/usage-guard.cjs check                    # one-shot: print real usage %
- *   node .claude/forge-bin/usage-guard.cjs status                   # guard state + live %
- *   node .claude/forge-bin/usage-guard.cjs watch [--interval 120] [--pause-at 95] [--resume-at 0]
+ *   node .claude/forge-bin/usage-guard.cjs status                   # settings (+ where each came from), guard state, live %
+ *   node .claude/forge-bin/usage-guard.cjs watch [--interval 120] [--pause-at 98] [--resume-at 0]
  *                                          [--nvidia-shift-at 80] [--grace-min 5] [--companies a,b]
  *                                          [--once] [--state <file>] [--dry-run]
- *   node .claude/forge-bin/usage-guard.cjs start                    # detached watch (single instance)
+ *   node .claude/forge-bin/usage-guard.cjs start [--force]          # detached watch (single instance); exit 3 when the
+ *                                                                   # owner switched the guard off (see SETTINGS)
  *   node .claude/forge-bin/usage-guard.cjs stop                     # stop the detached watcher
  *   node .claude/forge-bin/usage-guard.cjs credits                  # print purchased usage-credit balance (extra_usage)
  *   node .claude/forge-bin/usage-guard.cjs override-on [--reason ..] [--until <iso>]  # work on credits: suppress the plan-limit guard until credits run out
@@ -48,6 +49,28 @@
  * "nvidia_shift_at":<n>,"pause_at":<n>,"updated_at":"<iso>"} — always written (even when usage data is
  * missing/unreadable, as level "unknown") so a reader never sees a stale flag. `status` additionally
  * prints a one-line `pressure: ...` summary. Real week% only — never fabricated.
+ *
+ * SETTINGS (v2.7.0, 2026-09-24): every threshold resolves as CLI flag > the owner's `/forge config` value
+ * (forge-config.cjs, soft-required; absent = the schema's own defaults) > the hard default in GUARD_DEFAULTS
+ * (pause-at 98, resume-at 0, interval 120, nvidia-shift-at 80 — equal to FORGE_CONFIG_SCHEMA.json, pinned by a
+ * test). The pause default used to drift between 93, 95 and 98; 98 is now the only pause literal. `status` and the
+ * watch log print each value with its source (bron: vlag|instelling|standaard). The config key `usage-guard` is the
+ * owner's on/off switch: when it is off, `start` prints one plain line and exits 3 without spawning anything
+ * (`--force` overrides once). A REAL start (not "already running") prints the schema's disclosure text — what the
+ * guard reads and where it sends it — followed by the one command that switches it off.
+ *
+ * SAFE DEFAULTS (security fixes wp20, 2026-09-24):
+ *  - M3: a settings file forge-config refuses as malformed, or a missing forge-config.cjs, is UNREADABLE — never a
+ *    silent "on". The thresholds fall back to the defaults (with a note), but `start` refuses in one plain line and
+ *    exits 3 ("instellingen onleesbaar — usage guard start niet; ..."); `--force` overrides once.
+ *  - M6: the guard can only measure with ~/.claude/.credentials.json (on macOS Claude Code keeps the login in the
+ *    Keychain). Without that file `start` prints one honest line and exits 3 without spawning; `status`/`check` say
+ *    the same instead of a raw file error.
+ *  - L2: a RUNNING watcher re-reads the `usage-guard` switch before every check (watchStep). Switched off (or
+ *    unreadable) -> it logs one line, removes its pid file and exits 0. A watcher started with `start --force` while
+ *    the switch was off keeps running until the switch has been on at least once and is then turned off again.
+ *  - L1: credential-file errors are fixed strings ("credentials file unreadable (<name>)") — never a JSON-parse
+ *    message (V8 quotes ±10 input characters, i.e. token fragments) and never an absolute home path, in state or log.
  *
  * TEST/ISOLATION SEAM (F1, security fix 2026-09-24): `FORGE_USAGE_GUARD_HOME` overrides the `.claude`
  * home dir this whole file derives CRED_FILE / STATE_FILE / PRESSURE_FILE / PID_FILE / LOG_FILE /
@@ -84,13 +107,113 @@ const args = process.argv.slice(2);
 const cmd = args[0] || 'status';
 function argv(name, dflt) { const a = process.argv.slice(2); const i = a.indexOf('--' + name); return i >= 0 && a[i + 1] !== undefined ? a[i + 1] : dflt; }
 const has = (f) => args.includes('--' + f);
-const PAUSE_AT = Number(argv('pause-at', 93)); // owner 2026-07-09: pause at 93% (headroom before rate-limit)
-const RESUME_AT = Number(argv('resume-at', 0));
+
+// ---- SETTINGS (v2.7.0, 2026-09-24): CLI flag > /forge config value > hard default — see the header ----
+const GUARD_DEFAULTS = { 'pause-at': 98, 'resume-at': 0, interval: 120, 'nvidia-shift-at': 80 };
+const GUARD_SWITCH_KEY = 'usage-guard';
+const GUARD_SCHEMA_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json');
+const SOURCE_WORD = { flag: 'vlag', config: 'instelling', dflt: 'standaard' };
+const guardKey = (flag) => GUARD_SWITCH_KEY + '.' + flag;
+const entryValue = (e) => (e !== null && typeof e === 'object' ? e.value : e);
+const entrySource = (e) => (e !== null && typeof e === 'object' && e.source === 'default' ? SOURCE_WORD.dflt : SOURCE_WORD.config);
+
+/** resolveGuardSettings(argvList, cfg) -> { 'pause-at'|'resume-at'|'interval'|'nvidia-shift-at'|'enabled': {value, source},
+ *  force, warnings[] }. PURE (no I/O, inputs untouched). argvList = the CLI args after the script name; cfg = the
+ *  `.cfg` of loadGuardConfig() ({ '<config key>': {value, source} }) or null. source is 'vlag' | 'instelling' |
+ *  'standaard'. A flag that is not a number is ignored with a warning — a NaN threshold would silently never pause. */
+function resolveGuardSettings(argvList, cfg) {
+  const list = Array.isArray(argvList) ? argvList : [];
+  const c = cfg !== null && typeof cfg === 'object' ? cfg : {};
+  const out = { warnings: [] };
+  for (const flag of Object.keys(GUARD_DEFAULTS)) {
+    const i = list.indexOf('--' + flag);
+    const raw = i >= 0 && list[i + 1] !== undefined ? list[i + 1] : undefined;
+    const n = raw === undefined || String(raw).trim() === '' ? NaN : Number(raw);
+    if (Number.isFinite(n)) { out[flag] = { value: n, source: SOURCE_WORD.flag }; continue; }
+    if (raw !== undefined) out.warnings.push('--' + flag + ' "' + raw + '" is geen getal en wordt genegeerd / is not a number and is ignored');
+    const e = c[guardKey(flag)];
+    const v = entryValue(e);
+    out[flag] = typeof v === 'number' && Number.isFinite(v) ? { value: v, source: entrySource(e) } : { value: GUARD_DEFAULTS[flag], source: SOURCE_WORD.dflt };
+  }
+  const sw = c[GUARD_SWITCH_KEY];
+  out.enabled = typeof entryValue(sw) === 'boolean' ? { value: entryValue(sw), source: entrySource(sw) } : { value: true, source: SOURCE_WORD.dflt };
+  out.force = list.includes('--force');
+  return out;
+}
+
+/** loadGuardConfig(opts) -> { cfg: {'<key>': {value, source}}, disclosure: {nl, en}|null, note: string|null,
+ *  unreadable: boolean }. Reads the guard's keys through forge-config.cjs (opts.configModule === null simulates it
+ *  being absent). Absent module or a settings file forge-config refuses as malformed -> the schema's own defaults
+ *  (source 'default') for the thresholds, a visible note, and unreadable:true — which `start` and a running watcher
+ *  treat as OFF (M3: never a silent fall-back to ON). Never throws. */
+function loadGuardConfig(opts) {
+  const o = opts || {};
+  const keys = [GUARD_SWITCH_KEY, ...Object.keys(GUARD_DEFAULTS).map(guardKey)];
+  let mod = o.configModule;
+  if (mod === undefined) { try { mod = require('./forge-config.cjs'); } catch { mod = null; } }
+  let note = mod ? null : 'forge-config.cjs ontbreekt — drempels op de standaardwaarden, usage guard start niet (veilige standaard: uit) / forge-config.cjs is missing — thresholds at the defaults, the guard does not start (safe default: off)';
+  if (mod) {
+    try {
+      const r = mod.resolve(o.configOpts || {});
+      const cfg = {};
+      for (const k of keys) if (r.settings[k]) cfg[k] = { value: r.settings[k].value, source: r.settings[k].source };
+      const spec = mod.SCHEMA.settings[GUARD_SWITCH_KEY];
+      return { cfg, disclosure: spec && spec.disclosure ? spec.disclosure : null, note: null, unreadable: false };
+    } catch (e) {
+      note = 'je instellingen zijn niet leesbaar (' + String((e && e.message) || e).split('\n')[0] + ') — drempels op de standaardwaarden, usage guard start niet (veilige standaard: uit) / your settings are unreadable — thresholds at the defaults, the guard does not start (safe default: off)';
+    }
+  }
+  let schema = null;
+  try { schema = JSON.parse(fs.readFileSync(o.schemaPath || GUARD_SCHEMA_PATH, 'utf8')); } catch { schema = null; }
+  const specs = schema && schema.settings ? schema.settings : {};
+  const cfg = {};
+  for (const k of keys) if (specs[k]) cfg[k] = { value: specs[k].default, source: 'default' };
+  const spec = specs[GUARD_SWITCH_KEY];
+  return { cfg, disclosure: spec && spec.disclosure ? spec.disclosure : null, note, unreadable: true };
+}
+
+/** readGuardSwitch(opts) -> { on: boolean, unreadable: boolean } — the owner's `usage-guard` switch as it is NOW
+ *  (L2: a running watcher re-reads it before every check). forge-config.cjs is soft-required through
+ *  loadGuardConfig; its seams FORGE_CONFIG_HOME / FORGE_PROJECT_ROOT are read at call time. Unreadable -> OFF (M3).
+ *  Never throws. */
+function readGuardSwitch(opts) {
+  const o = opts || {};
+  let mod = o.configModule;
+  if (mod === undefined) { try { mod = require('./forge-config.cjs'); } catch { mod = null; } }
+  if (mod && typeof mod.safeGet === 'function') {   // forge-config's own fail-safe single-key read (never throws)
+    try {
+      const r = mod.safeGet(GUARD_SWITCH_KEY, Object.assign({ fallback: false }, o.configOpts || {}));
+      if (r && typeof r.value === 'boolean') return r.degraded ? { on: false, unreadable: true } : { on: r.value, unreadable: false };
+    } catch { return { on: false, unreadable: true }; }
+  }
+  const c = loadGuardConfig(Object.assign({}, o, { configModule: mod }));
+  if (c.unreadable) return { on: false, unreadable: true };
+  const e = c.cfg[GUARD_SWITCH_KEY];
+  return { on: !(e && e.value === false), unreadable: false };
+}
+
+const GUARD_CFG = loadGuardConfig();
+const GUARD = resolveGuardSettings(args, GUARD_CFG.cfg);
+const PAUSE_AT = GUARD['pause-at'].value;
+const RESUME_AT = GUARD['resume-at'].value;
 // owner policy: at ~80% weekly usage, PREFER NVIDIA agents over Claude agents (no quality downgrade) —
-// purely advisory (see NVIDIA-SHIFT SOFT THRESHOLD doc above). Same config mechanism as PAUSE_AT
-// (CLI arg + default; never itself read back from state — only recorded there for observability).
-const NVIDIA_SHIFT_AT = Number(argv('nvidia-shift-at', 80));
-const INTERVAL = Math.max(30, Number(argv('interval', 120)));
+// purely advisory (see NVIDIA-SHIFT SOFT THRESHOLD doc above). Same settings mechanism as PAUSE_AT
+// (never itself read back from state — only recorded there for observability).
+const NVIDIA_SHIFT_AT = GUARD['nvidia-shift-at'].value;
+const INTERVAL = Math.max(30, GUARD.interval.value);
+/** settingsLine(S) — one line with every value and its source, e.g. "pause-at 98% (bron: standaard) · …". */
+function settingsLine(S) {
+  const part = (k, v, unit) => k + ' ' + v + unit + ' (bron: ' + S[k].source + ')';
+  return [part('pause-at', S['pause-at'].value, '%'), part('resume-at', S['resume-at'].value, '%'),
+    part('nvidia-shift-at', S['nvidia-shift-at'].value, '%'), part('interval', Math.max(30, S.interval.value), 's'),
+    'usage-guard ' + (S.enabled.value ? 'aan' : 'uit') + ' (bron: ' + S.enabled.source + ')'].join(' · ');
+}
+/** disclosureLines(d) — what a REAL start tells the owner: the schema's disclosure (nl, en) + the off command. */
+function disclosureLines(d) {
+  const text = d && typeof d.nl === 'string' && typeof d.en === 'string' ? [d.nl, d.en]
+    : ['usage-guard draait nu op de achtergrond en meet je Claude-gebruik (uitleg: /forge config explain usage-guard) / the usage guard now runs in the background and measures your Claude usage'];
+  return [...text, 'Uit: /forge config set usage-guard uit'];
+}
 const _graceMinRaw = Number(argv('grace-min', 5));
 const GRACE_MIN = Number.isFinite(_graceMinRaw) && _graceMinRaw >= 0 ? _graceMinRaw : 5; // reset-rhythm grace period (minutes)
 const ONLY_COMPANIES = (argv('companies', '') || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -467,10 +590,28 @@ function watcherHealth(o) {
 }
 
 // ---- real usage (official endpoint; token in-memory only, never logged) ----
+/** credError(e) -> a FIXED-text error for a credentials-file failure (L1, 2026-09-24). A JSON.parse message quotes
+ *  ±10 characters of its input (a torn read could put a token fragment into state/log) and an fs message carries the
+ *  absolute home path — neither may reach FORGE_USAGE_GUARD_STATE.json or the log. Only the error's code/name. */
+function credError(e) {
+  const code = e && typeof e.code === 'string' && /^E[A-Z]+$/.test(e.code) ? e.code : (e && typeof e.name === 'string' ? e.name : 'Error');
+  return new Error('credentials file unreadable (' + code + ')');
+}
+/** credentialsPresent() — M6: the guard can only measure with the login FILE; on macOS Claude Code keeps the
+ *  login in the Keychain, so a default-on guard would start and never measure. */
+function credentialsPresent() {
+  try { return fs.statSync(CRED_FILE).isFile(); } catch { return false; }
+}
+function noCredentialsLine(tail) {
+  return 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (macOS keeps the login in the Keychain) — ' + tail;
+}
 function readToken() {
-  const cred = JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
-  const t = cred.claudeAiOauth && cred.claudeAiOauth.accessToken;
-  if (!t) throw new Error('no OAuth token in ' + CRED_FILE);
+  let raw;
+  try { raw = fs.readFileSync(CRED_FILE, 'utf8'); } catch (e) { throw credError(e); }
+  let cred;
+  try { cred = JSON.parse(raw); } catch (e) { throw credError(e); }
+  const t = cred && cred.claudeAiOauth && cred.claudeAiOauth.accessToken;
+  if (!t) throw new Error('no OAuth token in the credentials file (.credentials.json)');
   // CODEX ronde-3 #1 (2026-08-06): de vingerafdruk van het credential dat DEZE fetch werkelijk gebruikt,
   // afgeleid in DEZELFDE read als het token zelf (zelfde derivatie als readAccountIdentity's fallback).
   // De dubbele identiteits-lezing rond de fetch leest ~/.claude.json — een ANDER bestand dat tijdens een
@@ -485,9 +626,11 @@ async function fetchUsage() {
   // it simply never settles, so the tick never finishes and the watcher stops measuring while its process
   // stays alive: exactly the silent-death shape this guard was fixed for once already. 30s is far beyond
   // a healthy response and far below the tick interval, so a timeout can never stack ticks.
+  // wp20: read the login BEFORE arming the timer — a readToken() throw used to leave this 30 s timer holding the
+  // process open (every `check`/`watch --once` with a bad login file lingered 30 s before exiting).
+  const cred = readToken(); // token + credential-vingerafdruk uit EEN read (ronde-3 #1)
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30000);
-  const cred = readToken(); // token + credential-vingerafdruk uit EEN read (ronde-3 #1)
   let r;
   try {
     r = await fetch(USAGE_URL, {
@@ -1050,12 +1193,56 @@ function releaseWatcherSlot(opts) {
   catch (e) { return { ok: false, removed: false, reason: e.message }; }
 }
 
+/** watchStep(ctx, deps) -> Promise<{ outcome: 'lost-slot'|'switched-off'|'ticked', seenOn: boolean }> — ONE
+ *  iteration of the watch loop (L2, 2026-09-24; exported so the switch re-read is testable without a 30 s interval).
+ *  ctx = { forced: started with --force, seenOn: the switch has been on at some check of this watcher }. Order: slot
+ *  ownership, then the owner's switch (re-read NOW), then the real check. Switched off or unreadable -> one log line,
+ *  the pid file is released and the process exits 0 — unless the watcher was forced on while the switch was off and
+ *  has not seen it on since (a forced start is not undone by its own first tick). deps inject every side effect. */
+async function watchStep(ctx, deps) {
+  const D = Object.assign({
+    stillOwnsSlot: () => true, readSwitch: readGuardSwitch, tick, log,
+    release: releaseWatcherSlot, exit: (code) => process.exit(code),
+  }, deps || {});
+  const forced = !!(ctx && ctx.forced);
+  let seenOn = !!(ctx && ctx.seenOn);
+  if (!D.stillOwnsSlot()) {
+    D.log('SLOT VERLOREN — pid-bestand draagt niet meer dit pid/nonce; deze watcher stopt (een ander bewaakt het account)');
+    D.exit(1);
+    return { outcome: 'lost-slot', seenOn };
+  }
+  const sw = D.readSwitch();
+  if (sw.on) seenOn = true;
+  else if (!forced || seenOn) {
+    D.log(sw.unreadable
+      ? 'instellingen onleesbaar — usage guard stopt (veilige standaard: uit; herstel of reset met /forge config reset --yes) / settings unreadable — the watcher stops (safe default: off)'
+      : 'usage-guard staat nu UIT in je instellingen — de watcher stopt en ruimt zijn pid-bestand op (aanzetten: /forge config set usage-guard aan) / usage guard switched OFF in your settings — the watcher stops');
+    D.release();
+    D.exit(0);
+    return { outcome: 'switched-off', seenOn };
+  }
+  try { await D.tick(); } catch (e) { D.log('TICK FAILED (watcher stays alive): ' + ((e && e.stack) || e)); }
+  return { outcome: 'ticked', seenOn };
+}
+
 // CLI only when run directly — require()-ing this file used to immediately hit the live usage endpoint,
 // which is why its own tests had to MIRROR the logic inline instead of testing the real functions
 // (2026-08-03: the mirrored copies were what let the account/limits gaps go untested for so long).
 if (require.main === module) {
   (async () => {
   if (cmd === 'check' || cmd === 'status') {
+    if (cmd === 'status') {
+      // printed BEFORE the fetch so the owner sees the active settings even when the usage endpoint is unreachable
+      console.log('instellingen: ' + settingsLine(GUARD));
+      for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) console.log('note: ' + n);
+    }
+    // M6: without the login file there is nothing to measure with — say so plainly instead of a raw file error.
+    if (!credentialsPresent()) {
+      console.log(noCredentialsLine('no measurement'));
+      process.exitCode = 1;
+      if (cmd === 'status') { writePressureFile(NaN, NVIDIA_SHIFT_AT, PAUSE_AT); console.log('pressure: unknown (usage data unavailable — no login file)'); }
+      return;
+    }
     let u;
     try {
       u = await fetchUsage();
@@ -1152,7 +1339,8 @@ if (require.main === module) {
     const claim = claimWatcherSlot({ nonce: argv('start-nonce', null) || undefined });
     if (!claim.ok) { console.error(claim.reason); process.exit(1); }
     if (claim.mode === 'took-over-stale') log('took over a stale watcher slot (previous holder was gone) — this is now the only watcher');
-    log('usage-guard watch started — interval ' + INTERVAL + 's · pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '% · nvidia-shift-at ' + NVIDIA_SHIFT_AT + '%' + (ONLY_COMPANIES.length ? ' · companies: ' + ONLY_COMPANIES.join(',') : ''));
+    log('usage-guard watch started — ' + settingsLine(GUARD) + (ONLY_COMPANIES.length ? ' · companies: ' + ONLY_COMPANIES.join(',') : ''));
+    for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) log('note: ' + n);
     // SILENT-DEATH GUARD (2026-08-03): on this machine the loop stopped at 16:55 without a single error
     // line while the process stayed alive — only fetchUsage() was inside a try/catch, so a throw anywhere
     // else (e.g. an EPERM/EBUSY on the state write) became an unhandled rejection that killed the ticking
@@ -1179,9 +1367,13 @@ if (require.main === module) {
       if (myNonce && rec.nonce && rec.nonce !== myNonce) return false;
       return true;
     };
+    // L2 (2026-09-24): every iteration re-reads the owner's `usage-guard` switch before it measures (watchStep).
+    const forced = has('force');
+    let seenOn = false;
     const safeTick = async () => {
-      if (!stillOwnsSlot()) { log('SLOT VERLOREN — pid-bestand draagt niet meer dit pid/nonce; deze watcher stopt (een ander bewaakt het account)'); process.exit(1); }
-      try { await tick(); } catch (e) { log('TICK FAILED (watcher stays alive): ' + ((e && e.stack) || e)); }
+      const step = await watchStep({ forced, seenOn }, { stillOwnsSlot });
+      seenOn = step.seenOn;
+      if (step.outcome !== 'ticked') return;
       if (!stopping) setTimeout(safeTick, INTERVAL * 1000).unref?.();
     };
     process.on('SIGTERM', () => { stopping = true; });
@@ -1192,6 +1384,24 @@ if (require.main === module) {
     return; // keep alive
   }
   if (cmd === 'start') {
+    // OWNER SWITCH (v2.7.0): `/forge config set usage-guard uit` turns the guard off. `start` then refuses in one
+    // plain line (exit 3 = act on this) BEFORE opening a log or spawning anything; --force overrides it once.
+    if (!GUARD.enabled.value && !GUARD.force) {
+      console.log('usage-guard staat UIT in je instellingen (aanzetten: /forge config set usage-guard aan) / usage guard is OFF in your settings');
+      process.exit(3);
+    }
+    // M3: unreadable settings (malformed file / missing forge-config.cjs) are never read as "on".
+    if (GUARD_CFG.unreadable && !GUARD.force) {
+      console.log('instellingen onleesbaar — usage guard start niet; herstel of reset met /forge config reset --yes / settings unreadable — usage guard not started; repair or reset with /forge config reset --yes');
+      process.exit(3);
+    }
+    // M6: no login file = nothing to measure with (macOS: Keychain). Honest refusal, nothing spawned; --force cannot
+    // change that — a watcher without a login file could only ever log failed checks.
+    if (!credentialsPresent()) {
+      console.log(noCredentialsLine('not started'));
+      process.exit(3);
+    }
+    for (const n of [GUARD_CFG.note, ...GUARD.warnings].filter(Boolean)) console.log('note: ' + n);
     // A recycled PID must not make `start` believe a watcher exists — that would leave the account
     // permanently unguarded while the CLI cheerfully reports "already running" (audit, 2026-08-03).
     const rec = readPidRecord();
@@ -1204,10 +1414,16 @@ if (require.main === module) {
     // --grace-min was parsed but never forwarded, so `start --grace-min 30` silently ran on 5 (audit).
     extra.push('--grace-min', String(GRACE_MIN));
     if (DRY) extra.push('--dry-run');
+    // L2: the child re-reads the switch before every check; a forced start must not be undone by its first tick.
+    if (GUARD.force) extra.push('--force');
     // stdout → ignore (log() already appendFileSync's to LOG_FILE; redirecting stdout too double-logged every line);
     // keep stderr → LOG_FILE so a crash is still captured (fix 2026-07-09 checkup).
     const startNonce = crypto.randomUUID();
-    const child = spawn(process.execPath, [__filename, 'watch', '--interval', String(INTERVAL), '--pause-at', String(PAUSE_AT), '--resume-at', String(RESUME_AT), '--nvidia-shift-at', String(NVIDIA_SHIFT_AT), '--start-nonce', startNonce, ...extra], { detached: true, stdio: ['ignore', 'ignore', out], windowsHide: true });
+    // v2.7.0: forward ONLY the values that came from a flag. The child resolves the rest from the same /forge config
+    // itself (same env), so its log names the true source of every value instead of reporting all of them as a flag.
+    const fwd = [];
+    for (const k of Object.keys(GUARD_DEFAULTS)) if (GUARD[k].source === SOURCE_WORD.flag) fwd.push('--' + k, String(GUARD[k].value));
+    const child = spawn(process.execPath, [__filename, 'watch', ...fwd, '--start-nonce', startNonce, ...extra], { detached: true, stdio: ['ignore', 'ignore', out], windowsHide: true });
     child.unref();
     // START-HANDSHAKE (uitgesteld punt 2, gesloten 2026-08-06): dit pad printte "started (pid X)" en
     // exitte 0 TERWIJL het kind zijn claim later nog kon weigeren (claimWatcherSlot exit 1, alleen
@@ -1233,7 +1449,9 @@ if (require.main === module) {
       console.error('usage-guard NOT started — ' + hs.reason + ' (log: ' + LOG_FILE + ')');
       process.exit(1);
     }
-    console.log('usage-guard started (pid ' + child.pid + ', claim geverifieerd) — pause-at ' + PAUSE_AT + '% · resume-at ' + RESUME_AT + '% · nvidia-shift-at ' + NVIDIA_SHIFT_AT + '% · log: ' + LOG_FILE);
+    console.log('usage-guard started (pid ' + child.pid + ', claim geverifieerd) — ' + settingsLine(GUARD) + ' · log: ' + LOG_FILE);
+    // DISCLOSURE (v2.7.0): only here, on a verified NEW watcher — never on "already running" or a refused start.
+    for (const line of disclosureLines(GUARD_CFG.disclosure)) console.log(line);
     process.exit(0);
   }
   if (cmd === 'stop') {
@@ -1282,4 +1500,6 @@ module.exports = {
   claimWatcherSlot, releaseWatcherSlot, incumbentStatus, readPidRecordFrom, STALE_LOCK_MS,
   awaitChildClaim, journalAppend, unresolvedPausedAgents, rotateLogIfNeeded, compactJournalIfNeeded,
   computePressureLevel, buildPressureData, creditsExhausted,
+  resolveGuardSettings, loadGuardConfig, settingsLine, disclosureLines, GUARD_DEFAULTS,
+  readGuardSwitch, watchStep, readToken, credentialsPresent, noCredentialsLine,
 };

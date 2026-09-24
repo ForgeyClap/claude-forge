@@ -134,6 +134,146 @@
       "reason": "Every option adds a service/vector-store dependency. This project's project-local .claude/ markdown memory (FORGE_MEMORY.md/FORGE_DECISIONS.md/ledger/task-history) is deliberately simpler and zero-dep; borrow the CoALA working/episodic/semantic/procedural taxonomy and staleness envelope, never the frameworks themselves.",
       "source": "https://atlan.com/know/best-ai-agent-memory-frameworks-2026/",
       "ts": "2026-07-22T11:15:31.482Z"
+    },
+    {
+      "capability": "obra/superpowers (13 skills vendored into Forge @5bf4e78)",
+      "verdict": "approve",
+      "reason": "MIT (c) 2025 Jesse Vincent. Vendored at pinned commit 5bf4e78011075bcfc0dc295f0724994cd123ee71 so Forge's own skills can defer to them on a fresh install: brainstorming, dispatching-parallel-agents, executing-plans, finishing-a-development-branch, receiving-code-review, requesting-code-review, subagent-driven-development, systematic-debugging, test-driven-development, using-git-worktrees, verification-before-completion, writing-plans, writing-skills. Every file sha256-verified against the pinned manifest; LICENSE kept per skill dir; superpowers: namespaces made bare; brainstorming's local HTTP/WebSocket companion server excluded. Details: .claude/skills/VENDORED-SKILLS.md",
+      "source": "https://github.com/obra/superpowers",
+      "ts": "2026-09-24T01:56:05.357Z"
+    },
+    {
+      "capability": "frontend-design (anthropics/skills) - vendored into Forge @34040c9",
+      "verdict": "approve",
+      "reason": "Apache-2.0, LICENSE.txt shipped unmodified, change notice in the SKILL.md provenance block. Vendored at 34040c9c568585f6929bedeaad110ad08f079624 because a fresh Forge install has no frontend-design skill for forge-website to defer to. The 2026-07-22 hard-pass on 'frontend-design (anthropics/skills)' assumed the owner's global copy is present (duplication); that entry stays in this append-only ledger and still prevails for that key - this entry records the distribution-context decision separately.",
+      "source": "https://github.com/anthropics/skills",
+      "ts": "2026-09-24T01:56:05.424Z"
+    },
+    {
+      "capability": "anthropics/skills document-skills (docx/pdf/pptx/xlsx) - vendoring into the Forge distribution",
+      "verdict": "hard-pass",
+      "reason": "Source-available, not redistributable: never vendored or shipped with Forge. Scoped to redistribution only - the 2026-07-22 approve for 'docx/pdf/pptx (anthropics/skills document skills)' concerned use of the upstream skills where the user installs them, and is not changed by this entry.",
+      "source": "https://github.com/anthropics/skills",
+      "ts": "2026-09-24T01:56:05.489Z"
+    },
+    {
+      "capability": "hookify - automatic hook installation",
+      "verdict": "hard-pass",
+      "reason": "Hooks are owner-gated in Forge (no automatic hook install/activation). Only the pattern (expressing house rules as hook-checked rules) is noted; nothing installed or vendored.",
+      "source": "https://github.com/anthropics/claude-code",
+      "ts": "2026-09-24T01:56:05.553Z"
+    },
+    {
+      "capability": "explanatory/learning output styles - pattern only (Forge-native explain-mode)",
+      "verdict": "approve",
+      "reason": "Approved as a PATTERN, not vendored: becomes a Forge-native explain-mode config key. The 2026-07-22 hard-pass on installing explanatory-output-style@claude-plugins-official still stands.",
+      "source": "https://github.com/hesreallyhim/awesome-claude-code-output-styles-that-i-really-like",
+      "ts": "2026-09-24T01:56:05.618Z"
+    },
+    {
+      "capability": "ckelsoe/prompt-architect - pattern only (Forge-native prompt-doctor)",
+      "verdict": "approve",
+      "reason": "Approved as a PATTERN, nothing vendored: Forge-native reimplementation is 'forge-promptcheck.cjs ask' - deterministic, offline NL+EN scoring of the raw owner request on 5 dimensions with one suggested question.",
+      "source": "https://github.com/ckelsoe/prompt-architect",
+      "ts": "2026-09-24T01:56:05.684Z"
+    },
+    {
+      "capability": "skills.sh (vercel-labs/skills, npx skills search) - uncurated discovery source only",
+      "verdict": "approve",
+      "reason": "Approved ONLY as a labelled uncurated discovery source in 'forge-scout.cjs terms' (curated:false): its ranking is install telemetry with no submission review, never a trust signal. Every candidate found there still needs its own Scout APPROVE/HARD-PASS; the existing hard-pass on bulk unreviewed community marketplaces as an install source stays in force.",
+      "source": "https://skills.sh",
+      "ts": "2026-09-24T01:56:05.749Z"
+    },
+    {
+      "capability": "grill-me (mattpocock/skills) - vendored into Forge @c55ee46",
+      "verdict": "approve",
+      "reason": "MIT. Beginner interview entry point: user-invoked (upstream disable-model-invocation: true), delegates to the grilling skill by bare name; both ship. all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/mattpocock/skills/tree/c55ee46073ed923f86ce59a5eb3b6d895095d1b7/skills/productivity/grill-me",
+      "ts": "2026-09-24T02:33:14.307Z"
+    },
+    {
+      "capability": "grilling (mattpocock/skills) - vendored into Forge @c55ee46",
+      "verdict": "approve",
+      "reason": "MIT. Round-based design-tree interview with a recommended answer per question; asks decisions, looks up facts itself. Verbatim apart from the provenance block and license key. all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/mattpocock/skills/tree/c55ee46073ed923f86ce59a5eb3b6d895095d1b7/skills/productivity/grilling",
+      "ts": "2026-09-24T02:33:14.394Z"
+    },
+    {
+      "capability": "teach (mattpocock/skills) - vendored into Forge @c55ee46",
+      "verdict": "approve",
+      "reason": "MIT. User-invoked multi-session teaching workspace (HTML lessons, quizzes, learning records). Modified: workspace moved to docs/lessons/ so nothing lands in the project root. all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/mattpocock/skills/tree/c55ee46073ed923f86ce59a5eb3b6d895095d1b7/skills/productivity/teach",
+      "ts": "2026-09-24T02:33:14.473Z"
+    },
+    {
+      "capability": "wait-what (mattpocock/skills) - vendored into Forge @c55ee46",
+      "verdict": "approve",
+      "reason": "MIT. User-invoked re-pitch of the last answer in Simplified Technical English; one paragraph, no tools. all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/mattpocock/skills/tree/c55ee46073ed923f86ce59a5eb3b6d895095d1b7/skills/productivity/wait-what",
+      "ts": "2026-09-24T02:33:14.556Z"
+    },
+    {
+      "capability": "resolving-merge-conflicts (mattpocock/skills) - vendored into Forge @c55ee46",
+      "verdict": "approve",
+      "reason": "MIT. Read in full: no destructive git (forbids --abort; ends with a local commit or rebase --continue; no push/reset/clean/branch deletion). all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/mattpocock/skills/tree/c55ee46073ed923f86ce59a5eb3b6d895095d1b7/skills/engineering/resolving-merge-conflicts",
+      "ts": "2026-09-24T02:33:14.628Z"
+    },
+    {
+      "capability": "setup-pre-commit (mattpocock/skills) - vendored into Forge @c55ee46, user-invoked only",
+      "verdict": "approve",
+      "reason": "MIT. Installs husky/lint-staged/prettier via npm/npx and commits, so Forge added disable-model-invocation: true (the model never auto-runs it). all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/mattpocock/skills/tree/c55ee46073ed923f86ce59a5eb3b6d895095d1b7/skills/misc/setup-pre-commit",
+      "ts": "2026-09-24T02:33:14.699Z"
+    },
+    {
+      "capability": "claude-md-improver + /revise-claude-md (claude-plugins-official claude-md-management) - vendored into Forge @6bfd4e0",
+      "verdict": "approve",
+      "reason": "Apache-2.0, no NOTICE at the pin. Grades CLAUDE.md files A-F on 6 criteria and edits only after user approval; the command captures session learnings, also approval-gated. README and PNG screenshots not shipped. all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + LICENSE shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/anthropics/claude-plugins-official/tree/6bfd4e0c6d3da6050984fa5ed8281d915fa7ed69/plugins/claude-md-management",
+      "ts": "2026-09-24T02:33:14.787Z"
+    },
+    {
+      "capability": "/commit (claude-plugins-official commit-commands, commit.md only) - vendored into Forge @6bfd4e0",
+      "verdict": "approve",
+      "reason": "Apache-2.0. One local commit; allowed-tools limited to git add/status/commit; read-only inline git context. Only commit.md is vendored from this plugin. all files sha256-verified against the pinned manifest; 0 hidden unicode, 0 injection patterns; provenance block + Apache-2.0 text shipped (see .claude/skills/VENDORED-SKILLS.md).",
+      "source": "https://github.com/anthropics/claude-plugins-official/tree/6bfd4e0c6d3da6050984fa5ed8281d915fa7ed69/plugins/commit-commands/commands/commit.md",
+      "ts": "2026-09-24T02:33:41.140Z"
+    },
+    {
+      "capability": "commit-push-pr (claude-plugins-official commit-commands)",
+      "verdict": "hard-pass",
+      "reason": "Creates a branch, pushes to origin and opens a PR via gh in one step. Push and publication are owner-gated hard gates in Forge. Deliberately not downloaded or vendored; only commit.md from this plugin ships.",
+      "source": "https://github.com/anthropics/claude-plugins-official/tree/6bfd4e0c6d3da6050984fa5ed8281d915fa7ed69/plugins/commit-commands/commands/commit-push-pr.md",
+      "ts": "2026-09-24T02:33:51.470Z"
+    },
+    {
+      "capability": "clean_gone (claude-plugins-official commit-commands)",
+      "verdict": "hard-pass",
+      "reason": "Deletes local branches marked [gone] and removes their worktrees: destructive, hard to reverse. Deliberately not downloaded or vendored; only commit.md from this plugin ships.",
+      "source": "https://github.com/anthropics/claude-plugins-official/tree/6bfd4e0c6d3da6050984fa5ed8281d915fa7ed69/plugins/commit-commands/commands/clean_gone.md",
+      "ts": "2026-09-24T02:33:51.549Z"
+    },
+    {
+      "capability": "commit-commands@claude-plugins-official",
+      "verdict": "hard-pass",
+      "reason": "Installing the whole plugin would bring commit-push-pr (push + PR) and clean_gone (branch/worktree deletion) along with commit. Forge vendors commit.md alone as the /commit command instead; do not install the plugin wholesale.",
+      "source": "https://github.com/anthropics/claude-plugins-official/tree/6bfd4e0c6d3da6050984fa5ed8281d915fa7ed69/plugins/commit-commands",
+      "ts": "2026-09-24T02:33:51.624Z"
+    },
+    {
+      "capability": "101-skills/superpowers (skills.sh copycat)",
+      "verdict": "hard-pass",
+      "reason": "Name collision with obra/superpowers: no license, ~4 stars, created 2026-08-31, ~407.5K claimed installs, requires a login to a paid CLI. Install counts are not a trust signal. Use the vendored obra/superpowers skills instead.",
+      "source": "https://github.com/101-skills/superpowers",
+      "ts": "2026-09-24T02:33:51.697Z"
+    },
+    {
+      "capability": "qu-skills/superpowers (skills.sh copycat)",
+      "verdict": "hard-pass",
+      "reason": "Name collision with obra/superpowers: no license, 0 stars, created 2026-09-02, inflated install telemetry, same paid-CLI funnel pattern. Use the vendored obra/superpowers skills instead.",
+      "source": "https://github.com/qu-skills/superpowers",
+      "ts": "2026-09-24T02:33:51.771Z"
     }
   ]
 }

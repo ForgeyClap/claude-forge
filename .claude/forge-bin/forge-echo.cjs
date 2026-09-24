@@ -21,6 +21,14 @@
  *     override-seam convention every sibling Wave-B tool uses for hermetic tests. `summary` is a single
  *     human-readable line: pref count (+ up to 5 key=value samples) and active standing-rule count (+ up to
  *     5 rule ids), plus a shadowed-count note when standing-rules shadowing occurred.
+ *     v2.7.0 (2026-09-24): the echo also carries the resolved Forge SETTINGS from forge-config.cjs list() —
+ *     ", config: <n> setting(s) [<up to 5 key=value, non-default sources first>]" plus configCount,
+ *     configOverrides (source project/global/flag) and configChangedCount. opts.configOpts is forwarded to
+ *     forge-config (configHome/projectRoot/prefsOpts seams); without its own prefsOpts it reuses this call's
+ *     profilePath/globalProfilePath so both halves read the same owner profile. opts.configDiff (a
+ *     forge-config diff() result) adds ", <k> changed since last run". forge-config.cjs is a SOFT sibling: a
+ *     missing module or a damaged settings file is shown as "config: unreadable" in the summary with the reason
+ *     as a "forge-config: ..." note — visible, never a crash of the prefs echo and never a silent "0 settings".
  *   emitEcho(runId, matchParams, opts) -> composes the echo, then logs it as event_type 'owner_prefs_loaded'
  *     via the project's real log-event.cjs (a real spawned subprocess — this module never appends to
  *     events.jsonl itself, so log-event.cjs's honesty/strict-mode enforcement always applies). opts.root
@@ -42,10 +50,38 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const prefs = require('./forge-prefs.cjs');
 const standing = require('./forge-standing.cjs');
+// forge-config.cjs is a SOFT sibling (v2.7.0): the prefs/rules echo must keep working in a tree without it.
+let configTool = null;
+let configLoadError = null;
+try { configTool = require('./forge-config.cjs'); } catch (e) { configLoadError = e.message; }
+const OVERRIDE_SOURCES = ['project', 'global', 'flag'];
 
 const PROJECT_ROOT_DEFAULT = path.resolve(__dirname, '..', '..');
 const DEFAULT_LOG_EVENT_PATH = path.join(PROJECT_ROOT_DEFAULT, '.claude', 'forge-dashboard', 'log-event.cjs');
 const MAX_SAMPLES = 5;
+
+/** configPart(opts) -> { ok:true, count, overrides, samples, changed, notes } | { ok:false, reason } — the
+ *  forge-config.cjs half of the echo. Never throws: an unavailable module or an unreadable settings file comes
+ *  back as ok:false with the reason, which composeEcho() prints in the summary and the notes. */
+function configPart(opts) {
+  if (!configTool) return { ok: false, reason: 'forge-config.cjs not available (' + configLoadError + ')' };
+  const co = Object.assign({}, opts.configOpts || {});
+  if (!co.prefsOpts && (opts.profilePath || opts.globalProfilePath)) co.prefsOpts = { profilePath: opts.profilePath, globalProfilePath: opts.globalProfilePath };
+  let L;
+  try { L = configTool.list(Object.assign({}, co, { all: true })); }
+  catch (e) { return { ok: false, reason: e.message }; }
+  const settings = L.settings;
+  const ordered = settings.filter((s) => s.source !== 'default').concat(settings.filter((s) => s.source === 'default'));
+  const d = opts.configDiff;
+  return {
+    ok: true,
+    count: settings.length,
+    overrides: settings.filter((s) => OVERRIDE_SOURCES.includes(s.source)).map((s) => ({ key: s.key, value: s.value, source: s.source })),
+    samples: ordered.slice(0, MAX_SAMPLES).map((s) => s.key + '=' + JSON.stringify(s.value)),
+    changed: d && Array.isArray(d.changed) ? d.changed.length : 0,
+    notes: L.notes || [],
+  };
+}
 
 /** composeEcho — see file header. Never throws for a normal (even fully-empty) result; throws only if the
  *  underlying prefs.list()/standing.match() themselves throw (malformed config — same fail-closed rule
@@ -68,15 +104,30 @@ function composeEcho(matchParams, opts) {
   if (ruleBits.length) summary += ' [' + ruleBits.join(', ') + (activeRulesCount > ruleBits.length ? ', …' : '') + ']';
   if (shadowedCount) summary += ', ' + shadowedCount + ' shadowed';
 
+  const cfg = configPart(opts);
+  const notes = (prefsResolved.notes || []).slice();
+  if (cfg.ok) {
+    summary += ', config: ' + cfg.count + ' setting(s)';
+    if (cfg.samples.length) summary += ' [' + cfg.samples.join(', ') + (cfg.count > cfg.samples.length ? ', …' : '') + ']';
+    if (cfg.changed) summary += ', ' + cfg.changed + ' changed since last run';
+    for (const n of cfg.notes) notes.push('forge-config: ' + n);
+  } else {
+    summary += ', config: unreadable';
+    notes.push('forge-config: ' + cfg.reason);
+  }
+
   return {
     summary,
     prefsCount,
     activeRulesCount,
     shadowedCount,
+    configCount: cfg.ok ? cfg.count : null,
+    configOverrides: cfg.ok ? cfg.overrides : [],
+    configChangedCount: cfg.ok ? cfg.changed : 0,
     prefs: prefsResolved.prefs,
     rules: matched.active,
     shadowed: matched.shadowed,
-    notes: prefsResolved.notes || [],
+    notes,
   };
 }
 
@@ -104,6 +155,9 @@ function emitEcho(runId, matchParams, opts) {
     prefs_count: echo.prefsCount,
     active_rules_count: echo.activeRulesCount,
     shadowed_count: echo.shadowedCount,
+    config_count: echo.configCount,
+    config_overrides_count: echo.configOverrides.length,
+    config_changed_count: echo.configChangedCount,
   };
   const r = logEvent(logEventPath, runId, 'owner_prefs_loaded', extra);
   return Object.assign(

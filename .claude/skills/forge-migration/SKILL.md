@@ -5,7 +5,7 @@ description: Forge playbook for legacy modernization without a big-bang rewrite.
 
 # Forge playbook — Legacy modernization / migration
 
-**Do not duplicate ECC skills — defer to:** `learn-codebase` / `forge-deeplearn` (prime the legacy system before touching it — mandatory here), `test-driven-development` + `systematic-debugging` (characterization + regression work), `forge-worktrees` (isolate each slice), `/test-coverage`. This file is orchestration only.
+**Do not duplicate ECC skills — defer to:** `learn-codebase` / `forge-deeplearn` (prime the legacy system before touching it — mandatory here), `test-driven-development` + `systematic-debugging` (characterization + regression work; both ship with Forge as pinned vendored skills), `forge-worktrees` (isolate each slice), `/test-coverage`. This file is orchestration only.
 
 The governing principle is **Michael Feathers' rule: you cannot safely change code you cannot characterize.** Migration is not a rewrite — it is a sequence of small, reversible, parity-verified swaps behind a facade, each of which keeps the system working the whole time. The catastrophic failure mode is the "big-bang" rewrite that goes dark for months and cuts over into unverified behavior loss. Forge does not do that.
 

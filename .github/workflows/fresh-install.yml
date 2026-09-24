@@ -113,11 +113,16 @@ jobs:
 
       # The one check that matters: the tool's own full self-test, on the fresh install, with the empty
       # home still in effect. ALL GREEN or the job is red.
+      # v2.7.0: everything is ON by default, including the usage guard (pause at 98%). The empty HOME above already
+      # keeps every home-derived path away from a real account; these two seams make that explicit for the two tools
+      # that would otherwise spawn a background watcher or read a settings file (forge-config.cjs / usage-guard.cjs).
       - name: forge-doctor on the fresh install (empty HOME)
         shell: bash
         env:
           HOME: ${{ env.FORGE_TEST_HOME }}
           USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+          FORGE_CONFIG_HOME: ${{ env.FORGE_TEST_HOME }}/.claude
+          FORGE_USAGE_GUARD_HOME: ${{ env.FORGE_TEST_HOME }}/.claude
         run: |
           set -e
           cd "$FORGE_TEST_PROJECT"
@@ -233,45 +238,75 @@ jobs:
           # installer's own $LASTEXITCODE (measured on e7367fa: guard fired, "ok" printed, step still red).
           exit 0
 
-      # settings-keep check (security #4, review #10): an existing project .claude/settings.json must
-      # never be silently replaced — the payload version is written alongside as
-      # settings.forge-recommended.json instead, and the user's own file is kept byte-for-byte.
-      - name: settings.json is kept, not replaced (POSIX)
+      # settings-merge check (security #4, review #10; UPDATED wp22 / owner directive 2026-09-24 "alles
+      # standaard aan"): an existing project .claude/settings.json must never be silently REPLACED, but it
+      # must also no longer be left completely untouched next to a settings.forge-recommended.json (that was
+      # the pre-wp22 behaviour and directly contradicted "Forge does it for you"). It is now MERGED: every
+      # foreign hook entry, allow rule, and unknown top-level key survives byte-for-byte, and the template's
+      # own hooks (including the gate hook) and deny rules are added.
+      - name: settings.json is merged, not just kept (POSIX)
         if: runner.os != 'Windows'
         env:
           HOME: ${{ env.FORGE_TEST_HOME }}
         run: |
           set -e
-          proj="$RUNNER_TEMP/settings-keep-project"
+          proj="$RUNNER_TEMP/settings-merge-project"
           mkdir -p "$proj/.claude"
-          printf '%s' '{"permissions":{"deny":["Bash(rm -rf *)"]}}' > "$proj/.claude/settings.json"
-          cp "$proj/.claude/settings.json" "$RUNNER_TEMP/settings-keep-expected.json"
+          printf '%s' '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"node \"owner-hook.cjs\""}]}]},"permissions":{"allow":["Bash(npm run build)"],"deny":["Bash(rm -rf *)"]},"ownerField":"keep me"}' > "$proj/.claude/settings.json"
           bash install.sh --project "$proj" --yes >/dev/null
-          cmp -s "$proj/.claude/settings.json" "$RUNNER_TEMP/settings-keep-expected.json" || { echo "::error::settings.json was modified by the installer — it must be kept byte-for-byte"; exit 1; }
-          [ -f "$proj/.claude/settings.forge-recommended.json" ] || { echo "::error::settings.forge-recommended.json was not written alongside the kept settings.json"; exit 1; }
-          echo "ok   settings.json kept byte-for-byte; settings.forge-recommended.json present"
+          node -e '
+            const s = require(process.argv[1] + "/.claude/settings.json");
+            const pre = JSON.stringify(s.hooks.PreToolUse || []);
+            if (!pre.includes("owner-hook.cjs")) { console.error("::error::the foreign PreToolUse hook was lost by the merge"); process.exit(1); }
+            if (!pre.includes("forge-gate-hook.cjs")) { console.error("::error::the template gate hook was not merged in"); process.exit(1); }
+            if (JSON.stringify(s.permissions.allow || []) !== JSON.stringify(["Bash(npm run build)"])) { console.error("::error::the foreign permissions.allow rule was lost"); process.exit(1); }
+            if (!(s.permissions.deny || []).includes("Bash(rm -rf *)")) { console.error("::error::the foreign permissions.deny rule was lost"); process.exit(1); }
+            if (!(s.permissions.deny || []).includes("Read(./.env)")) { console.error("::error::the template deny rules were not merged in"); process.exit(1); }
+            if (s.ownerField !== "keep me") { console.error("::error::an unknown top-level key was dropped by the merge"); process.exit(1); }
+            console.log("ok   settings.json merged: foreign hook/allow/deny/unknown-key kept, template gate hook + deny rules added");
+          ' "$proj"
+          [ -f "$proj/.claude/settings.forge-recommended.json" ] && { echo "::error::settings.forge-recommended.json should not exist when the merge succeeded"; exit 1; }
+          backups=$(find "$proj/.claude" -maxdepth 1 -name 'settings.json.forge-bak-*' | wc -l)
+          [ "$backups" -eq 1 ] || { echo "::error::expected exactly one settings.json backup, found $backups"; exit 1; }
+          before_hash=$(sha256sum "$proj/.claude/settings.json" | cut -d' ' -f1)
+          bash install.sh --project "$proj" --yes | grep -qi "already merged" || { echo "::error::a second install did not report settings.json as already merged"; exit 1; }
+          after_hash=$(sha256sum "$proj/.claude/settings.json" | cut -d' ' -f1)
+          [ "$before_hash" = "$after_hash" ] || { echo "::error::settings.json changed on a second, idempotent install"; exit 1; }
+          backups2=$(find "$proj/.claude" -maxdepth 1 -name 'settings.json.forge-bak-*' | wc -l)
+          [ "$backups2" -eq 1 ] || { echo "::error::a no-op second install must not take a new backup (found $backups2)"; exit 1; }
+          echo "ok   second install is a true no-op (byte-identical, no new backup)"
 
-      - name: settings.json is kept, not replaced (Windows)
+      - name: settings.json is merged, not just kept (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           HOME: ${{ env.FORGE_TEST_HOME }}
           USERPROFILE: ${{ env.FORGE_TEST_HOME }}
         run: |
-          $proj = Join-Path $env:RUNNER_TEMP 'settings-keep-project'
+          $proj = Join-Path $env:RUNNER_TEMP 'settings-merge-project'
           New-Item -ItemType Directory -Force (Join-Path $proj '.claude') | Out-Null
           $settingsPath = Join-Path $proj '.claude\settings.json'
-          Set-Content -LiteralPath $settingsPath -Value '{"permissions":{"deny":["Bash(rm -rf *)"]}}' -NoNewline -Encoding utf8
-          $before = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
+          $fixture = '{"hooks":{"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"node owner-hook.cjs"}]}]},"permissions":{"allow":["Bash(npm run build)"],"deny":["Bash(rm -rf *)"]},"ownerField":"keep me"}'
+          [System.IO.File]::WriteAllText($settingsPath, $fixture, (New-Object System.Text.UTF8Encoding $false))
           powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
-          $after = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
-          if ($before -ne $after) {
-            Write-Host '::error::settings.json was modified by the installer -- it must be kept byte-for-byte'
-            exit 1
-          }
+          $s = Get-Content -Raw -LiteralPath $settingsPath | ConvertFrom-Json
+          $preJson = ($s.hooks.PreToolUse | ConvertTo-Json -Depth 10)
+          if ($preJson -notmatch 'owner-hook\.cjs') { Write-Host '::error::the foreign PreToolUse hook was lost by the merge'; exit 1 }
+          if ($preJson -notmatch 'forge-gate-hook\.cjs') { Write-Host '::error::the template gate hook was not merged in'; exit 1 }
+          if (($s.permissions.allow -join ',') -ne 'Bash(npm run build)') { Write-Host '::error::the foreign permissions.allow rule was lost'; exit 1 }
+          if ($s.permissions.deny -notcontains 'Bash(rm -rf *)') { Write-Host '::error::the foreign permissions.deny rule was lost'; exit 1 }
+          if ($s.permissions.deny -notcontains 'Read(./.env)') { Write-Host '::error::the template deny rules were not merged in'; exit 1 }
+          if ($s.ownerField -ne 'keep me') { Write-Host '::error::an unknown top-level key was dropped by the merge'; exit 1 }
+          Write-Host 'ok   settings.json merged: foreign hook/allow/deny/unknown-key kept, template gate hook + deny rules added'
           $recommended = Join-Path $proj '.claude\settings.forge-recommended.json'
-          if (-not (Test-Path -LiteralPath $recommended -PathType Leaf)) {
-            Write-Host '::error::settings.forge-recommended.json was not written alongside the kept settings.json'
-            exit 1
-          }
-          Write-Host 'ok   settings.json kept byte-for-byte; settings.forge-recommended.json present'
+          if (Test-Path -LiteralPath $recommended -PathType Leaf) { Write-Host '::error::settings.forge-recommended.json should not exist when the merge succeeded'; exit 1 }
+          $backups = Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Filter 'settings.json.forge-bak-*'
+          if ($backups.Count -ne 1) { Write-Host "::error::expected exactly one settings.json backup, found $($backups.Count)"; exit 1 }
+          $beforeHash = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
+          $out = powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes
+          if (($out -join "`n") -notmatch '(?i)already merged') { Write-Host '::error::a second install did not report settings.json as already merged'; exit 1 }
+          $afterHash = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
+          if ($beforeHash -ne $afterHash) { Write-Host '::error::settings.json changed on a second, idempotent install'; exit 1 }
+          $backups2 = Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Filter 'settings.json.forge-bak-*'
+          if ($backups2.Count -ne 1) { Write-Host "::error::a no-op second install must not take a new backup (found $($backups2.Count))"; exit 1 }
+          Write-Host 'ok   second install is a true no-op (byte-identical, no new backup)'

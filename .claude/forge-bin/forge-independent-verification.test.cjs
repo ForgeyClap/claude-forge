@@ -473,7 +473,16 @@ console.log('independent-verification (honesty-core)');
     'project_scanned', 'profile_loaded', 'memory_loaded', 'skill_loaded', 'file_read', 'owner_prefs_loaded',
     'claude_md_checked', 'project_skill_dir_checked', 'ecc_inventory',
     'agent_selected', 'agent_note', 'agent_next_action', 'owner_override', 'gate_evaluated',
+    // 2026-09-24: the arm tool's proof over run bookkeeping (manifest.json), same family as gate_evaluated —
+    // produces nothing of the reviewed product; the plan content is agent_work_package_created (work).
+    'manifest_armed',
   ]);
+  t('1 2026-09-24 manifest_armed (tool-proof over run bookkeeping) is inert, agent_work_package_created stays work',
+    RC.isWorkEventType('manifest_armed') === false && RC.isWorkEventType('agent_work_package_created') === true);
+  // config_changed (v2.7.0): logged when the OWNER changed a setting — it changes how the run behaves, so under
+  // "everything is work unless inert" it stays work; it is registered, so the parametric checks below cover it too.
+  t('1 2026-09-24 config_changed is registered at the writer and stays WORK (not on the inert list)',
+    bekend.has('config_changed') && RC.isWorkEventType('config_changed') === true && !inertVerwacht.has('config_changed'));
   const nietWerk = [...bekend].filter((x) => !RC.isWorkEventType(x));
   const onverwachtInert = nietWerk.filter((x) => !inertVerwacht.has(x) && !RC.REVIEW_START_TYPES.has(x) && !RC.REVIEW_DONE_TYPES.has(x));
   t('1 R4-06 elk als niet-werk ingedeeld type staat in de EXPLICIETE, gemotiveerde lijst',

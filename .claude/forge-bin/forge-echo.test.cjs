@@ -11,7 +11,15 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { spawnSync } = require('child_process');
+// v2.7.0: composeEcho() also reads forge-config.cjs. Before anything runs, its env seams point at a throwaway
+// TRAP dir, so a call without opts.configOpts (sections 1-3, and the spawned CLI, which inherits this env) can
+// never read this repo's or the owner's real FORGE_CONFIG.json — section 4 proves nothing landed in the trap.
+const CFG_TRAP = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-config-trap-'));
+process.env.FORGE_CONFIG_HOME = path.join(CFG_TRAP, 'home');
+process.env.FORGE_PROJECT_ROOT = path.join(CFG_TRAP, 'proj');
 const echo = require('./forge-echo.cjs');
+const forgeConfig = require('./forge-config.cjs');
+const CONFIG_KEYS = Object.keys(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), 'utf8')).settings);
 
 let passed = 0, failed = 0;
 function t(name, fn) {
@@ -219,6 +227,122 @@ t('CLI with an unknown command exits 2', () => {
 t('CLI with no command at all exits 2', () => {
   const r = runCLI([]);
   assert.strictEqual(r.status, 2);
+});
+
+// ---------------------------------------------------------------------------
+// 4) the Forge SETTINGS half of the echo (forge-config.cjs, v2.7.0) — temp config home + temp project only
+// ---------------------------------------------------------------------------
+console.log('\n4) config settings in the echo (forge-config.cjs)');
+
+function configFixture() {
+  const root = freshDir('echo-config');
+  const home = path.join(root, 'home');
+  const proj = path.join(root, 'proj');
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
+  const rulesPath = writeRules(root, [baseRule({ id: 'only-rule', trigger: 'on-request' })]);
+  return {
+    root, rulesPath,
+    configOpts: { configHome: home, projectRoot: proj },
+    globalFile: path.join(home, 'FORGE_CONFIG.json'),
+    projectFile: path.join(proj, '.claude', 'FORGE_CONFIG.json'),
+    base: { profilePath: NOWHERE, globalProfilePath: NOWHERE, rulesPath },
+  };
+}
+const writeSettings = (p, settings) => fs.writeFileSync(p, JSON.stringify({ version: 1, settings }));
+const configBracket = (summary) => { const m = /config: \d+ setting\(s\) \[([^\]]*)\]/.exec(summary); return m ? m[1] : null; };
+
+t('no settings files: every schema setting is counted, no overrides, no "changed" clause', () => {
+  const fx = configFixture();
+  const e = echo.composeEcho({}, Object.assign({ configOpts: fx.configOpts }, fx.base));
+  assert.strictEqual(e.configCount, CONFIG_KEYS.length);
+  assert.deepStrictEqual(e.configOverrides, []);
+  assert.strictEqual(e.configChangedCount, 0);
+  assert.ok(e.summary.includes(', config: ' + CONFIG_KEYS.length + ' setting(s) ['), e.summary);
+  assert.ok(!/changed since last run/.test(e.summary), e.summary);
+  assert.ok(e.summary.includes('…'), 'more than 5 settings must show the ellipsis marker');
+});
+
+t('project + global values are overrides with their source, and are sampled FIRST', () => {
+  const fx = configFixture();
+  writeSettings(fx.projectFile, { council: { value: 'off' } });
+  writeSettings(fx.globalFile, { 'usage-guard.pause-at': { value: 97 } });
+  const e = echo.composeEcho({}, Object.assign({ configOpts: fx.configOpts }, fx.base));
+  const byKey = Object.fromEntries(e.configOverrides.map((o) => [o.key, o]));
+  assert.deepStrictEqual(byKey.council, { key: 'council', value: 'off', source: 'project' });
+  assert.deepStrictEqual(byKey['usage-guard.pause-at'], { key: 'usage-guard.pause-at', value: 97, source: 'global' });
+  assert.strictEqual(e.configOverrides.length, 2);
+  const samples = configBracket(e.summary).split(', ').slice(0, 2).sort();
+  assert.deepStrictEqual(samples, ['council="off"', 'usage-guard.pause-at=97'], e.summary);
+});
+
+t('per-run flags count as overrides (source "flag") through opts.configOpts', () => {
+  const fx = configFixture();
+  const e = echo.composeEcho({}, Object.assign({ configOpts: Object.assign({ flags: ['council=off'] }, fx.configOpts) }, fx.base));
+  assert.deepStrictEqual(e.configOverrides, [{ key: 'council', value: 'off', source: 'flag' }]);
+});
+
+t('the product-default layer reads the SAME owner profile as the prefs half (profilePath forwarded)', () => {
+  const fx = configFixture();
+  const profilePath = writeProfile(fx.root, 'profile.json', { ui_quality_default: entry(false) });
+  const e = echo.composeEcho({}, { configOpts: fx.configOpts, profilePath, globalProfilePath: NOWHERE, rulesPath: fx.rulesPath });
+  assert.ok(configBracket(e.summary).split(', ').includes('ui-quality=false'), e.summary);
+  assert.deepStrictEqual(e.configOverrides, [], 'a product-default is not an owner override');
+});
+
+t('opts.configDiff (a real forge-config diff) adds "<k> changed since last run"', () => {
+  const fx = configFixture();
+  const o = Object.assign({ sessionStatePath: path.join(fx.root, 'state.json') }, fx.configOpts);
+  forgeConfig.markSeen(o);
+  forgeConfig.set('council', 'off', o);
+  forgeConfig.set('usage-guard.pause-at', '96', o);
+  const d = forgeConfig.diff(o);
+  assert.strictEqual(d.changed.length, 2);
+  const e = echo.composeEcho({}, Object.assign({ configOpts: fx.configOpts, configDiff: d }, fx.base));
+  assert.strictEqual(e.configChangedCount, 2);
+  assert.ok(e.summary.includes(', 2 changed since last run'), e.summary);
+});
+
+t('a damaged settings file does not crash the echo: "config: unreadable" + a note, never "0 settings"', () => {
+  const fx = configFixture();
+  fs.writeFileSync(fx.projectFile, '{ not json');
+  const e = echo.composeEcho({}, Object.assign({ configOpts: fx.configOpts }, fx.base));
+  assert.ok(e.summary.includes('config: unreadable'), e.summary);
+  assert.ok(!/config: 0 setting/.test(e.summary), e.summary);
+  assert.strictEqual(e.configCount, null);
+  assert.ok(e.notes.some((n) => /^forge-config: /.test(n) && /FORGE_CONFIG\.json/.test(n)), JSON.stringify(e.notes));
+});
+
+t('soft sibling: a tree WITHOUT forge-config.cjs still echoes prefs/rules and says config is unavailable', () => {
+  const root = freshDir('echo-no-config');
+  const bin = path.join(root, '.claude', 'forge-bin');
+  fs.mkdirSync(bin, { recursive: true });
+  for (const f of ['forge-echo.cjs', 'forge-prefs.cjs', 'forge-standing.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(bin, f));
+  const orch = path.join(root, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(orch, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_STANDING_RULES.json'), path.join(orch, 'FORGE_STANDING_RULES.json'));
+  const r = spawnSync(process.execPath, [path.join(bin, 'forge-echo.cjs'), 'compose', '--json'], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
+  const parsed = JSON.parse(r.stdout.trim());
+  assert.ok(parsed.summary.includes('owner prefs/rules applied') && parsed.summary.includes('config: unreadable'), parsed.summary);
+  assert.ok(parsed.notes.some((n) => /forge-config\.cjs not available/.test(n)), JSON.stringify(parsed.notes));
+});
+
+t('emitEcho() carries config_count / config_overrides_count / config_changed_count into the real event', () => {
+  const fx = configFixture();
+  const { logEventPath } = makeFixtureProject();
+  writeSettings(fx.projectFile, { council: { value: 'off' } });
+  const runId = 'forge-echo-config-' + Date.now();
+  const result = echo.emitEcho(runId, {}, Object.assign({ logEventPath, configOpts: fx.configOpts, configDiff: { changed: [{ key: 'council' }] } }, fx.base));
+  assert.strictEqual(result.logged, true, result.stderr);
+  const eventsFile = path.join(path.dirname(logEventPath), '..', 'forge-runs', runId, 'events.jsonl');
+  const ev = fs.readFileSync(eventsFile, 'utf8').trim().split(/\r?\n/).map((l) => JSON.parse(l)).find((x) => x.event_type === 'owner_prefs_loaded');
+  assert.deepStrictEqual([ev.config_count, ev.config_overrides_count, ev.config_changed_count], [CONFIG_KEYS.length, 1, 1]);
+  assert.ok(ev.note.includes(', 1 changed since last run'), ev.note);
+});
+
+t('hermetic: composeEcho() is read-only and nothing landed in the config trap dir', () => {
+  assert.deepStrictEqual(fs.readdirSync(CFG_TRAP), [], 'something was written into ' + CFG_TRAP);
 });
 
 console.log('');

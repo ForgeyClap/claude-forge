@@ -1,6 +1,6 @@
 ---
 name: forge-prd
-description: Generate a structured PRD (markdown + meta) for a non-trivial build and auto-create a ticket per acceptance criterion (Forge Mission Control Phase 2, WP3 "PRD generator"). Use before starting a non-trivial feature/build, typically right after Deep Learn Mode. Trigger on "write a PRD", "generate a PRD", "scope this feature", "spec this out before we build".
+description: Generates a structured PRD + ticket per acceptance criterion. Use before a non-trivial feature/build, after Deep Learn Mode — write a PRD, scope this feature, spec this out.
 ---
 
 # Forge PRD generator (WP3)

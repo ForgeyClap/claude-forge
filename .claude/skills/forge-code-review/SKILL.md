@@ -77,5 +77,5 @@ that wrote the code.
 `forge-code-review` is the **method** — the checklist and severity scale anyone applies when reviewing
 code, including Build Boss self-reviewing before handoff. **Review Boss** (`.claude/agents/review-boss.md`)
 is the **agent identity** that runs this method (plus `verification-before-completion`, `design-is`,
-`requesting-code-review`) as the final QA gate before a task is ever reported done. Use this skill
+`requesting-code-review` — the first and last ship with Forge as pinned vendored skills) as the final QA gate before a task is ever reported done. Use this skill
 directly for an in-flight self-review; dispatch Review Boss for the end-of-task gate.

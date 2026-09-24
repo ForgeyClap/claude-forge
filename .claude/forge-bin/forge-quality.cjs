@@ -34,10 +34,47 @@
  *
  * Dispositions zijn een GESLOTEN vocabulaire: RELEVANT · NOT_APPLICABLE · DEFERRED · OWNER_GATED.
  * Elke disposition draagt een reden — stil overslaan is precies de fout die deze laag bestrijdt.
+ *
+ * EIGENAARSINSTELLING `council` (v2.7.0, forge-config.cjs; standaard auto): `off` -> councilTrigger()
+ * geeft mode NONE met reason 'owner config council=off' — BEHALVE als de invoer explicit_request:true
+ * draagt: een expliciete "council"-vraag van nu wint van een opgeslagen instelling. Gelezen voor de root
+ * waarop de analyse draait (opts.projectRoot; FORGE_PROJECT_ROOT, de eigen seam van de resolver, wint als
+ * die gezet is). forge-config.cjs is soft-required en wordt via de fail-safe safeGet() gelezen: afwezig, een
+ * throw of een beschadigd instellingenbestand -> de schema-default (auto; geen datavlag) plus een `config_note`.
  */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+
+// Eigenaarsinstellingen (forge-config.cjs, v2.7.0) — soft-required, zie de header.
+const COUNCIL_OFF_REASON = 'owner config council=off';
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default, used only when forge-config.cjs is absent or broken; an older copy without safeGet is read
+ *  through get(). Never throws. opts.projectRoot = the root this tool acts on (ignored when FORGE_PROJECT_ROOT is
+ *  set); opts.configModule injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfg;
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
 
 const DISPOSITIES = new Set(['RELEVANT', 'NOT_APPLICABLE', 'DEFERRED', 'OWNER_GATED']);
 const SOURCE_TYPES = new Set(['EXPLICIT', 'INFERRED_FROM_LOCAL_EVIDENCE', 'INFERRED_FROM_STANDARD', 'RESEARCH_HYPOTHESIS', 'OPTIONAL', 'OWNER_GATED']);
@@ -530,15 +567,25 @@ function analyzeMission(missie, ctx) {
       credible_options: 1,
       criticality: profiel.criticality,
       explicit_request: /council|pressure.?test|debat/i.test(String(missie || '')),
-    }),
+    }, { projectRoot: basis, configModule: ctx.configModule }),
   };
 }
 
-/** councilTrigger — deterministisch en SELECTIEF: council is duur (latency, tokens, context) en levert
- *  alleen waarde bij echte beslisonzekerheid. Nooit op simpele taken. */
-function councilTrigger(inp) {
+/** councilTrigger(inp, opts) — deterministisch en SELECTIEF: council is duur (latency, tokens, context) en
+ *  levert alleen waarde bij echte beslisonzekerheid. Nooit op simpele taken. Een expliciete vraag wint
+ *  altijd; daarna geldt de eigenaarsinstelling `council` (off -> NONE). opts: { projectRoot, configModule }. */
+function councilTrigger(inp, opts) {
   inp = inp || {};
+  opts = opts || {};
   if (inp.explicit_request === true) return { mode: 'FULL', trigger_reason: 'expliciete gebruikerstrigger (council/pressure-test/debate) — de owner vroeg om tegenspraak', scores: inp };
+  const sc = configRead('council', 'auto', { projectRoot: opts.projectRoot, configModule: opts.configModule });
+  const r = councilByScores(inp, sc.value);
+  return sc.degraded ? Object.assign(r, { config_note: sc.reason }) : r; // degraded settings: zeg het in het resultaat
+}
+function councilByScores(inp, councilSetting) {
+  if (councilSetting === 'off') {
+    return { mode: 'NONE', reason: COUNCIL_OFF_REASON, trigger_reason: COUNCIL_OFF_REASON + ' — automatische council staat uit (terugzetten: /forge config set council auto); een expliciete council-vraag wint nog steeds', scores: inp };
+  }
   const zwaar = (inp.decision_impact === 'high') + (inp.uncertainty === 'high') + (inp.reversibility === 'low') + (Number(inp.credible_options) >= 2) + (inp.criticality === 'high');
   if (inp.decision_impact === 'high' && inp.uncertainty === 'high' && zwaar >= 3) {
     return { mode: 'FULL', trigger_reason: 'hoge impact + hoge onzekerheid' + (inp.reversibility === 'low' ? ' + moeilijk omkeerbaar' : '') + ' (' + zwaar + '/5 zwaartefactoren) — de verwachte informatiewinst overstijgt de kosten', scores: inp };
@@ -632,7 +679,7 @@ function sha256(s) { return crypto.createHash('sha256').update(String(s), 'utf8'
 module.exports = {
   loadCatalog, catalogDrift, compileMissionProfile, evaluateLenses, mineOmissions,
   validateRequirementCard, qualityKernel, buildMissionPack, selectKnowledgeCards,
-  councilTrigger, validateCouncilRecord, sha256,
+  councilTrigger, validateCouncilRecord, sha256, configOn, configRead, COUNCIL_OFF_REASON,
   loadKnowledgeCard, analyzeMission, persistCouncilRecord,
   DISPOSITIES, SOURCE_TYPES, PRIMARY_VOLGORDE,
 };

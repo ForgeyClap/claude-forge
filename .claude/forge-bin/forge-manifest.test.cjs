@@ -284,6 +284,10 @@ console.log('12) arm --log-event: the manifest and its manifest_armed proof are 
   t('the logged event is event_type manifest_armed for this exact run', captured[0].event_type === 'manifest_armed' && captured[0].run_id === 'run-log');
   t('the logged note names the armed work packages (real content, not a bare stamp)',
     /4 work package/.test(captured[0].note) && /wp1/.test(captured[0].note) && /wp4/.test(captured[0].note));
+  // 2026-09-24: an agent-less proof made forge-runcontract's independent-verification rule fail closed
+  // ("werk gelogd ZONDER agent") on every run armed with --log-event. The arm is the Lead's act.
+  t('the logged proof is attributed to the orchestrator (agent/role/runtime), never anonymous',
+    captured[0].agent === 'orchestrator' && captured[0].role === 'lead' && captured[0].runtime === 'internal');
 
   // ANTI-DEFAULT-ON: arming must NOT log unless asked. log-event.cjs always writes into the REAL project's
   // .claude/forge-runs/, so a default-on flag would make every hermetic test scribble into the live project.

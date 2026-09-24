@@ -1,6 +1,6 @@
 ---
 name: forge-mindmap
-description: Generate a mind map (nodes + edges from an indented outline) to visualize a plan, architecture, or mission decomposition (Forge Mission Control Phase 2, WP4 "Mind Map"). Use when a plan or architecture has enough branching structure that a graph reads clearer than prose. Trigger on "make a mind map", "map this out", "visualize the plan/architecture", "break this mission down visually".
+description: Generates a mind map (nodes+edges) to visualize a plan or architecture. Use when a plan has enough branching that a graph reads clearer than prose — mind map, visualize the plan.
 ---
 
 # Forge Mind Map (WP4)

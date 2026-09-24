@@ -22,6 +22,12 @@ const { spawnSync } = require('child_process');
 const HOOK = path.join(__dirname, 'forge-toolhook.cjs');
 const hook = require('./forge-toolhook.cjs');
 
+// Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home,
+// never ~/.claude, and FORGE_PROJECT_ROOT is cleared so each fixture ROOT decides which project file is read.
+const CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-toolhook-cfghome-'));
+process.env.FORGE_CONFIG_HOME = CONFIG_HOME;
+delete process.env.FORGE_PROJECT_ROOT;
+
 let passed = 0, failed = 0;
 function t(name, fn) {
   try { fn(); passed++; console.log('  ok   ' + name); }
@@ -498,6 +504,90 @@ t('H6 the scrub gate is at SERIALIZATION, so a field added tomorrow is covered a
   assert.ok(!s.includes(CANARY), 'an unknown field bypassed the scrubber: ' + s);
   assert.ok(/REDACTED/.test(s), 'expected the redaction marker in: ' + s);
 });
+
+// ---- I. owner setting `tool-log` (forge-config.cjs, v2.7.0) ----
+console.log('\nI) owner setting tool-log — OFF writes nothing; ON / module absent = unchanged');
+
+function writeConfig(root, settings) {
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }, null, 2));
+}
+const toollogDir = (root) => path.join(root, '.claude', 'forge-runs', '_toollog');
+
+t('I1 tool-log=false -> skipped with the owner-config reason; no ledger dir, no diagnostics file', () => {
+  const root = tmpRoot('i1');
+  writeConfig(root, { 'tool-log': { value: false } });
+  const r = hook.run(JSON.stringify(payload()), { root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.wrote, false);
+  assert.strictEqual(r.skipped, true);
+  assert.strictEqual(r.reason, 'owner config tool-log=off');
+  assert.ok(!fs.existsSync(toollogDir(root)), 'the ledger directory was created');
+  assert.ok(!fs.existsSync(path.join(root, '.claude', '.forge-toolhook.log')), 'a diagnostics file was written');
+});
+
+t('I2 tool-log=true -> the unchanged behaviour (one line written)', () => {
+  const root = tmpRoot('i2');
+  writeConfig(root, { 'tool-log': { value: true } });
+  const r = hook.run(JSON.stringify(payload()), { root });
+  assert.strictEqual(r.wrote, true);
+  assert.strictEqual(readLines(logFile(root, 'sess1')).length, 1);
+});
+
+t('I3 no settings file -> the schema default (ON): the line is written exactly as before', () => {
+  const root = tmpRoot('i3');
+  const r = hook.run(JSON.stringify(payload()), { root });
+  assert.strictEqual(r.wrote, true);
+  assert.strictEqual(r.skipped, undefined);
+});
+
+t('I4 config module absent (null) or throwing -> schema default ON, even when a file says OFF', () => {
+  for (const configModule of [null, { get() { throw new Error('boom'); } }]) {
+    const root = tmpRoot('i4');
+    writeConfig(root, { 'tool-log': { value: false } });
+    const r = hook.run(JSON.stringify(payload()), { root, configModule });
+    assert.strictEqual(r.wrote, true);
+  }
+});
+
+t('I4b M3: a malformed FORGE_CONFIG.json -> ledger stays ON (no data flag) and the result carries a one-line config_note', () => {
+  const root = tmpRoot('i4b');
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), '{ not json');
+  const r = hook.run(JSON.stringify(payload()), { root });
+  assert.strictEqual(r.wrote, true);
+  assert.ok(/damaged/.test(r.config_note || '') && !/\n/.test(r.config_note), 'config_note: ' + r.config_note);
+  const fine = tmpRoot('i4b-fine');
+  writeConfig(fine, { 'tool-log': { value: true } });
+  assert.strictEqual(hook.run(JSON.stringify(payload()), { root: fine }).config_note, undefined);
+});
+
+t('I5 configOn ignores a wrong-typed value and honours a real boolean', () => {
+  assert.strictEqual(hook.configOn('tool-log', true, { configModule: { get: () => ({ value: 'no' }) } }), true);
+  assert.strictEqual(hook.configOn('tool-log', true, { configModule: { get: () => ({ value: false }) } }), false);
+});
+
+const OFF_BUDGET_MS = Number(process.env.FORGE_HOOK_OFF_BUDGET_MS) || 500;
+t('I6 CLI OFF path (FORGE_PROJECT_ROOT fixture): exit 0, empty stdout/stderr, no ledger, best of 3 under ' + OFF_BUDGET_MS + ' ms', () => {
+  const fixture = tmpRoot('i6-fixture');
+  writeConfig(fixture, { 'tool-log': { value: false } });
+  const acting = tmpRoot('i6-acting');
+  const times = [];
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    const r = runCli(JSON.stringify(payload()), acting, { CLAUDE_PROJECT_DIR: acting, FORGE_PROJECT_ROOT: fixture });
+    times.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '');
+    assert.strictEqual(r.stderr, '');
+  }
+  assert.ok(!fs.existsSync(toollogDir(acting)) && !fs.existsSync(toollogDir(fixture)), 'a ledger was written on the OFF path');
+  times.sort((a, b) => a - b);
+  console.log('       OFF-path timings ms: ' + times.map((x) => x.toFixed(0)).join(', '));
+  assert.ok(times[0] < OFF_BUDGET_MS, 'fastest OFF run took ' + times[0].toFixed(0) + ' ms (budget ' + OFF_BUDGET_MS + ' ms; override FORGE_HOOK_OFF_BUDGET_MS on a slow runner)');
+});
+
+try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ }
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

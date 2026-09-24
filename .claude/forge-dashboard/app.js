@@ -39,6 +39,7 @@ const STATE = { meta: { name: '—', port: '' }, run: {}, events: [], report: nu
   // state in panels.js renderCapabilities()); {ok:false,...} = the tool degraded (see server.cjs handlers).
   capabilities: null, runcontract: null, stats: null,
   replay: { active: false, playing: false, cursor: 0, speed: 1 },
+  _closesAdvisories: [], // RULE 2 (wp23, 2026-09-24) — ignored closes_event_id lines from the last buildNodes() pass, advisory only
   ui: { insTab: 'summary', actFilter: 'all', dockTab: 'log', collapsed: new Set() } };
 // Live vs Replay: visibleEvents() drives the whole model. Live = all events. Replay = slice up to cursor (animates WAITING→RUNNING→COMPLETED in event order).
 function visibleEvents() { const r = STATE.replay; return r.active ? STATE.events.slice(0, Math.max(0, Math.min(r.cursor, STATE.events.length))) : STATE.events; }
@@ -50,6 +51,8 @@ const SYNTH = { run_started: 'orchestrator', run_completed: 'orchestrator', agen
   // OWNER GOVERNANCE (WAVE B / B4, 2026-07-18): the applied-prefs ECHO (forge-bin/forge-echo.cjs), logged
   // before intake — mirrors profile_loaded's synthetic node so it renders even when no `agent` field is set.
   owner_prefs_loaded: 'project-scan',
+  // v2.7.0: an owner setting changed since the last run (forge-bin/forge-config.cjs diff) — same node as the ECHO.
+  config_changed: 'project-scan',
   decision_logged: 'memory-loader', skill_loaded: 'skill-runner', command_run: 'command-runner', file_read: 'file-reader', file_changed: 'file-writer',
   check_started: 'reviewer', check_passed: 'reviewer', check_failed: 'reviewer', report_generated: 'report-writer',
   mission_packet_created: 'orchestrator', mission_blueprint_created: 'orchestrator', role_map_created: 'orchestrator', agent_work_package_created: 'orchestrator',
@@ -280,6 +283,8 @@ function taskStatus(e) { if (e.status) return statusClass(e.status); const t = e
        'agent_artifact_created', 'subagent_artifact_created', 'subagent_output_created', 'agent_handoff', 'ecc_inventory',
        // WAVE B / B4: the applied-prefs ECHO — mirrors profile_loaded/memory_loaded (forge-verify.cjs TERMINAL_TYPES).
        'owner_prefs_loaded',
+       // v2.7.0: owner settings changed since the last run (forge-config.cjs diff) — one-shot fact, mirrors the ECHO.
+       'config_changed',
        // forge-harvest.cjs (2026-07-18, post-WAVE-E): a completed cross-project learning harvest — mirrors
        // memory_updated (see forge-verify.cjs TERMINAL_TYPES).
        'lessons_harvested',
@@ -324,8 +329,34 @@ const GROUP_LABEL = { control: 'CONTROL', context: 'CONTEXT', planning: 'PLANNIN
 function groupBandOf(n) { const b = agentColor(n.key, n.role).band; return ({ control: 'control', context: 'context', plan: 'planning', domain: 'domain', execution: 'execution', review: 'review', report: 'report' }[b]) || 'domain'; }
 
 /* ---------- agent / work-package model ---------- */
+// RULE 1 (2026-09-24, wp23 "verify: heartbeats and evidence-closed tasks") — mirrored 1:1 from
+// forge-verify.cjs closeHeartbeats(): a subagent_completed/subagent_failed closes every still-open
+// agent_progress task of the SAME node (agent) logged before it, matched by wp_id (fallback: role when
+// the completion carries no wp_id; close nothing when it has neither). Real defect this closes: a
+// completed agent's own heartbeats could never resolve, so the dashboard showed finished work as open
+// forever. A heartbeat already 'done' (an explicit terminal status field) is left untouched.
+function closeHeartbeats(n, completionEvent, idx) {
+  const wpId = (typeof completionEvent.wp_id === 'string' && completionEvent.wp_id.trim()) || null;
+  const role = (typeof completionEvent.role === 'string' && completionEvent.role.trim()) || null;
+  if (!wpId && !role) return; // neither present on the completion — close nothing (spec: no fallback available)
+  const status = nodeState(completionEvent);
+  for (const tk of n.tasks) {
+    if (tk._closed || tk.status === 'done' || !tk.event || tk.event.event_type !== 'agent_progress') continue;
+    if (tk.evIdx >= idx) continue; // must be logged BEFORE the completion
+    const tkWpId = (typeof tk.event.wp_id === 'string' && tk.event.wp_id.trim()) || null;
+    const tkRole = (typeof tk.event.role === 'string' && tk.event.role.trim()) || null;
+    const match = wpId ? tkWpId === wpId : (!!tkRole && tkRole === role);
+    if (match) { tk.status = status; tk._closed = true; tk.evIdx = idx; tk.ts = completionEvent.timestamp; }
+  }
+}
 function buildNodes() {
   const map = new Map(); const order = [];
+  // RULE 2 (2026-09-24, wp23) — event_id -> task object, so a fix_completed/check_passed carrying a
+  // closes_event_id can close an EARLIER task belonging to ANY node, not just its own. Mirrored 1:1 from
+  // forge-verify.cjs verifyRun()'s eventIdToTask. Advisory messages collect into STATE._closesAdvisories
+  // (never gates status/progress) so an ignored closure is visible without breaking anything silently.
+  const eventIdToTask = new Map();
+  const closesAdvisories = [];
   visibleEvents().forEach((e, idx) => {
     const explicit = !!e.agent; const key = e.agent || SYNTH[e.event_type] || 'system';
     let n = map.get(key);
@@ -342,6 +373,9 @@ function buildNodes() {
     const fv = e._forge_verify; // honesty stamp from log-event.cjs (deep-scan 2026-07-07)
     if (fv) { if (fv.agent_registered === false) n._unregistered = true; if (fv.dispatch_unverified) n._noDispatch = true; if (fv.proof_verified === false) n._proofUnverified = true; }
     const t = e.event_type;
+    // RULE 1 — subagent_completed/subagent_failed are BACKBONE (never a task themselves); this must run
+    // regardless, so a completed agent's own heartbeats actually close instead of staying open forever.
+    if (t === 'subagent_completed' || t === 'subagent_failed') closeHeartbeats(n, e, idx);
     if (String(e.status || '').toLowerCase().includes('internal') || String(e.role || '').toLowerCase() === 'internal' || String(e.attribution || '').toLowerCase() === 'internal') n.internal = true;
     if (e.note) n.notes.push({ ts: e.timestamp, text: e.note, evidence: e.evidence });
     if (e.output) { n.outputs.push({ ts: e.timestamp, text: e.output, evidence: e.evidence }); }
@@ -374,8 +408,37 @@ function buildNodes() {
       const startType = TASK_PAIR_TERMINAL_TO_START[t];
       const openTask = startType && n.tasks.find((tk) => !tk._closed && tk.event && tk.event.event_type === startType);
       if (openTask) { openTask.status = nodeState(e); openTask.evIdx = idx; openTask.ts = e.timestamp; openTask._closed = true; }
-      else n.tasks.push({ id: 't:' + idx, evIdx: idx, parent: key, status: nodeState(e), title: trunc(msg, 30), event: e, ts: e.timestamp }); }
+      else {
+        const task = { id: 't:' + idx, evIdx: idx, parent: key, status: nodeState(e), title: trunc(msg, 30), event: e, ts: e.timestamp };
+        n.tasks.push(task);
+        if (typeof e.event_id === 'string' && e.event_id) eventIdToTask.set(e.event_id, task);
+      } }
+    // RULE 2 — independent of the TASK_PAIRS merge above: closes_event_id is an ADDITIONAL, separate
+    // closure of whatever earlier task it names (possibly on a different node), never a replacement for
+    // the closer's own fix_started/fix_completed (or check_started/check_passed) pairing.
+    if (t === 'fix_completed' || t === 'check_passed') {
+      const closesId = (typeof e.closes_event_id === 'string' && e.closes_event_id.trim()) || null;
+      if (closesId) {
+        const hasEvidence = typeof e.evidence === 'string' && e.evidence.trim().length > 0;
+        if (!hasEvidence) {
+          closesAdvisories.push('closes_event_id ignored: no evidence (target ' + closesId + ')');
+        } else {
+          const target = eventIdToTask.get(closesId);
+          if (!target) {
+            closesAdvisories.push('closes_event_id ignored: unknown event_id ' + closesId);
+          } else if (target.evIdx >= idx) {
+            closesAdvisories.push('closes_event_id ignored: forward reference (' + closesId + ' is not earlier than the closer)');
+          } else {
+            target.status = nodeState(e);
+            target._closed = true;
+            target.evIdx = idx;
+            target.ts = e.timestamp;
+          }
+        }
+      }
+    }
   });
+  STATE._closesAdvisories = closesAdvisories; // advisory only — never affects status/progress
   const runCompleted = replayAtLive() && (STATE.run.status || '').toLowerCase() === 'completed';
   for (const n of map.values()) {
     n.group = groupBandOf(n); if (n.title === n.key && n.role) n.title = n.role; if (n.wp && n.wp.mission && !n.mission) n.mission = n.wp.mission;

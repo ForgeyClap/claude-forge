@@ -25,6 +25,7 @@ import { buildUsage } from './usage.mjs';
 import { buildToolsInventory } from './tools.mjs';
 import { buildMcpView } from './mcp.mjs';
 import { buildCapabilities } from './capabilities.mjs';
+import { buildForgeConfig } from './config.mjs';
 import { listDirectory, readFilePreview } from './files.mjs';
 import { buildRecovery, buildCheckpoints } from './recovery.mjs';
 import { buildApprovals } from './approvals.mjs';
@@ -527,6 +528,8 @@ async function handleApi(req, res, pathname, searchParams) {
   }
 
   // ── WP6 T6.1-T6.7: agents/skills/tools/MCP/models/capability health map additions ──────────
+  // (+ wp12 forge-2026-09-24-config-v250: GET /api/config, read-only Forge settings, right after
+  // /api/capabilities below)
   if (pathname === '/api/tools') {
     const projectName = searchParams.get('project') || '';
     const { entry, registryError } = await resolveProjectByName(projectName);
@@ -551,6 +554,19 @@ async function handleApi(req, res, pathname, searchParams) {
     if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
     if (!entry) return sendJson(res, 404, { ok: false, error: 'unknown project (must match /api/projects)' });
     const result = await buildCapabilities(entry.path);
+    const { _capturedAtMs, ...safe } = result;
+    return sendJson(res, safe.ok ? 200 : 502, safe);
+  }
+
+  // forge-2026-09-24-config-v250 wp12: READ-ONLY view of the selected project's own Forge settings
+  // (its `forge-config.cjs list --json --all`, see config.mjs). GET only — there is deliberately no
+  // write route: a setting is changed in chat or with `/forge config set` (D2 write boundary).
+  if (pathname === '/api/config') {
+    const projectName = searchParams.get('project') || '';
+    const { entry, registryError } = await resolveProjectByName(projectName);
+    if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
+    if (!entry) return sendJson(res, 404, { ok: false, error: 'unknown project (must match /api/projects)' });
+    const result = await buildForgeConfig(entry.path);
     const { _capturedAtMs, ...safe } = result;
     return sendJson(res, safe.ok ? 200 : 502, safe);
   }

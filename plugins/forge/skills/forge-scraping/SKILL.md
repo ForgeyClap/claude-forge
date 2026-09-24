@@ -1,6 +1,6 @@
 ---
 name: forge-scraping
-description: "Forge playbook for SAFE, legal web scraping and data collection. Use when scraping, crawling, harvesting, or collecting data from websites or APIs — keywords: scrape, scraping, crawler, spider, data collection, harvest, extract data, API pull, lead list, contacts. Enforces public/official/permitted sources only, rate limits, and DRAFT-ONLY outreach."
+description: Forge playbook for SAFE, legal web scraping and data collection. Use for scrape, crawler, spider, harvest, extract data, API pull, lead list — public/permitted sources only.
 ---
 
 # Forge playbook — Safe scraping / data collection

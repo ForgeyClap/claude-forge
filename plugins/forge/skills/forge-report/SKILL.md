@@ -70,7 +70,7 @@ Allowed wording: "Command Center health check passed (4100)." · "Command Center
 - package.json scripts: added / skipped (no package.json) / conflict
 - VS Code tasks: added / example file / skipped
 - commands tested: <list> · commands not tested: <list>
-- how to start dashboard — PowerShell: `.\.claude\forge-bin\forge-dashboard.ps1` · CMD: `.claude\forge-bin\forge-dashboard.cmd` · Bash: `bash .claude/forge-bin/forge-dashboard.sh` · npm: `.claude/forge-bin/forge-dashboard.cmd` (or `.ps1` / `.sh`)
+- how to start dashboard — PowerShell: `.\.claude\forge-bin\forge-dashboard.ps1` · CMD: `.claude\forge-bin\forge-dashboard.cmd` · Bash: `bash .claude/forge-bin/forge-dashboard.sh` (Forge defines no npm scripts — never document any)
 
 ## 8c. Project governance (CLAUDE.md + custom skills)
 - **CLAUDE.md:** created / updated (safe-merge) / existed·no change / conflict — and **what existing instructions were preserved** (never silently deleted).

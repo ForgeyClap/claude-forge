@@ -3,7 +3,7 @@
 Forge ships **19 built-in agents** — **12 permanent Bosses** plus **7 on-demand specialists** — and turns Claude Code into a coordinated team that builds, tests, reviews and ships. Every one is a **real Claude Code Agent-tool subagent** defined in [`.claude/agents/*.md`](.claude/agents/), not a simulated persona or a fabricated name on a dashboard.
 
 > [!NOTE]
-> **Honest count.** The full install ships **19 agents** (12 permanent Bosses + 7 specialists) and **50 skills**; the LITE plugin carries **18 agents** and **31 skills**. Counts are taken from the directories, not typed by hand. Forge can also *route* to your wider agent ecosystem (ECC / Claude-Code agent types) when a task calls for something outside the built-ins — but those are not part of this repo. When you see large numbers elsewhere, that is the routable ecosystem, not what claude-forge ships. See [Routing to your wider ecosystem](#routing-to-your-wider-ecosystem).
+> **Honest count.** The full install ships **19 agents** (12 permanent Bosses + 7 specialists) and **72 skills** (51 Forge skills + 21 vendored public skills); the LITE plugin carries **18 agents** and **22 skills**. Counts are taken from the directories, not typed by hand. Forge can also *route* to your wider agent ecosystem (ECC / Claude-Code agent types) when a task calls for something outside the built-ins — but those are not part of this repo. When you see large numbers elsewhere, that is the routable ecosystem, not what claude-forge ships. See [Routing to your wider ecosystem](#routing-to-your-wider-ecosystem).
 
 ---
 
@@ -50,6 +50,27 @@ The Bosses are always available. They form the standing org chart Forge draws fr
 
 > [!TIP]
 > **Read-only Bosses gate; they don't build.** `security-boss`, `review-boss`, `search-boss` and `seo-boss` deliberately have **no write tools** — they audit, research and report so their verdicts stay independent of the code they judge.
+
+### Skills each Boss carries
+
+Every Boss gets its **core skills** automatically at team-build time (from [`.claude/config/agents/agent-skill-map.json`](.claude/config/agents/agent-skill-map.json)); the skill bundle for the project type comes on top. Skills marked *(vendored)* are public skills that ship with Forge since 2.7.0 — see [docs/FEATURES.md](docs/FEATURES.md#vendored-public-skills).
+
+| Boss | Core skills | When the extra ones are used |
+|---|---|---|
+| **boss** | `forge-router` · `forge-prd` · `forge-brainstorm` · `forge-report` · `forge-prompt-coach` · `grill-me` *(vendored)* · `grilling` *(vendored)* | `forge-prompt-coach` on every raw request during intake; `grill-me` / `grilling` only in interview mode or when you ask to be questioned hard about a plan. |
+| **head-chef** | `forge-prd` · `forge-worktrees` · `forge-router` | |
+| **build-boss** | `forge-skill-testing` · `forge-debug` · `forge-code-review` · `forge-worktrees` · `resolving-merge-conflicts` *(vendored)* · `setup-pre-commit` *(vendored)* | `resolving-merge-conflicts` when a merge or rebase stops on a conflict; `setup-pre-commit` **only when you ask** for pre-commit hooks (it runs npm). |
+| **test-boss** | `forge-skill-testing` · `forge-verify` · `forge-debug` | |
+| **ui-boss** | `forge-website` · `forge-mobile` · `forge-verify` | |
+| **seo-boss** | `forge-website` · `forge-scout` · `forge-verify` | |
+| **search-boss** | `forge-scout` | |
+| **security-boss** | `forge-verify` | |
+| **skill-boss** | `forge-scout` · `forge-skill-testing` · `forge-router` | |
+| **integration-boss** | `forge-integration` | |
+| **docs-boss** | `forge-report` · `forge-prd` · `teach` *(vendored)* · `wait-what` *(vendored)* · `claude-md-improver` *(vendored)* | `teach` / `wait-what` for beginner explanations (setting `explain-mode`); `claude-md-improver` for CLAUDE.md work (the `/revise-claude-md` command). |
+| **review-boss** | `forge-code-review` · `forge-verify` | |
+
+Forge's own skills (for example `forge-brainstorm`, `forge-debug`, `forge-code-review`, `forge-fullstack`) also refer to vendored method skills such as `brainstorming`, `systematic-debugging` and `test-driven-development`; shipping them is what makes those references work on a fresh install.
 
 ---
 
@@ -117,4 +138,4 @@ The 19 built-ins cover the common Forge domains, but they are not a ceiling. Whe
 
 ---
 
-<sub>Every agent above is defined in <a href="./.claude/agents/">.claude/agents/</a>. Counts are honest: 19 agents, 50 skills (full install); 18 agents, 31 skills (LITE plugin). MIT © ForgeyClap.</sub>
+<sub>Every agent above is defined in <a href="./.claude/agents/">.claude/agents/</a>. Counts are honest: 19 agents, 72 skills (full install); 18 agents, 22 skills (LITE plugin). MIT © ForgeyClap.</sub>

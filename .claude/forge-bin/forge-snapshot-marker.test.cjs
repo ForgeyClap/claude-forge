@@ -9,6 +9,12 @@ const assert = require('assert');
 const { spawnSync } = require('child_process');
 const marker = require('./forge-snapshot-marker.cjs');
 
+// Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home,
+// never ~/.claude, and FORGE_PROJECT_ROOT is cleared so each fixture ROOT decides which project file is read.
+const CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'mark-cfghome-'));
+process.env.FORGE_CONFIG_HOME = CONFIG_HOME;
+delete process.env.FORGE_PROJECT_ROOT;
+
 let passed = 0, failed = 0;
 function t(name, fn) {
   try { fn(); passed++; console.log('  ok   ' + name); }
@@ -145,6 +151,143 @@ t('CLI with malformed stdin still exits 0 (never blocks)', () => {
   });
   assert.strictEqual(r.status, 0);
 });
+
+// ---------------------------------------------------------------------------
+console.log('\n7) owner setting `snapshots` (forge-config.cjs, v2.7.0) — OFF writes nothing; ON / module absent = unchanged');
+function writeConfig(root, settings) {
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings }, null, 2));
+}
+function claudeEntries(root) { try { return fs.readdirSync(path.join(root, '.claude')).sort(); } catch { return []; } }
+
+t('snapshots=false in the project file -> skipped with the owner-config reason, and NOTHING is written', () => {
+  const root = freshRoot('mark-off');
+  installForgeSnapshot(root);
+  writeConfig(root, { snapshots: { value: false } });
+  const r = marker.run(preCompactPayload({}), { projectRoot: root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.skipped, true);
+  assert.strictEqual(r.reason, 'owner config snapshots=off');
+  assert.strictEqual(r.wrote, false);
+  assert.strictEqual(r.snapshotWritten, false);
+  assert.deepStrictEqual(claudeEntries(root), ['FORGE_CONFIG.json', 'forge-bin'], 'no marker, no FORGE_SNAPSHOT.md, no diagnostics log');
+});
+
+t('snapshots=true in the project file -> the unchanged behaviour (marker + real snapshot written)', () => {
+  const root = freshRoot('mark-on');
+  installForgeSnapshot(root);
+  writeConfig(root, { snapshots: { value: true } });
+  const r = marker.run(preCompactPayload({}), { projectRoot: root });
+  assert.strictEqual(r.skipped, undefined);
+  assert.strictEqual(r.wrote, true);
+  assert.strictEqual(r.snapshotWritten, true);
+});
+
+t('no settings file at all -> the schema default (ON): the marker is written exactly as before', () => {
+  const root = freshRoot('mark-default');
+  const r = marker.run(preCompactPayload({}), { projectRoot: root });
+  assert.strictEqual(r.skipped, undefined);
+  assert.strictEqual(r.wrote, true);
+});
+
+t('the GLOBAL settings file (FORGE_CONFIG_HOME) turning snapshots off is honoured when the project sets nothing', () => {
+  const home = freshRoot('mark-globalhome');
+  fs.writeFileSync(path.join(home, 'FORGE_CONFIG.json'), JSON.stringify({ version: 1, settings: { snapshots: { value: false } } }));
+  const root = freshRoot('mark-global-off');
+  process.env.FORGE_CONFIG_HOME = home;
+  try {
+    const r = marker.run(preCompactPayload({}), { projectRoot: root });
+    assert.strictEqual(r.skipped, true);
+    assert.deepStrictEqual(claudeEntries(root), []);
+  } finally { process.env.FORGE_CONFIG_HOME = CONFIG_HOME; }
+});
+
+t('config module absent (configModule:null) -> schema default ON, even when a file says OFF', () => {
+  const root = freshRoot('mark-absent');
+  writeConfig(root, { snapshots: { value: false } });
+  const r = marker.run(preCompactPayload({}), { projectRoot: root, configModule: null });
+  assert.strictEqual(r.skipped, undefined);
+  assert.strictEqual(r.wrote, true);
+});
+
+t('a config module that throws -> schema default ON (fail-open to the default, never a crash)', () => {
+  const root = freshRoot('mark-throws');
+  const r = marker.run(preCompactPayload({}), { projectRoot: root, configModule: { get() { throw new Error('boom'); } } });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.wrote, true);
+});
+
+t('a malformed FORGE_CONFIG.json makes the REAL resolver throw -> configOn falls back to ON', () => {
+  const root = freshRoot('mark-badcfg');
+  fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.claude', 'FORGE_CONFIG.json'), '{ not json');
+  const r = marker.run(preCompactPayload({}), { projectRoot: root });
+  assert.strictEqual(r.wrote, true);
+  assert.ok(/damaged/.test(r.config_note || '') && /snapshots/.test(r.config_note), 'degraded (M3): ' + r.config_note);
+});
+
+t('M3: configRead prefers safeGet, reports degraded, and falls back to get() for an older module copy', () => {
+  const degraded = marker.configRead('snapshots', true, { configModule: { safeGet: () => ({ value: true, source: 'default', degraded: true, reason: 'the file is damaged' }), get() { throw new Error('get must not be used'); } } });
+  assert.deepStrictEqual([degraded.value, degraded.degraded, degraded.reason], [true, true, 'the file is damaged']);
+  const old = marker.configRead('snapshots', true, { configModule: { get: () => ({ value: false, source: 'project' }) } });
+  assert.deepStrictEqual([old.value, old.degraded], [false, false]);
+  const absent = marker.configRead('snapshots', true, { configModule: null });
+  assert.deepStrictEqual([absent.value, absent.degraded, /not found/.test(absent.reason)], [true, true, true]);
+  const r = marker.run(preCompactPayload({}), { projectRoot: freshRoot('mark-cfgnote'), configModule: null });
+  assert.ok(/not found/.test(r.config_note || ''), 'the absent module is named in the result');
+});
+
+t('configOn ignores a wrong-typed value and honours a real boolean', () => {
+  assert.strictEqual(marker.configOn('snapshots', true, { configModule: { get: () => ({ value: 'off' }) } }), true);
+  assert.strictEqual(marker.configOn('snapshots', true, { configModule: { get: () => ({ value: false }) } }), false);
+  assert.strictEqual(marker.configOn('snapshots', true, { configModule: {} }), true, 'a module without get() counts as absent');
+});
+
+t('a copy with NO sibling forge-config.cjs (the global ~/.claude/forge-bin deployment) reads the setting of the TARGET project', () => {
+  const proj = freshRoot('mark-globalcopy-proj');
+  const pbin = path.join(proj, '.claude', 'forge-bin');
+  fs.mkdirSync(pbin, { recursive: true });
+  for (const f of ['forge-config.cjs', 'forge-config-text.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(pbin, f));
+  const orch = path.join(proj, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(orch, { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), path.join(orch, 'FORGE_CONFIG_SCHEMA.json'));
+  writeConfig(proj, { snapshots: { value: false } });
+  const globalBin = path.join(freshRoot('mark-globalcopy-home'), 'forge-bin');
+  fs.mkdirSync(globalBin, { recursive: true });
+  fs.copyFileSync(CLI, path.join(globalBin, 'forge-snapshot-marker.cjs'));
+  const r = spawnSync(process.execPath, [path.join(globalBin, 'forge-snapshot-marker.cjs')], {
+    input: preCompactPayload({}), encoding: 'utf8', env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: proj }),
+  });
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout, '');
+  assert.ok(!fs.existsSync(path.join(proj, '.claude', '.forge-snapshot-due.json')), 'the global copy ignored the project setting');
+});
+
+const OFF_BUDGET_MS = Number(process.env.FORGE_HOOK_OFF_BUDGET_MS) || 500;
+t('CLI OFF path (FORGE_PROJECT_ROOT fixture, snapshots=false): exit 0, no stdout/stderr, nothing written anywhere, best of 3 under ' + OFF_BUDGET_MS + ' ms', () => {
+  const fixture = freshRoot('mark-cli-off-fixture');
+  writeConfig(fixture, { snapshots: { value: false } });
+  const acting = freshRoot('mark-cli-off-acting');
+  const times = [];
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    const r = spawnSync(process.execPath, [CLI], {
+      input: preCompactPayload({}), encoding: 'utf8',
+      env: Object.assign({}, process.env, { FORGE_PROJECT_ROOT: fixture, CLAUDE_PROJECT_DIR: acting }),
+    });
+    times.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '');
+    assert.strictEqual(r.stderr, '');
+  }
+  assert.deepStrictEqual(claudeEntries(fixture), ['FORGE_CONFIG.json']);
+  assert.deepStrictEqual(claudeEntries(acting), []);
+  times.sort((a, b) => a - b);
+  console.log('       OFF-path timings ms: ' + times.map((x) => x.toFixed(0)).join(', '));
+  assert.ok(times[0] < OFF_BUDGET_MS, 'fastest OFF run took ' + times[0].toFixed(0) + ' ms (budget ' + OFF_BUDGET_MS + ' ms; override FORGE_HOOK_OFF_BUDGET_MS on a slow runner)');
+});
+
+try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ }
 
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

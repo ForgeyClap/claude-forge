@@ -3,7 +3,7 @@
 The complete catalog behind the one-line pitch. **claude-forge** turns Claude Code into a coordinated team that **builds, automates, reviews and ships** — with a live per-project dashboard, honest reporting, and zero runtime dependencies.
 
 > [!NOTE]
-> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists) and **50 skills**; the LITE plugin carries **18 agents** and **31 skills**. That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present, but Forge itself ships only these numbers — nothing else is ever claimed as "shipped".
+> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists), **72 skills** (51 Forge skills + 21 vendored public skills) and **102 zero-dependency tool files**; the LITE plugin carries **18 agents** and **22 skills** and none of the vendored skills. That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present, but Forge itself ships only these numbers — nothing else is ever claimed as "shipped".
 
 > [!TIP]
 > You do **not** need to read this whole page to use Forge. Run `/setup-forge` once, then say `/forge <what you want>`. This reference is for when you want to know *exactly* what is under the hood.
@@ -15,11 +15,14 @@ The complete catalog behind the one-line pitch. **claude-forge** turns Claude Co
 ## Table of contents
 
 - [Orchestration & routing](#orchestration--routing)
+- [Settings: `/forge config`](#settings-forge-config)
+- [Prompt coach & silent intake](#prompt-coach--silent-intake)
+- [The safety stop (gate hook) & secret deny rules](#the-safety-stop-gate-hook--secret-deny-rules)
 - [Domain playbooks](#domain-playbooks)
 - [The 12 Bosses + 7 specialists](#the-12-bosses--7-specialists)
 - [Verification, honesty & reporting](#verification-honesty--reporting-skills)
 - [Priming, visualization & cross-project](#priming-visualization--cross-project-skills)
-- [Craft skills](#craft-skills)
+- [Vendored public skills](#vendored-public-skills)
 - [The dashboard (Control Center)](#the-dashboard-control-center)
 - [Project memory](#project-memory-the-forge_-files)
 - [Onboarding & safe key setup](#onboarding--safe-key-setup)
@@ -48,7 +51,8 @@ You (the orchestrator)
 |---|---|
 | **`forge-core`** | The global, security-light Forge layer. Instructions only — no hooks, no auto-running gates. Defines Forge behavior (dynamic agent pool, project isolation, optional Codex review, honest reporting) and the per-project installer. |
 | **`forge-router`** | The router / agent-selection brain. Classifies each task by **domain** and **complexity (L1–L4)**, selects the smallest fitting team, decides parallel vs serial, sets the review gates, and loads the matching domain playbook. Reads project memory first; never fakes availability. |
-| **`forge-intake`** | Prompt Master intake. At the start of any BUILD task it captures the project's real goal via one consolidated clarifying-question list (project-type-aware, subagent-brainstormed for new types), then feeds answers into the PRD and the Boss dispatch prompts. Also lint-checks every dispatch prompt is Prompt-Master-shaped. |
+| **`forge-intake`** | Prompt Master intake. At the start of any BUILD task it captures the project's real goal. By default it is **silent**: Forge answers the project-type-aware question list itself from your request, the project scan and your saved setup, records those answers as *Assumptions (auto-filled)* in the PRD, and asks you **at most one** question. `/forge interview` (or setting `intake` = `interview`) asks the full list one question at a time. Also lint-checks every dispatch prompt is Prompt-Master-shaped. |
+| **`forge-prompt-coach`** | *New in 2.7.0.* Turns a vague request into a buildable one: 9 ingredients of an accurate request, 13 failure modes (F1–F13) each with ONE 2–3-option question and a safe default, a 7-rule asking protocol and 10 worked bad→good examples. Decides which single question the silent intake asks, if any. |
 | **`forge-prd`** | Generates a structured PRD (markdown + JSON meta) before a non-trivial build and auto-creates one ticket per acceptance criterion — forcing scope, acceptance criteria, and the test plan to be explicit before agents touch files. |
 
 ### Fan-out levels
@@ -63,6 +67,51 @@ Forge picks the smallest team that fits — it never locks to a fixed agent coun
 | **L4** | phased | large builds run in phases |
 
 Parallel work happens only for **independent** subtasks, isolated in git worktrees/branches — the Lead is always the integration layer.
+
+---
+
+## Settings: `/forge config`
+
+*New in 2.7.0.* Every user-facing Forge switch lives in one catalogue, `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` — **36 settings** in three groups (on by default · available when needed · advanced), each with a Dutch and English explanation, plus **7 locked rules** that are shown but can never be switched off. One tool, `forge-config.cjs`, is the only code that resolves, validates or writes them.
+
+- **Everything is on by default.** Three deliberate exceptions: `paperclip` (unattended agents, only on request), `cleanup` (`report`, because `auto` deletes files) and `ecc-full-test` (heavy diagnostics).
+- **One command to see and change it all:** `/forge config list [--all] · get · set [--global] · unset · reset · explain · diff · parse "<sentence>"` — or just say it in chat; Forge maps the sentence to a setting and runs the command itself.
+- **Where a value comes from** (highest wins): a one-run `--flag` (never saved) → the project file `.claude/FORGE_CONFIG.json` → the machine-wide file `~/.claude/FORGE_CONFIG.json` → the product default from the shipped owner profile (read-only) → the schema default. Machine-wide settings (`usage-guard*`, `dashboard`, `language`, `portfolio`) ignore a project-file value, with a visible note.
+- **Forge notices changes.** At the start of every run `forge-config.cjs diff --run <run_id>` compares the settings with the previous run, logs one `config_changed` event when something changed, and Forge tells you in plain words.
+- **Safe by construction:** a damaged settings file is refused (nothing is written, nothing is silently reset); writes are atomic; a locked rule is refused with exit 3; data-relevant settings carry flags (reads credentials · uses the network · costs quota · runs unattended · reads outside the project · deletes files) and, where relevant, a disclosure.
+- **Read-only in the dashboard:** the Command Center's Settings view has a "Forge settings" section fed by `GET /api/config`.
+
+Full table with every default: [SETTINGS.md](SETTINGS.md).
+
+---
+
+## Prompt coach & silent intake
+
+*New in 2.7.0.* Beginners write short requests; a good one is often about 20 words, a first try often fewer than 9. Forge does not make you learn how to ask:
+
+1. **Check the raw request.** `forge-promptcheck.cjs ask "<request>"` (deterministic, offline, Dutch and English) scores five dimensions and finds the failure modes F1–F13 — a vague verb, no "done when", an unanchored "my site", taste words without an example, "everything at once", a bug without a symptom, an outward action such as sending or paying, and so on.
+2. **Fill small gaps silently.** Safe defaults are written into the PRD under *Assumptions (auto-filled)*, so you can change them later.
+3. **Ask at most one question** — only when two readings would lead to materially different builds, or for an outward/irreversible action. It comes as 2–3 plain options plus "iets anders / something else", with the recommended one first. The intake question bank now has Dutch text and beginner options on every question.
+4. **Confirm in one sentence:** "Ik bouw dus: … Klopt dat?" / "So I'll build: … Is that right?" Work continues unless you correct it; outward actions still wait for an explicit yes.
+5. **Teach in one line** (setting `explain-mode`), after you answered, quoting your own words — never blaming.
+
+Settings: `intake` (`silent` / `interview`), `prompt-doctor`, `explain-mode`. Beginner guide: [HOW-TO-ASK.md](HOW-TO-ASK.md).
+
+---
+
+## The safety stop (gate hook) & secret deny rules
+
+*New in 2.7.0.* Written rules are advice; a model can still ignore them. So three of Forge's hard gates are now **enforced** by a Claude Code `PreToolUse` hook (`forge-gate-hook.cjs`, matcher `Bash|PowerShell`), using the same classifier as everything else (`forge-actiongate.cjs` + `hard-gates.json`):
+
+| Gate | Blocked, for example | What passes |
+|---|---|---|
+| `destructive-delete` | `rm -rf ./build`, `Remove-Item -Recurse -Force ./src`, `rd /s /q dist`, `rimraf ./lib` | a delete whose every target is provably inside a scratch area: `_scratch/`, any `node_modules/` or `dist/`, `.claude/forge-backups/*`, the system temp folder, … |
+| `kill-by-name` | `taskkill /IM node.exe`, `Stop-Process -Name node`, `pkill node` | killing the exact PID you started |
+| `git-destructive` | `git reset --hard`, `git clean -f`, `git checkout -f`, `git checkout .`, `git checkout -- <path>`, `git restore <path>`, `git switch -f`, `git stash drop` / `clear` | commit or `git stash push` first |
+
+A blocked call gets a plain Dutch/English reason and Claude has to ask you. The `git checkout .` / `git checkout -- <path>` / `git restore <path>` / `git switch -f` forms were not caught at all before 2.7.0. **Honest limits:** the hook sees shell command text only — a delete hidden in a script (`npm run clean`), in a variable or in `node -e` is not seen, and the text gates (deploy, push, spend, …) stay classifier + prose gates because blocking on text would hit legitimate flows. On by default; `/forge config set gate-hook off` switches it off. If the hook itself breaks, it lets the call through (fail-open) so a broken hook never breaks a session.
+
+The shipped `.claude/settings.json` also carries **`permissions.deny`** rules so Claude's Read tool never opens `.env`, `.env.local`, `.env.*.local`, `.env.development`, `.env.production`, `.env.staging`, `.env.test` or `secrets/**`. `.env.example` stays readable on purpose.
 
 ---
 
@@ -131,7 +180,7 @@ Seven skills exist purely to keep Forge honest — closing the gap between "an a
 |---|---|
 | **`forge-verify`** | The verify-loop. After any agent/work-package claims done, it reconstructs task state from `events.jsonl` (the same way the dashboard does) and flags any agent that claims completed while its own tasks are still open/running/failed. `--enforce` sends mismatches back; exit code gates a hook/CI step. |
 | **`forge-graded-verify`** | Advisory rubric-scored verification for subjective answer-quality work (RAG/research/scraping/prediction). Dispatches review-boss as a graded verifier that scores each criterion 1–4 with evidence. **Never** gates an irreversible action — deterministic checks + owner approval stay authoritative. |
-| **`forge-doctor`** | Self-test + secret/leak scan. `node --check` every source, runs all test suites, verifies the honesty gate still rejects unknown events, confirms the dashboard SPA is intact, and scans git-tracked files for leaked secrets. |
+| **`forge-doctor`** | Self-test + secret/leak scan. `node --check` every source, runs all test suites, verifies the honesty gate still rejects unknown events, confirms the dashboard SPA is intact, and scans git-tracked files for leaked secrets. *New in 2.7.0:* six **beginner-setup checks** (advisory — they can never turn the doctor red): a project `CLAUDE.md` over ~200 lines · `claude`, `git` and `node` on PATH, with a clear note when Node is missing entirely (Claude Code itself does not need Node, Forge's tools need Node 18+) · `bypassPermissions` set as the default permission mode · a WSL project under `/mnt/c` · a read-only summary of `claude doctor` · the prompt coach installed alongside the intake. |
 | **`forge-heartbeat`** | Stall/silence watchdog. Reads a run's `events.jsonl` and flags any started-but-not-finished agent that hasn't logged anything for longer than a window (default 10 min) — crashed, stuck, or waiting on nobody. Read-only. |
 | **`forge-report`** | The standard end-of-task delivery report — classification, project adaptation, mission blueprint + skill discovery, files changed, checks actually run, and the evidence-based **Agent Activity Ledger**. Reflects only checks that really ran. |
 | **`forge-agent-report`** | The completion-report contract. Every dispatched Boss ends its final message with one fenced block; the tool parses, validates, and ingests it — so the Lead never hand-transcribes results into the dashboard. |
@@ -162,12 +211,22 @@ node .claude/forge-bin/forge-verify.cjs <run_id> --json     # machine-readable
 
 ---
 
-## Craft skills
+## Vendored public skills
 
-| Skill | What it does |
+*New in 2.7.0.* Forge's own playbooks refer to general working-method skills such as `brainstorming`, `systematic-debugging` and `test-driven-development`. So those references work on a fresh install — and so a beginner never has to hunt for skills — the full install ships **21 public skills and 2 commands**. The Bosses apply them automatically through the skill map (`.claude/config/agents/agent-skill-map.json`).
+
+| Source (licence) | Skills |
 |---|---|
-| **`humanizer`** | Removes signs of AI-generated writing (inflated symbolism, promotional language, em-dash overuse, rule-of-three, filler phrases, negative parallelisms, …). Based on Wikipedia's "Signs of AI writing" guide. |
-| **`gsap`** | Production-grade web-animation toolkit for `forge-website` / frontend work — timelines, ScrollTrigger, React integration, plugins, performance. A curated reference bundle (vendored from GreenSock's gsap-skills, MIT), read via progressive disclosure. |
+| obra/superpowers (MIT) — 13 | `brainstorming` · `dispatching-parallel-agents` · `executing-plans` · `finishing-a-development-branch` · `receiving-code-review` · `requesting-code-review` · `subagent-driven-development` · `systematic-debugging` · `test-driven-development` · `using-git-worktrees` · `verification-before-completion` · `writing-plans` · `writing-skills` |
+| anthropics/skills (Apache-2.0) — 1 | `frontend-design` |
+| mattpocock/skills (MIT) — 6 | `grill-me` · `grilling` · `teach` · `wait-what` · `resolving-merge-conflicts` · `setup-pre-commit` (only when you ask — it installs git hooks with npm) |
+| anthropics/claude-plugins-official (Apache-2.0) — 1 skill + 2 commands | `claude-md-improver` · the commands `/commit` and `/revise-claude-md` |
+
+**How they are attached:** the Boss uses `forge-prompt-coach` on every raw request and `grill-me`/`grilling` only in interview mode or when you ask to be questioned hard; Build Boss uses `resolving-merge-conflicts` when a merge stops on a conflict; Docs Boss uses `teach` and `wait-what` for beginner explanations and `claude-md-improver` for CLAUDE.md work.
+
+**Provenance and licences:** every vendored skill is pinned to an exact upstream commit (never "latest"), keeps its upstream `LICENSE` / `LICENSE.txt` in its own folder, and carries a provenance header (`Source:`, `Pinned commit:`, `License:`, `Forge vendor note:`) at the top of its `SKILL.md`. Every upstream file was sha256-checked against the pinned commit and scanned for hidden Unicode and prompt-injection patterns before copying. Helper scripts that open a network listener or delete outside their own work folder were left out. The full list, with every change Forge made, is [.claude/skills/VENDORED-SKILLS.md](../.claude/skills/VENDORED-SKILLS.md).
+
+**Deliberately not shipped:** the GSAP skills (no open licence) and `humanizer` — the maintainer uses them internally at a pinned commit; fetch them from their source if you want them. Also not shipped: commands that push or delete branches (`commit-push-pr`, `clean_gone`). The LITE plugin does not include the vendored skills.
 
 ---
 
@@ -183,6 +242,7 @@ node .claude/forge-dashboard/server.cjs
 - **One Command Center on 127.0.0.1:4100.** It auto-discovers your Forge projects and shows strictly per-project data, so two projects never clash and you only run one dashboard. *(Legacy: the retired per-project Control Center still derives a deterministic port in 3737–3999 from the project path, stored in `.claude/forge-dashboard/PORT` — used only by an explicit `legacy dashboard` request.)*
 - **Real activity only.** It reads each run's `.claude/forge-runs/<run_id>/{run.json, events.jsonl, final-report.md}` **read-only** and renders real events. It never reads another project's `.claude/`.
 - **Zero dependencies.** No database, no cloud, no login — a plain Node `.cjs` server + a static SPA.
+- **Forge settings, read-only** *(Command Center, new in 2.7.0).* The Settings view has a "Forge settings" section with every setting of the active project — value, source and explanation — read from `GET /api/config?project=<name>` (read-only: a POST is refused, an unknown project is a 404). You change settings in chat or with `/forge config`, never in the dashboard.
 
 <details>
 <summary><b>What the Control Center shows</b></summary>
@@ -276,13 +336,15 @@ These are the non-negotiables baked into every skill, agent, and dashboard view.
 - Every dashboard is local and per-project; it never reads another project's `.claude/`. The one exception — `forge-registry` — is opt-in, read-only, and writes only a global index, never into a scanned project.
 - No deploy, push, or money spent on your behalf without you asking.
 
-**Security posture — light, non-blocking:** no mandatory security gates slow a normal build. Basic hygiene (secrets in env, `.env.example` placeholders) is guidance, not an enforced hook. `security-boss` and `codex-reviewer` remain **available on request** for sensitive code — optional, never a blocker.
+**Security posture — light, non-blocking, with one deliberate exception:** no mandatory security gates slow a normal build. Basic hygiene (secrets in env, `.env.example` placeholders) is guidance, not an enforced hook. The exception, new in 2.7.0 and switchable with one command, is the [gate hook](#the-safety-stop-gate-hook--secret-deny-rules): it blocks only mass deletes, killing processes by name and git commands that discard uncommitted work, plus the `.env` read-deny rules. `security-boss` and `codex-reviewer` remain **available on request** for sensitive code — optional, never a blocker.
+
+**Beginner promise:** Forge runs every command, script, install and build itself and never asks you to run a file or code; it does not ask "shall I continue?" between phases. It always stops for the hard gates and a real usage-limit pause.
 
 ---
 
 ## Zero-dependency design
 
-Forge is plain Node `.cjs` — **nothing to `npm install`, ever.**
+Forge's own tools are plain Node `.cjs` — **nothing to `npm install`.** The only npm step anywhere is the optional dashboard's one-time build, and your AI assistant (or Forge) runs it for you; you never type it.
 
 - Every tool in `.claude/forge-bin/` and the dashboard server is zero-dependency Node; the wrappers auto-detect Node and never modify PATH or execution policy.
 - The dashboard has **no database, no cloud, no login** — it reads the run's JSON/JSONL event logs directly and serves a static SPA.

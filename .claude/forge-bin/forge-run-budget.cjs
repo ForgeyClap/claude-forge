@@ -10,7 +10,7 @@
  *     `claude -p --output-format json` envelope and logs a cost_sampled event so the dashboard meter is
  *     real. Recording a number is not a brake.
  *   · usage-guard.cjs watches the SUBSCRIPTION WINDOW (the 5h session window and the weekly window) and
- *     pauses the Paperclip agents at >= 95%. It is blind to one single run burning money inside a window
+ *     pauses the Paperclip agents at the configured threshold (setting usage-guard.pause-at, default 98%). It is blind to one single run burning money inside a window
  *     that still has plenty of room.
  * So an unattended wrapper that loses the plot had no ceiling at all. This file is that ceiling.
  *
@@ -62,7 +62,7 @@
  *
  * Module API: { CONFIG_REL, DEFAULTS, STATUS, VERDICT_FILE, BUDGET_MARKER, loadConfig, resolveCap,
  *               budgetArgs, classifyOutcome, isCompletion, countsAsStop, recordVerdict, readVerdicts,
- *               budgetStops }
+ *               budgetStops, configOn, configRead }
  */
 const fs = require('fs');
 const path = require('path');
@@ -102,6 +102,45 @@ const ENV_KEY = 'FORGE_RUN_BUDGET_USD';
 // ---- config ------------------------------------------------------------------------------------------
 function num(v) { return (typeof v === 'number' && Number.isFinite(v)) ? v : null; }
 
+// ---- owner setting `budget-usd` (forge-config.cjs, v2.7.0) — soft-required, see resolveCap step 4 ----
+let cfgModule = null;
+try { cfgModule = require('./forge-config.cjs'); } catch { cfgModule = null; }
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default, used only when forge-config.cjs is absent or broken; an older copy without safeGet is read
+ *  through get(). Never throws. opts.projectRoot = the root this tool acts on (ignored when FORGE_PROJECT_ROOT is
+ *  set); opts.configModule injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfgModule;
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
+const BUDGET_USD_DEFAULT = 5; // the schema default of budget-usd — only used when forge-config.cjs is absent
+/** ownerBudget({root, configModule}) -> { value, source } ONLY when the owner really set budget-usd (any
+ *  resolver source except the schema 'default') to a positive finite number; { note } when the settings could
+ *  not be read (a degraded read is never an owner value); otherwise null. */
+function ownerBudget(o) {
+  const e = configRead('budget-usd', BUDGET_USD_DEFAULT, { projectRoot: o && o.root, configModule: o && o.configModule });
+  if (e.degraded) return { note: 'owner setting budget-usd not used — ' + e.reason };
+  if (e.source === 'default' || num(e.value) === null || e.value <= 0) return null;
+  return { value: e.value, source: e.source };
+}
+
 /**
  * loadConfig({root|configFile}) -> { config, source, degraded, reason }
  * A missing or unreadable or malformed file is never fatal and never silently "uncapped": it returns the
@@ -133,7 +172,7 @@ function limitsOf(cfg) {
 }
 
 /**
- * resolveCap({wrapper, level}, {root|configFile, env}) -> {cap_usd, source, clamped, degraded, reason, wrapper, level, config_file}
+ * resolveCap({wrapper, level}, {root|configFile, env, configModule}) -> {cap_usd, source, clamped, degraded, reason, wrapper, level, config_file}
  *
  * Precedence, most specific first:
  *   1. env FORGE_RUN_BUDGET_USD  — a deliberate one-off override. Garbage / 0 / negative is IGNORED (it
@@ -141,8 +180,16 @@ function limitsOf(cfg) {
  *      become "this run has no brake" or "this run dies instantly".
  *   2. config.wrappers[<wrapper>]
  *   3. config.levels[<level>]    — case-insensitive (l2 == L2)
- *   4. config.default_usd
- *   5. DEFAULTS.default_usd      — builtin fallback, always reported degraded
+ *   4. the owner setting `budget-usd` (forge-config.cjs, v2.7.0) — ONLY when the owner actually set it
+ *      (resolver source project/global/flag/product-default). The schema's own default (source 'default')
+ *      never replaces step 5, so a project that set nothing behaves exactly as before. forge-config.cjs is
+ *      soft-required and read through its fail-safe safeGet(): absent, throwing or a damaged settings file ->
+ *      this step is skipped and `reason` says why (a degraded read is never an owner value). The resolver already range-checks the value
+ *      (0.25-25); the clamp below still applies as belt-and-braces. Reported as source
+ *      'forge-config.budget-usd (<resolver source>)'. When a more specific step wins over an owner value,
+ *      `reason` says so, so the owner can see why their number was not used.
+ *   5. config.default_usd
+ *   6. DEFAULTS.default_usd      — builtin fallback, always reported degraded
  * The winner is then CLAMPED into [limits.min_usd, limits.max_usd]; a clamp is reported as 'min'/'max'.
  */
 function resolveCap(sel, opts) {
@@ -151,11 +198,14 @@ function resolveCap(sel, opts) {
   const env = o.env || process.env;
   const loaded = loadConfig(o);
   const cfg = loaded.config;
+  const ownerRead = ownerBudget(o);
+  const owner = ownerRead && !ownerRead.note ? ownerRead : null;
   const { min, max } = limitsOf(cfg);
 
   let cap = null;
   let source = null;
   const notes = [];
+  if (ownerRead && ownerRead.note) notes.push(ownerRead.note);
 
   const rawEnv = env && env[ENV_KEY];
   if (rawEnv !== undefined && rawEnv !== null && String(rawEnv).trim() !== '') {
@@ -173,13 +223,22 @@ function resolveCap(sel, opts) {
     const key = Object.keys(levels).find((k) => k.toLowerCase() === String(s.level).toLowerCase());
     if (key && num(levels[key]) !== null) { cap = levels[key]; source = 'config.levels.' + key; }
   }
+  if (owner && cap !== null) {
+    notes.push('your setting budget-usd=' + owner.value + ' (' + owner.source + ') is not used: ' + source + ' is more specific');
+  }
+  let ownerUsed = false;
+  if (cap === null && owner) { cap = owner.value; source = 'forge-config.budget-usd (' + owner.source + ')'; ownerUsed = true; }
   if (cap === null && num(cfg && cfg.default_usd) !== null) { cap = cfg.default_usd; source = 'config.default'; }
   if (cap === null) {
     cap = DEFAULTS.default_usd;
     source = 'builtin-fallback';
     if (!loaded.degraded) notes.push('the config file has no usable default_usd');
   }
-  if (loaded.degraded) { source = 'builtin-fallback'; notes.push(loaded.reason); }
+  if (loaded.degraded) {
+    if (ownerUsed) notes.push('the amount came from ' + source + ', clamped by the builtin limits');
+    source = 'builtin-fallback';
+    notes.push(loaded.reason);
+  }
 
   let clamped = null;
   if (cap > max) { cap = max; clamped = 'max'; notes.push('clamped down to the configured ceiling ' + max); }
@@ -319,7 +378,7 @@ function budgetStops(runDir) {
 
 module.exports = {
   CONFIG_REL, DEFAULTS, STATUS, VERDICT_FILE, BUDGET_MARKER, ENV_KEY,
-  loadConfig, resolveCap, budgetArgs,
+  loadConfig, resolveCap, budgetArgs, configOn, configRead,
   classifyOutcome, isCompletion, countsAsStop,
   recordVerdict, readVerdicts, budgetStops,
 };

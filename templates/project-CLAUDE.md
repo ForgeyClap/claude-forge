@@ -36,6 +36,9 @@ This project has [claude-forge](https://github.com/ForgeyClap/claude-forge) inst
 - **`/forge <task>`** — classify the task, pick the smallest fitting agent team, build it, and
   report honestly what ran and what did not.
 - **`/setup-forge`** — first-time onboarding and a health check of this installation.
+- **`/forge config`** — see and change every Forge setting (everything is on by default), or just say it in
+  chat. Forge runs every command itself and never asks you to run code; it only stops for the hard gates
+  (deploying, pushing, spending money, …) and a real usage-limit pause.
 - **`node .claude/forge-bin/forge-doctor.cjs`** — run the full self-test of the Forge install.
 
 Forge keeps its memory of this project in `.claude/FORGE_*.md` and logs every run to

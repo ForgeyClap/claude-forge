@@ -34,9 +34,15 @@ import {
 import { useGatewayClaudeCodeHealth, useGatewayConnection as useConnection } from '@/prototype/state/gateway-adapter';
 import {
   useGatewayCapabilities,
+  useGatewayForgeConfig,
   useGatewayMcp,
   useGatewayModels,
   useGatewayTools,
+} from '@/prototype/state/gateway-capabilities';
+import type {
+  GatewayForgeConfigFile,
+  GatewayForgeGroup,
+  GatewayForgeSetting,
 } from '@/prototype/state/gateway-capabilities';
 import { nextToastId, selectActiveProject, usePrototype } from '@/prototype/state/prototype-store';
 import type { DockTab } from '@/prototype/state/prototype-store';
@@ -54,6 +60,7 @@ type SectionId =
   | 'connection'
   | 'models'
   | 'capabilities'
+  | 'forge'
   | 'agents'
   | 'skills'
   | 'permissions'
@@ -111,6 +118,14 @@ const SECTIONS: readonly SectionDef[] = [
     icon: 'Boxes',
     wired: true,
     summary: 'What this gateway can actually route to and call: models, tools, MCP servers and the Forge capability report.',
+  },
+  {
+    id: 'forge',
+    label: 'Forge settings',
+    icon: 'Wrench',
+    wired: true,
+    summary:
+      'Every Forge setting of the active project — value, where it comes from, what it does — read from GET /api/config. Change it in chat or with /forge config.',
   },
   {
     id: 'agents',
@@ -243,6 +258,68 @@ const SURFACE_SWATCHES: readonly { readonly token: string; readonly name: string
 
 function unique(values: readonly string[]): readonly string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+}
+
+/* --------------------------------------------------------- forge settings */
+
+/**
+ * wp12 (forge-2026-09-24-config-v250) — helpers for the read-only Forge
+ * settings section. The JSON carries only the flag letters; these words are
+ * `forge-config-text.cjs`'s own English `flag` map, in its own FLAG_ORDER, so
+ * this view says exactly what `/forge config list` says.
+ */
+const FORGE_FLAG_WORDS: Readonly<Record<string, string>> = {
+  C: 'reads credentials',
+  N: 'uses the network',
+  $: 'costs quota or money',
+  U: 'runs unattended',
+  X: 'reads outside this project',
+  D: 'deletes files',
+};
+const FORGE_FLAG_ORDER: readonly string[] = ['C', 'N', '$', 'U', 'X', 'D'];
+
+/** The exact command that changes a setting: an on/off setting shows the
+ *  command that flips it; any other shows its current value, ready to edit. */
+function forgeSetCommand(setting: GatewayForgeSetting): string {
+  let next = '<value>';
+  if (typeof setting.value === 'boolean') next = setting.value ? 'off' : 'on';
+  else if (setting.value !== null) next = String(setting.value);
+  return `/forge config set ${setting.key} ${next}`;
+}
+
+function forgeStatusWord(status: string | null): string {
+  if (status === 'on') return 'ON';
+  if (status === 'off') return 'OFF';
+  return '—';
+}
+
+function forgeFileLine(file: GatewayForgeConfigFile | null): string {
+  if (file === null) return '—';
+  return `${file.pretty ?? file.path ?? '—'} · ${file.present ? 'saved' : 'not created, defaults apply'}`;
+}
+
+/** Settings in the tool's own group order. A setting whose group the tool did
+ *  not list still shows, under its raw group id — never silently dropped. */
+function groupForgeSettings(
+  settings: readonly GatewayForgeSetting[],
+  groups: readonly GatewayForgeGroup[],
+): readonly { readonly id: string; readonly title: string; readonly settings: readonly GatewayForgeSetting[] }[] {
+  const groupOf = (setting: GatewayForgeSetting) => setting.group ?? 'other';
+  const titles = new Map(groups.map((group) => [group.id, group.title ?? group.id]));
+  const ids = [...groups.map((group) => group.id), ...unique(settings.map(groupOf)).filter((id) => !titles.has(id))];
+  return ids
+    .map((id) => ({ id, title: titles.get(id) ?? id, settings: settings.filter((setting) => groupOf(setting) === id) }))
+    .filter((group) => group.settings.length > 0);
+}
+
+/** Footnote numbers in settings order for every setting that says what it
+ *  does with your data — the same numbering `/forge config list` prints. */
+function forgeFootnoteRefs(settings: readonly GatewayForgeSetting[]): ReadonlyMap<string, number> {
+  const refs = new Map<string, number>();
+  for (const setting of settings) {
+    if (setting.disclosure !== null || setting.flags.length > 0) refs.set(setting.key, refs.size + 1);
+  }
+  return refs;
 }
 
 /* -------------------------------------------------------- real preferences */
@@ -397,6 +474,8 @@ export default function SettingsView() {
   const tools = useGatewayTools(state.activeProjectId);
   const mcp = useGatewayMcp(state.activeProjectId);
   const capabilities = useGatewayCapabilities(state.activeProjectId);
+  // wp12: the active project's Forge settings, read-only (GET /api/config).
+  const forgeConfig = useGatewayForgeConfig(state.activeProjectId);
 
   const active = SECTIONS.find((entry) => entry.id === section) ?? SECTIONS[0];
 
@@ -1019,6 +1098,143 @@ export default function SettingsView() {
     );
   }
 
+  /** wp12: read-only. Every value comes from GET /api/config; nothing here
+   *  writes — each row shows the command that changes it instead. */
+  function renderForgeSettings(): ReactNode {
+    const config = forgeConfig.data;
+    const showData = !forgeConfig.error && !forgeConfig.loading && config.available;
+    const refs = forgeFootnoteRefs(config.settings);
+    const footnoted = config.settings.filter((setting) => refs.has(setting.key));
+    const usedFlags = FORGE_FLAG_ORDER.filter((flag) => footnoted.some((setting) => setting.flags.includes(flag)));
+
+    return (
+      <>
+        <Panel
+          title="Where the values come from"
+          subtitle="The active project's own forge-config.cjs, read straight from GET /api/config."
+        >
+          {forgeConfig.error ? (
+            <EmptyState icon="Unplug" title="Forge settings unavailable" detail={forgeConfig.error} />
+          ) : forgeConfig.loading ? (
+            <Note>Reading the Forge settings…</Note>
+          ) : !config.available ? (
+            <EmptyState
+              icon="PackageOpen"
+              title="Settings unavailable"
+              detail={config.note ?? config.state ?? undefined}
+            />
+          ) : config.settings.length === 0 ? (
+            <EmptyState icon="PackageOpen" title="No settings reported" detail="forge-config.cjs returned an empty settings list." />
+          ) : (
+            <>
+              <Note>
+                Read-only here. Change a setting with the command on its row — on/off settings show
+                the command that flips them, the others their current value to edit — or just say it
+                in chat.
+              </Note>
+              <div className="fw-settings__rows">
+                <Row label="Project settings file" hint="Values saved for this project only.">
+                  <Machine muted>{forgeFileLine(config.projectFile)}</Machine>
+                </Row>
+                <Row label="Global settings file" hint="Values saved for every project on this computer.">
+                  <Machine muted>{forgeFileLine(config.globalFile)}</Machine>
+                </Row>
+              </div>
+              {config.notes.map((note) => (
+                <Note key={note}>{note}</Note>
+              ))}
+              {config.hidden ? <Note>{config.hidden} advanced setting(s) not listed.</Note> : null}
+            </>
+          )}
+        </Panel>
+
+        {showData
+          ? groupForgeSettings(config.settings, config.groups).map((group) => (
+              <Panel key={group.id} title={group.title} subtitle={`${group.settings.length} settings`}>
+                <div className="fw-settings__table-scroll">
+                  <table className="fw-settings__table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Status</th>
+                        <th scope="col">Setting</th>
+                        <th scope="col">Value</th>
+                        <th scope="col">From</th>
+                        <th scope="col">What it does</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {group.settings.map((setting) => (
+                        <tr key={setting.key}>
+                          <td>
+                            <Machine muted>{forgeStatusWord(setting.status)}</Machine>
+                          </td>
+                          <td>
+                            <Machine>{setting.key}</Machine>
+                          </td>
+                          <td>
+                            <Machine muted>{setting.display ?? '—'}</Machine>
+                          </td>
+                          <td>
+                            <Machine muted>{setting.source ?? '—'}</Machine>
+                          </td>
+                          <td>
+                            {setting.desc ?? '—'}
+                            {refs.has(setting.key) ? ` [${refs.get(setting.key)}]` : null}
+                            <br />
+                            <Machine muted>{forgeSetCommand(setting)}</Machine>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Panel>
+            ))
+          : null}
+
+        {showData && footnoted.length > 0 ? (
+          <Panel title="Footnotes" subtitle="What these settings do with your data.">
+            <ul className="fw-settings__facts">
+              {footnoted.map((setting) => (
+                <li key={setting.key}>
+                  <Icon name="Info" size="sm" className="fw-settings__facts-mark" />
+                  <span>
+                    [{refs.get(setting.key)}] <Machine>{setting.key}</Machine>
+                    {setting.flags.length > 0 ? (
+                      <>
+                        {' '}
+                        (<Machine muted>{setting.flags.join(' ')}</Machine>)
+                      </>
+                    ) : null}
+                    : {setting.disclosure ?? setting.flags.map((flag) => FORGE_FLAG_WORDS[flag] ?? flag).join('; ')}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {usedFlags.length > 0 ? (
+              <Note>Flags: {usedFlags.map((flag) => `${flag} = ${FORGE_FLAG_WORDS[flag]}`).join(' · ')}</Note>
+            ) : null}
+          </Panel>
+        ) : null}
+
+        {showData && config.locked.length > 0 ? (
+          <Panel title="Locked" subtitle="Always on and never settable — not from chat, not with /forge config.">
+            <ul className="fw-settings__facts">
+              {config.locked.map((entry) => (
+                <li key={entry.id}>
+                  <Icon name="ShieldCheck" size="sm" className="fw-settings__facts-mark" />
+                  <span>
+                    <Machine>{entry.id}</Machine> — {entry.text ?? '—'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        ) : null}
+      </>
+    );
+  }
+
   function renderAgents(): ReactNode {
     return (
       <Panel title="Roster" subtitle="The team this workspace renders.">
@@ -1227,6 +1443,8 @@ export default function SettingsView() {
         return renderModels();
       case 'capabilities':
         return renderCapabilities();
+      case 'forge':
+        return renderForgeSettings();
       case 'agents':
         return renderAgents();
       case 'skills':

@@ -147,6 +147,9 @@ const TERMINAL_TYPES = new Set([
   // OWNER GOVERNANCE (WAVE B / B4, 2026-07-18): the applied-prefs ECHO — one-shot informational event, mirrors
   // profile_loaded/memory_loaded. See log-event.cjs KNOWN_EVENT_TYPES and forge-dashboard/app.js taskStatus().
   'owner_prefs_loaded',
+  // config_changed (v2.7.0, 2026-09-24): forge-config.cjs diff({run}) recorded that owner settings changed since
+  // the last run — a one-shot informational fact like owner_prefs_loaded/decision_logged.
+  'config_changed',
   // PAPERCLIP CONTROL PLANE done-status events (WAVE C / C-INTEGRATE, 2026-07-18) — every logEvent() call
   // site in forge-paperclip.cjs already carries an explicit status:'done'/'failed'/'previewing' field, so
   // statusClass() decides classification first in practice; these entries are the honest event_type-only
@@ -346,16 +349,50 @@ function taskTitle(e) {
 }
 
 /**
- * verifyRun(runDir, opts) -> { agents, mismatches, malformed }
+ * closeHeartbeats(rec, completionEvent, evIdx) — RULE 1 (2026-09-24, wp23 "verify: heartbeats and
+ * evidence-closed tasks"): a subagent_completed/subagent_failed event closes every still-open
+ * agent_progress task of the SAME agent (rec) that was LOGGED BEFORE it and matches by wp_id — falling
+ * back to role only when the completion carries no wp_id, and closing nothing when the completion has
+ * neither. The closed heartbeat's status becomes taskStatus(completionEvent) (via the existing
+ * statusClass() substring rule, so completed_with_blockers/blocked/failed stay visibly 'failed' — a
+ * blocker is never hidden as done). A heartbeat that already resolved 'done' (an explicit terminal
+ * status field) is left untouched — it was never open. Mutates rec.tasks in place; never touches other
+ * agents' tasks (heartbeats are scoped to their own agent by construction).
+ */
+function closeHeartbeats(rec, completionEvent, evIdx) {
+  const wpId = (typeof completionEvent.wp_id === 'string' && completionEvent.wp_id.trim()) || null;
+  const role = (typeof completionEvent.role === 'string' && completionEvent.role.trim()) || null;
+  if (!wpId && !role) return; // neither present on the completion — close nothing (spec: no fallback available)
+  const status = taskStatus(completionEvent);
+  for (const tk of rec.tasks) {
+    if (tk._closed || tk.status === 'done' || tk.event_type !== 'agent_progress') continue;
+    if (tk.origEvIdx >= evIdx) continue; // must be logged BEFORE the completion
+    const match = wpId ? tk.wp_id === wpId : (!!tk.role && tk.role === role);
+    if (match) { tk.status = status; tk._closed = true; tk.evIdx = evIdx; }
+  }
+}
+
+/**
+ * verifyRun(runDir, opts) -> { agents, mismatches, malformed, closesAdvisories }
  * Reconstructs per-agent task state from events.jsonl the SAME way the dashboard does: each event is
  * attributed to e.agent as-is (no SYNTH fallback — events without an agent are skipped); a non-BACKBONE
  * event is a "task" for that agent; a task is "done" when taskStatus(e) === 'done'. An agent "claims
  * completed" if it has an agent_completed or subagent_completed event anywhere in the run.
+ *
+ * RULE 1 / RULE 2 (2026-09-24, wp23 — real defect: a completed agent's own `agent_progress` heartbeats,
+ * and a Lead-fixed `completed_with_blockers` subagent_output, could NEVER close, so finished work stayed
+ * "67 open tasks" forever): see closeHeartbeats() above (RULE 1) and the closes_event_id handling below
+ * (RULE 2 — a fix_completed/check_passed with a `closes_event_id` pointing at an EARLIER event's
+ * event_id, plus a non-empty `evidence` string, closes that exact earlier task with the closer's status —
+ * whatever agent/type it belongs to). Both rules mirror the SAME semantics in forge-dashboard/app.js
+ * buildNodes() (read that file before changing either).
  */
 function verifyRun(runDir, opts) {
   opts = opts || {};
   const { events, malformed } = readEventsJsonl(runDir);
   const byAgent = new Map();
+  const eventIdToTask = new Map(); // event_id -> task object, for RULE 2 cross-task/cross-agent closure
+  const closesAdvisories = []; // RULE 2 — one plain-language line per ignored closes_event_id, never gates
   events.forEach((e, evIdx) => {
     if (!e || typeof e !== 'object') return;
     const agent = e.agent;
@@ -364,13 +401,51 @@ function verifyRun(runDir, opts) {
     const rec = byAgent.get(agent);
     if (e.event_type === 'agent_completed' || e.event_type === 'subagent_completed') rec.claimsDone = true;
     const t = e.event_type;
+
+    // RULE 1 — runs even for subagent_completed/subagent_failed, which are BACKBONE (never a task
+    // themselves) and would otherwise `return` below before ever touching that agent's open heartbeats.
+    if (t === 'subagent_completed' || t === 'subagent_failed') closeHeartbeats(rec, e, evIdx);
+
     if (BACKBONE.has(t)) return; // structural milestone — not a task
     // Fix 1 pairing parity: a terminal event closes its agent's earliest still-open matching start-task
     // (same rule as app.js buildNodes) instead of counting as a second task.
     const startType = TASK_PAIR_TERMINAL_TO_START[t];
     const openTask = startType && rec.tasks.find((tk) => !tk._closed && tk.event_type === startType);
-    if (openTask) { openTask.status = taskStatus(e); openTask.evIdx = evIdx; openTask._closed = true; return; }
-    rec.tasks.push({ title: taskTitle(e), evIdx, status: taskStatus(e), event_type: t, _closed: false });
+    if (openTask) { openTask.status = taskStatus(e); openTask.evIdx = evIdx; openTask._closed = true; }
+    else {
+      const task = {
+        title: taskTitle(e), evIdx, origEvIdx: evIdx, status: taskStatus(e), event_type: t, _closed: false,
+        wp_id: (typeof e.wp_id === 'string' && e.wp_id.trim()) || null,
+        role: (typeof e.role === 'string' && e.role.trim()) || null,
+        event_id: (typeof e.event_id === 'string' && e.event_id) || null,
+      };
+      rec.tasks.push(task);
+      if (task.event_id) eventIdToTask.set(task.event_id, task);
+    }
+
+    // RULE 2 — independent of the TASK_PAIRS merge above: a fix_completed/check_passed is still recorded
+    // as its own task/pair exactly as before; closes_event_id is an ADDITIONAL, separate closure of
+    // whatever earlier task it names.
+    if (t === 'fix_completed' || t === 'check_passed') {
+      const closesId = (typeof e.closes_event_id === 'string' && e.closes_event_id.trim()) || null;
+      if (closesId) {
+        const hasEvidence = typeof e.evidence === 'string' && e.evidence.trim().length > 0;
+        if (!hasEvidence) {
+          closesAdvisories.push('closes_event_id ignored: no evidence (target ' + closesId + ')');
+        } else {
+          const target = eventIdToTask.get(closesId);
+          if (!target) {
+            closesAdvisories.push('closes_event_id ignored: unknown event_id ' + closesId);
+          } else if (target.origEvIdx >= evIdx) {
+            closesAdvisories.push('closes_event_id ignored: forward reference (' + closesId + ' is not earlier than the closer)');
+          } else {
+            target.status = taskStatus(e);
+            target._closed = true;
+            target.evIdx = evIdx;
+          }
+        }
+      }
+    }
   });
   const agents = Array.from(byAgent.values()).map((rec) => {
     const tasksDone = rec.tasks.filter((tk) => tk.status === 'done').length;
@@ -386,7 +461,7 @@ function verifyRun(runDir, opts) {
     };
   });
   const mismatches = agents.filter((a) => a.mismatch).length;
-  return { agents, mismatches, malformed };
+  return { agents, mismatches, malformed, closesAdvisories };
 }
 
 /**
@@ -1557,6 +1632,12 @@ if (require.main === module) {
     const lines = ['Forge Verify — ' + opts.run_id];
     if (!result.agents.length) lines.push('  (no agent activity recorded yet)');
     for (const a of result.agents) lines.push(fmtAgentLine(a));
+    // RULE 2 advisory (wp23, 2026-09-24) — never gates the exit code; an ignored closes_event_id is a
+    // logging mistake to fix, not proof of unfinished work.
+    if (result.closesAdvisories && result.closesAdvisories.length) {
+      lines.push('Evidence Closures (advisory, non-blocking):');
+      for (const msg of result.closesAdvisories) lines.push('  ⚠ ' + msg);
+    }
     lines.push('Tickets:');
     if (!ticketResult.tickets.length) lines.push('  (no tickets found for this run)');
     else if (!ticketResult.open.length && !ticketResult.unproven.length) lines.push('  ✓ all tickets closed (with test evidence where required)');
@@ -1623,6 +1704,7 @@ if (require.main === module) {
     if (opts.json) {
       console.log(JSON.stringify({
         run_id: opts.run_id, root, agents: result.agents, mismatches: result.mismatches, malformed: result.malformed,
+        closes_advisories: result.closesAdvisories,
         tickets: ticketResult.tickets, open_tickets: ticketResult.open, unproven_tickets: ticketResult.unproven,
         isolation, evidence, config_drift: configDrift,
         loop: Object.assign({}, loop, { brake, max: opts.maxRounds, dry_streak_required: opts.dryStreak }),

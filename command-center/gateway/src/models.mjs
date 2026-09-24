@@ -30,10 +30,14 @@ export function _setNvidiaProviderCjsForTests(p) { nvidiaProviderCjsOverride = p
 //   "NVIDIA OK (live) — <n> models · <ms>ms · <baseUrl>"           (real, connected)
 //   "NVIDIA MOCK MODE (no key — NOT live-ready) — <reason>"         (no NVIDIA_API_KEY configured)
 //   "NVIDIA FAIL — <reason>"                                        (key present, live call failed)
+//   "NVIDIA OFF — <reason> — no NVIDIA request made (...)"          (exit 3: the owner's `nvidia` setting is off
+//                                                                    or unreadable — wp20 M4: NO request was sent)
+// State vocabulary: CONNECTED | NOT CONFIGURED | DISCONNECTED | OFF | UNKNOWN.
 function parseNvidiaHealthOutput(stdout) {
   const line = String(stdout || '').trim();
   const okMatch = line.match(/^NVIDIA OK \(live\) — (\d+) models · (\d+)ms · (.+)$/);
   if (okMatch) return { state: 'CONNECTED', models: Number(okMatch[1]), ms: Number(okMatch[2]), base_url: okMatch[3] };
+  if (/^NVIDIA OFF\b/.test(line)) return { state: 'OFF', note: redact(line).slice(0, 300) };
   if (/^NVIDIA MOCK MODE/i.test(line)) return { state: 'NOT CONFIGURED', note: line };
   if (/^NVIDIA FAIL/i.test(line)) return { state: 'DISCONNECTED', note: line };
   // WP8-13 gap-closing round (this is the highest-risk child in the gateway: nvidia-provider.cjs
@@ -51,6 +55,12 @@ async function probeNvidiaHealthLive() {
     return parseNvidiaHealthOutput(stdout);
   } catch (err) {
     if (err && err.killed) return { state: 'UNKNOWN', note: 'nvidia-provider health probe timed out after ' + NVIDIA_HEALTH_TIMEOUT_MS + 'ms' };
+    // wp20 M4: the owner switched NVIDIA off (or the setting is unreadable) — the CLI made no request, printed one
+    // "NVIDIA OFF — ..." line and exited 3. That is a deliberate state, not a failed connection.
+    if (err && err.code === 3) {
+      const off = parseNvidiaHealthOutput(err.stdout);
+      if (off.state === 'OFF') return off;
+    }
     // WP8-13 gap-closing round: a non-zero exit's err.message can embed the child's own stderr
     // verbatim (Node's child_process error formatting) — exactly where an unallowlisted
     // NVIDIA_API_KEY-bearing child is most likely to leak a real credential on failure.

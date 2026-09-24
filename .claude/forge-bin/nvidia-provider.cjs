@@ -48,6 +48,25 @@
  * key is a hard ERROR (never a silent default); a function with fit="none" (no model judged good enough)
  * is HARD-SKIPPED like a policy-blocked call — Claude keeps that work rather than forcing a bad-fit model.
  * `role`/`model` still work unchanged when `--function` is omitted (fully backward-compatible).
+ *
+ * OWNER SETTING `nvidia` (v2.7.0, forge-config.cjs; default ON): OFF -> chat() returns
+ * { skipped: true, reason: 'owner config nvidia=off' } as its VERY FIRST step — before agent/policy/model
+ * resolution, before the key is looked at, before any network request. CLI `chat` then prints
+ * "SKIPPED (config) — ..." and exits 3 (the same shape as the usagePolicy skip). OFF also covers `health` and
+ * `models` (security fix M4, 2026-09-24 — they used to send the key to GET /models even when switched off):
+ * health()/listModels() return { ok: false, mode: 'off', reason } WITHOUT any network request, and the CLI prints
+ * one plain "NVIDIA OFF — ..." line and exits 3. `--force` (CLI) / { force: true } (module) runs them anyway.
+ * `route` never touches the network and still runs, with a note on stderr. forge-config.cjs is soft-required and
+ * FAIL-SAFE (M3): a missing module, a throwing get() (unreadable/malformed FORGE_CONFIG.json) or a non-boolean
+ * value means OFF with reason 'config unreadable → safe default off' — never a silent fall-back to ON.
+ * chat(args, opts) / health(opts) / listModels(opts): opts.configModule injects a module (tests).
+ *
+ * ENV FILES (security fix M5, 2026-09-24): from the project .env AND the global ~/.claude/nvidia.env only
+ * NVIDIA_API_KEY and NVIDIA_<ROLE>_MODEL are loaded — every other name is ignored. NVIDIA_BASE_URL and
+ * NVIDIA_ALLOW_CUSTOM_BASE_URL are honoured ONLY from the real environment or the GLOBAL file, never from a
+ * project .env (a cloned repo could otherwise send the owner's global key to any host). The base URL must be
+ * https: with a hostname ending in .nvidia.com unless NVIDIA_ALLOW_CUSTOM_BASE_URL=1; a violation refuses every
+ * request with a plain reason (no request is sent).
  */
 const fs = require('fs');
 const path = require('path');
@@ -58,26 +77,83 @@ const MATRIX_FILE = path.join(CLAUDE_DIR, 'config', 'models', 'model-capability-
 const MODEL_MAP_FILE = path.join(CLAUDE_DIR, 'config', 'agents', 'agent-model-map.json');
 const FUNCTION_FIT_FILE = path.join(CLAUDE_DIR, 'config', 'models', 'function-model-fit.json');
 
+// Owner settings (forge-config.cjs, v2.7.0) — soft-required, see the header.
+const NVIDIA_OFF_REASON = 'owner config nvidia=off';
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+/** configOn(key, def, opts) -> the owner's value for `key`, or `def` (the schema default) when forge-config.cjs
+ *  is absent or throws. Never throws. opts.projectRoot = the root this tool acts on (ignored when
+ *  FORGE_PROJECT_ROOT is set); opts.configModule injects a module (tests; null = "absent"). */
+function configOn(key, def, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : cfg;
+  if (!mod || typeof mod.get !== 'function') return def;
+  try {
+    const e = mod.get(key, opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : undefined);
+    return e && typeof e.value === typeof def ? e.value : def;
+  } catch { return def; }
+}
+// M3 fail-safe (2026-09-24): the owner switch is read with a SAFE default — anything that is not a clear boolean
+// answer from forge-config (module missing, get() throwing on an unreadable file, a wrong-typed value) is OFF.
+const NVIDIA_UNREADABLE_REASON = 'config unreadable → safe default off';
+/** nvidiaState(opts) -> { on: boolean, reason: string|null }. Never throws. opts.configModule injects a module. */
+function nvidiaState(opts) {
+  const mod = opts && opts.configModule !== undefined ? opts.configModule : cfg;
+  const rootOpts = process.env.FORGE_PROJECT_ROOT ? {} : { projectRoot: PROJECT_DIR };
+  let e;
+  try {
+    if (mod && typeof mod.safeGet === 'function') {            // forge-config's own fail-safe read (never throws)
+      e = mod.safeGet('nvidia', Object.assign({ fallback: false }, rootOpts));
+      if (e && e.degraded) return { on: false, reason: NVIDIA_UNREADABLE_REASON };
+    } else if (mod && typeof mod.get === 'function') {         // an older forge-config.cjs without safeGet
+      e = mod.get('nvidia', process.env.FORGE_PROJECT_ROOT ? undefined : rootOpts);
+    } else return { on: false, reason: NVIDIA_UNREADABLE_REASON };
+  } catch { return { on: false, reason: NVIDIA_UNREADABLE_REASON }; }
+  if (!e || typeof e.value !== 'boolean') return { on: false, reason: NVIDIA_UNREADABLE_REASON };
+  return e.value ? { on: true, reason: null } : { on: false, reason: NVIDIA_OFF_REASON };
+}
+
 // ---- env loader (simple KEY=VALUE; never logs values) ----
 // Precedence: real environment > project .env > GLOBAL ~/.claude/nvidia.env (user decision 2026-07-05:
 // the key lives once, globally, and works for every Forge project — no copying secrets per project).
-function loadEnvFile(envFile) {
-  try {
-    for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
-      if (!m) continue;
-      let v = m[2].trim();                                          // strip trailing whitespace (invisible 401s)
-      if (/^(["']).*\1$/.test(v)) v = v.slice(1, -1);               // strip surrounding quotes
-      if (v !== '' && process.env[m[1]] === undefined) process.env[m[1]] = v;
-    }
-  } catch {} /* missing file is fine */
+// M5 (2026-09-24): a file may only set the names below; the base-URL pair is GLOBAL-file (or real env) only.
+const ENV_FILE_ANY = /^NVIDIA_(?:API_KEY|[A-Z0-9_]+_MODEL)$/;
+const ENV_FILE_GLOBAL_ONLY = new Set(['NVIDIA_BASE_URL', 'NVIDIA_ALLOW_CUSTOM_BASE_URL']);
+/** loadEnvFile(envFile, isGlobal) — loads the allowed names from one KEY=VALUE file into process.env (a name
+ *  that is already set wins). Never logs values; a missing file is fine. */
+function loadEnvFile(envFile, isGlobal) {
+  let text;
+  try { text = fs.readFileSync(envFile, 'utf8'); } catch { return; } /* missing file is fine */
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const name = m[1];
+    if (!ENV_FILE_ANY.test(name) && !(isGlobal && ENV_FILE_GLOBAL_ONLY.has(name))) continue;
+    let v = m[2].trim();                                          // strip trailing whitespace (invisible 401s)
+    if (/^(["']).*\1$/.test(v)) v = v.slice(1, -1);               // strip surrounding quotes
+    if (v !== '' && process.env[name] === undefined) process.env[name] = v;
+  }
 }
 function loadEnv() {
-  if (process.env.NVIDIA_SKIP_ENV_FILES === '1') return;                        // hermetic test isolation (no file key sources)
-  loadEnvFile(path.join(PROJECT_DIR, '.env'));                                  // project overrides
-  loadEnvFile(path.join(require('os').homedir(), '.claude', 'nvidia.env'));     // global fallback (one key for all projects)
+  if (process.env.NVIDIA_SKIP_ENV_FILES === '1') return;                              // hermetic test isolation (no file key sources)
+  loadEnvFile(path.join(PROJECT_DIR, '.env'), false);                                 // project: key + model overrides only
+  loadEnvFile(path.join(require('os').homedir(), '.claude', 'nvidia.env'), true);     // global fallback (one key for all projects)
 }
 loadEnv();
+
+const DEFAULT_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+/** checkBaseUrl(raw, allowCustom) -> { ok: true, url } | { ok: false, reason } (M5). https: + a hostname ending in
+ *  .nvidia.com, unless allowCustom. The reason names only the scheme/host, never the full URL. Pure. */
+function checkBaseUrl(raw, allowCustom) {
+  let u;
+  try { u = new URL(String(raw)); } catch { return { ok: false, reason: 'NVIDIA_BASE_URL is not a valid URL — refused, no request sent' }; }
+  const url = u.href.replace(/\/+$/, '');
+  if (allowCustom) return { ok: true, url };
+  const how = ' — refused, no request sent (allow a custom endpoint with NVIDIA_ALLOW_CUSTOM_BASE_URL=1 in the real environment or ~/.claude/nvidia.env)';
+  if (u.protocol !== 'https:') return { ok: false, reason: 'NVIDIA_BASE_URL must use https: (got ' + u.protocol + ')' + how };
+  if (!u.hostname.toLowerCase().endsWith('.nvidia.com')) return { ok: false, reason: 'NVIDIA_BASE_URL host "' + u.hostname + '" is not an nvidia.com host' + how };
+  return { ok: true, url };
+}
 
 function readJson(f, fallback) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; } }
 const MATRIX = readJson(MATRIX_FILE, { roles: {}, catalog: [], provider: {} });
@@ -99,8 +175,13 @@ function normAgent(agent) { if (agent == null) return null; let s = String(agent
 function isKnownAgent(slug) { return !!(slug && (MODEL_MAP.agents || {})[slug]); }
 function policyFor(agent) { const a = normAgent(agent); if (!a) return 'unclassified'; if (SKIP_AGENTS.has(a)) return 'claude-first-skip'; if (BULK_AGENTS.has(a)) return 'nvidia-bulk-only'; return 'unclassified'; }
 
+// M5: after loadEnv(), NVIDIA_BASE_URL / NVIDIA_ALLOW_CUSTOM_BASE_URL can only have come from the real environment
+// or the global file (a project .env can no longer set them).
+const BASE = checkBaseUrl(process.env.NVIDIA_BASE_URL || (MATRIX.provider && MATRIX.provider.baseUrlDefault) || DEFAULT_BASE_URL,
+  process.env.NVIDIA_ALLOW_CUSTOM_BASE_URL === '1');
 const CONFIG = {
-  baseUrl: (process.env.NVIDIA_BASE_URL || (MATRIX.provider && MATRIX.provider.baseUrlDefault) || 'https://integrate.api.nvidia.com/v1').replace(/\/$/, ''),
+  baseUrl: BASE.ok ? BASE.url : '',
+  baseUrlError: BASE.ok ? null : BASE.reason,
   key: process.env.NVIDIA_API_KEY || '',
   // guard against a non-numeric NVIDIA_TIMEOUT_MS (e.g. "120s") — NaN would make AbortSignal.timeout throw
   // a RangeError that the retry loop misreads as a transient network error (fix 2026-07-09 checkup).
@@ -126,6 +207,7 @@ function modelForRole(role) {
 // ---- HTTP (native fetch, Node >= 18) with retry/timeout/429 ----
 async function call(method, p, body) {
   if (!hasKey()) return { mock: true, status: 0, error: 'no NVIDIA_API_KEY set — mock mode (no live call made)' };
+  if (CONFIG.baseUrlError) return { refused: true, status: 0, error: CONFIG.baseUrlError }; // M5: never send the key to a refused endpoint
   let lastErr = null;
   for (let attempt = 0; attempt <= CONFIG.retries; attempt++) {
     try {
@@ -154,18 +236,28 @@ async function call(method, p, body) {
 }
 
 // ---- public API ----
-async function listModels() {
+/** offResult(opts) -> the M4 "switched off" answer, or null when NVIDIA may be contacted (on, or opts.force). */
+function offResult(opts) {
+  if (opts && opts.force === true) return null;
+  const s = nvidiaState(opts);
+  return s.on ? null : { ok: false, mode: 'off', reason: s.reason };
+}
+async function listModels(opts) {
+  const off = offResult(opts);
+  if (off) return Object.assign(off, { models: [] });
   const r = await call('GET', '/models');
   if (r.mock) return { mock: true, models: [], note: r.error };
-  if (r.error) return { error: r.error, models: [] };
+  if (r.error) return r.refused ? { error: r.error, models: [], refused: true } : { error: r.error, models: [] };
   const models = ((r.json && r.json.data) || []).map((m) => m.id).sort();
   return { models };
 }
-async function health() {
+async function health(opts) {
+  const off = offResult(opts);
+  if (off) return off;
   if (!hasKey()) return { ok: false, mode: 'mock', reason: 'NVIDIA_API_KEY not set (adapter works in mock mode; no live calls)' };
   const t0 = Date.now();
-  const r = await listModels();
-  if (r.error) return { ok: false, mode: 'live', reason: r.error };
+  const r = await listModels({ force: true }); // the switch was checked just above
+  if (r.error) return { ok: false, mode: r.refused ? 'refused' : 'live', reason: r.error };
   return { ok: true, mode: 'live', models: r.models.length, ms: Date.now() - t0, baseUrl: CONFIG.baseUrl };
 }
 // role → capability the assigned model MUST have (generic validation; Codex F2)
@@ -228,7 +320,11 @@ function routeFor(agent, func, forceOverride) {
   const blocked = !allowed && !forceOverride;
   return { agent, claudeTier: a.claudeTier, nvidiaRole: nvidiaRoleUsed, model: blocked ? null : primary, fallbackModel: fallback, premium: a.premium, why: a.why, prohibited: a.prohibited || [], policy, allowed, func: func || null, funcNote, warnings };
 }
-async function chat({ role, model, prompt, system, maxTokens, agent, func, forceOverride, overrideReason }) {
+async function chat({ role, model, prompt, system, maxTokens, agent, func, forceOverride, overrideReason }, opts) {
+  // Owner setting first (v2.7.0): nvidia=off means NO call at all — checked before anything else is resolved.
+  // An unreadable setting is OFF too (M3), with its own reason.
+  const ns = nvidiaState(opts);
+  if (!ns.on) return { skipped: true, reason: ns.reason };
   // usagePolicy enforcement (forced 2026-07-08; hardened 2026-07-09) — checked BEFORE model resolution / any network call.
   const na = normAgent(agent);
   // close the asymmetric hole: a PASSED-but-unknown agent slug (typo of a real Boss) must ERROR, not
@@ -282,7 +378,8 @@ async function chat({ role, model, prompt, system, maxTokens, agent, func, force
 }
 
 // Exported CONFIG is a REDACTED copy — the key never leaves this module (Fable security hardening).
-module.exports = { chat, health, listModels, routeFor, resolveFunction, loadEnv, CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '' }, modelForRole, mask };
+module.exports = { chat, health, listModels, routeFor, resolveFunction, loadEnv, CONFIG: { ...CONFIG, key: hasKey() ? '***set***' : '' }, modelForRole, mask, configOn,
+  nvidiaState, checkBaseUrl, NVIDIA_OFF_REASON, NVIDIA_UNREADABLE_REASON };
 
 // ---- CLI ----
 if (require.main === module) {
@@ -291,15 +388,24 @@ if (require.main === module) {
   // a flag's value must not be the next flag: `--force-override --reason --max-tokens 200` must NOT make
   // reason='--max-tokens' (fix 2026-07-09 checkup) — treat a following --token as "no value given".
   const arg = (n, d) => { const i = args.indexOf('--' + n); if (i < 0 || args[i + 1] === undefined) return d; const v = args[i + 1]; return String(v).startsWith('--') ? d : v; };
+  // M4: when the owner switched NVIDIA off (or the setting is unreadable), health/models make NO request unless
+  // --force; `route` never touches the network and only gets a note. One plain line, exit 3 (= act on this).
+  const ns = nvidiaState();
+  const force = args.includes('--force');
+  const offLine = ns.on ? null : 'NVIDIA OFF — ' + ns.reason + ' — no NVIDIA request made (check anyway: --force; turn it back on: /forge config set nvidia aan)';
+  const offNote = ns.on ? null : 'note: ' + ns.reason + ' — chat() is skipped (no NVIDIA call)' + (cmd === 'route' ? '; route is a local preview only' : '; --force: this ' + cmd + ' contacts NVIDIA anyway') + '. Turn it back on: /forge config set nvidia aan';
   (async () => {
+    if ((cmd === 'health' || cmd === 'models') && offLine && !force) { console.log(offLine); process.exitCode = 3; return; }
     if (cmd === 'health') {
-      const h = await health();
+      const h = await health({ force });
       console.log(h.ok ? 'NVIDIA OK (live) — ' + h.models + ' models · ' + h.ms + 'ms · ' + h.baseUrl : 'NVIDIA ' + (h.mode === 'mock' ? 'MOCK MODE (no key — NOT live-ready)' : 'FAIL') + ' — ' + h.reason);
+      if (offNote) console.log(offNote);
       // Mock is NOT a passing connectivity check (Codex F1): exit 1 unless explicitly allowed for offline flows.
       process.exitCode = h.ok ? 0 : (h.mode === 'mock' && args.includes('--allow-mock') ? 0 : 1); return;
     }
     if (cmd === 'models') {
-      const r = await listModels();
+      if (offNote) console.log(offNote);
+      const r = await listModels({ force });
       if (r.mock) { console.log('[mock — no NVIDIA_API_KEY] configured matrix models:'); (MATRIX.catalog || []).forEach((c) => console.log('  ' + c.id + '  [' + c.caps.join(',') + ']')); return; }
       if (r.error) { console.error('models fetch failed: ' + r.error); process.exitCode = 1; return; }
       console.log(r.models.length + ' live models on ' + CONFIG.baseUrl);
@@ -313,12 +419,17 @@ if (require.main === module) {
     }
     if (cmd === 'route') {
       const out = routeFor(args[1], arg('function'), args.includes('--force-override'));
+      if (offNote) console.error(offNote); // stderr, so the JSON on stdout stays parseable
       console.log(JSON.stringify(out, null, 2)); process.exitCode = out.error ? 1 : 0; return;
     }
     if (cmd === 'chat') {
       const out = await chat({ role: arg('role'), model: arg('model'), prompt: arg('prompt', 'Say: ok'), system: arg('system'), maxTokens: arg('max-tokens'),
         agent: arg('agent'), func: arg('function'), forceOverride: args.includes('--force-override'), overrideReason: arg('reason') });
-      if (out.skipped) { console.log('SKIPPED (' + (out.functionUnfit ? 'function-fit' : 'usagePolicy') + ') — ' + out.reason); process.exitCode = 3; return; }
+      if (out.skipped) {
+        const why = out.reason === NVIDIA_OFF_REASON || out.reason === NVIDIA_UNREADABLE_REASON ? 'config' : out.functionUnfit ? 'function-fit' : 'usagePolicy';
+        console.log('SKIPPED (' + why + ') — ' + out.reason + (why === 'config' ? ' (no NVIDIA call made; turn it back on: /forge config set nvidia aan)' : ''));
+        process.exitCode = 3; return;
+      }
       if (out.error) { console.error(mask(out.error)); process.exitCode = 1; return; }
       const tags = [out.policyOverridden ? 'POLICY-OVERRIDDEN' : '', out.bulkOffload ? 'BULK-OFFLOAD' : '', out.codeGateRequired ? 'CODE-GATE-REQUIRED' : '', out.func ? 'FUNC:' + out.func : ''].filter(Boolean);
       console.log((out.mock ? '[MOCK] ' : '[' + out.model + '] ') + (tags.length ? '[' + tags.join(' ') + '] ' : '') + out.content);

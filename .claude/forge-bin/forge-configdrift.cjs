@@ -46,6 +46,13 @@
  *   hard_rules            .claude/config/orchestration/FORGE_HARD_RULES.json
  *   recovery_policy       .claude/config/orchestration/FORGE_RECOVERY_POLICY.json
  *   project_claude_md     CLAUDE.md
+ *   config_schema         .claude/config/orchestration/FORGE_CONFIG_SCHEMA.json (v2.7.0: every setting, default, lock)
+ *   owner_config          .claude/FORGE_CONFIG.json — OPTIONAL: the owner's own settings (forge-config.cjs set).
+ *                         Absent is the normal state (all defaults), never a finding. A `config_changed` event
+ *                         (forge-config.cjs diff --run) announces it by TYPE, because it names settings, not a
+ *                         path; a type-only announcement can never make a no-op claim (the change may have come
+ *                         from the global file or a flag). When it changed, the report lists the settings whose
+ *                         set_at falls after the baseline (`owner_config_changes`): the owner changed them mid-run.
  *   skill_frontmatter:<n> .claude/skills/<n>/SKILL.md — THE FRONTMATTER BLOCK ONLY
  * The skill entries hash the frontmatter and not the body ON PURPOSE: the frontmatter is what decides whether
  * a skill is offered to the model at all (its name and description are the always-loaded trigger surface —
@@ -71,7 +78,10 @@
  * REPORT: {ok, comparable, run_id, generated_at, baseline_at, findings[], notes[], announced_changes[],
  *          unchanged, checked, reason}
  *   findings[]: {kind:'unannounced_change'|'noop_claim'|'source_removed'|'source_added', id, path, detail, claimed_by?}
- *   notes[]   : {kind:'formatting_only'|'unannounced_removal_note', id, detail} — informational, never flip ok
+ *   notes[]   : {kind:'formatting_only'|'unannounced_removal_note'|'not_in_baseline'|'owner_setting_elsewhere', id, detail}
+ *               — informational, never flip ok. not_in_baseline = a FIXED source added to this module after the
+ *               run's baseline was written (an older baseline cannot know it; "cannot tell", never a red).
+ *   owner_config_changes[]: {key, value, set_at, set_by} — owner settings set after the baseline (see above).
  *   ok = findings.length === 0. comparable=false means there was no baseline to compare against (an honest
  *   "cannot tell", never a red).
  *
@@ -83,6 +93,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 
 const BASELINE_FILE = 'config-baseline.json';
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -96,7 +107,10 @@ const FIXED_SOURCES = [
   { id: 'hard_rules', kind: 'json', rel: ['.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'] },
   { id: 'recovery_policy', kind: 'json', rel: ['.claude', 'config', 'orchestration', 'FORGE_RECOVERY_POLICY.json'] },
   { id: 'project_claude_md', kind: 'text', rel: ['CLAUDE.md'] },
+  { id: 'config_schema', kind: 'json', rel: ['.claude', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'] },
+  { id: 'owner_config', kind: 'json', rel: ['.claude', 'FORGE_CONFIG.json'], optional: true },
 ];
+const FIXED_IDS = FIXED_SOURCES.map((s) => s.id);
 
 /** Event types that can ANNOUNCE a governance change. Every one is already registered in
  *  forge-dashboard/log-event.cjs KNOWN_EVENT_TYPES — this module invents no event vocabulary, exactly like
@@ -106,6 +120,11 @@ const ANNOUNCE_EVENT_TYPES = new Set([
   'file_changed', 'claude_md_created', 'claude_md_updated',
   'custom_skill_created', 'custom_skill_updated', 'decision_logged',
 ]);
+/** Event types that announce a source by TYPE rather than by path (v2.7.0). config_changed is logged by
+ *  forge-config.cjs diff --run with the changed setting keys and no file path, so it announces owner_config
+ *  directly. Such an announcement never produces a noop_claim: the logged change may have come from another
+ *  layer (the global settings file, a per-run flag, the owner profile) while the project file stayed the same. */
+const TYPE_ANNOUNCES = new Map([['config_changed', ['owner_config']]]);
 /** Where a path may sit on an announcing event — the same field vocabulary forge-verify.cjs's isolation
  *  tripwire already scans, plus `config_path` for a decision that names the file it governs. */
 const ANNOUNCE_PATH_FIELDS = ['path', 'file', 'config_path', 'target_path', 'output_path'];
@@ -185,7 +204,7 @@ function listSkillDirs(root, maxDepth) {
  *  Pure path computation: it does not read a byte, so a caller can show what WOULD be guarded. */
 function sources(root) {
   const r = path.resolve(root);
-  const out = FIXED_SOURCES.map((s) => ({ id: s.id, kind: s.kind, path: path.join(r, ...s.rel) }));
+  const out = FIXED_SOURCES.map((s) => Object.assign({ id: s.id, kind: s.kind, path: path.join(r, ...s.rel) }, s.optional ? { optional: true } : {}));
   for (const s of listSkillDirs(r)) out.push({ id: 'skill_frontmatter:' + s.name, kind: 'frontmatter', path: s.path });
   return out;
 }
@@ -194,6 +213,10 @@ function sources(root) {
  *  entry: an entry that silently vanishes between baseline and now would read as "nothing to compare" when it
  *  actually means the file was deleted. */
 function hashSource(src) {
+  const e = hashSourceRaw(src);
+  return src.optional ? Object.assign(e, { optional: true }) : e;
+}
+function hashSourceRaw(src) {
   const buf = readFileSafe(src.path);
   if (buf === null) return { id: src.id, kind: src.kind, path: src.path, exists: false, sha256: null, semantic_sha256: null, bytes: 0 };
   if (src.kind === 'frontmatter') {
@@ -243,10 +266,11 @@ function writeBaseline(root, runId, opts) {
     _doc: 'Governance-config baseline for this run, written by forge-bin/forge-configdrift.cjs at run start '
       + 'and diffed at run end (`diff <run_id>`). ADVISORY: a finding means a human should look, never that '
       + 'the run failed. Hashes cover the files that decide how a run BEHAVES — the agent registry, the agent '
-      + 'tool policy, the hard rules, the recovery policy, the project CLAUDE.md, and the FRONTMATTER of every '
-      + 'project skill (not their bodies).',
+      + 'tool policy, the hard rules, the recovery policy, the project CLAUDE.md, the settings schema, the '
+      + 'owner settings file (optional), and the FRONTMATTER of every project skill (not their bodies).',
     run_id: runId,
     generated_at: snap.generated_at,
+    fixed_ids: FIXED_IDS,
     root: snap.root,
     entries: snap.entries,
   };
@@ -302,8 +326,19 @@ function eventPaths(e, root) {
  *  path is a fact, and this check must not be satisfiable by wording. */
 function announcementsFor(events, entries, root) {
   const map = new Map();
+  const add = (id, rec) => { if (!map.has(id)) map.set(id, []); map.get(id).push(rec); };
   for (const e of events) {
-    if (!e || typeof e !== 'object' || !ANNOUNCE_EVENT_TYPES.has(e.event_type)) continue;
+    if (!e || typeof e !== 'object') continue;
+    if (TYPE_ANNOUNCES.has(e.event_type)) {
+      const ids = TYPE_ANNOUNCES.get(e.event_type);
+      const keys = Array.isArray(e.changed) ? e.changed.map((c) => c && c.key).filter((k) => typeof k === 'string') : [];
+      for (const entry of entries) {
+        if (!ids.includes(entry.id)) continue;
+        add(entry.id, { event_type: e.event_type, agent: (typeof e.agent === 'string' && e.agent.trim()) || null, note: (typeof e.note === 'string' && e.note.trim()) || '', by_type: true, keys });
+      }
+      continue;
+    }
+    if (!ANNOUNCE_EVENT_TYPES.has(e.event_type)) continue;
     const paths = eventPaths(e, root);
     if (!paths.length) continue;
     for (const entry of entries) {
@@ -327,6 +362,64 @@ function changedHow(before, after) {
   if (before.sha256 === after.sha256) return 'same';
   if (before.semantic_sha256 && after.semantic_sha256 && before.semantic_sha256 === after.semantic_sha256) return 'formatting_only';
   return 'changed';
+}
+
+/** ownerSettingsSince(file, sinceIso) -> [{key, value, set_at, set_by}] — the settings in the owner settings
+ *  file whose set_at is at or after the baseline time: the owner changed them while this run was going. A
+ *  removal leaves no set_at behind, so an empty list next to a changed hash means a removal or a hand edit.
+ *  Never throws: an unreadable file simply yields no names (its hash change is still reported). */
+function ownerSettingsSince(file, sinceIso) {
+  const since = Date.parse(sinceIso || '');
+  let data;
+  try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return []; }
+  const settings = data && typeof data.settings === 'object' && data.settings && !Array.isArray(data.settings) ? data.settings : {};
+  const out = [];
+  for (const [key, ent] of Object.entries(settings)) {
+    const at = ent && typeof ent.set_at === 'string' ? Date.parse(ent.set_at) : NaN;
+    if (Number.isFinite(at) && (!Number.isFinite(since) || at >= since)) out.push({ key, value: ent.value, set_at: ent.set_at, set_by: typeof ent.set_by === 'string' ? ent.set_by : null });
+  }
+  return out;
+}
+function ownerChangeText(changes, runId) {
+  const named = changes.length
+    ? 'the owner changed ' + changes.length + ' setting(s) mid-run: ' + changes.map((c) => c.key + '=' + JSON.stringify(c.value) + ' (set ' + c.set_at + (c.set_by ? ' by ' + c.set_by : '') + ')').join(', ')
+    : 'no setting carries a set_at after the run start, so this was a removal or a hand edit';
+  return named + ' — run `node .claude/forge-bin/forge-config.cjs diff --run ' + runId + '` so Forge logs config_changed and acts on it';
+}
+
+/**
+ * bodyChangedPerGit(root, absPath) -> {checked, changed, reason} — NOOP_CLAIM REFINEMENT (2026-09-24, wp23).
+ * A `skill_frontmatter:<n>` source hashes ONLY the frontmatter block (see hashSourceRaw's `frontmatter`
+ * branch) — that is deliberate (the frontmatter decides when a skill fires), but it means a real BODY-only
+ * edit (prose/examples changed, trigger rule unchanged) is byte-identical on this source and would fall
+ * straight into the `noop_claim` finding below even though the file genuinely changed. When git is
+ * available, ask it whether the file actually differs (pending working-tree changes OR untracked/staged) as
+ * real, independent evidence the file was touched at all. FAIL-HONEST: git unavailable, not a repo, or a
+ * command error all resolve to checked:false — the caller keeps the noop_claim finding rather than trusting
+ * an unverifiable "it changed" claim.
+ */
+function bodyChangedPerGit(root, absPath) {
+  let rel;
+  try { rel = path.relative(root, absPath); } catch { return { checked: false, changed: false, reason: 'could not compute a relative path' }; }
+  const opts = { cwd: root, encoding: 'utf8' };
+  let probe;
+  try { probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], opts); }
+  catch (e) { return { checked: false, changed: false, reason: 'git unavailable: ' + e.message }; }
+  if (!probe || probe.error || probe.status !== 0 || !/true/.test(String(probe.stdout || '').trim())) {
+    return { checked: false, changed: false, reason: 'git unavailable or this is not a git working tree' };
+  }
+  // untracked or staged-different files never show up in a plain `git diff` — `git status --porcelain` catches those too.
+  let status;
+  try { status = spawnSync('git', ['status', '--porcelain', '--', rel], opts); } catch (e) { return { checked: false, changed: false, reason: 'git status threw: ' + e.message }; }
+  if (status && !status.error && status.status === 0 && String(status.stdout || '').trim()) {
+    return { checked: true, changed: true, reason: 'git status shows a pending change for ' + rel };
+  }
+  let diff;
+  try { diff = spawnSync('git', ['diff', '--quiet', '--', rel], opts); } catch (e) { return { checked: false, changed: false, reason: 'git diff threw: ' + e.message }; }
+  if (!diff || diff.error) return { checked: false, changed: false, reason: 'git diff could not run' };
+  if (diff.status === 1) return { checked: true, changed: true, reason: 'git diff shows a change for ' + rel };
+  if (diff.status === 0) return { checked: true, changed: false, reason: 'git diff shows no change for ' + rel };
+  return { checked: false, changed: false, reason: 'git diff exited ' + diff.status + ' (error, not a clean 0/1)' };
 }
 
 /**
@@ -359,6 +452,13 @@ function checkDrift(root, runId, opts) {
   const notes = [];
   const announcedChanges = [];
   let unchanged = 0;
+  const knownFixed = Array.isArray(baseline.fixed_ids) ? baseline.fixed_ids : [];
+  let ownerChanges = [];
+  const ownerNote = (after) => {
+    if (after.id !== 'owner_config' || !after.exists) return {};
+    ownerChanges = ownerSettingsSince(after.path, baseline.generated_at);
+    return { owner_settings: ownerChanges };
+  };
 
   for (const after of now.entries) {
     const before = beforeById.get(after.id);
@@ -366,8 +466,19 @@ function checkDrift(root, runId, opts) {
     const claimedBy = anns.length ? (anns.find((a) => a.agent) || anns[0]).agent : null;
 
     if (!before) {
+      // nothing to compare and nothing appeared: an absent source the baseline never listed is simply absent
+      if (!after.exists) { unchanged++; continue; }
       // a source that did not exist at baseline: new skill, new config file
-      if (anns.length) { announcedChanges.push({ id: after.id, path: after.path, kind: 'added', announced_by: claimedBy, events: anns }); continue; }
+      if (anns.length) { announcedChanges.push(Object.assign({ id: after.id, path: after.path, kind: 'added', announced_by: claimedBy, events: anns }, ownerNote(after))); continue; }
+      if (FIXED_IDS.includes(after.id) && !knownFixed.includes(after.id)) {
+        // a FIXED source this module learned about after the baseline was written: cannot tell, never a red
+        notes.push({
+          kind: 'not_in_baseline', id: after.id,
+          detail: after.id + ' (' + after.path + ') is guarded since after this run\'s baseline was written, so there is no '
+            + 'before-picture to compare it with — not comparable for this source, which is not the same as clean',
+        });
+        continue;
+      }
       findings.push({
         kind: 'source_added', id: after.id, path: after.path,
         detail: 'a governance source appeared during this run that the baseline never covered (' + after.path
@@ -387,26 +498,56 @@ function checkDrift(root, runId, opts) {
       continue;
     }
     if (!before.exists && after.exists) {
-      if (anns.length) { announcedChanges.push({ id: after.id, path: after.path, kind: 'created', announced_by: claimedBy, events: anns }); continue; }
-      findings.push({
+      const owner = ownerNote(after);
+      if (anns.length) { announcedChanges.push(Object.assign({ id: after.id, path: after.path, kind: 'created', announced_by: claimedBy, events: anns }, owner)); continue; }
+      findings.push(Object.assign({
         kind: 'source_added', id: after.id, path: after.path,
-        detail: 'governance source ' + after.id + ' did not exist at run start and exists now (' + after.path + ') with no event announcing it',
-      });
+        detail: 'governance source ' + after.id + ' did not exist at run start and exists now (' + after.path + ') with no event announcing it'
+          + (owner.owner_settings ? ' — ' + ownerChangeText(owner.owner_settings, runId) : ''),
+      }, owner));
       continue;
     }
     if (!before.exists && !after.exists) { unchanged++; continue; }
 
     const how = changedHow(before, after);
+    const pathAnns = anns.filter((a) => !a.by_type);
+    if (how === 'same' && anns.length && !pathAnns.length) {
+      // only a TYPE announcement (config_changed) and this file is byte-identical: the logged change came from
+      // another layer. Informational, never a no-op claim.
+      notes.push({
+        kind: 'owner_setting_elsewhere', id: after.id,
+        detail: anns[0].event_type + (anns[0].keys && anns[0].keys.length ? ' (' + anns[0].keys.join(', ') + ')' : '')
+          + ' was logged while ' + after.path + ' stayed the same — that change came from another layer (the global '
+          + 'settings file, a per-run flag or the owner profile)',
+      });
+      unchanged++;
+      continue;
+    }
     if (how === 'same') {
-      if (anns.length) {
-        // DIRECTION 2 — the claim that changed nothing.
-        findings.push({
-          kind: 'noop_claim', id: after.id, path: after.path, claimed_by: claimedBy,
-          detail: 'a ' + anns[0].event_type + ' event' + (claimedBy ? ' from ' + claimedBy : '') + ' claims '
-            + after.id + ' was changed' + (anns[0].note ? ' ("' + anns[0].note + '")' : '') + ', but its hash is '
-            + 'byte-identical to the run-start baseline (' + after.sha256.slice(0, 12) + '…) — before == after, so '
-            + 'this is a NO-OP and the claim is rejected: the work package it belongs to is not done',
-        });
+      if (pathAnns.length) {
+        // NOOP_CLAIM REFINEMENT (2026-09-24, wp23): a skill_frontmatter:<n> source only ever hashes the
+        // frontmatter block, so a real BODY-only edit is "same" here even though the file genuinely changed.
+        // Ask git (fail-honest: unavailable/not-a-repo/error all keep the noop_claim below) before rejecting
+        // the claim outright.
+        const gitCheck = after.kind === 'frontmatter' ? bodyChangedPerGit(r, after.path) : { checked: false, changed: false };
+        if (gitCheck.checked && gitCheck.changed) {
+          notes.push({
+            kind: 'body_only_change', id: after.id,
+            detail: 'a ' + anns[0].event_type + ' event' + (claimedBy ? ' from ' + claimedBy : '') + ' claims '
+              + after.id + ' was changed' + (anns[0].note ? ' ("' + anns[0].note + '")' : '') + ' — the frontmatter '
+              + 'is unchanged; the body changed — not a rule change (git confirms: ' + gitCheck.reason + ')',
+          });
+          unchanged++;
+        } else {
+          // DIRECTION 2 — the claim that changed nothing (git could not confirm otherwise, or genuinely agrees).
+          findings.push({
+            kind: 'noop_claim', id: after.id, path: after.path, claimed_by: claimedBy,
+            detail: 'a ' + anns[0].event_type + ' event' + (claimedBy ? ' from ' + claimedBy : '') + ' claims '
+              + after.id + ' was changed' + (anns[0].note ? ' ("' + anns[0].note + '")' : '') + ', but its hash is '
+              + 'byte-identical to the run-start baseline (' + after.sha256.slice(0, 12) + '…) — before == after, so '
+              + 'this is a NO-OP and the claim is rejected: the work package it belongs to is not done',
+          });
+        }
       } else unchanged++;
       continue;
     }
@@ -420,18 +561,19 @@ function checkDrift(root, runId, opts) {
       continue;
     }
     // how === 'changed'
+    const owner = ownerNote(after);
     if (anns.length) {
-      announcedChanges.push({ id: after.id, path: after.path, kind: 'changed', announced_by: claimedBy, events: anns });
+      announcedChanges.push(Object.assign({ id: after.id, path: after.path, kind: 'changed', announced_by: claimedBy, events: anns }, owner));
     } else {
       // DIRECTION 1 — the change nobody announced.
-      findings.push({
+      findings.push(Object.assign({
         kind: 'unannounced_change', id: after.id, path: after.path,
         detail: 'governance source ' + after.id + ' (' + after.path + ') changed during this run — '
           + before.sha256.slice(0, 12) + '… -> ' + after.sha256.slice(0, 12) + '… — and no event in this run\'s '
           + 'events.jsonl announced it. An undeclared edit to the rules a run is judged by is not a small '
           + 'bookkeeping miss: every event logged afterwards was evaluated under different rules than the ones '
-          + 'the run started with',
-      });
+          + 'the run started with' + (owner.owner_settings ? ' — ' + ownerChangeText(owner.owner_settings, runId) : ''),
+      }, owner));
     }
   }
 
@@ -454,6 +596,7 @@ function checkDrift(root, runId, opts) {
     generated_at: now.generated_at,
     baseline_at: baseline.generated_at || null,
     findings, notes, announced_changes: announcedChanges,
+    owner_config_changes: ownerChanges,
     unchanged, checked: now.entries.length,
     reason: 'compared ' + now.entries.length + ' governance source(s) against the baseline recorded '
       + (baseline.generated_at || 'at an unrecorded time'),
@@ -464,16 +607,19 @@ function checkDrift(root, runId, opts) {
 function summarize(rep) {
   if (!rep) return 'config drift: unavailable';
   if (!rep.comparable) return 'not comparable — ' + rep.reason;
+  const oc = Array.isArray(rep.owner_config_changes) ? rep.owner_config_changes : [];
   const head = rep.checked + ' governance source(s) checked · ' + rep.unchanged + ' unchanged · '
-    + rep.announced_changes.length + ' announced change(s)';
+    + rep.announced_changes.length + ' announced change(s)'
+    + (oc.length ? ' · owner changed ' + oc.length + ' setting(s) mid-run (' + oc.map((c) => c.key).join(', ') + ')' : '');
   if (rep.ok) return head + ' · no undeclared changes and no no-op claims';
   return head + ' · ' + rep.findings.length + ' finding(s): ' + rep.findings.map((f) => f.kind + ' ' + f.id).join(', ');
 }
 
 module.exports = {
   sources, snapshot, writeBaseline, readBaseline, checkDrift, summarize,
-  announcementsFor, frontmatterBlock, canonicalJson, changedHow, hashSource, readEvents,
-  FIXED_SOURCES, ANNOUNCE_EVENT_TYPES, ANNOUNCE_PATH_FIELDS, BASELINE_FILE,
+  announcementsFor, frontmatterBlock, canonicalJson, changedHow, hashSource, readEvents, ownerSettingsSince,
+  bodyChangedPerGit,
+  FIXED_SOURCES, ANNOUNCE_EVENT_TYPES, TYPE_ANNOUNCES, ANNOUNCE_PATH_FIELDS, BASELINE_FILE,
 };
 
 // ---- CLI ----
@@ -506,6 +652,7 @@ if (require.main === module) {
       console.log('Forge config drift — ' + runId + ' (ADVISORY)');
       console.log('  ' + summarize(rep));
       for (const a of rep.announced_changes) console.log('  ✓ announced ' + a.kind + ': ' + a.id + (a.announced_by ? ' by ' + a.announced_by : ''));
+      for (const c of rep.owner_config_changes || []) console.log('  owner setting changed mid-run: ' + c.key + '=' + JSON.stringify(c.value) + ' (set ' + c.set_at + (c.set_by ? ' by ' + c.set_by : '') + ')');
       for (const n of rep.notes) console.log('  note (' + n.kind + '): ' + n.detail);
       for (const f of rep.findings) console.log('  ⚠ ' + f.kind.toUpperCase() + ' ' + f.id + ' — ' + f.detail);
       return;

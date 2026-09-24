@@ -1,9 +1,14 @@
 ---
 name: forge-verify
-description: Run Forge's verify-loop — after an agent (or a work package) claims to be done, check whether that claim actually holds against events.jsonl and the ticket store, and send the task back to the agent when it doesn't. Use after every agent/work-package completion in a /forge run, and again at the end of the run before the final report.
+description: Runs Forge's verify-loop — checks a completion claim against events.jsonl and the ticket store, sends it back if false. Use after every agent/work-package completion in a run.
 ---
 
 # forge-verify — the verify-loop
+
+**Self-improvement substrate (wp-skill-evals, 2026-07-31):** before applying this skill, read
+`learnings.md` in this skill's own folder and honor its corrections. After a run that produced a
+genuine correction (an owner fix, a false assumption caught, a preference stated), append it to
+`learnings.md` with a date and real evidence — never invent a lesson that didn't happen.
 
 Closes the honesty gap between "an agent said it's done" and "the recorded events actually show it's
 done." Never trusts a completion claim on its own.

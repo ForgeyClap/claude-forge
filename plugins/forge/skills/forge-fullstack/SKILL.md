@@ -1,11 +1,11 @@
 ---
 name: forge-fullstack
-description: "Forge playbook for full-stack apps with frontend + backend + database + auth. Use when building a complete application, web app, SaaS, CRUD app, or data-backed dashboard with a database and login — keywords: full-stack, app, SaaS, backend, API, database, Postgres, Supabase, auth, login, JWT, session, signup, CRUD, end-to-end. Coordinates frontend, backend, DB, and auth specialists across git worktrees."
+description: Forge playbook for full-stack apps — frontend + backend + database + auth. Use for full-stack, SaaS, CRUD app, Postgres, Supabase, JWT, session, signup, dashboard.
 ---
 
 # Forge playbook — Full-stack app
 
-**Do not duplicate ECC skills — defer to:** `make-plan`/`do` (planning+execution), `using-git-worktrees` (parallel isolation), `subagent-driven-development`. Orchestration only.
+**Do not duplicate ECC skills — defer to:** `make-plan`/`do` (planning+execution), `using-git-worktrees` (parallel isolation), `subagent-driven-development` (both ship with Forge as pinned vendored skills). Orchestration only.
 
 ## Hard rules
 - Auth on **every** protected route, enforced server-side (authn + authz).

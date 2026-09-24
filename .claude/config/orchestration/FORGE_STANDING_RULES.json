@@ -113,6 +113,20 @@
       "status": "active",
       "cannot_override_core": false,
       "notes": null
+    },
+    {
+      "id": "does-it-for-you",
+      "text": "Forge runs commands, scripts, installs and builds itself and never asks the user to run a file or code; it does not ask 'shall I continue?' between phases — only a hard gate or a real usage-limit pause interrupts.",
+      "scope": "global",
+      "trigger": "always",
+      "domain": null,
+      "glob": null,
+      "topic": "autonomy",
+      "source": "owner /goal 2026-09-24 (_scratch/owner-goal-2026-09-24.txt) — verbatim: \"ik heb hier ook meegemaakt dat claude zegt dat ik handmatig een code of een bestand moet runnen bij mij zelf maar ik weet dus niet helemaal hoe dat moet en wil het liefst aan jou overlaten dat jij dan al die dingen doet zonder het te vragen dat geldt ook bij de fases dus stel er zijn er 10 fases en dat die dan steeds vraagt moet ik verder of moet ik dit...\"",
+      "confidence": "high",
+      "status": "active",
+      "cannot_override_core": false,
+      "notes": "owner directive 2026-09-24; reinforces autonomy_default"
     }
   ]
 }

@@ -129,6 +129,12 @@
  *                   being guarded is silent growth: a number nobody sees is the state that let the skill
  *                   list get truncated on 31 July with no warning at all.
  *
+ * BEGINNER SETUP (wp17, 2026-09-24) — six ADVISORY-ONLY checks under their own top-level key
+ * `report.advisory.beginner_setup`, one printSummary line each (see beginnerSetup() for the contract):
+ *   claude-md-size · path-tools · bypass-mode · wsl-mnt-c · claude-doctor · prompt-coach-present.
+ * They describe the MACHINE and the owner's preferences (a long CLAUDE.md, a missing `node`, a bypass default,
+ * a WSL project under /mnt/c), never a defect in this project's code, so none can ever turn the doctor red.
+ *
  * V9-INTEGRATE ENFORCEMENT OVERRIDE PATH (2026-07-22): a promoted-to-ENFORCED check's failure is recoverable
  * without editing code — config/orchestration/FORGE_HARD_RULES.json's `doctor_check_overrides` array (see
  * loadDoctorCheckOverrides() below) lets the owner log an explicit, reasoned, timestamped override for
@@ -1721,7 +1727,18 @@ function skillHygiene(root) {
 }
 
 /**
- * installationProfile(root) -> {profile:'development'|'redistribution', vendored:[ids], checked, reason}
+ * installationProfile(root) -> {profile:'development'|'redistribution', marker, marker_present, vendored:[ids],
+ *   checked, reason}
+ *
+ * DISCRIMINATOR CHANGED (wp17, 2026-09-24): the verdict now keys on `.claude/config/forge-dev-tree.json` (a
+ * parseable `{"dev_tree": true}`), NOT on "carries vendored skills". The history below explains why vendoring
+ * was once a sound marker; it stopped being one the day the public distribution began SHIPPING vendored skills
+ * (13 obra/superpowers skills + frontend-design, wp6): a fresh clone would then read as the development tree
+ * and run exact-count assertions against a tree that honestly holds fewer skills. The marker file is the
+ * difference that survives: it exists only in the canonical checkout and the release sync deliberately never
+ * ships it. The vendoring pins are still counted and quoted in `reason`, because a skip must be able to say
+ * what it saw. The two profile names are kept unchanged on purpose — forge-configdrift.test.cjs and
+ * forge-contextbudget.test.cjs gate on `profile === 'development'`.
  *
  * WHICH TREE IS THIS? (2026-08-02) — not a check, and deliberately never folded into any verdict. It answers
  * one narrow question that some assertions genuinely need to ask before they mean anything: is this the
@@ -1735,16 +1752,26 @@ function skillHygiene(root) {
  * destroy exactly the drift detection they were written for — a count that accepts two answers guards
  * nothing.
  *
- * The marker is the difference itself, and it is EVIDENCE rather than a label: a skill counts as vendored
- * only when detectVendorPin() finds BOTH an upstream `Source:` and a `Pinned commit:` hash that the
- * vendoring step actually wrote into the file (see that function's own doc for why a half-marker must not
- * buy anything). A tree that carries such skills is the tree those pins were measured against; a tree with
- * none of them is a redistribution, and the pins are honestly not applicable there — which is a SKIP with a
- * stated reason, never a quiet pass.
+ * (Historical, 2026-08-02 until wp17 — superseded by the dev-tree marker above.) The marker WAS the
+ * difference itself: a skill counts as vendored only when detectVendorPin() finds BOTH an upstream `Source:`
+ * and a `Pinned commit:` hash that the vendoring step actually wrote into the file, and a tree without any
+ * such skill was treated as a redistribution. What remains true: a pinned assertion outside the development
+ * tree is a SKIP with a stated reason, never a quiet pass.
  *
  * Deliberately NOT a doctor check and NOT in `checks`: neither profile is a defect. Never throws — an
  * unreadable skill is simply not counted, exactly as skillHygiene() treats it.
  */
+const DEV_TREE_MARKER_REL = '.claude/config/forge-dev-tree.json';
+/** readDevTreeMarker(root) -> {present, valid, error?} — the marker counts only when it parses AND says
+ *  `dev_tree: true`; an empty or garbled file is reported, never promoted to "development". Never throws. */
+function readDevTreeMarker(root) {
+  const p = path.join(claudeDir(root), 'config', 'forge-dev-tree.json');
+  if (!fs.existsSync(p)) return { present: false, valid: false };
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return data && data.dev_tree === true ? { present: true, valid: true } : { present: true, valid: false, error: 'dev_tree is not true' };
+  } catch (e) { return { present: true, valid: false, error: e.code || e.name }; }
+}
 function installationProfile(root) {
   const cd = claudeDir(root);
   const vendored = [];
@@ -1755,14 +1782,20 @@ function installationProfile(root) {
     checked++;
     if (detectVendorPin(text)) vendored.push(rel.replace(/^skills\//, '').replace(/\/SKILL\.md$/, ''));
   }
-  const dev = vendored.length > 0;
+  const marker = readDevTreeMarker(root);
+  const dev = marker.valid;
+  const pins = vendored.length + ' of ' + checked + ' skills carry an upstream Source: + Pinned commit: header';
   return {
     profile: dev ? 'development' : 'redistribution',
+    marker: DEV_TREE_MARKER_REL,
+    marker_present: marker.present,
     vendored: vendored.sort(),
     checked,
     reason: dev
-      ? 'development tree: ' + vendored.length + ' of ' + checked + ' skills carry an upstream Source: + Pinned commit: header'
-      : 'not the development tree: none of the ' + checked + ' skills under .claude/skills carry a vendoring pin, so the vendored third-party skills these counts were measured with are absent',
+      ? 'development tree: ' + DEV_TREE_MARKER_REL + ' present (' + pins + ')'
+      : marker.present
+        ? 'not the development tree: ' + DEV_TREE_MARKER_REL + ' exists but is not a valid {"dev_tree": true} marker (' + marker.error + '); ' + pins
+        : 'not the development tree: ' + DEV_TREE_MARKER_REL + ' (the canonical-checkout marker the release sync never ships) is absent, so the exact counts measured in the development tree do not apply; ' + pins,
   };
 }
 
@@ -1805,8 +1838,234 @@ function contextBudgetCheck(root) {
   catch (e) { return { ok: true, reason: 'forge-contextbudget.measure threw: ' + e.message, posts: [], findings: [], total_approx_tokens: 0 }; }
 }
 
-function runDoctor(root) {
+// ===========================================================================================================
+// BEGINNER SETUP (wp17, 2026-09-24) — ADVISORY-ONLY, report.advisory.beginner_setup. The setup traps a
+// first-time user hits and a doctor can see (research: .claude/forge-research/beginner-sweep-2026-09-24/
+// web-track-a.md): A3 an over-long CLAUDE.md gets ignored · A32/B18 `claude`/`git`/`node` "not recognized" ·
+// a native Claude Code install needs no Node while every Forge tool is a .cjs file · A20/B9 bypassPermissions
+// as a default · B22 a WSL project under /mnt/c · A35 `claude doctor` exists and nobody knows it.
+// Contract of every check: {id, ok, level:'ok'|'info'|'warn'|'n-a', detail, ms, ...evidence}; ok is false
+// exactly when level is 'warn'. Each result passes through applyDoctorOverride() under its printed id, so an
+// owner can acknowledge a deliberate warn (a throwaway VM that really runs bypassPermissions) with the same
+// reasoned doctor_check_overrides entry the enforced checks use. Nothing here reads the user's home
+// directory: only the project root, the PATH it is handed, and the tools that PATH resolves to.
+// ===========================================================================================================
+const CLAUDE_MD_MAX_LINES = 200;
+const BEGINNER_PATH_TOOLS = ['claude', 'git', 'node'];
+const TOOL_VERSION_TIMEOUT_MS = 3000;
+const CLAUDE_DOCTOR_TIMEOUT_MS = 5000;
+const CLAUDE_DOCTOR_MAX_LINES = 5;
+const PATH_MISSING_HINT = 'Close and reopen your terminal; if it is still missing, the install folder is not on PATH.';
+const NODE_MISSING_HINT = "Forge's own tools are Node scripts and need Node 18 or newer, even though Claude Code itself does not.";
+const WIN_EXEC_EXTS = ['.COM', '.EXE', '.BAT', '.CMD'];
+const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+function envGet(env, name) {
+  if (!env) return undefined;
+  if (env[name] !== undefined) return env[name];
+  const key = Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase());
+  return key === undefined ? undefined : env[key];
+}
+function beginnerResult(id, level, detail, extra) {
+  return Object.assign({ id, ok: level !== 'warn', level, detail }, extra || {});
+}
+/** safeCheck — times one check and turns a throw into a visible warn. An advisory must never be able to take
+ *  down the doctor it only advises, but a check that crashed is not "fine" either. */
+function safeCheck(id, fn) {
+  const t0 = Date.now();
+  try { return Object.assign({}, fn(), { ms: Date.now() - t0 }); }
+  catch (e) { return beginnerResult(id, 'warn', 'check could not run: ' + e.message, { ms: Date.now() - t0 }); }
+}
+function textLines(text) {
+  if (!text) return 0;
+  const n = text.split(/\r?\n/).length;
+  return /\n$/.test(text) ? n - 1 : n;
+}
+function cleanLines(text, max) {
+  return String(text || '').replace(ANSI_RE, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, max)
+    .map((l) => (l.length > 160 ? l.slice(0, 157) + '...' : l));
+}
+
+/** claude-md-size — the project CLAUDE.md (root, or .claude/CLAUDE.md) line count against Anthropic's ~200
+ *  guidance. Absent is fine and said so; unreadable is a warn (Claude Code cannot load it either). */
+function claudeMdSize(root) {
+  const files = [];
+  for (const rel of ['CLAUDE.md', '.claude/CLAUDE.md']) {
+    const abs = path.join(root, rel);
+    if (!fs.existsSync(abs)) continue;
+    try { files.push({ file: rel, lines: textLines(fs.readFileSync(abs, 'utf8')) }); }
+    catch (e) { files.push({ file: rel, lines: null, error: e.code || e.message }); }
+  }
+  if (!files.length) return beginnerResult('claude-md-size', 'ok', 'no project CLAUDE.md — nothing to measure', { files });
+  const listing = files.map((f) => f.file + ' ' + (f.lines === null ? 'UNREADABLE (' + f.error + ')' : f.lines + ' lines')).join(' · ');
+  const long = files.some((f) => f.lines > CLAUDE_MD_MAX_LINES);
+  const unreadable = files.some((f) => f.lines === null);
+  if (!long && !unreadable) return beginnerResult('claude-md-size', 'info', listing + ' (within the ~' + CLAUDE_MD_MAX_LINES + '-line guidance)', { files });
+  return beginnerResult('claude-md-size', 'warn', listing
+    + (long ? ' — over ~' + CLAUDE_MD_MAX_LINES + ' lines. Anthropic: long CLAUDE.md files get ignored; move procedures into skills' : '')
+    + (unreadable ? ' — a CLAUDE.md that cannot be read is never loaded' : ''), { files });
+}
+
+/** resolveOnPath(name, env, platform) -> absolute path | null. The same lookup the shell does, in-process:
+ *  `where`/`which` were measured at 437-470 ms per call on Windows, which alone breaks this check's 300 ms
+ *  budget three times over. Windows: every PATH dir x PATHEXT (.com/.exe/.bat/.cmd only); POSIX: an
+ *  executable regular file. Never spawns, never throws. */
+function resolveOnPath(name, env, platform) {
+  const isWin = platform === 'win32';
+  // Windows PATH entries may be wrapped in quotes (cmd strips them); a POSIX PATH entry is taken literally.
+  const dirs = String(envGet(env, 'PATH') || '').split(isWin ? ';' : ':').map((d) => (isWin ? d.trim().replace(/^"(.*)"$/, '$1') : d)).filter(Boolean);
+  let exts = [''];
+  if (isWin) {
+    const fromEnv = String(envGet(env, 'PATHEXT') || '').split(';').map((e) => e.trim().toUpperCase()).filter((e) => WIN_EXEC_EXTS.includes(e));
+    exts = (fromEnv.length ? fromEnv : WIN_EXEC_EXTS).map((e) => e.toLowerCase());
+  }
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, name + ext);
+      try {
+        if (!fs.statSync(candidate).isFile()) continue;
+        if (!isWin) fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch { /* not here — keep looking */ }
+    }
+  }
+  return null;
+}
+/** spawnResolved — run an already-resolved tool read-only: no shell, stdin closed (so nothing can wait for a
+ *  keypress), hard timeout. Node refuses to spawn .cmd/.bat directly since the 2024 batch-file hardening, so
+ *  those go through cmd.exe with ONE pre-quoted command line, verbatim — the same /d /s /c form Node itself
+ *  builds for a shell spawn. The arguments are fixed literals chosen by this file, never user input. */
+function spawnResolved(file, args, env, timeoutMs, cwd) {
+  const base = { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env, cwd, shell: false };
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
+    const comspec = envGet(env, 'ComSpec') || envGet(process.env, 'ComSpec') || 'cmd.exe';
+    return spawnSync(comspec, ['/d', '/s', '/c', '""' + file + '" ' + args.join(' ') + '"'], Object.assign({}, base, { windowsVerbatimArguments: true }));
+  }
+  return spawnSync(file, args, base);
+}
+function toolVersion(file, env, cwd) {
+  const r = spawnResolved(file, ['--version'], env, TOOL_VERSION_TIMEOUT_MS, cwd);
+  if (r.error && r.error.code === 'ETIMEDOUT') return { version: null, version_note: '--version timed out after ' + (TOOL_VERSION_TIMEOUT_MS / 1000) + ' s' };
+  if (r.error) return { version: null, version_note: '--version failed: ' + (r.error.code || r.error.message) };
+  const first = cleanLines((r.stdout || '') + '\n' + (r.stderr || ''), 1)[0];
+  return first ? { version: first } : { version: null, version_note: '--version printed nothing (exit ' + r.status + ')' };
+}
+
+function isSameFile(a, b) {
+  try {
+    const ra = fs.realpathSync(a), rb = fs.realpathSync(b);
+    return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+  } catch { return false; }
+}
+/** path-tools — claude, git, node resolvable on PATH, each with the first line of its --version (3 s cap).
+ *  When the `node` on PATH IS the binary running this doctor, its version is process.version — the exact
+ *  string `node --version` prints — and one of three spawns is saved (measured 40-140 ms per spawn here). */
+function pathTools(root, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const platform = o.platform || process.platform;
+  const tools = {};
+  for (const name of BEGINNER_PATH_TOOLS) {
+    const found = resolveOnPath(name, env, platform);
+    if (!found) { tools[name] = { found: false, path: null, version: null }; continue; }
+    tools[name] = name === 'node' && isSameFile(found, process.execPath)
+      ? { found: true, path: found, version: process.version, version_source: 'this doctor process' }
+      : Object.assign({ found: true, path: found }, toolVersion(found, env, root));
+  }
+  const missing = BEGINNER_PATH_TOOLS.filter((n) => !tools[n].found);
+  const listing = BEGINNER_PATH_TOOLS.map((n) => n + ': ' + (!tools[n].found ? 'MISSING' : (tools[n].version || 'found (' + tools[n].version_note + ')'))).join(' · ');
+  if (!missing.length) return beginnerResult('path-tools', 'ok', listing, { tools, missing });
+  return beginnerResult('path-tools', 'warn', listing + ' — not recognized on PATH: ' + missing.join(', ') + '. ' + PATH_MISSING_HINT
+    + (missing.includes('node') ? ' ' + NODE_MISSING_HINT : ''), { tools, missing });
+}
+
+/** bypass-mode — the PROJECT's .claude/settings.json + settings.local.json only (never a global settings
+ *  file): permissions.defaultMode "bypassPermissions" is a warn; a file that does not parse is a warn too. */
+function bypassMode(root) {
+  const files = [];
+  for (const rel of ['.claude/settings.json', '.claude/settings.local.json']) {
+    const abs = path.join(root, rel);
+    if (!fs.existsSync(abs)) continue;
+    let data;
+    try { data = JSON.parse(fs.readFileSync(abs, 'utf8')); }
+    catch (e) { files.push({ file: rel, readable: false, error: e.code || e.name }); continue; }
+    const perms = data && typeof data === 'object' && data.permissions && typeof data.permissions === 'object' ? data.permissions : {};
+    files.push({ file: rel, readable: true, defaultMode: typeof perms.defaultMode === 'string' ? perms.defaultMode : null });
+  }
+  const bypass = files.filter((f) => f.defaultMode === 'bypassPermissions').map((f) => f.file);
+  const unreadable = files.filter((f) => !f.readable).map((f) => f.file + ' (' + f.error + ')');
+  const problems = [];
+  if (bypass.length) problems.push(bypass.join(', ') + ' sets permissions.defaultMode "bypassPermissions": every tool call runs without asking — keep that for a throwaway container or VM, not a real machine');
+  if (unreadable.length) problems.push('settings unreadable: ' + unreadable.join(', ') + ' — Claude Code cannot apply a settings file it cannot parse');
+  if (problems.length) return beginnerResult('bypass-mode', 'warn', problems.join(' · '), { files });
+  if (!files.length) return beginnerResult('bypass-mode', 'info', 'no project settings file — Claude Code asks before risky actions by default', { files });
+  return beginnerResult('bypass-mode', 'info', 'no bypassPermissions default in ' + files.map((f) => f.file + (f.defaultMode ? ' (defaultMode ' + f.defaultMode + ')' : '')).join(' + '), { files });
+}
+
+/** wsl-mnt-c — a Linux (WSL) process whose project root sits under /mnt/ is working on the Windows drive
+ *  through the 9P bridge: slow, and file watching there is incomplete. Pure string check, no file access. */
+function wslMntC(root, opts) {
+  const platform = (opts && opts.platform) || process.platform;
+  if (platform !== 'linux') return beginnerResult('wsl-mnt-c', 'n-a', 'not applicable on ' + platform + ' (WSL-only check)');
+  if (String(root).startsWith('/mnt/')) return beginnerResult('wsl-mnt-c', 'warn', 'project root ' + root + ' is on the Windows drive seen from WSL (slow file access, incomplete file watching). WSL: keep the project inside the Linux home for speed');
+  return beginnerResult('wsl-mnt-c', 'ok', 'project root is on the Linux filesystem');
+}
+
+/** claude-doctor — Anthropic's own read-only installation check, surfaced because beginners do not know it
+ *  exists. Runs ONLY when the caller asks (the forge-doctor CLI does; library and fixture calls do not, so a
+ *  test suite never spends 5 s per runDoctor() on it), only when `claude` resolved on PATH, with stdin
+ *  closed and a 5 s cap: it can never become an interactive session — a CLI that insists on a terminal just
+ *  times out, and that is reported as such. The first 5 non-empty lines are shown verbatim, never parsed. */
+function claudeDoctorProbe(root, opts) {
+  const o = opts || {};
+  if (!o.claudePath) return beginnerResult('claude-doctor', 'info', 'not run (claude CLI absent from PATH)', { ran: false, lines: [] });
+  if (!o.probe) return beginnerResult('claude-doctor', 'info', 'not run (library call — the read-only `claude doctor` probe runs from the forge-doctor CLI only)', { ran: false, lines: [] });
+  const timeoutMs = o.timeoutMs || CLAUDE_DOCTOR_TIMEOUT_MS;
+  const r = spawnResolved(o.claudePath, ['doctor'], o.env || process.env, timeoutMs, root);
+  if (r.error && r.error.code === 'ETIMEDOUT') return beginnerResult('claude-doctor', 'info', 'not run (timed out after ' + (timeoutMs / 1000) + ' s — the doctor runs `claude doctor` read-only itself and stopped it because it was waiting for an interactive terminal; nothing for you to do, the next doctor run tries again)', { ran: false, timed_out: true, lines: [] });
+  if (r.error) return beginnerResult('claude-doctor', 'info', 'not run (' + (r.error.code || r.error.message) + ')', { ran: false, lines: [] });
+  const lines = cleanLines((r.stdout || '') + '\n' + (r.stderr || ''), CLAUDE_DOCTOR_MAX_LINES);
+  return beginnerResult('claude-doctor', 'info', '`claude doctor` ran read-only (exit ' + r.status + ')' + (lines.length ? ', first ' + lines.length + ' line(s):' : ' but printed nothing'), { ran: true, exit: r.status, lines });
+}
+
+/** prompt-coach-present — completeness: an install that has forge-intake must also have forge-prompt-coach,
+ *  the skill the intake hands a vague request to. */
+function promptCoachPresent(root) {
+  const skills = path.join(claudeDir(root), 'skills');
+  const intake = fs.existsSync(path.join(skills, 'forge-intake', 'SKILL.md'));
+  const coach = fs.existsSync(path.join(skills, 'forge-prompt-coach', 'SKILL.md'));
+  if (!intake) return beginnerResult('prompt-coach-present', 'n-a', 'forge-intake is not installed here, so there is no pairing to check', { intake, coach });
+  if (coach) return beginnerResult('prompt-coach-present', 'ok', 'forge-intake and forge-prompt-coach are both installed', { intake, coach });
+  return beginnerResult('prompt-coach-present', 'warn', 'forge-intake is installed but .claude/skills/forge-prompt-coach/SKILL.md is missing — an incomplete install or sync', { intake, coach });
+}
+
+/** beginnerSetup(root, {env, platform, probeClaudeDoctor, claudeDoctorTimeoutMs, overrideMap}) ->
+ *  {ok, checks:{claude_md_size, path_tools, bypass_mode, wsl_mnt_c, claude_doctor, prompt_coach_present}, ms}.
+ *  env/platform default to this process — injectable so the tests can hand it a fake PATH or a Linux root. */
+function beginnerSetup(root, opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const platform = o.platform || process.platform;
+  const overrideMap = o.overrideMap || new Map();
+  const t0 = Date.now();
+  const pt = safeCheck('path-tools', () => pathTools(root, { env, platform }));
+  const claudePath = pt.tools && pt.tools.claude && pt.tools.claude.found ? pt.tools.claude.path : null;
+  const raw = {
+    claude_md_size: safeCheck('claude-md-size', () => claudeMdSize(root)),
+    path_tools: pt,
+    bypass_mode: safeCheck('bypass-mode', () => bypassMode(root)),
+    wsl_mnt_c: safeCheck('wsl-mnt-c', () => wslMntC(root, { platform })),
+    claude_doctor: safeCheck('claude-doctor', () => claudeDoctorProbe(root, { claudePath, probe: !!o.probeClaudeDoctor, env, timeoutMs: o.claudeDoctorTimeoutMs })),
+    prompt_coach_present: safeCheck('prompt-coach-present', () => promptCoachPresent(root)),
+  };
+  const checks = {};
+  for (const [key, res] of Object.entries(raw)) checks[key] = applyDoctorOverride(overrideMap, res.id, res);
+  return { ok: Object.values(checks).every((c) => c.ok), checks, ms: Date.now() - t0 };
+}
+
+function runDoctor(root, opts) {
   root = path.resolve(root);
+  const o = opts || {};
   const testsResult = runTests(root);
   const overrides = loadDoctorCheckOverrides(root);
   const overrideMap = new Map(overrides.map((o) => [o.check, o]));
@@ -1837,6 +2096,9 @@ function runDoctor(root) {
     // 2026-08-01: the ALWAYS-LOADED instruction surface, metered. Its own top-level advisory key (a context
     // budget is not completeness) with its own printSummary line. See contextBudgetCheck() above.
     context_budget: contextBudgetCheck(root),
+    // wp17 (2026-09-24): the beginner setup traps — machine/preference findings, never a code defect, so
+    // advisory by construction. The `claude doctor` probe runs only when the caller opts in (the CLI does).
+    beginner_setup: beginnerSetup(root, { overrideMap, env: o.env, platform: o.platform, probeClaudeDoctor: !!o.probeClaudeDoctor, claudeDoctorTimeoutMs: o.claudeDoctorTimeoutMs }),
     // WAVE A / A2 (2026-07-18) + V9-INTEGRATE (2026-07-22): the completeness checks that remain
     // ADVISORY-ONLY, grouped under one key so printSummary can emit a single compact advisory line — see the
     // header doc comment for exactly why each one here (unlike unregistered_event/check_the_checks above)
@@ -2024,6 +2286,16 @@ function printSummary(rep) {
       ? '  ⚠ completeness (advisory, non-blocking): ' + parts.join(' · ')
       : '  ✓ completeness (advisory): sync manifest complete · memory populated · mcp dormant/least-privilege · run contract satisfied · skill evals green' + skillHygieneCleanText);
   }
+  // wp17 (2026-09-24): one line per beginner-setup check, ALWAYS printed (a beginner reads these for the info
+  // as much as for the warnings). ⚠ = warn, ℹ = info, ✓ = ok / not applicable — never a ✗, never in the verdict.
+  if (rep.advisory && rep.advisory.beginner_setup && rep.advisory.beginner_setup.checks) {
+    for (const bc of Object.values(rep.advisory.beginner_setup.checks)) {
+      const warn = bc.level === 'warn' && !bc.overridden;
+      const icon = warn ? '⚠' : (bc.level === 'info' ? 'ℹ' : '✓');
+      out.push('  ' + icon + ' setup ' + bc.id + (warn ? ' (advisory, non-blocking): ' : ' (advisory): ') + (bc.level === 'n-a' ? 'n/a — ' : '') + bc.detail + overrideTag(bc));
+      if (Array.isArray(bc.lines)) for (const l of bc.lines) out.push('      │ ' + l);
+    }
+  }
   out.push(rep.ok ? '  ⇒ ALL GREEN' : '  ⇒ FAILURES ABOVE');
   return out.join('\n');
 }
@@ -2053,6 +2325,10 @@ module.exports = {
   qualityCatalogDoctorCheck,
   // 2026-08-01 — forge-contextbudget.cjs wired in as an automatic advisory (see contextBudgetCheck above)
   contextBudgetCheck,
+  // wp17 (2026-09-24) — beginner setup advisories + the dev-tree marker behind installationProfile()
+  beginnerSetup, claudeMdSize, pathTools, bypassMode, wslMntC, claudeDoctorProbe, promptCoachPresent,
+  resolveOnPath, readDevTreeMarker, DEV_TREE_MARKER_REL, CLAUDE_MD_MAX_LINES, BEGINNER_PATH_TOOLS,
+  TOOL_VERSION_TIMEOUT_MS, CLAUDE_DOCTOR_TIMEOUT_MS, CLAUDE_DOCTOR_MAX_LINES,
 };
 
 // ---- CLI ----
@@ -2084,7 +2360,8 @@ if (require.main === module) {
       else if (argv[i] === '--run') run = argv[++i];
       else if (argv[i] === '--json') wantJson = true;
     }
-    const rep = runDoctor(root);
+    // wp17: the CLI is the one caller that runs the read-only `claude doctor` probe (5 s cap, stdin closed).
+    const rep = runDoctor(root, { probeClaudeDoctor: true });
     // --json is a machine-readable CONTRACT: exactly ONE JSON object on stdout, nothing else — so a
     // consumer (e.g. forge-sync.cjs) can demand positive evidence instead of trusting only the exit code.
     // Without --json, keep the existing human-readable summary as the default.

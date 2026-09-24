@@ -5,7 +5,10 @@
             "forge-router",
             "forge-prd",
             "forge-brainstorm",
-            "forge-report"
+            "forge-report",
+            "forge-prompt-coach",
+            "grill-me",
+            "grilling"
         ],
         "head-chef": [
             "forge-prd",
@@ -46,18 +49,34 @@
             "forge-skill-testing",
             "forge-debug",
             "forge-code-review",
-            "forge-worktrees"
+            "forge-worktrees",
+            "resolving-merge-conflicts",
+            "setup-pre-commit"
         ],
         "integration-boss": [
             "forge-integration"
         ],
         "docs-boss": [
             "forge-report",
-            "forge-prd"
+            "forge-prd",
+            "teach",
+            "wait-what",
+            "claude-md-improver"
         ]
     },
     "autoAttach": "At team-build time the Lead (Boss) reads this map + the project-type bundle and embeds the skill list in each subagent's prompt (skills load via the Skill tool inside the subagent). No manual per-project reconnection.",
     "honesty": "Entries marked (ECC agent)/(method)/(tools) are agents, procedures, or tools — not SKILL.md files; they are invoked as what they are. Never claim a skill loaded that didn't.",
+    "invocationNotes": {
+        "_doc": "When a core skill above is only used in a specific situation. The array entries stay plain skill names (they must resolve to .claude/skills/<name>/SKILL.md); the condition lives here. Added 2026-09-24 (run forge-2026-09-24-config-v250, wp13b + wp6b vendoring).",
+        "forge-prompt-coach": "boss: on every raw owner request during intake (silent: at most one question; config intake/prompt-doctor/explain-mode).",
+        "grill-me": "boss: only when config intake = interview, or when the owner asks to be grilled / questioned hard about a plan.",
+        "grilling": "boss: only when config intake = interview, or when the owner asks to be grilled / questioned hard about a plan.",
+        "teach": "docs-boss: beginner explanations (config explain-mode).",
+        "wait-what": "docs-boss: re-explain when a message did not land with the owner (config explain-mode).",
+        "claude-md-improver": "docs-boss: CLAUDE.md audit / improvement (the /revise-claude-md command).",
+        "resolving-merge-conflicts": "build-boss: when a git merge or rebase stops on a conflict.",
+        "setup-pre-commit": "build-boss: USER-INVOKED ONLY - it runs npm/npx and installs Husky + lint-staged into the repo; never invoke it unless the owner explicitly asks for pre-commit hooks."
+    },
     "_unshipped_removed_2026_09_23": {
         "_doc": "External audit II-E: these were skills not shipped in this payload (some exist only in an owner's global ~/.claude/skills, others were never Forge skills at all - see the 2026-09-24 correction below), so on a clean install every Boss dispatch tripped the unresolvable-core-skill fallback by design. Known equivalents were remapped to the shipped Forge skill; the rest are listed here so the intent is not lost. An owner who installs a missing one globally may add it back.",
         "removed": {

@@ -540,6 +540,14 @@ const NON_WORK_EVENT_TYPES = new Set([
   'agent_note', 'agent_next_action',
   // governance/audit
   'owner_override', 'gate_evaluated',
+  /** 2026-09-24 (run forge-2026-09-24-config-v250): `manifest_armed` is the arm TOOL's own proof over run
+   *  bookkeeping (.claude/forge-runs/<run>/manifest.json) — the same family as `gate_evaluated`: it records
+   *  that a Forge tool ran, produces nothing of the reviewed product, and cannot make a review stale (the
+   *  reviewed subject is code + gates, never the run's own bookkeeping). The plan CONTENT lives in
+   *  `agent_work_package_created`, which stays work. Found because forge-manifest.cjs logged this proof
+   *  without an agent, which N-01 read as anonymous work and blocked finalize; the tool now stamps the
+   *  orchestrator as well, so both the classification and the attribution are right. */
+  'manifest_armed',
   /** R4-02 (vierde herreview): hier stonden ook `agent_output`, `decision_logged`, `rework_assigned` en
    *  `rejected_approach`. Dat was fout, en precies de valkuil van de omkering: de uitzonderingslijst mag
    *  alleen INERTE events bevatten. `rejected_approach` eist bij de writer zelfs BEWIJS en geldt later als

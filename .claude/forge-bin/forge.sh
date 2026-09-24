@@ -44,5 +44,14 @@ case "$cmd" in
   # read-only cross-project learning harvest into the reserved global lesson namespace (forge-harvest.cjs).
   # Usage: bash forge.sh learn --scan <dir> [--global-store <file>] [--dry-run] [--json]
   learn)           "$NODE_CMD" "$DIR/forge-harvest.cjs" "$@" ;;
-  *) echo "Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn" ;;
+  # the ONE settings tool: list/get/set/unset/reset/explain/diff/parse (forge-config.cjs, --help on each).
+  # Usage: bash forge.sh config list|get|set|unset|reset|explain|diff|parse [args]
+  config)          "$NODE_CMD" "$DIR/forge-config.cjs" "$@" ;;
+  # resumable, checkpointed YouTube research sweep - captions/metadata only, never media (forge-sweep.cjs).
+  # Usage: bash forge.sh sweep enumerate|filter|transcripts|extract|aggregate|status [args]
+  sweep)           "$NODE_CMD" "$DIR/forge-sweep.cjs" "$@" ;;
+  # Prompt Master dispatch-prompt linter, advisory only (forge-promptcheck.cjs); the ask subcommand scores
+  # the raw owner request before Forge plans anything. Usage: bash forge.sh promptcheck <promptFile|-> [args]
+  promptcheck)     "$NODE_CMD" "$DIR/forge-promptcheck.cjs" "$@" ;;
+  *) echo "Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn | config | sweep | promptcheck" ;;
 esac

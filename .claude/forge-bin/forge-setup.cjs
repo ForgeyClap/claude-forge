@@ -13,6 +13,10 @@
  *                  .env.forge-setup; keeps !.env.example). If .env is already TRACKED by git
  *                  (`git ls-files --error-unmatch .env` exits 0), this is a hard stop: exit code 3 +
  *                  a loud warning to run `git rm --cached .env` and rotate keys. Idempotent.
+ *   gitignore   -> the /forge git-checkpoint pre-step (review-boss M5): append-only, makes .gitignore keep every
+ *                  secret-shaped name out of git (the guard lines plus .env.*, *.pem, *.key, id_rsa*,
+ *                  credentials*.json, secrets/) with !.env.example after the last .env.* line. No git call, no
+ *                  tracked-check, never removes a line. --json prints {created, appended, patterns}.
  *   init-keys   -> runs guard() first (refuses if .env is tracked); writes a temp fill-file
  *                  (default .env.forge-setup) with COMMENTED placeholder lines for the keys the given
  *                  --type needs, each with one-line help + a where-to-get URL. Never overwrites a
@@ -105,8 +109,8 @@
  *     isManagedDefaultTmp, refusesAsEnvTarget, detectLineEnding, sanitizeLang, pathsEqualForFs,
  *     ensureTmpGitignored, isPathInside, detectUtf16Bom, checkGitIgnoreStatus, verifyAndReinforceIgnored,
  *     countUnparseableContentLines, isAllPlaceholderVocab, findConflictingDuplicateKeys,
- *     extractKeyValueFromLine, KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES,
- *     KEEP_NEGATION_LINE, DEFAULT_TMP_NAME }
+ *     extractKeyValueFromLine, protectSecrets, KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES,
+ *     KEEP_NEGATION_LINE, DEFAULT_TMP_NAME, CHECKPOINT_SECRET_LINES }
  */
 const fs = require('fs');
 const path = require('path');
@@ -182,6 +186,30 @@ function verifyAndReinforceIgnored(projectDir, relPath) {
   appendGitignoreLineAtEnd(projectDir, relPath);
   const second = checkGitIgnoreStatus(projectDir, relPath);
   return { verified: second !== null, ignored: second === true, reinforced: true };
+}
+
+// ---- checkpoint secret protection (review-boss M5, 2026-09-24) ----------------------------------------
+// The /forge git checkpoint stages the whole project, so BEFORE staging every secret-shaped name must already be
+// ignored. Append-only (grep-before-append): never removes or reorders a line; creates .gitignore when missing.
+// `.env.*` also matches .env.example, so `!.env.example` must come AFTER the last `.env.*` line (git: last match
+// wins) — it is re-appended at the end whenever it does not. No git call, no tracked-check: that is guard()'s job.
+const CHECKPOINT_SECRET_LINES = ['.env.*', '*.pem', '*.key', 'id_rsa*', 'credentials*.json', 'secrets/'];
+function protectSecrets(projectDir) {
+  const invalidDir = validateProjectDir(projectDir);
+  if (invalidDir) return { ok: false, reason: invalidDir.reason, path: null, created: false, appended: [], patterns: [] };
+  const gitignorePath = path.join(projectDir, '.gitignore');
+  const existedBefore = fs.existsSync(gitignorePath);
+  let content = existedBefore ? fs.readFileSync(gitignorePath, 'utf8') : '# Forge V2 — secrets (managed by forge-setup)\n';
+  const linesNow = () => content.split(/\r?\n/).map((l) => l.trim());
+  const appended = [];
+  const add = (line) => { if (content.length > 0 && !content.endsWith('\n')) content += '\n'; content += line + '\n'; appended.push(line); };
+  const patterns = REQUIRED_GITIGNORE_LINES.concat(CHECKPOINT_SECRET_LINES);
+  const present = new Set(linesNow());
+  for (const line of patterns) if (!present.has(line)) { add(line); present.add(line); }
+  const ls = linesNow();
+  if (ls.lastIndexOf(KEEP_NEGATION_LINE) < ls.lastIndexOf('.env.*')) add(KEEP_NEGATION_LINE);
+  if (!existedBefore || appended.length > 0) fs.writeFileSync(gitignorePath, content, 'utf8');
+  return { ok: true, path: gitignorePath, created: !existedBefore, appended, patterns: patterns.concat(KEEP_NEGATION_LINE) };
 }
 
 // Ensure .gitignore protects secrets. Grep-before-append, create-if-missing, never rewrites/removes
@@ -1028,8 +1056,8 @@ module.exports = {
   validateProjectDir, resolveTmpPath, isManagedDefaultTmp, refusesAsEnvTarget, detectLineEnding, sanitizeLang,
   pathsEqualForFs, ensureTmpGitignored, isPathInside, detectUtf16Bom,
   checkGitIgnoreStatus, verifyAndReinforceIgnored, countUnparseableContentLines, isAllPlaceholderVocab,
-  findConflictingDuplicateKeys, extractKeyValueFromLine,
-  KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES, KEEP_NEGATION_LINE, DEFAULT_TMP_NAME,
+  findConflictingDuplicateKeys, extractKeyValueFromLine, protectSecrets,
+  KEY_INFO, TYPE_KEYS, REQUIRED_GITIGNORE_LINES, KEEP_NEGATION_LINE, DEFAULT_TMP_NAME, CHECKPOINT_SECRET_LINES,
 };
 
 // ---- CLI ------------------------------------------------------------------------------------------
@@ -1084,6 +1112,15 @@ if (require.main === module) {
           for (const l of g.appended) console.log('gitignore: added "' + l + '"');
           if (!g.created && g.appended.length === 0) console.log('.gitignore already protects secrets — no changes needed');
         }
+        return;
+      }
+      case 'gitignore': {
+        const g = protectSecrets(projectDir);
+        if (!g.ok) { console.error(g.reason); process.exitCode = 1; return; }
+        if (opts.json) { console.log(JSON.stringify(g, null, 2)); return; }
+        if (g.created) console.log('created .gitignore');
+        for (const l of g.appended) console.log('gitignore: added "' + l + '"');
+        if (!g.created && g.appended.length === 0) console.log('.gitignore already keeps secret-shaped files out of git — no changes needed');
         return;
       }
       case 'init-keys': {
@@ -1156,7 +1193,7 @@ if (require.main === module) {
         return;
       }
       default:
-        console.error('Usage: node forge-setup.cjs <status|guard|init-keys|place-keys|mark|self-heal|doctor|lang> [--project <dir>] [--json] [--quiet]');
+        console.error('Usage: node forge-setup.cjs <status|guard|gitignore|init-keys|place-keys|mark|self-heal|doctor|lang> [--project <dir>] [--json] [--quiet]');
         process.exitCode = 1;
     }
   };

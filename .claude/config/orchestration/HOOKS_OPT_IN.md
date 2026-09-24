@@ -1,4 +1,12 @@
-# Forge hooks — mostly opt-in, 4 real ones LIVE (3 snapshot hooks in section 4 + the tool ledger in section 5)
+# Forge hooks — mostly opt-in, 5 real hook entries LIVE (3 snapshot entries in section 4, the tool ledger in section 5, the gate hook in section 6)
+
+**Status (updated 2026-09-24, v2.7.0 WP16):** `.claude/settings.json` now carries **5 live hook entries
+running 4 hook scripts** — the 3 snapshot entries (section 4), the tool ledger (section 5) and, new, the
+**gate hook** (section 6: a PreToolUse hook that really BLOCKS the three destructive command gates) — plus a
+**`permissions.deny` block** that keeps `.env` files and `secrets/` out of Claude's Read tool (section 6b).
+The gate hook is the first hook here that enforces instead of advising; it is ON by default because the
+owner decided so (config key `gate-hook`), and it is switched off with one command. The history below is kept
+as it was written.
 
 **Status (corrected 2026-07-29, forge-snapshot wiring):** this project's `.claude/settings.json` now EXISTS
 and carries **4 real, live hooks**: the three context-continuity snapshot hooks (section 4 below) and the PostToolUse tool ledger (section 5, now with a `Write|Edit|MultiEdit|NotebookEdit|Bash` matcher — corrected 2026-09-23 after an external audit measured it firing on every tool call). Everything
@@ -13,8 +21,8 @@ zero-dependency `forge-bin` CLI** you can also run by hand at any time, hook or 
 `settings.json`, "zero project-local hooks" never meant nothing fires while you work here. The **global**
 `~/.claude/settings.json` (outside this project, owner-gated) has long carried **2 live hooks that apply to
 every project including this one**:
-- **PreToolUse** (`Write|Edit|MultiEdit`) → `~/.claude/forge-bin/forge-hook-hotspot-lock.cjs` (timeout 5000ms) → calls `forge-lock-guard.cjs`'s `check()` on the edited path.
-- **PostToolUse** (`Write|Edit|MultiEdit`) → `~/.claude/forge-bin/forge-hook-secret-scrub.cjs` (timeout 8000ms) → calls `forge-secret-scrub.cjs`'s `scanFile()` on the edited path.
+- **PreToolUse** (`Write|Edit|MultiEdit`) → `~/.claude/forge-bin/forge-hook-hotspot-lock.cjs` (`timeout: 5000` — SECONDS, see the L8 note in section 4) → calls `forge-lock-guard.cjs`'s `check()` on the edited path.
+- **PostToolUse** (`Write|Edit|MultiEdit`) → `~/.claude/forge-bin/forge-hook-secret-scrub.cjs` (`timeout: 8000` — SECONDS) → calls `forge-secret-scrub.cjs`'s `scanFile()` on the edited path.
 
 Both are read-only/advisory (they report, they do not block). As of 2026-07-29 that same global config also
 carries the 2 snapshot events (PreCompact manual+auto, SessionStart compact) — see section 4; every
@@ -101,7 +109,14 @@ fork`), and **whatever a `SessionStart` hook writes to stdout is added back into
 official re-injection point this whole system relies on. There is **no context-window percentage available
 to any hook** (a closed feature request) — this system never fabricates or estimates one anywhere.
 
-**Project-local** (`.claude/settings.json`, created 2026-07-29):
+> **TIMEOUT UNIT (corrected 2026-09-24, security review wp9b L8):** a Claude Code hook `timeout` is in
+> **SECONDS**, not milliseconds. The `5000` / `8000` values written here since 2026-07-29 meant 83 minutes and
+> 2.2 hours, not 5 and 8 seconds. The project-local `.claude/settings.json` now uses 15 (snapshot hooks) and
+> 10 (tool ledger, gate hook). The jsonc blocks in this file are the HISTORICAL shapes with the old numbers.
+> The global `~/.claude/settings.json` entries named above may carry the same unit mistake; that file is
+> outside this project and was not changed.
+
+**Project-local** (`.claude/settings.json`, created 2026-07-29; timeouts now 15 seconds, see the note above):
 ```jsonc
 {
   "hooks": {
@@ -134,7 +149,7 @@ raw file body or credential.
 Manual (also always available, hook or no hook): `node .claude/forge-bin/forge-snapshot.cjs write --reason
 manual|phase` · `node .claude/forge-bin/forge-snapshot.cjs check --max-age-hours 24` · `/forge snapshot`.
 
-## 5. Tool-behaviour ledger — `forge-toolhook.cjs` (PostToolUse, **WIRED and live** — matcher `Write|Edit|MultiEdit|NotebookEdit|Bash`, timeout 8000ms, since 2026-09-23; the 2026-08-03 correction further down already said it was firing)
+## 5. Tool-behaviour ledger — `forge-toolhook.cjs` (PostToolUse, **WIRED and live** — matcher `Write|Edit|MultiEdit|NotebookEdit|Bash`, timeout 10 SECONDS since 2026-09-24 (was `8000`, i.e. 2.2 hours — see the L8 note in section 4), matcher since 2026-09-23; the 2026-08-03 correction further down already said it was firing)
 
 **The gap it closes, measured 2026-08-01 (not assumed):** across all 28 `events.jsonl` in this project —
 846 events — `file_read` appears **0** times and `command_run` **1** time. Both types are registered in
@@ -209,7 +224,7 @@ uncommittable. **No new `event_type` is introduced**, so the 3-place registratio
 > that file's own `_matcher_doc`, added the same day, which records why: shipped without a matcher it fired
 > on every tool call of every agent — 461 in one audited session, ~56 ms each — and logged 320 paths outside
 > the project; the ledger exists to record what CHANGED, and reads are noise). So, as of 2026-09-23: the live
-> entry **does** carry a matcher, its timeout is **8000ms** (not 5000), and it fires only on a **Write, Edit,
+> entry **does** carry a matcher, its timeout was **8000** (not 5000) — and that number is SECONDS, so it was corrected to **10** on 2026-09-24 (L8), and it fires only on a **Write, Edit,
 > MultiEdit, NotebookEdit or Bash** call — not on every tool call. The jsonc block right below is the
 > **original, historical proposal** (`"matcher": "*"`, `timeout: 5000`) from before either correction; it is
 > kept for its shape/rationale but no longer describes what actually runs.
@@ -246,7 +261,7 @@ uncommittable. **No new `event_type` is introduced**, so the 3-place registratio
 3. **Governance requires it.** The global policy demands per-item owner approval before any hook is enabled
    — pinned purpose, reviewed command, documented disable procedure — and the project `CLAUDE.md` keeps the
    security posture light. This hook is advisory and never blocks (always exit 0, never `decision:"block"`,
-   never one byte of stdout, own 2500 ms failsafe under the live 8000 ms budget), which makes it *eligible*,
+   never one byte of stdout, own 2500 ms internal failsafe under the live 10-SECOND hook timeout), which makes it *eligible*,
    not automatic.
 
 Proven by `forge-toolhook.test.cjs` (42/42, real subprocesses): garbage stdin, binary/NUL stdin, empty
@@ -257,7 +272,257 @@ no `.claude/` degrades silently and creates nothing.
 Manual (always available, hook or no hook): the module is directly callable —
 `require('.claude/forge-bin/forge-toolhook.cjs').run(payloadJson, {root})`.
 
+## 6. Gate hook — `forge-gate-hook.cjs` (PreToolUse, matcher `Bash|PowerShell`, **LIVE, default ON**)
+
+**Why it exists (2026-09-24, run `forge-2026-09-24-config-v250`, WP16).** The beginner research
+(`forge-research/beginner-sweep-2026-09-24/web-track-a.md`, rows A4, A21 and B10) found that written rules
+are advice: CLAUDE.md can say "never run `rm -rf`" and a model can still run it. Real beginners lost 11 GB, or
+their whole home folder, to a "clean up" request. The owner wants Forge to do the safe thing by default, so the
+three COMMAND hard gates from `hard-gates.json` are now enforced by a hook. The model cannot talk its way past
+a hook, because Claude Code runs it before the tool call. The design was hardened the same day by a
+security-boss audit (wp9b) and a review-boss audit (wp9a); every finding id is named where it applies below.
+
+**What it does.** Before every `Bash` or `PowerShell` tool call it passes the command text to
+`forge-actiongate.cjs` (the same classifier everything else uses, so there is no second regex set). The entry
+runs `node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"` (security M2a). That the variable
+expands was PROVEN live in Claude Code 2.1.220 on win32, because the hook ran and blocked a probe from that
+command form. The hook therefore works even when the session's working directory is not the project root.
+
+| Exit | Meaning |
+|---|---|
+| **2** | **Blocked.** Claude Code stops the call and shows Claude one plain-language reason in Dutch and English. |
+| **1** | **Not blocked, but VISIBLE** to the user (security M2 / M3). Used when the gate is switched off and the call *would* have been blocked, and when the hook could not check the call (internal error, payload over 8 MB, stdin that never ends, classifier unavailable). |
+| **0** | Allowed. |
+
+| Gate | What gets blocked | Safe variant the message offers |
+|---|---|---|
+| `destructive-delete` | `rm -rf ./build`, `rm -r ./src` / `rm -R` / `rm --recursive` (security H1), `Remove-Item -Recurse -Force ./src`, `rd /s /q dist`, `rimraf ./lib`, a recursive `Get-ChildItem … \| Remove-Item` | name the exact path and check it first, delete single files, or clean up inside a scratch area. A delete whose every segment is a provable scratch delete PASSES (see "Scratch pass-through"). |
+| `kill-by-name` | `taskkill /IM node.exe`, a `taskkill /FI` filter other than `PID eq` (security M1), `Stop-Process -Name` / `-N` / `-Na` / `-Nam`, `pkill`, `killall`, `gps node \| Stop-Process`, `ps node \| kill`, `kill $(pgrep node)`, `pgrep node \| xargs kill`, `ps aux \| grep node \| xargs kill` | kill only the exact PID you started (`taskkill /PID <pid>`, `Stop-Process -Id <pid>`). Never a pass-through. |
+| `git-destructive` | `git reset --hard`, `git clean -f`, `git checkout -f`, `git checkout .`, `git checkout -- <path>`, `git checkout <tree-ish> -- <path>`, `git restore <path>` / `git restore .`, `git switch -f` / `--force` / `--discard-changes`, `git stash drop` / `clear` | commit or stash first (`git stash push`). Never a pass-through. |
+| `gate-hook-self-disable` (security M3, hook-only) | a Bash/PowerShell call to forge-config that sets `gate-hook` to off (any off-synonym: off, uit, false, no, nee, 0, disabled…) without the exact `--once` shape, or `unset gate-hook` (`reset` is allowed: it restores the default, which is ON) | see "Switching the gate off" below. |
+
+**The `git-destructive` gap this closed.** Before WP16, `git checkout .`, `git checkout -- src/app.js` and
+`git restore src/app.js` were classified "no gate triggered". All three discard uncommitted edits with no
+reflog entry. The gate has five more arms now, including `git switch` with a force flag. These stay silent:
+- `git restore --staged <path>` (it only unstages);
+- `git checkout main` and `git checkout -b x`;
+- `git switch main`;
+- a trailing `--` with no path.
+
+### Switching the gate off (security M3, review M4)
+- **The owner** can always switch it off: run `/forge config set gate-hook off` yourself, or any command
+  with `!` in front (bash mode runs in the owner's own shell, not through Claude's tool). You can also delete
+  the `PreToolUse` entry from `.claude/settings.json`. Switch it back on with `… set gate-hook on`.
+- **An agent cannot switch it off.** The hook blocks the agent's own `forge-config … set gate-hook off`,
+  and `unset gate-hook`. A `reset` (project or global, with or without `--yes`) is allowed, because it can
+  only restore the default, which is ON.
+- **There is one exception: the beginner yes-path.** When the owner has explicitly said yes, the agent may run
+  exactly `node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<the owner's words>"`, and
+  nothing else on the same line. That is a one-off 10-minute off whose expiry lives in forge-config.cjs (wp21).
+  - Until wp21 ships `--once`, the CLI rejects the unknown flag with exit 2 and writes nothing. So the
+    exception cannot become a permanent off by accident.
+  - The quote's field name in `get()` is read defensively (`once_quote`, `approval_quote`, `quote` or
+    `approval`), because wp21 had not landed when this was written.
+- **While the gate is off it is never silent about what it would have stopped.** Every call that would have
+  been blocked exits 1 with one visible line:
+  - `FORGE GATE is OFF (set_at <ts>, set_by <who>) — this would have been blocked (<gates>)`, or, for a one-off,
+  - `FORGE GATE is OFF until <expires_at> — one-off approval: "<quote>" — this would have been blocked (<gates>)`.
+- **Optional hardening — not installed by default (security M3 point 3).** The hook only sees Bash and
+  PowerShell. An agent could still edit the switch files with the Write or Edit tools. A user who wants that
+  closed too can add these lines to `permissions.deny`:
+
+  ```json
+  "Edit(./.claude/FORGE_CONFIG.json)", "Write(./.claude/FORGE_CONFIG.json)",
+  "Edit(./.claude/settings.json)", "Write(./.claude/settings.json)",
+  "Edit(./.claude/forge-bin/forge-gate-hook.cjs)", "Write(./.claude/forge-bin/forge-gate-hook.cjs)",
+  "Edit(./.claude/forge-bin/forge-gate-data.cjs)", "Edit(./.claude/forge-bin/forge-actiongate.cjs)",
+  "Edit(./.claude/config/orchestration/hard-gates.json)"
+  ```
+
+  They are not shipped, because in the Forge dev tree they would block the maintenance of these very files.
+  They also do not affect `/forge config set`, because the node CLI writes the file, not Claude's Edit tool.
+
+### Inert data is not a command (WP16 follow-up 2, review L1 + L3)
+
+**Why.** On the first day the hook blocked three calls whose QUOTED DATA only mentioned a gated command: a Lead
+log payload, a verification line, and the codex-reviewer's prompt file. So before classifying, the hook removes
+regions that provably never execute (`forge-gate-data.cjs`). Everything else is classified exactly as before,
+and any doubt means nothing is stripped. If that module is missing, nothing is stripped at all.
+
+**What gets stripped.**
+- **(a) A bash heredoc body**, when all of these hold:
+  - the consumer is a pure writer: `cat`, `tee`, `printf` or `echo`;
+  - it is not piped;
+  - its head line has no quote, `$(`, backtick or `#` before it;
+  - it does not write a script file.
+
+  An UNQUOTED delimiter (`<<EOF`) qualifies only when the body has no `$(`, backtick or `${`. The Claude Code
+  commit form `git commit -m "$(cat <<'EOF'` … `EOF` / `)"` also qualifies.
+- **(b) Quoted literals** — single-quoted, or double-quoted without `$` — given to:
+  - `echo` or `printf`;
+  - `git commit -m|-am|--message`;
+  - `.claude/forge-dashboard/log-event.cjs`;
+  - the search tools `grep`, `rg`, `egrep`, `fgrep`, `ag`, `Select-String`, `findstr`, `git grep` and
+    `git log --grep` (review L3: a search tool never executes its pattern).
+
+  This applies only when that segment is not piped (into anything) and nothing is piped into an interpreter.
+- **Review L1:** a region is NEVER stripped when an interpreter (`bash`, `sh`, `zsh`, `node`, `python*`,
+  `pwsh`, `powershell`, `cmd`, `eval`, `source`, `.`, `iex`, `xargs`, `chmod`) or a layout/rename command
+  (`mv`, `ln`, `mklink`, `cp`, `rename`, `Move-Item`, `Copy-Item`, …) appears ANYWHERE later in the same
+  command. So write-then-run stays classified, e.g. `… > x.txt; mv x.txt x.sh; bash x.sh`, or `… | sh`.
+
+**What stays classified.**
+- `bash <<'EOF'`, `bash -c "…"`, `node -e '…'`, `echo "…" | bash`, `echo "…" | cat`.
+- `X='…'; $X`, and `$(…)` inside double quotes.
+- An escaped quote outside quotes (`it\'s`), a PowerShell lone `&`.
+- `grep -l "pkill" . | xargs kill`.
+
+All of these are proven in `forge-gate-hook.test.cjs` section 4c. Measured live on 2026-09-24:
+`grep -rn "taskkill /IM" …HOOKS_OPT_IN.md` PASSED, and `echo "git reset --hard" | cat` was BLOCKED.
+
+### Scratch pass-through (WP16 follow-up, review L2, security L3)
+
+**Why.** Once warnings became blocks, the config's own price counts would have stalled every agent. The count
+is now 62 of 90 legitimate cleanup commands after security H1; examples are `rm -rf ./_scratch/run-1` and
+`rm -r ./_scratch/x`. So the hook, not the classifier, makes one narrow exception.
+
+**The rule.**
+- It applies only when the ONLY command gate that fired is `destructive-delete`.
+- EVERY segment of the command must itself be a provable delete (review L2). So `rm -rf ./_scratch/x && npm ci`,
+  `git mv …`, `/bin/mv …` and `command mv …` all block.
+- There must be no `{ } ( )`, and no `cd`, `pushd`, `Set-Location`, `mv`, `cp`, `ln`, `mklink`, `New-Item`,
+  `builtin`, `command`, `exec` or `env` as ANY token (security L3).
+- Every target must resolve inside one of the areas below. Resolution means: against the payload's `cwd`, on
+  real paths (a link is judged by where it points), and case-insensitively on Windows. The areas:
+  - `<root>/_scratch`;
+  - any `node_modules/` or `dist/` path segment below the root;
+  - strictly inside `<root>/.claude/forge-backups/`;
+  - `<root>/.claude/forge-runs/**/gate-output`;
+  - `<root>/command-center/.data/tmp`;
+  - strictly inside `os.tmpdir()`.
+- It then passes with exit 0 and one stderr line naming the targets.
+
+**What still blocks, each tested in section 4b:**
+- `.`, `*`, globs, and `..` anywhere in a target (refused outright).
+- `~`, `$VAR`, `$env:X`, `%VAR%`, drive roots and `/`.
+- `src`, `.claude`, `.git` and `build`.
+- A redirection, a `-Param:value` flag, and `/s`-style switches (a path in Git Bash and PowerShell).
+- A `\` path under the Bash tool.
+- A pipeline delete, and `git rm`.
+- A pass-through that errors internally keeps the block (fail-CLOSED).
+
+**Live proof, 2026-09-24:**
+- `rm -rf ./_scratch/probe-dir` on a directory created for the test PASSED, and the directory was really gone.
+- A payload probe of `rm -r ./_scratch/probe-x` passed, and `rm -r ./src` was blocked.
+
+**Limits (honest):**
+- It reasons about the file system at the moment the hook runs.
+- `dist/` and `node_modules/` are trusted by NAME.
+- Anything inside the temp dir passes.
+- The Git Bash `/tmp` alias is not mapped, so it blocks (a safe false block).
+
+**Cost.** Measured by `forge-gate-hook.test.cjs`: a real spawned hook takes about 66–104 ms on this machine
+(best of 5, then median, across runs), and most of that is Node starting up. The test's hard budget is 1000 ms
+(env `FORGE_GATE_HOOK_TIMING_MS`); 200 ms is an advisory line only (review L9), so a slow CI runner or a
+beginner's doctor cannot turn red on timing. The hook writes nothing to disk and nothing to stdout.
+
+**Fail-safe rules (security M2).**
+- A missing or damaged `FORGE_CONFIG.json`, or a missing `forge-config.cjs`, leaves the gate ON (the schema
+  default).
+- If `hard-gates.json` or the classifier cannot load, a fallback regex BLOCKS the obviously destructive verbs
+  (`rm`, `Remove-Item`, `rd`, `rmdir`, `del`, `taskkill`, `Stop-Process`, `pkill`, `killall`, and `git` with
+  `reset`, `clean`, `checkout`, `restore`, `switch` or `stash`). Everything else exits 1 with "classifier
+  unavailable — this call was NOT checked".
+- Any other internal error, an oversized payload, or a stdin error or timeout exits 1 (visible, not blocking).
+  A broken hook never breaks a session, and never hides that it did not check.
+- Unparseable stdin, or a payload that is not a Bash/PowerShell PreToolUse call, exits 0 silently.
+
+**Proof.** `forge-gate-hook.test.cjs` is 142/142. It uses real spawned processes with hermetic
+`FORGE_CONFIG_HOME` and `FORGE_PROJECT_ROOT` temp dirs, and includes a fixture tree with `hard-gates.json`
+removed. Live proofs in a real Claude Code session, 2026-09-24:
+- `echo probe git checkout .` was blocked by both the relative and the `$CLAUDE_PROJECT_DIR` command forms.
+- `echo probe rm -r ./src` was blocked (H1).
+- `echo probe git switch -f main` was blocked.
+- The quoted-data probes passed.
+- `rm -rf ./_scratch/probe-dir` passed.
+
+### Honest limits (not hidden)
+- **It sees Bash and PowerShell command TEXT only.** It inherits every blind spot of the classifier, which
+  `hard-gates.json` → `_not_caught` lists and executes. Examples: `iex $cmd`, an encoded command,
+  `npm run clean`, `node -e "require('fs').rmSync(…)"`, `robocopy /MIR`, `git checkout src/app.js` written
+  without `--`, and `kill -n node` (PowerShell's kill alias with a -Name prefix; POSIX `-n` is a signal
+  number). It cannot see the Write or Edit tools.
+- **Text gates and `write-outside-root` are not enforced here.** Text gates match spoken intent. Blocking on
+  them would hit legitimate flows: a push to the authorised remote, `git commit -m "deploy notes"`, editing
+  the authorised distribution copy.
+- **Over-warns the rules cannot prove are blocked calls.** Examples: a cleanup with a variable or glob; prose
+  that quotes a command outside a recognised data position (`echo probe git checkout .`); `git restore -S
+  <path>` (the gate is case-insensitive, so only the long `--staged` is treated as safe); `gsutil -m rm -r`
+  (the H1 lookbehind expects exactly `gsutil rm`).
+- **The owner and the agent cannot be told apart.** The self-disable block stops an agent's Bash/PowerShell
+  off-switch, but not a Write/Edit of `FORGE_CONFIG.json` (see the optional hardening above).
+  - A `--once` quote could be invented by the agent. The one-off expires after 10 minutes, and every call it
+    would have blocked shows the quote.
+  - `set_by` in the config reads `owner /forge config set` whoever ran it.
+- **Owner bash mode (`!`) is inferred, not reproduced.** A subagent cannot type `!`. That these commands
+  bypass the tool hook comes from Claude Code's documentation of bash mode.
+
+## 6b. `permissions.deny` — secrets stay out of Claude's Read tool (LIVE)
+
+The deny list now holds 23 rules:
+- the 8 original ones: `./.env`, `./.env.local`, `./.env.*.local`, `./.env.development`, `./.env.production`,
+  `./.env.staging`, `./.env.test`, `./secrets/**`;
+- plus security L5: `./**/.env`, `./**/.env.local`, `./**/.env.*.local`, `./**/.env.production`,
+  `./**/.env.prod`, `./**/.env.bak`, `./**/.env.backup`, `./**/*.pem`, `./**/*.key`, `./**/id_rsa*`,
+  `./**/id_ed25519*`, `./**/secrets/**`, `~/.claude/.credentials.json`, `~/.claude/nvidia.env`, `~/.ssh/**`.
+
+All of them are in the `Read(...)` form.
+
+**Why:** without these rules Claude can read a secret straight into its context, and from there into logs,
+transcripts and reports. The rule form (`Read(./.env)`, `Read(./secrets/**)`) is the one in the official
+permissions docs, as quoted in `web-track-a.md` S19. `./` means "relative to the working directory", and
+`./**/` covers nested apps too.
+
+**`.env.example` stays readable on purpose.** `Read(./.env.*)` would also match `.env.example`, and a deny rule
+cannot be undone with an allow rule, because deny always wins. Every Forge build records new variables in
+`.env.example`, so the secret names are listed one by one; the suite asserts that no rule matches it.
+
+**Not covered (honest):**
+- **Reading a secret through the shell** (`cat .env`, `Get-Content .env`). Deny rules govern Claude's Read
+  tool, not the commands a shell runs. The gate hook does not treat a read as a destructive command either.
+- Unlisted names such as `.env.staging2`.
+- `.env.development` or `.env.test` below the root.
+
+**No `_doc` key inside `permissions`.** Claude Code is proven to tolerate an unknown key on a hook-matcher
+object: the existing `_matcher_doc` is there and the ledger keeps recording. It is not proven to tolerate one
+inside `permissions`. A rejected file would silently switch off all five hook entries and these rules, so the
+explanation lives in the gate-hook entry's `_doc` and here.
+
 ---
+
+## Existing projects: merged automatically, not "merge by hand" (wp22, 2026-09-24)
+
+Before 2026-09-24, a project that already had its own `.claude/settings.json` got the template's version
+written next to it as `settings.forge-recommended.json` with an instruction to "merge what you want by
+hand" — both from `install.sh`/`install.ps1` and from `forge-sync install`/`sync-all`. That contradicted the
+owner directive "Forge does it for you — never tell the user to run or merge something by hand", and it meant
+a pre-existing project's `.claude/settings.json` never received the gate hook or the deny rules on upgrade.
+
+**Now:** the installers and `forge-sync install`/`sync-all` all call the same dedicated tool,
+`forge-bin/forge-settings-merge.cjs` (generalises `forge-snapshot-settings.cjs`'s proven merge-safety model —
+pure function, deep-clone, append-only, exact matcher+command match, idempotent — from the 2 snapshot hooks
+to every `hooks.<event>[]` entry plus `permissions.deny`). Absent `settings.json` -> created (a copy of the
+template's). Present -> MERGED: every foreign hook entry, foreign `permissions.allow`/`ask` rule, and unknown
+top-level key is kept byte-for-byte at its original position; the template's own hooks (including the gate
+hook) and deny rules are added; a stale pre-2026-09-24 millisecond-as-seconds Forge hook timeout is fixed in
+place. A backup of the pre-merge file is written first at `<file>.forge-bak-<yyyyMMdd-HHmmss>` (same naming
+convention the installers already use for every other merge-safe file) — see it with
+`diff <file>.forge-bak-<ts> settings.json` (POSIX) or `Compare-Object` (PowerShell). Only a genuinely
+malformed or unexpectedly-shaped existing `settings.json` still falls back to the old
+`settings.forge-recommended.json` behaviour — reported plainly, never silently. Re-running the installer or
+`forge-sync install` a second time is a true no-op: nothing is rewritten and no new backup is taken.
+`node .claude/forge-bin/forge-settings-merge.cjs check --target .claude/settings.json --source <template>/.claude/settings.json`
+answers "is this project's settings.json behind the template?" without writing anything.
 
 ## Disabling / revoking
 
@@ -265,9 +530,18 @@ Delete the relevant entry from `.claude/settings.json` (project-local) or `~/.cl
 or delete `.claude/settings.json` entirely to return this project to the zero-project-local-hook default
 (the global config, including the snapshot hooks there, is unaffected by deleting the project-local file).
 Every mechanism in this file still works as a manual CLI afterward — disabling a hook never removes the
-capability, only its automatic firing.
+capability, only its automatic firing. For the gate hook (section 6) the lighter switch is
+the owner's `/forge config set gate-hook off`: the entry stays wired and, while off, exits 1 with a visible
+"FORGE GATE is OFF … this would have been blocked" line for every call it would have stopped.
 
-## Why sections 1-3 stay opt-in (never installed) while section 4 is live
+## Why sections 1-3 stay opt-in (never installed) while sections 4-6 are live
 - The project `CLAUDE.md` states the security posture explicitly: no mandatory gates, no `secrets-guard`/`prod-deploy-guard` hooks, normal builds not slowed by blocking. A default-on ENFORCEMENT hook (lock/doctor/secret-scrub-as-a-gate) would contradict that, so sections 1-3 stay documented-only.
 - Section 4 is different in kind: it is purely **advisory continuity tooling** (it writes a markdown file and re-injects a short summary; it never blocks, never gates, never enforces anything), and the owner explicitly asked for it to be live, "dit geldt ook voor globaal" — so it was turned on for real, with a backup + a proven-safe merge first.
+- Section 6 (gate hook) IS an enforcement hook, and it departs on purpose from the first bullet — for the
+  three destructive command gates only. The owner decided it (v2.7.0: the `gate-hook` setting, default ON,
+  in `FORGE_CONFIG_SCHEMA.json`) after the beginner research showed prose rules do not stop a destructive
+  command. It is scoped to Bash/PowerShell calls that trip `destructive-delete`, `kill-by-name` or
+  `git-destructive`; everything else stays advisory. It is switched off with one command. OPEN: the project
+  `CLAUDE.md` line "No mandatory security gates" and `precedence.md` ("Advisory, not a hook") do not yet
+  mention this exception. That reconciliation was outside WP16's file scope and is handed to the Lead / Docs Boss.
 - The global governance (`~/.claude` policies) requires **per-item owner approval** before any hook is enabled — pinned purpose, reviewed command, documented disable procedure. This file is that documentation for every hook, live or not.

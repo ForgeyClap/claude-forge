@@ -5,7 +5,7 @@ description: Forge playbook for full-stack apps — frontend + backend + databas
 
 # Forge playbook — Full-stack app
 
-**Do not duplicate ECC skills — defer to:** `make-plan`/`do` (planning+execution), `using-git-worktrees` (parallel isolation), `subagent-driven-development`. Orchestration only.
+**Do not duplicate ECC skills — defer to:** `make-plan`/`do` (planning+execution), `using-git-worktrees` (parallel isolation), `subagent-driven-development` (both ship with Forge as pinned vendored skills). Orchestration only.
 
 ## Hard rules
 - Auth on **every** protected route, enforced server-side (authn + authz).

@@ -38,7 +38,7 @@ NEVER paste real secrets, API keys, or .env values into this issue.
 
 - **OS:** <!-- e.g. Windows 11 / macOS 14 / Ubuntu 24.04 -->
 - **Node version:** <!-- output of `node --version` -->
-- **Forge version:** <!-- see VERSION file, e.g. 2.0.0 -->
+- **Forge version:** <!-- see VERSION file, e.g. 2.7.0 -->
 
 ## `/setup-forge` doctor output
 

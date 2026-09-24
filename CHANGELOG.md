@@ -9,6 +9,203 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.7.0] - 2026-09-24
+
+Release theme: **built for beginners — everything on, one command for every setting, a real safety stop.** The
+maintainer's first users do not think in computer terms. Three read-only research tracks (35, 75 and 89 sources) looked
+at how beginners should steer an AI, which mistakes they make, and which public skills help them. This release turns the
+findings into defaults: Forge does the work, protects the user without being asked, and explains itself in one plain
+sentence. Counts for the full install: **19 agents · 72 skills · 102 zero-dependency tool files**; the LITE plugin is
+now 18 agents / 22 skills: the plugin copies of the Forge skills and agents were re-synced with the payload (they had drifted since 2.1.0), `forge-prompt-coach` was added, and `gsap/*` + `humanizer` were removed from the plugin (not open-licensed / deliberately not shipped in the full install either).
+
+### Added
+
+- **`/forge config` — every setting in one command.** One catalogue, `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json`,
+  lists **36 settings** in three groups (on by default · available when needed · advanced), each with a Dutch and
+  English explanation, plus **7 locked rules** that are shown but can never be set (hard gates, the usage-limit pause,
+  the honesty core, project isolation, "does it for you", never auto-push, draft-only outreach). One tool,
+  `forge-config.cjs` (with `forge-config-cli.cjs` and `forge-config-text.cjs`), is the only code that resolves,
+  validates and writes them: `list [--all] · get · set [--global] · unset · reset --yes · explain · diff · parse
+  "<sentence>"`, with `--lang nl|en`, `--ascii` and `--json`. Values live in `.claude/FORGE_CONFIG.json` (project) and
+  `~/.claude/FORGE_CONFIG.json` (machine-wide); precedence is one-run flag > project > global > product default >
+  schema default. Writes are atomic; a damaged file is refused and nothing is written; a locked rule is refused with
+  exit 3. Plain sentences ("zet de usage guard op 97%") are mapped to the exact `set` command.
+- **Forge notices a changed setting.** At the start of every run `forge-config.cjs diff --run <run_id> --mark-seen`
+  logs one `config_changed` event when a value changed since the last run, and Forge repeats it to the user in plain
+  words.
+- **The beginner promise**, written into `/forge` and the standing rules (`does-it-for-you`): Forge runs every
+  command, script, install and build itself, never asks the user to run a file or code, never asks "shall I
+  continue?" between phases, and only stops for the hard gates and a real usage-limit pause.
+- **The gate hook** (`forge-gate-hook.cjs`, a `PreToolUse` hook on `Bash|PowerShell`, setting `gate-hook`, on by
+  default). Before every shell command it asks the existing hard-gate classifier (`forge-actiongate.cjs` +
+  `hard-gates.json`) whether the command is a recursive force-delete, a kill of processes by name, or a git command
+  that discards uncommitted work. If so it exits 2: Claude Code blocks the call and shows a plain Dutch/English reason,
+  and Claude has to ask the user. A delete whose every target is provably inside a scratch area (`_scratch/`, any
+  `node_modules/` or `dist/`, `.claude/forge-backups/*`, the system temp folder, …) passes.
+- **21 vendored public skills and 2 commands**, so a beginner never has to hunt for skills: 13 from obra/superpowers
+  (MIT), `frontend-design` from anthropics/skills (Apache-2.0), 6 from mattpocock/skills (MIT: `grill-me`, `grilling`,
+  `teach`, `wait-what`, `resolving-merge-conflicts`, `setup-pre-commit`) and `claude-md-improver` from
+  anthropics/claude-plugins-official (Apache-2.0), plus the commands `/commit` and `/revise-claude-md` from the same
+  repository. Each is pinned to an exact upstream commit, keeps its upstream `LICENSE` file in its folder and carries a
+  provenance header; every change is listed in `.claude/skills/VENDORED-SKILLS.md`. The Bosses use them automatically
+  (`agent-skill-map.json`: Boss → `forge-prompt-coach`, `grill-me`, `grilling`; Build Boss → `resolving-merge-conflicts`,
+  `setup-pre-commit` (only on request); Docs Boss → `teach`, `wait-what`, `claude-md-improver`).
+- **Prompt coach.** The new Forge skill `forge-prompt-coach` (9 ingredients of an accurate request, failure modes
+  F1–F13 each with one 2–3-option question and a safe default, a 7-rule asking protocol, 10 bad→good examples) and
+  `forge-promptcheck.cjs ask "<request>"` (implemented in `forge-promptcheck-ask.cjs`; deterministic, offline, Dutch and
+  English). The silent intake asks **at most one** question — the highest-ranked real gap, as 2–3 plain options plus
+  "iets anders / something else" — then confirms in one sentence and, in explain mode, adds one teaching tip. Beginner
+  guide `docs/HOW-TO-ASK.md` (Dutch first, then English).
+- **Intake question bank:** Dutch text and beginner options on all 149 questions; the `bugfix` and `bots` sets are live
+  intake packs. `forge-intake.cjs` gains `--lang nl|en`, `--beginner` and `--trigger F<id>`, and passes the beginner
+  fields through in `--json`.
+- **Doctor beginner checks** (advisory, never red): a project `CLAUDE.md` over ~200 lines; `claude`, `git` and `node`
+  on PATH, including a clear note when Node is missing entirely (Claude Code itself needs no Node, Forge's tools need
+  Node 18+); `bypassPermissions` as the default permission mode; a WSL project under `/mnt/c`; a read-only summary of
+  `claude doctor`; the prompt coach installed next to the intake.
+- **Command Center:** a read-only "Forge settings" section in Settings, served by `GET /api/config?project=<name>`
+  (read-only: POST is refused with 405, an unknown project is a 404).
+- **`git-checkpoint`** (on by default): a local safety commit or branch before an L2+ build or any destructive request —
+  never pushed, never staging a `.env` or key file git does not ignore.
+- **`forge-sweep.cjs`** (with `-core`, `-extract`, `-aggregate`): a maintainer tool for a resumable YouTube beginner
+  research sweep. Needs `yt-dlp`; captions only, never media.
+
+### Changed
+
+- **The usage guard is on by default and pauses at 98 %.** In 2.4.0 it was opt-in, started only on an explicit request
+  or an opt-in marker file. The maintainer reversed that: beginners should be protected without having to know the guard
+  exists. To keep that honest, the tool now says what it does exactly when a new watcher really starts — it reads the
+  Claude login token locally from `~/.claude/.credentials.json` and sends it only to `api.anthropic.com` — followed by
+  the one command that switches it off (`/forge config set usage-guard off` — `off`, `uit` and `false` are all accepted). The opt-in marker is no longer used.
+  `usage-guard.cjs start` exits 3 without starting anything when the user switched it off, and `status` prints every
+  threshold with its source. It is still never started by `/forge dashboard`, by the Paperclip runtime (which needs
+  `--with-usage-guard`) or by the doctor's test run.
+- **Why 98 % and not the old 95 %:** Claude Code 2.1.234 and later already wait at a limit and continue by themselves
+  after the reset. The guard's job is now the pause *before* the limit, between phases, so a build is never cut off in
+  the middle of a step. The pause default had drifted between 93, 95 and 98 across files; 98 is now the only literal.
+- **Everything is on by default**, with three documented exceptions: `paperclip` stays off (unattended agents only on
+  an explicit request — `forge-paperclip.cjs up`/`ensure` now refuse with exit 3 while it is off, unless `--force`),
+  `cleanup` stays on `report` (`auto` deletes files) and `ecc-full-test` stays off (heavy diagnostics; it is bridged into
+  `FORGE_ECC_MODE.json`, and the old `ECC_TEST_MODE.md` marker is legacy).
+- **Build by default follows the settings:** `start-gate` (default `off`), `intake`, `prompt-doctor`, `dashboard`,
+  `usage-guard`, `git-checkpoint`, `team-max`, `model-tiering` and `explain-mode`. `/forge` refuses to work in the home
+  folder or a drive root, lists a keep-list before any "clean up" request, and ends every finished run with a one-line
+  `/clear` reminder.
+- `/forge dashboard` never prints a start or build command for the user to type; when no dashboard is available it says
+  so in one line and continues.
+- The doctor's "which tree is this?" check (`installationProfile`) now keys on a development-tree marker file that the
+  release never ships, instead of "carries vendored skills" — the public distribution ships vendored skills now.
+  Installation-pinned test assertions keep skipping visibly outside the development tree; skill counts are derived from
+  disk.
+
+### Fixed
+
+- **Hard-gate gap:** `git checkout .`, `git checkout -- <path>`, `git checkout <tree-ish> -- <path>` and
+  `git restore <path>` / `git restore .` were classified "no gate triggered", although each discards uncommitted edits
+  with no reflog entry. They are now `git-destructive`, as are `git switch -f` / `--force` / `--discard-changes`.
+  `git restore --staged <path>` (it only unstages), `git checkout main` and `git checkout -b x` stay silent.
+- The docs contradicted each other on the usage guard (opt-in vs default; 95 % vs 98 %). All docs now say: on by
+  default, 98 %, one command to change or switch off.
+- The README promised "no `npm install`, ever" while telling the user to run `npm install && npm run build` for the
+  dashboard. Forge's tools need no npm; the dashboard's one-time build is the only npm step, and it is run for the user.
+- `docs/FEATURES.md` listed `humanizer` and `gsap` as shipped craft skills and called gsap MIT. Neither is shipped in
+  the full install (gsap has no open licence); the section now lists the vendored skills that really ship.
+- The shipped owner profile's seed note said `/forge remember` writes `~/.claude/FORGE_OWNER_PROFILE.json`; it writes
+  the project's standing rules (`.claude/config/orchestration/FORGE_STANDING_RULES.json`).
+
+### Security
+
+- The gate hook is the first Forge hook that **enforces** instead of advising — deliberately scoped to the three
+  destructive command gates. Honest limits, documented in `HOOKS_OPT_IN.md` §6: it sees shell command text only (a delete
+  inside a script, a variable or `node -e` is not seen); the text gates (deploy, push, spend, …) and
+  writing outside the project stay classifier + prose gates; a hook cannot tell the user apart from the agent. If the
+  hook itself cannot judge a call (its own error, an oversized payload, a stdin timeout) it exits 1 — visible and
+  non-blocking, never a silent pass — and a regex fallback still blocks the obvious destructive verbs when the
+  classifier fails to load; if its scratch pass-through errors it keeps the block. A missing or damaged settings file
+  falls back to the default, which is ON.
+- After the read-only security and code reviews of this release the hook was tightened: a recursive delete
+  **without** the force flag is gated too (`rm -r`, `rm -R`, `rm --recursive`; `aws s3 rm`, `git rm -r` and `gsutil rm -r`
+  stay silent); kill-by-name also catches abbreviated `Stop-Process -N…`, `taskkill /FI` with any filter except
+  `PID eq`, `kill $(pgrep …)` / `` `pidof` `` substitutions and `pgrep|pidof|grep … | xargs kill`; the hook command is
+  `node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"` (works from any working directory; expansion
+  proven live); an agent's own `forge-config … set gate-hook off|unset|reset` is blocked, the one exact shape
+  `… set gate-hook off --once "<quote>"` passes (a quoted owner approval that expires after 10 minutes), and while the
+  gate is off every call it would have stopped prints a `FORGE GATE is OFF …` notice with exit 1; the scratch
+  pass-through refuses braces, parentheses and `cd`/`mv`/`ln`/`builtin`/`command`/`exec`/`env` words, and a delete
+  passes only when **every** segment of the command is itself a provable delete; quoted data (heredoc bodies,
+  `echo`/`printf` literals, log-event payloads, search patterns for grep/rg/Select-String/findstr/git grep) is never
+  classified as a command unless the same command later feeds it to an interpreter (`forge-gate-data.cjs`). Declared
+  gaps stay in `hard-gates.json` `_not_caught`: PowerShell `kill -n <name>` is silent (for POSIX `kill`, `-n` is a
+  signal number) and `gsutil -m rm -r` over-warns.
+- Hook `timeout` values are **seconds** in Claude Code; the shipped 5000/8000 meant 83 minutes / 2.2 hours. Now 15 s
+  for the snapshot hooks and 10 s for the tool ledger and the gate hook.
+- The shipped `.claude/settings.json` adds 23 `permissions.deny` rules: `Read(./.env)`, `Read(./.env.local)`,
+  `Read(./.env.*.local)`, `Read(./.env.development)`, `Read(./.env.production)`, `Read(./.env.staging)`,
+  `Read(./.env.test)`, `Read(./secrets/**)`, the same names nested anywhere (`Read(./**/.env)`, `.env.local`,
+  `.env.*.local`, `.env.production`, `.env.prod`, `.env.bak`, `.env.backup`, `secrets/**`), private keys
+  (`*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`) and the user's own credential files (`~/.claude/.credentials.json`,
+  `~/.claude/nvidia.env`, `~/.ssh/**`). `.env.example` stays readable on purpose (a test asserts it). Not covered:
+  reading through the shell.
+- Vendored skills: every upstream file was sha256-verified against the pinned commit's manifest and scanned for hidden or
+  zero-width Unicode and prompt-injection patterns before copying. Helper scripts that open a network listener or
+  delete outside their own work folder were excluded (the brainstorming browser companion); commands that push, open
+  PRs or delete branches (`commit-push-pr`, `clean_gone`) were not shipped.
+- The doctor warns when `bypassPermissions` is the default permission mode.
+- **NVIDIA off means no network.** With `nvidia` off, `health` and `models` make no request at all (one `NVIDIA OFF` line,
+  exit 3; `--force` checks anyway) and the Command Center shows the state `OFF` instead of "disconnected". A project
+  `.env` file may only set the API key and the per-role model names; the base URL and the "allow a custom URL" flag count
+  only from the real environment or the global `~/.claude/nvidia.env`, and the URL must be `https:` on an `*.nvidia.com`
+  host unless that flag is set — otherwise every request is refused before it is sent. `NVIDIA_TIMEOUT_MS` can no longer
+  come from an env file.
+- **Usage guard hardening.** Login-file errors are fixed text (no token fragment, no home path reaches the state file, the
+  log or the output); a running watcher re-reads the `usage-guard` setting before every check and exits cleanly when it
+  was switched off; `start` without a login file (for example macOS Keychain) refuses honestly with exit 3; a stale
+  "paused" state older than three intervals no longer blocks every phase; a pre-existing 30-second linger on a bad
+  login file is gone.
+- **The Command Center never runs a selected project's own code.** `GET /api/config` runs the gateway's own central
+  `forge-config.cjs` against the selected project (only that project's settings file is read), and the config child
+  receives no `*_TOKEN`, `*_SECRET` or `*_KEY` variables.
+- **Unreadable settings never mean "on".** `forge-config.cjs` exports `safeGet()`, which never throws: when
+  `FORGE_CONFIG.json` is damaged, every setting that costs money, uses the network or your data, deletes files or hands
+  control to an unattended agent falls to its safe value (off / report-only), the CLIs print one `NOTE (settings)` line
+  naming the file and the way back, and `reset --yes` moves the damaged file aside byte-for-byte before starting fresh.
+  The nine tools that read a setting now share one `configRead` adapter instead of nine copies.
+- **`git-checkpoint` never stages a secret.** Before the local safety commit Forge appends the missing ignore lines
+  (`forge-setup.cjs gitignore`, keeps `!.env.example`), then unstages anything secret-shaped that git did not ignore
+  (`.env*` except `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `credentials*.json`, `secrets/`) and says so in one line.
+
+### Fixed — after the read-only code and security reviews of this release (2026-09-24)
+
+- **Existing projects get the hooks and deny rules too.** A project that already had its own `.claude/settings.json`
+  used to receive only `settings.forge-recommended.json` and the message "merge what you want by hand", and
+  `forge-sync install` never touched `settings.json` at all — so a 2.4.0 project upgrading would never have got the gate
+  hook. New `forge-settings-merge.cjs` merges the five Forge hooks and the deny rules into an existing file
+  (existing entries kept byte-for-byte and in place, a Forge timeout still written in milliseconds corrected to seconds,
+  timestamped backup first, atomic write, running again is a no-op; an unreadable file is left alone with the
+  recommended copy next to it). `install.sh`, `install.ps1` and `forge-sync install`/`sync-all` all use it; the
+  fresh-install CI asserts a foreign hook and allow rule survive and the Forge entries arrive.
+- **Progress heartbeats of finished work no longer count as open tasks.** `forge-verify.cjs` and the dashboard's
+  `app.js` (mirrored) close an agent's `agent_progress` heartbeats when the same work package's `subagent_completed` or
+  `subagent_failed` arrives, taking that completion's status (blockers stay visible); a `fix_completed` or
+  `check_passed` carrying `closes_event_id` plus non-empty `evidence` closes exactly that earlier task; the drift check
+  reports a skill whose body changed but whose frontmatter did not as a `body_only_change` note instead of a false
+  `noop_claim` (git confirms the change).
+- **Version number.** This release is numbered **2.7.0** at the maintainer's request; there was no 2.5.0 or 2.6.0
+  release. Every version marker in the tree (VERSION, plugin and marketplace manifests, docs, code labels, brand tokens)
+  reads 2.7.0.
+
+### Docs
+
+- New: `docs/SETTINGS.md` (every setting with its default, how to change it, precedence, the locked rules),
+  `docs/CLAUDE-CODE-BASICS.md` (English and Dutch: paid plan and `/login`, the install line per shell, PATH, Git for
+  Windows, permission prompts and the folder-trust prompt, the hooks and deny rules Forge adds, Esc / Esc Esc /
+  `/rewind` / git as real undo, `/usage` and the shared 5-hour and weekly limits, `/clear`, CLAUDE.md, three myths) and
+  `docs/HOW-TO-ASK.md`.
+- README: the beginner promise (English and Dutch), "Settings in one command", the safety stop, the vendored skills,
+  the prompt coach, the usage-guard change and a corrected dashboard section. AI-INSTALL §2b lists the gate hook and
+  deny rules and describes the usage guard's default honestly. COMMANDS-QUICK-REF, FEATURES, HOW-IT-WORKS,
+  TOKEN-USAGE and AGENTS (skills per Boss) are updated to match; `forge-core` gains a v2.7.0 section.
+
 ## [2.4.0] - 2026-09-23
 
 Release theme: **measured on a machine that has never seen Forge.** An independent deep audit of v2.3.0 (Windows 11,
@@ -403,7 +600,8 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.4.0...v2.7.0
 [2.4.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.0.0...v2.3.0
 [2.2.0]: https://github.com/ForgeyClap/claude-forge/commits/main

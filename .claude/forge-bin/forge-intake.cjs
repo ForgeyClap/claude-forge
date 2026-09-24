@@ -11,7 +11,10 @@
  * BANK SHAPE (read-only; this file never writes it):
  *   { version, universal: [ {dimension, question, why, options[], tier:'required'|'recommended'} ],
  *     byType: { "<slug>": [ same shape ] } }  — slugs e.g. website, ecommerce, fullstack, electron, n8n,
- *   integration, rag, voice, prediction, scraping, dashboard.
+ *   integration, rag, voice, prediction, scraping, dashboard, bots, bugfix (a task kind across every domain).
+ *   Beginner layer (forge-prompt-coach, wp13b): question_nl, options_nl[], why_nl, beginner {options[],
+ *   options_nl[], recommended (index|null), assume, assume_nl}, triggers[F-ids] — passed through UNCHANGED
+ *   in --json whenever the bank item has them (additive: the classic fields stay exactly as they were).
  *
  * SELECTION ORDER: ALL of `universal` first, then `byType[<type>]` (if the slug exists) — within EACH
  * group, tier 'required' precedes 'recommended', original bank order otherwise preserved. `--extra` items
@@ -24,9 +27,16 @@
  *
  * CLI:
  *   node forge-intake.cjs --type <slug> [--task "<desc>"] [--tier required|all] [--max N]
- *                          [--extra <file.json>] [--json] [--run <run_id>]
+ *                          [--extra <file.json>] [--trigger F<1-13>] [--lang nl|en] [--beginner] [--json] [--run <run_id>]
  *     Human output (default): one numbered list, `N. [tier] (dimension) question` + why/opties lines,
  *     with a Dutch header/footer (owner-chosen voice — matches this project's Forge NL conventions).
+ *     --lang nl prints question_nl with the beginner options (at most 3 + "Iets anders", the recommended one
+ *     FIRST with its one-line reason from why_nl; recommended null -> no marker, a "waarom:" line). Items
+ *     without a beginner layer fall back to their own fields. --beginner forces that block in English too.
+ *     Both flags only change the human print; --json always carries every field in both languages.
+ *     --trigger F<id> keeps only the questions whose `triggers` contain that failure-mode id (how the Lead
+ *     picks the ONE question for a gap, e.g. F9 -> the bugfix symptom set); applied after --tier, before
+ *     --max; an empty result is an honest empty list (exit 0). --json then also carries `trigger`.
  *     --json prints { type, version, count, required, recommended, note, droppedCount, questions[] }.
  *     --run <run_id> additionally logs ONE `agent_note` event (agent:orchestrator, role:lead) via
  *     ../forge-dashboard/log-event.cjs describing how many intake questions were produced. A logging
@@ -51,6 +61,14 @@ function normText(s) { return String(s == null ? '' : s).toLowerCase().replace(/
 function tierOf(t) { return t === 'required' ? 'required' : 'recommended'; }
 function tierRank(t) { return tierOf(t) === 'required' ? 0 : 1; }
 
+// The beginner layer (wp13b) is copied as-is, only when the bank item has it — never invented or reshaped.
+const BEGINNER_FIELDS = ['question_nl', 'options_nl', 'why_nl', 'beginner', 'triggers'];
+function beginnerFields(q) {
+  const out = {};
+  for (const k of BEGINNER_FIELDS) if (q[k] !== undefined) out[k] = q[k];
+  return out;
+}
+
 /** groupQuestions(list, groupName) -> annotated, tier-sorted (required before recommended, stable)
  *  question objects for one bank group ('universal' or a byType slug). Never throws on a malformed item. */
 function groupQuestions(list, groupName) {
@@ -58,14 +76,14 @@ function groupQuestions(list, groupName) {
     .filter((q) => q && typeof q === 'object' && typeof q.question === 'string' && q.question.trim())
     .slice()
     .sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
-    .map((q) => ({
+    .map((q) => Object.assign({
       group: groupName,
       dimension: typeof q.dimension === 'string' && q.dimension.trim() ? q.dimension.trim() : 'general',
       question: q.question.trim(),
       why: typeof q.why === 'string' ? q.why.trim() : '',
       options: Array.isArray(q.options) ? q.options : [],
       tier: tierOf(q.tier),
-    }));
+    }, beginnerFields(q)));
 }
 
 /** loadBank(bankPath) -> {ok:true, bank} | {ok:false, error}. Never throws. */
@@ -109,15 +127,14 @@ function assembleAll(bank, type, extraQuestions) {
   const seen = new Set(items.map((q) => normText(q.question)));
   const extra = (Array.isArray(extraQuestions) ? extraQuestions : [])
     .filter((q) => q && typeof q === 'object' && typeof q.question === 'string' && q.question.trim())
-    .map((q) => ({
+    .map((q) => Object.assign({
       group: 'extra',
       dimension: typeof q.dimension === 'string' && q.dimension.trim() ? q.dimension.trim() : 'extra',
       question: q.question.trim(),
       why: typeof q.why === 'string' ? q.why.trim() : '',
       options: Array.isArray(q.options) ? q.options : [],
       tier: tierOf(q.tier),
-      _norm: normText(q.question),
-    }))
+    }, beginnerFields(q), { _norm: normText(q.question) }))
     .filter((q) => { if (seen.has(q._norm)) return false; seen.add(q._norm); return true; })
     .sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
     .map((q) => { const { _norm, ...rest } = q; return rest; });
@@ -141,11 +158,12 @@ function capList(items, max) {
 }
 
 /** buildIntake(bank, opts) -> the final numbered result. opts: {type, tier:'required'|'all',
- *  max:number|null, extraQuestions[]}. Pure/deterministic given the same bank + opts. */
+ *  max:number|null, extraQuestions[], trigger:'F<id>'|null}. Pure/deterministic given the same bank + opts. */
 function buildIntake(bank, opts) {
   opts = opts || {};
   const { items, typeNote, trimmedType } = assembleAll(bank, opts.type, opts.extraQuestions);
   let working = opts.tier === 'required' ? items.filter((q) => q.tier === 'required') : items;
+  if (opts.trigger) working = working.filter((q) => Array.isArray(q.triggers) && q.triggers.includes(opts.trigger));
   let dropped = 0;
   if (Number.isFinite(opts.max)) {
     const capped = capList(working, opts.max);
@@ -154,7 +172,7 @@ function buildIntake(bank, opts) {
   }
   const questions = working.map((q, i) => Object.assign({ n: i + 1 }, q));
   const required = questions.filter((q) => q.tier === 'required').length;
-  return {
+  const out = {
     type: trimmedType || null,
     version: bank.version || null,
     note: typeNote,
@@ -164,19 +182,56 @@ function buildIntake(bank, opts) {
     required,
     recommended: questions.length - required,
   };
+  if (opts.trigger) out.trigger = opts.trigger;
+  return out;
 }
 
 // ---- rendering ----
-function formatHuman(result) {
+const TIER_NL = { required: 'verplicht', recommended: 'aanbevolen' };
+const isElseOption = (s) => /^(?:iets anders|something else)\b/i.test(String(s).trim());
+
+/** beginnerLines(q, lang) -> the beginner block (recommended option FIRST with its one-line reason, at most
+ *  3 options, then "Iets anders"/"Something else") or null when the item has no beginner options. */
+function beginnerLines(q, lang) {
+  const nl = lang === 'nl';
+  const b = q.beginner && typeof q.beginner === 'object' ? q.beginner : null;
+  const raw = b && Array.isArray(nl ? b.options_nl : b.options) ? (nl ? b.options_nl : b.options).map(String) : [];
+  if (!raw.length) return null;
+  const why = String((nl ? q.why_nl || q.why : q.why) || '').trim();
+  const rec = Number.isInteger(b.recommended) && b.recommended >= 0 && b.recommended < raw.length && !isElseOption(raw[b.recommended]) ? b.recommended : null;
+  const ordered = (rec === null ? [] : [raw[rec]]).concat(raw.filter((o, i) => i !== rec && !isElseOption(o))).slice(0, 3);
+  const elseLabel = raw.find(isElseOption) || (nl ? 'Iets anders' : 'Something else');
+  const lines = ordered.map((o, i) => '      ' + 'ABC'[i] + ') ' + o
+    + (i === 0 && rec !== null && why ? (nl ? ' — aanbevolen: ' : ' — recommended: ') + why : ''));
+  lines.push('      ' + 'ABCD'[ordered.length] + ') ' + elseLabel);
+  if (rec === null && why) lines.push((nl ? '      waarom: ' : '      why: ') + why);
+  return lines;
+}
+
+/** formatHuman(result, {lang:'nl'|'en', beginner:boolean}) — the default (en, no beginner) is the classic list. */
+function formatHuman(result, view) {
+  const lang = view && view.lang === 'nl' ? 'nl' : 'en';
+  const showBeginner = lang === 'nl' || !!(view && view.beginner);
   const typeLabel = result.type || 'universal';
   const lines = [`Prompt Master intake — ${typeLabel} · ${result.count} vragen (${result.required} verplicht, ${result.recommended} aanbevolen)`];
   if (result.note) lines.push('Let op: ' + result.note);
+  if (result.trigger) {
+    lines.push(result.count
+      ? `Filter: alleen vragen met trigger ${result.trigger} (${result.count}).`
+      : `Let op: geen vragen met trigger ${result.trigger} voor dit type — een eerlijke lege lijst.`);
+  }
   if (result.droppedCount > 0) lines.push(`Let op: --max liet ${result.droppedCount} aanbevolen vra(a)g(en) vallen.`);
   lines.push('');
   for (const q of result.questions) {
-    lines.push(`${q.n}. [${q.tier}] (${q.dimension}) ${q.question}`);
-    if (q.why) lines.push('      why: ' + q.why);
-    if (q.options.length) lines.push('      opties: ' + q.options.join(' · '));
+    const tier = lang === 'nl' ? TIER_NL[q.tier] : q.tier;
+    const text = lang === 'nl' && typeof q.question_nl === 'string' && q.question_nl.trim() ? q.question_nl.trim() : q.question;
+    lines.push(`${q.n}. [${tier}] (${q.dimension}) ${text}`);
+    const block = showBeginner ? beginnerLines(q, lang) : null;
+    if (block) { lines.push(...block); continue; }
+    const why = lang === 'nl' && q.why_nl ? q.why_nl : q.why;
+    const options = lang === 'nl' && Array.isArray(q.options_nl) && q.options_nl.length ? q.options_nl : q.options;
+    if (why) lines.push((lang === 'nl' ? '      waarom: ' : '      why: ') + why);
+    if (options.length) lines.push('      opties: ' + options.join(' · '));
   }
   lines.push('');
   lines.push('Beantwoord per nummer of kies een optie hierboven — je antwoorden voeden de PRD en de Boss-dispatches.');
@@ -188,6 +243,7 @@ function toJson(result, task) {
     type: result.type, version: result.version, count: result.count, required: result.required,
     recommended: result.recommended, note: result.note, droppedCount: result.droppedCount, questions: result.questions,
   };
+  if (result.trigger) out.trigger = result.trigger;
   if (task) out.task = task;
   return out;
 }
@@ -206,13 +262,14 @@ function logIntakeNote(runId, root, result, typeLabel) {
 
 // ---- CLI ----
 function parseArgs(argv) {
-  const opts = { type: null, task: null, tier: 'all', max: null, extra: null, json: false, run: null };
+  const opts = { type: null, task: null, tier: 'all', max: null, extra: null, json: false, run: null, lang: 'en', beginner: false, trigger: null };
   const errors = [];
-  const KNOWN = new Set(['--type', '--task', '--tier', '--max', '--extra', '--json', '--run']);
+  const KNOWN = new Set(['--type', '--task', '--tier', '--max', '--extra', '--json', '--run', '--lang', '--beginner', '--trigger']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!KNOWN.has(a)) { errors.push(`unknown flag '${a}'`); continue; }
     if (a === '--json') { opts.json = true; continue; }
+    if (a === '--beginner') { opts.beginner = true; continue; }
     const v = argv[++i];
     if (v === undefined) { errors.push(`${a} requires a value`); continue; }
     if (a === '--type') opts.type = v;
@@ -221,8 +278,16 @@ function parseArgs(argv) {
     else if (a === '--max') opts.max = v;
     else if (a === '--extra') opts.extra = v;
     else if (a === '--run') opts.run = v;
+    else if (a === '--lang') opts.lang = v;
+    else if (a === '--trigger') opts.trigger = v;
   }
   if (opts.tier !== 'all' && opts.tier !== 'required') errors.push(`--tier must be 'required' or 'all' (got '${opts.tier}')`);
+  if (opts.lang !== 'nl' && opts.lang !== 'en') errors.push(`--lang must be 'nl' or 'en' (got '${opts.lang}')`);
+  if (opts.trigger !== null) {
+    const m = /^F(1[0-3]|[1-9])$/i.exec(String(opts.trigger).trim());
+    if (m) opts.trigger = 'F' + m[1];
+    else errors.push(`--trigger must be a failure-mode id F1..F13 (got '${opts.trigger}')`);
+  }
   let maxNum = null;
   if (opts.max != null) {
     maxNum = Number(opts.max);
@@ -233,12 +298,12 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-  console.error('Usage: node forge-intake.cjs --type <slug> [--task "<desc>"] [--tier required|all] [--max N] [--extra <file.json>] [--json] [--run <run_id>]');
+  console.error('Usage: node forge-intake.cjs --type <slug> [--task "<desc>"] [--tier required|all] [--max N] [--extra <file.json>] [--trigger F<1-13>] [--lang nl|en] [--beginner] [--json] [--run <run_id>]');
 }
 
 module.exports = {
   normText, groupQuestions, loadBank, loadExtra, assembleAll, capList, buildIntake,
-  formatHuman, toJson, logIntakeNote, parseArgs,
+  formatHuman, toJson, logIntakeNote, parseArgs, beginnerLines, BEGINNER_FIELDS,
 };
 
 if (require.main === module) {
@@ -257,9 +322,9 @@ if (require.main === module) {
       } else {
         const extraLoaded = loadExtra(opts.extra);
         if (extraLoaded.note) console.error('forge-intake: ' + extraLoaded.note);
-        const result = buildIntake(loaded.bank, { type: opts.type, tier: opts.tier, max: opts.maxNum, extraQuestions: extraLoaded.questions });
+        const result = buildIntake(loaded.bank, { type: opts.type, tier: opts.tier, max: opts.maxNum, extraQuestions: extraLoaded.questions, trigger: opts.trigger });
         if (opts.json) console.log(JSON.stringify(toJson(result, opts.task)));
-        else console.log(formatHuman(result));
+        else console.log(formatHuman(result, { lang: opts.lang, beginner: opts.beginner }));
         if (opts.run) {
           const logged = logIntakeNote(opts.run, PROJECT_ROOT, result, result.type || 'universal');
           if (logged.ok === false) console.error('forge-intake: agent_note logging failed (question list still valid): ' + logged.reason);

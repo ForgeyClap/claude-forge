@@ -97,7 +97,7 @@ the documented, supported Windows path is `install.ps1`. Pick one and finish wit
 
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
-- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is kept untouched and Forge's version is written next to it as `settings.forge-recommended.json`.
+- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is never replaced: Forge's hooks and deny rules are **merged into it** (your own hooks, allow rules and other keys stay exactly where they are; a timestamped backup `settings.json.forge-bak-<ts>` is written first; running again changes nothing). Only when the file is not valid JSON does the installer leave it alone and write Forge's version next to it as `settings.forge-recommended.json`, saying so in one line.
 - An identical file is left untouched.
 - Your `CLAUDE.md` is **never overwritten** — it is only created when absent.
 - Your `.gitignore` only ever gets lines it does not already have.
@@ -113,24 +113,63 @@ the documented, supported Windows path is `install.ps1`. Pick one and finish wit
 
 ## 2b. What the install switches on (tell the user — do not let them find out later)
 
-The project payload ships a `.claude/settings.json` with **four live Claude Code hooks**, all local,
-none phoning home:
+The project payload ships a `.claude/settings.json` with **hooks on four Claude Code events** (five entries,
+four small Node scripts), all local, none phoning home, plus **deny rules** that keep secret files out of
+Claude's reach:
 
 1. **PreCompact (manual)** — snapshots the mission state before a manual context compaction
 2. **PreCompact (auto)** — snapshots the mission state before an automatic compaction
-3. **SessionStart** — re-injects the mission after compaction, so a long session does not lose what it was doing
+3. **SessionStart** (after compaction) — re-injects the mission, so a long session does not lose what it was doing
 4. **PostToolUse** (matcher: `Write|Edit|MultiEdit|NotebookEdit|Bash`) — appends the tool name and target path of each *changing* tool call to `.claude/forge-runs/_toollog/<session>.jsonl` (gitignored)
+5. **PreToolUse — the gate hook** (matcher: `Bash|PowerShell`, `forge-gate-hook.cjs`, new in 2.7.0) — before every
+   shell command it asks Forge's hard-gate classifier whether the command is a recursive delete (with or without
+   the force flag), a kill of processes by name (also through `pgrep`/`pidof` substitutions and `xargs`
+   pipelines), or a git command that throws away uncommitted work (`git reset --hard`, `git clean -f`,
+   `git checkout -f` / `.` / `-- <path>`, `git restore <path>`, `git switch -f`, `git stash drop|clear`). If so it
+   exits 2: Claude Code blocks the call and shows a plain Dutch/English reason, and the assistant must ask the
+   user. A delete whose every target is provably inside a scratch area (`_scratch/`, `node_modules/`, `dist/`, the
+   system temp folder, …) passes. Quoted data — heredoc bodies, `echo` literals, log payloads, `grep` patterns —
+   is never mistaken for a command. When the hook cannot judge a call (its own error, an oversized payload) it
+   exits 1: visible, not blocking, never a silent pass. It is the only hook that blocks instead of advising; it is
+   ON by default. Only the user switches it off (`/forge config set gate-hook off`): the assistant's own attempt to
+   switch it off is itself blocked, a one-off `--once "<quoted approval>"` expires after 10 minutes, and while it
+   is off every call it would have stopped still prints a visible notice.
 
-Each hook runs a small, fast Node command that fires locally only — nothing phones home. To opt out of any hook, delete its entry from `.claude/settings.json` — nothing else depends on them.
+**Deny rules** (`permissions.deny`, 23 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
+`Read(./.env.development)`, `Read(./.env.production)`, `Read(./.env.staging)`, `Read(./.env.test)`,
+`Read(./secrets/**)`, the same names nested anywhere (`Read(./**/.env)`, `Read(./**/.env.local)`,
+`Read(./**/.env.*.local)`, `Read(./**/.env.production)`, `Read(./**/.env.prod)`, `Read(./**/.env.bak)`,
+`Read(./**/.env.backup)`, `Read(./**/secrets/**)`), private keys (`Read(./**/*.pem)`, `Read(./**/*.key)`,
+`Read(./**/id_rsa*)`, `Read(./**/id_ed25519*)`) and the user's own credential files (`Read(~/.claude/.credentials.json)`,
+`Read(~/.claude/nvidia.env)`, `Read(~/.ssh/**)`). `.env.example` stays readable on purpose (Forge records new
+variable names in it; a test asserts it). Not covered: reading a file through the shell (`cat .env`).
 
-The **usage guard** (`usage-guard.cjs`) is **opt-in only**. It is a machine-global background watcher that
-reads the Claude OAuth token from `~/.claude/.credentials.json` and polls Anthropic's own usage
-endpoint so a run can pause before the account's limit. Nothing starts it silently any more: not `/forge`, not
-`/forge dashboard`, not the Paperclip runtime (`forge-paperclip.cjs up` needs `--with-usage-guard`), and not the
-test suite the doctor runs (its test isolates a temporary home). It runs only when the user asks for usage
-protection in the session, or when the explicit opt-in marker `~/.claude/FORGE_USAGE_GUARD_OPT_IN.json` exists —
-a marker only such a request creates. If you start it on their behalf, say so plainly in one line
-(`node .claude/forge-bin/usage-guard.cjs stop` stops it).
+Each hook runs a small, fast Node command that fires locally only — nothing phones home. To opt out of any hook,
+delete its entry from `.claude/settings.json` — nothing else depends on them. **If the project already had its own
+`.claude/settings.json`**, the installer (and every later `forge-sync install` upgrade) merges the five hooks and the
+deny rules into it with `forge-settings-merge.cjs`: existing entries are kept byte-for-byte and in place, only missing
+Forge entries are appended, a Forge hook whose timeout was still written in milliseconds is corrected to seconds, and a
+timestamped backup is written first. Running it again is a no-op. Only an unreadable (non-JSON) file is left alone, with
+Forge's version written next to it as `settings.forge-recommended.json`. Tell the user which of the three happened
+(created · merged · left alone) and, after a merge, name the backup path.
+
+**Everything is on by default, and `/forge config` shows and changes it.** `/forge config list` (in a terminal:
+`node .claude/forge-bin/forge-config.cjs list --all`) lists all 36 settings with value, source and a plain
+explanation. Choices are saved in `.claude/FORGE_CONFIG.json` (this project) and `~/.claude/FORGE_CONFIG.json`
+(machine-wide); a fresh install has neither file, so the built-in defaults apply. Mention this command in the
+handover — the user never has to edit a settings file.
+
+The **usage guard** (`usage-guard.cjs`) is **on by default since 2.7.0** (in 2.4.0 it was opt-in; the maintainer
+reversed that so beginners are protected without knowing it exists). It is a machine-global background watcher
+that reads the Claude login token **locally** from `~/.claude/.credentials.json` and sends it **only** to
+`api.anthropic.com`, to read the account's usage, so a run can pause at **98 %** (setting `usage-guard.pause-at`)
+before the account's limit. `/forge` starts it at the beginning of a build when the setting `usage-guard` is on.
+The tool prints that disclosure itself — in Dutch and English, followed by the off command — exactly when a new
+watcher really starts, not when one is already running. No consent file is created or read any more. Still never
+started by: `/forge dashboard`, the Paperclip runtime (`forge-paperclip.cjs up` needs `--with-usage-guard`), or
+the test suite the doctor runs (its test isolates a temporary home). **Tell the user in one line** that it exists,
+what it reads and where it sends it, and that `/forge config set usage-guard off` switches it off (the tool then
+refuses to start); `node .claude/forge-bin/usage-guard.cjs stop` stops a watcher that is already running.
 
 One more token reader, also opt-in: the Command Center's **Discord service** (`command-center/discord/`) reads the
 same `~/.claude/.credentials.json` to show subscription usage, and sends the token only to `api.anthropic.com`. It is
@@ -172,6 +211,13 @@ Tell them, in their own language, this:
   my bakery", "find why the login breaks", "automate this with n8n") and Forge classifies the task,
   picks the smallest fitting team of agents, builds it, and reports honestly what ran.
 - **`/setup-forge`** — first-time onboarding; run it once inside Claude Code.
+- **`/forge config`** — every Forge setting in one list (value, where it comes from, what it does); change any of
+  them with one command, or by just saying it in chat ("pause at 95 percent", "codex review off"). Everything is on
+  by default. Details: [docs/SETTINGS.md](docs/SETTINGS.md).
+- **The beginner promise** — say it in their language:
+  - EN: "Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. The only things it always stops for are the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and a real usage-limit pause. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat."
+  - NL: "Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt alleen altijd voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en een echte gebruikslimiet-pauze. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat."
+- **New to Claude Code?** Point them to [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md) (English and Dutch).
 - **`CLAUDE.md`** in their project root is theirs to edit — it is the project brain every session
   reads. The installer filled in a skeleton; ask them to complete the "Project identity" and
   "How to run and test" sections, because agents read those before touching anything.

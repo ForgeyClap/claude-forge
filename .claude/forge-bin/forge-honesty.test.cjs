@@ -179,5 +179,88 @@ t('panels.js trustStats() tracks unstamped events', /unstamped/.test(PANELS_SRC)
   t('Fix5: banner text names the Codex flag instead of a blanket "all required gates pass"', /Codex flagged an issue/.test(r.text));
 }
 
+// ---------------------------------------------------------------------------------------------------
+// WP23 (2026-09-24) — "verify: heartbeats and evidence-closed tasks", mirrored from forge-verify.cjs's
+// verifyRun() into app.js's buildNodes() (same 3-place discipline the file headers describe).
+// ---------------------------------------------------------------------------------------------------
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Build Boss', event_type: 'agent_started', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Build Boss', event_type: 'agent_progress', wp_id: 'wp1', note: 'heartbeat', timestamp: '2026-09-24T00:00:01Z' },
+    { agent: 'Build Boss', event_type: 'subagent_completed', wp_id: 'wp1', status: 'completed', timestamp: '2026-09-24T00:00:02Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Build Boss');
+    ({ heartbeat: n.tasks.find((tk) => tk.event && tk.event.event_type === 'agent_progress') });
+  `);
+  t('RULE 1: app.js closes a same-wp_id heartbeat on subagent_completed', r.heartbeat && r.heartbeat.status === 'done');
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Search Boss', event_type: 'agent_progress', wp_id: 'wpA', note: 'heartbeat', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Search Boss', event_type: 'subagent_completed', wp_id: 'wpB', status: 'completed', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Search Boss');
+    ({ heartbeat: n.tasks.find((tk) => tk.event && tk.event.event_type === 'agent_progress') });
+  `);
+  t('RULE 1: app.js does NOT close a heartbeat when the completion names a different wp_id', r.heartbeat && r.heartbeat.status !== 'done');
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Docs Boss', event_type: 'agent_progress', wp_id: 'wp13b', note: 'heartbeat', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'Docs Boss', event_type: 'subagent_completed', wp_id: 'wp13b', status: 'completed_with_blockers', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Docs Boss');
+    ({ heartbeat: n.tasks.find((tk) => tk.event && tk.event.event_type === 'agent_progress') });
+  `);
+  t('RULE 1: a completed_with_blockers completion closes the heartbeat as FAILED, not done (blockers stay visible)', r.heartbeat && r.heartbeat.status === 'failed');
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Review Boss', event_type: 'check_failed', event_id: 'ev-app-closes-1', task: 'lint gate', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'orchestrator', event_type: 'fix_completed', closes_event_id: 'ev-app-closes-1', evidence: 'reran lint, 0 errors', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Review Boss');
+    ({ closedTask: n.tasks[0], advisories: STATE._closesAdvisories.length });
+  `);
+  t('RULE 2: app.js closes an EARLIER task on a different node via closes_event_id + evidence', r.closedTask.status === 'done');
+  t('RULE 2: no advisory for a valid closure', r.advisories === 0);
+}
+{
+  const { run } = loadDashboard();
+  const events = [
+    { agent: 'Review Boss', event_type: 'check_failed', event_id: 'ev-app-closes-2', task: 'lint gate', timestamp: '2026-09-24T00:00:00Z' },
+    { agent: 'orchestrator', event_type: 'fix_completed', closes_event_id: 'ev-app-closes-2', timestamp: '2026-09-24T00:00:01Z' },
+  ];
+  const r = run(`
+    STATE.events = ${JSON.stringify(events)};
+    STATE.run = {};
+    STATE._nodes = buildNodes();
+    const n = STATE._nodes.find((x) => x.key === 'Review Boss');
+    ({ closedTask: n.tasks[0], advisories: STATE._closesAdvisories });
+  `);
+  t('RULE 2: without evidence, app.js closes nothing', r.closedTask.status !== 'done');
+  t('RULE 2: exactly one advisory naming "no evidence"', r.advisories.length === 1 && /no evidence/.test(r.advisories[0]));
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

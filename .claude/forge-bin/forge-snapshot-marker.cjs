@@ -30,11 +30,54 @@
  *     is not re-injected into context the way SessionStart's is — only the marker file + snapshot file are
  *     written); stderr carries at most a short diagnostic label, never file content.
  *
- * MODEL: run(rawStdinJson, opts) -> {ok, wrote, due, root, snapshotWritten, reason} — pure-ish, testable
- * without a real stdin pipe. CLI: reads real stdin, calls run(), always exits 0.
+ * OWNER SETTING `snapshots` (v2.7.0, forge-config.cjs; default ON): OFF -> run() returns
+ * {ok:true, skipped:true, reason:'owner config snapshots=off'} BEFORE touching the disk — no marker, no
+ * snapshot, no diagnostics line, no output, exit 0. The setting is read for the SAME project root this hook
+ * acts on (FORGE_PROJECT_ROOT, the resolver's own seam, wins when set). forge-config.cjs is soft-required and
+ * read through its fail-safe safeGet(): absent, throwing or a damaged settings file -> the schema default (ON,
+ * `snapshots` carries no data flag) with run() returning a one-line `config_note`, so a missing or damaged
+ * settings file never breaks compaction. The GLOBAL copy has no sibling forge-config.cjs, so it falls back to the TARGET project's own
+ * `.claude/forge-bin/forge-config.cjs` — the same "that project's own module" rule as forge-snapshot.cjs.
+ *
+ * MODEL: run(rawStdinJson, opts) -> {ok, wrote, due, root, snapshotWritten, reason, skipped?} — pure-ish,
+ * testable without a real stdin pipe (opts.configModule injects a config module; null = "absent"). CLI:
+ * reads real stdin, calls run(), always exits 0.
  */
 const fs = require('fs');
 const path = require('path');
+
+let cfg = null;
+try { cfg = require('./forge-config.cjs'); } catch { cfg = null; }
+function configModuleFor(root) {
+  if (cfg) return cfg;
+  try { return require(path.join(root, '.claude', 'forge-bin', 'forge-config.cjs')); } // eslint-disable-line global-require
+  catch { return null; }
+}
+/** configRead(key, fallback, opts) -> { value, source, degraded, reason } via forge-config.safeGet (FAIL-SAFE,
+ *  review-boss M3: a damaged settings file never switches a flagged feature on). `fallback` is this file's copy of
+ *  the schema default, used only when forge-config.cjs is absent or broken; an older copy without safeGet is read
+ *  through get(). Never throws. opts.projectRoot = the root this hook acts on (ignored when FORGE_PROJECT_ROOT is
+ *  set); opts.configModule injects a module (tests; null = "absent"). */
+function configRead(key, fallback, opts) {
+  opts = opts || {};
+  const mod = opts.configModule !== undefined ? opts.configModule : configModuleFor(opts.projectRoot || process.cwd());
+  const o = opts.projectRoot && !process.env.FORGE_PROJECT_ROOT ? { projectRoot: opts.projectRoot } : {};
+  let why = 'forge-config.cjs not found';
+  try {
+    if (mod && typeof mod.safeGet === 'function') {
+      const r = mod.safeGet(key, Object.assign({ fallback }, o));
+      if (r && typeof r.value === typeof fallback) return r;
+      why = 'forge-config gave no usable value';
+    } else if (mod && typeof mod.get === 'function') {
+      const e = mod.get(key, o);
+      if (e && typeof e.value === typeof fallback) return { value: e.value, source: e.source || 'unknown', degraded: false, reason: null };
+      why = 'forge-config gave a value of the wrong type';
+    }
+  } catch (e) { why = 'settings unreadable: ' + ((e && e.message) || e); }
+  return { value: fallback, source: 'built-in', degraded: true, reason: why + ' — ' + key + ' uses the built-in ' + JSON.stringify(fallback) };
+}
+/** configOn(key, def, opts) -> just the value of configRead(). */
+function configOn(key, def, opts) { return configRead(key, def, opts).value; }
 
 function resolveProjectRoot(opts) {
   opts = opts || {};
@@ -57,11 +100,16 @@ function logDiag(root, obj) {
  *  returned as {ok:false, reason}), so the CLI wrapper can always exit 0. */
 function run(rawStdinJson, opts) {
   opts = opts || {};
+  const root = resolveProjectRoot(opts);
+  const sc = configRead('snapshots', true, { projectRoot: root, configModule: opts.configModule });
+  const note = sc.degraded ? { config_note: sc.reason } : {}; // degraded settings: say so in the result (this hook prints nothing)
+  if (sc.value === false) {
+    return Object.assign({ ok: true, skipped: true, reason: 'owner config snapshots=off', wrote: false, due: null, root, snapshotWritten: false }, note);
+  }
   let payload = {};
   try { payload = JSON.parse(rawStdinJson || '{}'); } catch { payload = {}; }
   if (!payload || typeof payload !== 'object') payload = {};
 
-  const root = resolveProjectRoot(opts);
   const compactionType = payload.compaction_type === 'manual' ? 'manual' : 'auto';
   const reason = mapReason(payload.compaction_type);
   const due = {
@@ -90,10 +138,10 @@ function run(rawStdinJson, opts) {
     // no Forge install at this project root — silent, honest no-op (never an error)
   } catch (e) { logDiag(root, { at: due.at, step: 'write-snapshot', error: e.message }); }
 
-  return { ok: true, wrote, due, root, snapshotWritten, reason };
+  return Object.assign({ ok: true, wrote, due, root, snapshotWritten, reason }, note);
 }
 
-module.exports = { run, resolveProjectRoot, mapReason };
+module.exports = { run, resolveProjectRoot, mapReason, configOn, configRead };
 
 // ---- CLI (advisory hook target — ALWAYS exits 0, never blocks). Mirrors the async stdin-collection
 // pattern already proven safe on Windows by forge-hook-hotspot-lock.cjs/forge-hook-secret-scrub.cjs (a

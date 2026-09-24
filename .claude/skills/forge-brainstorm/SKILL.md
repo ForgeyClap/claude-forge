@@ -5,7 +5,7 @@ description: Forge structured-ideation playbook. Use BEFORE building when the ap
 
 # Forge playbook — Structured ideation (brainstorm before build)
 
-**Do not duplicate ECC skills — defer to:** `brainstorming` (the deep design-dialogue methodology). This
+**Do not duplicate ECC skills — defer to:** `brainstorming` (the deep design-dialogue methodology; it ships with Forge as a pinned vendored skill). This
 file is the Forge-specific orchestration wrapper: a compact diverge → converge loop sized for a `/forge`
 work package rather than a full standalone design doc.
 

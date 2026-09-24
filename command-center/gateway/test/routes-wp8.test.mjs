@@ -6,6 +6,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { createServer } from '../src/server.mjs';
 import { PROJECT_ROOT } from '../src/paths.mjs';
 import { _resetProjectsCacheForTests } from '../src/projects.mjs';
@@ -115,15 +116,26 @@ test('SECURITY: GET /api/recovery with an unknown project never reaches the file
 
 /* -------------------------------------------------------------------------- /api/checkpoints --- */
 
-test('GET /api/checkpoints honestly reports UNAVAILABLE resume state and no manifests for this project', async () => {
+test('GET /api/checkpoints reports the resume state and the run manifests that REALLY exist for this project', async () => {
   const res = await request(port, '/api/checkpoints?project=' + encodeURIComponent(THIS_PROJECT_NAME));
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
-  // Verified true today: no FORGE_RESUME_STATE.json and no run manifest.json exist anywhere in
-  // this fleet — the endpoint must say so honestly rather than fabricate either.
-  assert.equal(res.json.resume_state.available, false);
-  assert.equal(res.json.runs_with_manifest_count, 0);
-  assert.equal(res.json.provenance, 'NOT CONFIGURED');
+  // 2026-09-24: this used to pin "no manifest.json exists anywhere" as a fact about the fleet. It stopped
+  // being true the moment a real run armed a manifest (forge-manifest.cjs arm --log-event), so the test
+  // now measures the disk instead of assuming a snapshot: the endpoint must report exactly the manifests
+  // that exist, and its provenance must follow its own documented rule (LIVE when a resume state or any
+  // manifest is present, NOT CONFIGURED otherwise) — honest in both directions, fabricating in neither.
+  const runsDir = path.join(PROJECT_ROOT, '.claude', 'forge-runs');
+  const onDisk = fs.existsSync(runsDir)
+    ? fs.readdirSync(runsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && fs.existsSync(path.join(runsDir, d.name, 'manifest.json')))
+      .map((d) => d.name).sort()
+    : [];
+  assert.equal(typeof res.json.resume_state.available, 'boolean');
+  assert.equal(res.json.runs_with_manifest_count, onDisk.length);
+  assert.deepEqual(res.json.runs_with_manifest.map((r) => r.run_id).sort(), onDisk);
+  const expectProvenance = res.json.resume_state.available || onDisk.length > 0 ? 'LIVE' : 'NOT CONFIGURED';
+  assert.equal(res.json.provenance, expectProvenance);
 });
 
 /* ---------------------------------------------------------------------------- /api/approvals --- */

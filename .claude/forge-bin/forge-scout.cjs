@@ -26,7 +26,10 @@
  *   "nothing vetted yet."
  *
  * MODEL:
- *   terms({ domain, keywords }, opts) -> { domain, terms: [string,...] }
+ *   terms({ domain, keywords }, opts) -> { domain, terms: [string,...], sources: [{name, url, curated, note},...] }
+ *     `sources` (wp6, 2026-09-24) lists WHERE to search besides the web/video search, each with an explicit
+ *     `curated` flag — an uncurated source (skills.sh) is a place to FIND candidates, never evidence that one
+ *     is safe; every candidate still gets its own APPROVE/HARD-PASS below.
  *   record({ capability, verdict, reason, source }, opts) -> the appended entry (with ts stamped)
  *   list(opts) -> { entries: [...] }
  *   isVetted(capability, opts) -> null (never vetted) | the prevailing entry (a HARD-PASS, if one exists
@@ -136,6 +139,16 @@ const SEED_TEMPLATES = {
 
 const MAX_TERMS = 16;
 
+// Discovery sources handed to the Lead/Search Boss alongside the terms. `curated: false` means the listing has
+// no submission review: it may surface candidates, it never vouches for them (see the ledger's standing
+// hard-pass on bulk unreviewed community marketplaces as an INSTALL source).
+const DISCOVERY_SOURCES = Object.freeze([
+  Object.freeze({
+    name: 'skills.sh (vercel-labs/skills, npx skills search)', url: 'https://skills.sh', curated: false,
+    note: 'install-telemetry ranking, no submission review — never a trust signal; Scout APPROVE/HARD-PASS still applies',
+  }),
+]);
+
 function dedupe(arr) {
   const seen = new Set();
   const out = [];
@@ -186,7 +199,7 @@ function terms(params, opts) {
   for (const kw of keywords) kwTerms.push(...keywordTerms(kw));
 
   const merged = dedupe([...seeded, ...fallback, ...kwTerms]).slice(0, MAX_TERMS);
-  return { domain, terms: merged };
+  return { domain, terms: merged, sources: DISCOVERY_SOURCES.map((s) => ({ ...s })) }; // copies: a caller can never edit the shared list
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -307,7 +320,7 @@ function isVetted(capability, opts) {
 module.exports = {
   terms, record, list, isVetted,
   loadLedger, saveLedger, defaultLedger, resolvePath,
-  SEED_TEMPLATES, VALID_VERDICTS, CONFIG_PATH, MAX_TERMS,
+  SEED_TEMPLATES, VALID_VERDICTS, CONFIG_PATH, MAX_TERMS, DISCOVERY_SOURCES,
 };
 
 // ---- CLI ----
@@ -342,7 +355,11 @@ if (require.main === module) {
       else {
         const result = terms({ domain: opts.domain, keywords: opts.keywords }, {});
         if (opts.json) console.log(JSON.stringify(result));
-        else { console.log('domain: ' + result.domain); for (const t of result.terms) console.log('  - ' + t); }
+        else {
+          console.log('domain: ' + result.domain); for (const t of result.terms) console.log('  - ' + t);
+          console.log('sources:');
+          for (const s of result.sources) console.log('  - ' + s.name + ' ' + s.url + (s.curated ? '' : ' [UNCURATED]') + ' — ' + s.note);
+        }
         process.exitCode = 0;
       }
     } else if (opts.cmd === 'record') {

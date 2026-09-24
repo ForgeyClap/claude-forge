@@ -1,6 +1,6 @@
 ---
 name: forge-graded-verify
-description: "Advisory GRADED verification for high-stakes answer-quality Forge tasks (RAG/research/scraping/prediction). Use when output quality is subjective and needs per-criterion scoring + actionable feedback — ALONGSIDE (never replacing) forge-verify (structural) and forge-evals (deterministic binary gate). Keywords: graded, rubric, quality, verify, review, answer quality, RAG quality, source grounding."
+description: Advisory graded quality scoring for RAG/research/scraping/prediction output. Use alongside forge-verify for subjective answer quality — rubric, per-criterion score, source grounding.
 ---
 
 # forge-graded-verify — advisory rubric-scored verification (scout #7, 2026-07-13)
@@ -20,4 +20,4 @@ High-stakes answer-quality work where "did it pass an assertion" isn't enough: R
 LLM-graded scores are judgment, not ground truth (a judge can mislabel). Frame results as advisory quality signals; cite per-criterion evidence; the reviewer model should differ from the builder model (evaluator independence). Rubrics are owner-editable JSON — start from the shipped ones and ADAPT per project, don't drop-in.
 
 ## Rubrics
-Shipped starters in `.claude/config/rubrics/`: `rag.json` (source-grounding, reasoning soundness, coverage, answer-correctness, completeness). Add per-domain rubrics as needed (research, scraping, prediction) with the same shape.
+Shipped starters in `.claude/config/rubrics/`: `rag.json` (source-grounding, reasoning soundness, coverage, answer-correctness, completeness), `payments.json` (no-raw-PAN, money-integrity, idempotency, webhook-security, test/live-safety), `ecommerce.json` (real-catalog, inventory-safety, order-idempotency, flow-integrity, connector-safety), `electron.json` (renderer-hardening, ipc-safety, csp/secrets, installer-reality, no-mock-data), `voice.json` (dutch-first-ux, turn-discipline, barge-in/latency, consent/disclosure, action-safety). Add more per-domain rubrics as needed (research, scraping, prediction) with the same shape.

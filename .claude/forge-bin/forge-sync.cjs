@@ -379,13 +379,26 @@ const SYSTEM = [
   // every prior wave's precedent above). skills/**/SKILL.md is NOT glob-covered (see the docdrift precedent
   // immediately above), so it needs its own explicit entry. This wave introduces NO new log-event.cjs event
   // type (the generator/hooks never call logEvent themselves, per the shared-file rule every other
-  // WAVE-J/V9-INTEGRATE module already follows) and does not itself write settings.json for a synced
-  // project — settings.json wiring stays a deliberate, per-project owner action (see HOOKS_OPT_IN.md).
+  // WAVE-J/V9-INTEGRATE module already follows).
+  // UPDATED 2026-09-24 (wp22, owner directive 2026-09-24 "alles standaard aan" / never "merge by hand"): the
+  // sentence above ("does not itself write settings.json for a synced project — settings.json wiring stays a
+  // deliberate, per-project owner action") is SUPERSEDED. forge-sync now DOES write/merge settings.json for a
+  // synced project — see syncProjectSettings()/printSettingsMergeResult() near the bottom of this file and
+  // the dedicated forge-settings-merge.cjs tool it calls (absent -> created; present -> merged, every foreign
+  // hook/rule/key kept byte-for-byte; malformed/unexpected shape -> refused-safe, reported, never fails the
+  // file sync). settings.json itself is still deliberately NOT added to the SYSTEM list above: it is
+  // user-owned content that gets MERGED, never blindly overwritten like a real SYSTEM file.
   'forge-bin/forge-snapshot.cjs', 'forge-bin/forge-snapshot.test.cjs',
   'forge-bin/forge-snapshot-marker.cjs', 'forge-bin/forge-snapshot-marker.test.cjs',
   'forge-bin/forge-snapshot-reinject.cjs', 'forge-bin/forge-snapshot-reinject.test.cjs',
   'forge-bin/forge-snapshot-settings.cjs', 'forge-bin/forge-snapshot-settings.test.cjs',
   'skills/forge-snapshot/SKILL.md',
+  // wp22 (2026-09-24, owner directive "alles standaard aan"): the GENERAL settings.json merge tool (every
+  // hooks.<event>[] + permissions.deny, not just the 2 snapshot hooks forge-snapshot-settings.cjs covers) —
+  // called by forge-sync.cjs's own syncProjectSettings() and by install.sh/install.ps1. Already covered by
+  // SYSTEM_GLOB below (forge-bin/*.cjs) — pinned here explicitly too anyway (same belt-and-suspenders
+  // discipline as every prior wave's precedent above).
+  'forge-bin/forge-settings-merge.cjs', 'forge-bin/forge-settings-merge.test.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by
@@ -447,6 +460,66 @@ const SYSTEM = [
   // suite staying green. It has no module of its own (the gate set lives in forge-verify.cjs, already
   // SYSTEM_GLOB-covered), so only the test file is pinned. Introduces NO new event type — it never logs.
   'forge-bin/forge-verify-gates.test.cjs',
+  // v2.7.0 settings (2026-09-24): the ONE catalogue forge-config.cjs resolves (the .cjs is SYSTEM_GLOB-covered,
+  // config/orchestration/ is not); the owner's own values in FORGE_CONFIG.json are PROTECTed below, never synced.
+  'config/orchestration/FORGE_CONFIG_SCHEMA.json',
+  // vendored public skills, 2026-09-24 — see skills/VENDORED-SKILLS.md; pinned by test (forge-sync.test.cjs section 71
+  // derives the shipped set from that file, so a newly vendored skill with an unpinned file turns red, naming the path).
+  'skills/brainstorming/LICENSE', 'skills/brainstorming/SKILL.md',
+  'skills/brainstorming/spec-document-reviewer-prompt.md',
+  'skills/dispatching-parallel-agents/LICENSE', 'skills/dispatching-parallel-agents/SKILL.md',
+  'skills/executing-plans/LICENSE', 'skills/executing-plans/SKILL.md', 'skills/executing-plans/scripts/task-done',
+  'skills/executing-plans/scripts/task-start',
+  'skills/finishing-a-development-branch/LICENSE', 'skills/finishing-a-development-branch/SKILL.md',
+  'skills/frontend-design/LICENSE.txt', 'skills/frontend-design/SKILL.md',
+  'skills/receiving-code-review/LICENSE', 'skills/receiving-code-review/SKILL.md',
+  'skills/requesting-code-review/LICENSE', 'skills/requesting-code-review/SKILL.md',
+  'skills/requesting-code-review/code-reviewer.md',
+  'skills/subagent-driven-development/LICENSE', 'skills/subagent-driven-development/SKILL.md',
+  'skills/subagent-driven-development/implementer-prompt.md',
+  'skills/subagent-driven-development/re-review-prompt.md',
+  'skills/subagent-driven-development/scripts/review-package',
+  'skills/subagent-driven-development/scripts/sdd-workspace', 'skills/subagent-driven-development/scripts/task-brief',
+  'skills/subagent-driven-development/task-reviewer-prompt.md',
+  'skills/systematic-debugging/CREATION-LOG.md', 'skills/systematic-debugging/LICENSE',
+  'skills/systematic-debugging/SKILL.md', 'skills/systematic-debugging/condition-based-waiting-example.ts',
+  'skills/systematic-debugging/condition-based-waiting.md', 'skills/systematic-debugging/defense-in-depth.md',
+  'skills/systematic-debugging/find-polluter.sh', 'skills/systematic-debugging/root-cause-tracing.md',
+  'skills/systematic-debugging/test-academic.md', 'skills/systematic-debugging/test-pressure-1.md',
+  'skills/systematic-debugging/test-pressure-2.md', 'skills/systematic-debugging/test-pressure-3.md',
+  'skills/test-driven-development/LICENSE', 'skills/test-driven-development/SKILL.md',
+  'skills/test-driven-development/writing-good-tests.md',
+  'skills/using-git-worktrees/LICENSE', 'skills/using-git-worktrees/SKILL.md',
+  'skills/verification-before-completion/LICENSE', 'skills/verification-before-completion/SKILL.md',
+  'skills/writing-plans/LICENSE', 'skills/writing-plans/SKILL.md',
+  'skills/writing-plans/plan-document-reviewer-prompt.md',
+  'skills/writing-skills/LICENSE', 'skills/writing-skills/SKILL.md',
+  'skills/writing-skills/anthropic-best-practices.md', 'skills/writing-skills/examples/CLAUDE_MD_TESTING.md',
+  'skills/writing-skills/graphviz-conventions.dot', 'skills/writing-skills/persuasion-principles.md',
+  'skills/writing-skills/render-graphs.js', 'skills/writing-skills/testing-skills-with-subagents.md',
+  'skills/VENDORED-SKILLS.md',
+  // vendored public skills ronde 2 (wp6b, 2026-09-24) — see skills/VENDORED-SKILLS.md "Meegeleverd — ronde 2"
+  // (7 skills + 2 commands, mattpocock/skills + anthropics/claude-plugins-official). Pinned by the same
+  // section-71 test (forge-sync.test.cjs), now extended (wp5) to scan BOTH "Meegeleverd" sections of that doc
+  // instead of only the first.
+  'skills/grill-me/LICENSE', 'skills/grill-me/SKILL.md',
+  'skills/grilling/LICENSE', 'skills/grilling/SKILL.md',
+  'skills/teach/GLOSSARY-FORMAT.md', 'skills/teach/LEARNING-RECORD-FORMAT.md', 'skills/teach/LICENSE',
+  'skills/teach/MISSION-FORMAT.md', 'skills/teach/RESOURCES-FORMAT.md', 'skills/teach/SKILL.md',
+  'skills/wait-what/LICENSE', 'skills/wait-what/SKILL.md',
+  'skills/resolving-merge-conflicts/LICENSE', 'skills/resolving-merge-conflicts/SKILL.md',
+  'skills/setup-pre-commit/LICENSE', 'skills/setup-pre-commit/SKILL.md',
+  'skills/claude-md-improver/LICENSE.txt', 'skills/claude-md-improver/SKILL.md',
+  'skills/claude-md-improver/references/quality-criteria.md', 'skills/claude-md-improver/references/templates.md',
+  'skills/claude-md-improver/references/update-guidelines.md',
+  // the two vendored commands (wp6b) — commands/ carries no SYSTEM_GLOB (only forge-bin/forge-dashboard/
+  // agents are globbed — see the SYSTEM_GLOB block below); only commands/forge.md was pinned before this wave.
+  'commands/commit.md', 'commands/revise-claude-md.md',
+  // forge-prompt-coach (wp13b, Forge-native — NOT part of the VENDORED-SKILLS.md scan above, which covers only
+  // third-party content). skills/**/SKILL.md is never glob-covered (same precedent as every other skill entry
+  // in this list), so its SKILL.md + references need an explicit pin too.
+  'skills/forge-prompt-coach/SKILL.md', 'skills/forge-prompt-coach/references/before-after.md',
+  'skills/forge-prompt-coach/references/failure-modes.md', 'skills/forge-prompt-coach/references/HOW-TO-ASK.md',
 ];
 const SYSTEM_GLOB = [ // whole-dir system files by extension (kept fresh), minus the protected names below
   { dir: 'forge-bin', ext: ['.cjs', '.ps1', '.cmd', '.sh', '.md', '.bat'] },
@@ -455,6 +528,7 @@ const SYSTEM_GLOB = [ // whole-dir system files by extension (kept fresh), minus
 ];
 const PROTECT = new Set([ // NEVER overwrite these project-local files even inside a system dir
   'forge-dashboard/PORT', 'forge-dashboard/DASHBOARD_STATE.json',
+  'FORGE_CONFIG.json', // v2.7.0: the owner's own settings written by forge-config.cjs set — user-owned, never a template file
 ]);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.turbo', 'graphify-out']);
 const CANARY_DIR_NAME = '.forge-canary'; // dot-prefixed -> structurally excluded from findForgeProjects discovery
@@ -1737,11 +1811,13 @@ function safeSyncProject(templateDir, projectDir, opts) {
     };
   }
 
-  if (opts.dryRun) return { ok: true, dryRun: true, projectDir, plan, templateVersion: templateVer };
+  if (opts.dryRun) return { ok: true, dryRun: true, projectDir, plan, templateVersion: templateVer, settingsMerge: syncProjectSettings(templateDir, projectDir, { dryRun: true }) };
 
   if (plan.toChange.length === 0) { // H2: distinguish a clean no-op from a project BLOCKED by unresolved drift
     const blocked = plan.unknownDrift.length > 0 || plan.conflicts.length > 0;
-    return { ok: !blocked, noop: !blocked, blocked, projectDir, plan, templateVersion: templateVer };
+    // WP22: even when the FILE plan is a no-op, settings.json may still be behind the template (a project
+    // synced before wp22 shipped, or hand-edited) — the settings merge is independent of the file plan.
+    return { ok: !blocked, noop: !blocked, blocked, projectDir, plan, templateVersion: templateVer, settingsMerge: blocked ? null : syncProjectSettings(templateDir, projectDir, {}) };
   }
 
   const nowIso = opts.nowIso || new Date().toISOString();
@@ -1912,7 +1988,12 @@ function safeSyncProject(templateDir, projectDir, opts) {
    *  directory), so a concurrent reader always sees one whole file, never a half-written one. */
   writeReceipt(projectDir, receipt);
   writeAtomic(versionFilePath(projectDir), JSON.stringify(ver, null, 2) + '\n');
-  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest };
+  // WP22: settings.json merge runs AFTER the file sync/receipt/version stamp above have already succeeded —
+  // it is deliberately independent of that commit (see syncProjectSettings's own doc comment): a refused-safe
+  // merge (malformed/unexpected-shape existing settings.json) is reported on the result, never rolls back or
+  // fails an otherwise-successful file sync.
+  const settingsMerge = syncProjectSettings(templateDir, projectDir, {});
+  return { ok: true, projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest, settingsMerge };
 }
 
 /** adoptProject — NEW COMMAND: `forge-sync adopt <projectDir>`. Establishes a baseline receipt from the
@@ -2140,7 +2221,7 @@ function runSyncAll(templateDir, rootDir, opts) {
   const lockedSync = (p, sOpts) => {
     const lock = acquireLock(claudeDirOf(p));
     if (!lock.ok) return { ok: false, refused: true, projectDir: p, reason: 'S6: could not acquire project lock for ' + p + ': ' + lock.reason };
-    try { return safeSyncProject(templateDir, p, sOpts); }
+    try { return safeSyncProject(templateDir, p, sOpts); } // settings.json merge is now internal to safeSyncProject (WP22)
     finally { releaseLock(lock); }
   };
 
@@ -2232,7 +2313,7 @@ function printPlanSummary(plan) {
 function printSafeSyncResult(projectDir, r) {
   const name = path.basename(projectDir);
   if (!r.ok && r.refused) { console.error(name + ': REFUSED — ' + r.reason); return; }
-  if (r.dryRun) { console.log('[dry-run] ' + name + ':'); printPlanSummary(r.plan); return; }
+  if (r.dryRun) { console.log('[dry-run] ' + name + ':'); printPlanSummary(r.plan); printSettingsMergeResult(projectDir, r.settingsMerge); return; }
   if (r.blocked) { console.error(name + ': BLOCKED: ' + r.plan.unknownDrift.length + ' drifted / ' + r.plan.conflicts.length + ' conflicted (use --force-overwrite or declare .claude/config/forge-overrides.json)'); return; }
   if (r.refusedPartialDrift) { // B3: never silently stamp a partially-synced project
     console.error(name + ': BLOCKED — ' + r.plan.unknownDrift.length + ' drifted / ' + r.plan.conflicts.length + ' conflicted file(s) prevent a full sync (use --force-overwrite or declare .claude/config/forge-overrides.json); safely-syncable file(s) were rolled back, NOT partially stamped');
@@ -2240,11 +2321,12 @@ function printSafeSyncResult(projectDir, r) {
     if (r.plan.conflicts.length) console.error('  CONFLICT: ' + r.plan.conflicts.join(', '));
     return;
   }
-  if (r.noop) { console.log(name + ': up to date (' + r.plan.same + ' unchanged)'); if (r.plan.unknownDrift.length || r.plan.conflicts.length) printPlanSummary(r.plan); return; }
+  if (r.noop) { console.log(name + ': up to date (' + r.plan.same + ' unchanged)'); if (r.plan.unknownDrift.length || r.plan.conflicts.length) printPlanSummary(r.plan); printSettingsMergeResult(projectDir, r.settingsMerge); return; }
   if (r.ok) {
     const note = r.outcome && r.outcome.alreadyRedSkipped ? ' [pre-existing unrelated failure(s), not attributed to this sync]' : (r.outcome && r.outcome.degradedAllowed ? ' [DEGRADED validator, --allow-degraded]' : '');
     console.log(name + ': ' + r.plan.toChange.length + ' updated, ' + r.plan.same + ' current -> version ' + r.receipt.templateVersionTo + ' · validation: ' + r.validation.tool + ' OK' + note);
     if (r.plan.expectedOverrides.length) console.log('  expected overrides preserved: ' + r.plan.expectedOverrides.join(', '));
+    printSettingsMergeResult(projectDir, r.settingsMerge);
   } else {
     const failLabel = r.validation ? (r.validation.timedOut ? (r.validation.tool + ' TIMED OUT (blocked, not a confirmed failure)') : (r.validation.tool + ', exit ' + r.validation.exitCode)) : (r.applyError || 'unknown');
     let rbNote;
@@ -2299,6 +2381,42 @@ function parseArgs(argv) {
   return { flags, pos, argError };
 }
 
+/** syncProjectSettings — v2.7.0 WP22 (owner directive 2026-09-24, "alles standaard aan" / never "merge by
+ *  hand"): after this project's system FILES are synced, also merge the template's `settings.json` into the
+ *  project's own — absent -> create (a copy); present -> merge (forge-settings-merge.cjs, foreign hooks/
+ *  rules kept); malformed/unexpected shape -> refused-safe, reported, NEVER fails the file sync. Deliberately
+ *  independent of the file-sync backup/receipt/rollback machinery above: settings.json is user-owned content,
+ *  not a SYSTEM file (see the SYSTEM list's own "does not itself write settings.json" comment, now
+ *  superseded by this function), so it gets its own dedicated merge tool and its own `.forge-bak-<ts>`
+ *  backup instead of joining the receipt ledger. A template without a settings.json, or a merge tool that
+ *  cannot load, is a silent, honestly-labelled skip — this step must never turn a successful file sync into
+ *  a failure. */
+function syncProjectSettings(templateDir, projectDir, opts) {
+  opts = opts || {};
+  const srcPath = path.join(templateDir, 'settings.json');
+  if (!fs.existsSync(srcPath)) return { ok: true, skipped: 'no-template-settings' };
+  let mergeTool;
+  try { mergeTool = require('./forge-settings-merge.cjs'); }
+  catch (e) { return { ok: false, skipped: 'merge-tool-unavailable', error: e.message }; }
+  const dstPath = path.join(claudeDirOf(projectDir), 'settings.json');
+  try { return mergeTool.applySettingsMerge({ target: dstPath, source: srcPath, dryRun: !!opts.dryRun }); }
+  catch (e) { return { ok: false, skipped: 'merge-error', error: e.message }; }
+}
+/** printSettingsMergeResult — one plain status line for the CLI/sync-all output, never throws, never blocks
+ *  the caller on a skip/refusal (see syncProjectSettings's own doc comment for why a refusal is reported,
+ *  not fatal). */
+function printSettingsMergeResult(projectDir, r) {
+  const name = path.basename(projectDir);
+  if (!r) return;
+  if (r.skipped) { if (r.skipped !== 'no-template-settings') console.error(name + ': settings.json merge skipped (' + r.skipped + (r.error ? ': ' + r.error : '') + ')'); return; }
+  if (r.status === 'created') console.log(name + ': settings.json created (from template)');
+  else if (r.status === 'would-create') console.log('[dry-run] ' + name + ': settings.json would be created (from template)');
+  else if (r.status === 'noop') console.log(name + ': settings.json already merged');
+  else if (r.status === 'would-merge') console.log('[dry-run] ' + name + ': settings.json would merge — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s)');
+  else if (r.status === 'merged') console.log(name + ': settings.json merged — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath);
+  else if (r.status === 'refused' || r.status === 'would-refuse') console.error(name + ': ' + r.message);
+}
+
 module.exports = {
   listSystemFiles, sha256, sha256Normalized, normalizeEolBuffer, fileStatus, templateVersion, claudeDirOf, safeJoin, isSymlinkPath,
   containmentSafe, projectId, receiptPath, readReceipt, writeReceipt, writeAtomic, receiptLastTemplateHashMap,
@@ -2311,6 +2429,7 @@ module.exports = {
   journalPath, latestBatchId, acquireLock, releaseLock, lockPathFor,
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,
   dedicatedCanaryDir, canaryInit, runSyncAll, parseArgs, CANARY_DIR_NAME,
+  syncProjectSettings, printSettingsMergeResult,
 };
 
 // ---- CLI ----
@@ -2384,13 +2503,14 @@ if (require.main === module) {
       if (flags.unsafe) {
         console.warn('*** --unsafe: legacy-style install for ' + pos[0] + ' — NO canary, NO validation; a real backup is still taken (never "no undo") ***');
         const r = rawInstall(TEMPLATE, pos[0], { dryRun: flags.dryRun, batchId, centralBackupRoot, runId: flags.runId });
+        if (r.ok) printSettingsMergeResult(pos[0], syncProjectSettings(TEMPLATE, pos[0], { dryRun: flags.dryRun }));
         exitCode = r.ok ? 0 : 1;
       } else {
         const r = safeSyncProject(TEMPLATE, pos[0], {
           dryRun: flags.dryRun, forceOverwrite: flags.forceOverwrite, batchId, centralBackupRoot, runId: flags.runId,
           allowDegraded: flags.allowDegraded, doctorTimeoutMs: flags.doctorTimeout, resumeBatch: flags.resumeBatch,
           refuseOnUnresolvedDrift: true, // B3: a direct single-project install is all-or-nothing (sync-all is not)
-        });
+        }); // settings.json merge is internal to safeSyncProject (WP22) — r.settingsMerge is already set
         printSafeSyncResult(pos[0], r);
         exitCode = (r.ok || r.dryRun || r.noop) ? 0 : 1;
       }

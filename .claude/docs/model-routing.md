@@ -9,17 +9,17 @@
 - Never in git, code, logs, or reports — the adapter masks `nvapi-…` in every output. `.env.example` carries placeholders only.
 - Endpoint (official docs): `https://integrate.api.nvidia.com/v1/chat/completions`, `Authorization: Bearer $NVIDIA_API_KEY`, OpenAI-compatible. Free tier ≈ 40 req/min → adapter handles 429 + Retry-After.
 
-## Role slots (env-overridable; defaults corrected from LIVE probes 2026-07-07 — the 07-05 picks hung/404'd)
+## Role slots (env-overridable; RE-VALIDATED against the live catalog 2026-09-24 — wp19)
 | Slot | Model | Why |
 |---|---|---|
-| default | nvidia/nemotron-3-nano-30b-a3b | REMAPPED 2026-07-26 (was minimaxai/minimax-m3 — now unused, see Consolidation note below); fast+clean general, ~0.6s pings — drafts/summaries/classification |
-| fast / coding-fast | nvidia/nemotron-3-nano-30b-a3b | cheap, 1M ctx (probe 1s) — routing/formatting/bulk first-pass |
-| reasoning | moonshotai/kimi-k2.6 | best working single-shot reasoner (probe 623ms) |
-| review | mistralai/mistral-large-3-675b-instruct-2512 | frontier 675B, fast (probe 347ms) — 2nd-opinion QA |
-| coding | openai/gpt-oss-120b | top working coder (SWE 62.4%, probe 1s clean Python) |
-| vision | meta/llama-4-maverick-17b-128e-instruct | probe-working multimodal — but adapter text-only, real vision on Claude |
+| default | mistralai/mistral-nemotron | REMAPPED 2026-09-24 (was nvidia/nemotron-3-nano-30b-a3b — now HTTP 410 Gone); small non-reasoning instruct, live 'OK' in 365ms — drafts/summaries/classification |
+| fast / coding-fast | mistralai/mistral-nemotron | same pick (nano is gone); terse and coding-capable — routing/formatting/bulk first-pass; NVIDIA code still goes through the build+test gate |
+| reasoning | nvidia/nemotron-3-super-120b-a12b | REMAPPED 2026-09-24 (was deepseek-ai/deepseek-v4-flash — now HTTP 410 Gone); shares the coding model; live 724ms at 300 tokens — give it token headroom |
+| review | z-ai/glm-5.3 | REMAPPED 2026-09-24 (was mistralai/mistral-small-4-119b-2603 — now HTTP 410 Gone); a different model family than the coder for an independent 2nd opinion; thinking model, needs >=400 max_tokens; liveness-only evidence so far |
+| coding | nvidia/nemotron-3-super-120b-a12b | unchanged since 2026-07-17; still live 2026-09-24 (724ms clean at 300 tokens) |
+| vision | meta/llama-3.2-11b-vision-instruct | REMAPPED 2026-09-24 (was meta/llama-4-maverick-17b-128e-instruct — now HTTP 410 Gone); adapter is still text-only, real vision stays on Claude |
 
-> Do NOT use deepseek-v4-pro/flash, qwen3-next-80b, qwen3.5-122b/397b (HANG), codestral/codellama/granite-code (404), gpt-oss-20b/nano-9b (empty) — see `model-capability-matrix.json` `notAvailableOrBroken`. `route <agent>` now warns if an env override points at an avoid/broken model.
+> Do NOT use: the four former role models that answer **HTTP 410 Gone** since 2026-09-24 (nemotron-3-nano-30b-a3b, deepseek-v4-flash, mistral-small-4-119b-2603, llama-4-maverick-17b-128e-instruct); deepseek-v4-pro, qwen3-next-80b, qwen3.5-122b/397b (HANG), codestral/codellama/granite-code (404), gpt-oss-20b/nano-9b (empty) — see `model-capability-matrix.json` `notAvailableOrBroken`. `route <agent>` now warns if an env override points at an avoid/broken model.
 
 Override per project via `.env`: `NVIDIA_REASONING_MODEL=…` etc. Change models in `config/models/model-capability-matrix.json` — **no core code edits needed**.
 
@@ -43,3 +43,6 @@ An agent's default NVIDIA role (above) is a starting point, not the last word: a
 
 ## Consolidation (WP-NVIDIA-CONSOLIDATE, 2026-07-26)
 Cross-probing every function's weak spot against `nemotron-3-nano`/`nemotron-3-super`/`deepseek-v4-flash` on the same real tasks found 2 models now cover all 7 bulk-work functions at fit="correct" — `nemotron-3-nano` (doc-draft, data-extract, summarize) and `nemotron-3-super` (code-draft, test-sketch, research-digest, translate-rewrite) — so `minimax-m3` and `mistral-small-4-119b-2603` are no longer needed by any function, and the `default` ROLE was remapped from `minimax-m3` to `nemotron-3-nano` (~16.7x faster on a real summarize task, same correctness). Full evidence (including every losing candidate) is in `function-model-fit.json`'s `consolidation` block; `deepseek-v4-flash`/`mistral-small-4-119b-2603` remain the `reasoning`/`review` ROLE defaults for non-function-routed calls, unchanged.
+
+## Live re-validation (wp19, 2026-09-24)
+The live catalog drifted again: `models --verify` listed 82 live ids and 6 of the 7 role models were missing (only `coding` was LIVE). One minimal chat probe per model (`Reply with exactly: OK`, 16 tokens (300-400 for the thinking-model re-probes), 25 s timeout, one request per probe, sequential; 16 probes in total) returned HTTP 410 Gone ('has reached its end of life') for the old default/fast/coding-fast, reasoning, review and vision models. New map: default/fast/coding-fast -> `mistralai/mistral-nemotron`, reasoning -> `nvidia/nemotron-3-super-120b-a12b` (shared with coding), review -> `z-ai/glm-5.3`, vision -> `meta/llama-3.2-11b-vision-instruct`. After the change `models --verify` shows all 7 LIVE and `route` resolves every Boss with exit 0 (the 6 bulk Bosses with 0 warnings). Limits: a probe proves a model answers, not how well it does its role — mistral-nemotron and glm-5.3 are liveness-only for their new slots. **Open gap:** `function-model-fit.json` still pins the retired `nemotron-3-nano-30b-a3b` for doc-draft, data-extract and summarize, so those `--function` calls get HTTP 410 until a function-fit re-probe reassigns them (`route <agent> --function <fn>` warns BROKEN/avoid for them). The full probe table is in `model-capability-matrix.json` `_doc`. **Closed the same day (wp19 follow-up):** same-task cross-probes re-pointed doc-draft and summarize to `nemotron-3-super` and data-extract to `glm-5.3` (11 probes; evidence in `function-model-fit.json`); all 9 allowed `route <agent> --function <fn>` calls now exit 0 with no warnings. Risk: `mistral-nemotron` (default/fast/coding-fast) answered pings fast but timed out on 3 of 4 real-task probes — its role binding needs a real-task re-probe.

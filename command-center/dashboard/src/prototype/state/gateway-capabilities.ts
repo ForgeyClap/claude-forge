@@ -2,9 +2,10 @@
  * Forge Command Center — model routing, tool inventory, MCP servers and Claude
  * install capabilities (forge-2026-07-29-cc-finish, WP wire-capabilities).
  *
- * Exposes the 4 real, tested gateway endpoints this WP wires up for the first
- * time — `GET /api/models`, `GET /api/tools`, `GET /api/mcp` and
- * `GET /api/capabilities` — in the exact house style `gateway-recovery.ts`
+ * Exposes 5 real, tested gateway endpoints — `GET /api/models`,
+ * `GET /api/tools`, `GET /api/mcp`, `GET /api/capabilities` (this WP) and
+ * `GET /api/config` (forge-2026-09-24-config-v250 wp12: the active project's
+ * Forge settings, read-only) — in the exact house style `gateway-recovery.ts`
  * already established for this seam: `gwGet` + the `pick*` defensive
  * extractors from `gateway-client.ts`, one hook per route, a 15s poll, and the
  * same honesty contract stated in that file's header —
@@ -23,7 +24,7 @@
  * Settings, and `gateway-recovery.ts`'s bare parsed-object return has no way
  * to tell "gateway unreachable" apart from "asked, got a real empty answer".
  * A private `useGatewayPoll<T>` factors the identical fetch/poll/cancel
- * wiring once (DRY) rather than pasting it four times; each of the four
+ * wiring once (DRY) rather than pasting it five times; each of the five
  * EXPORTED hooks below is still exactly "one hook per route" at the public
  * API surface. On a failed poll, the LAST known-good `data` is kept (never
  * wiped to a fabricated empty state) while `error` carries the real transport
@@ -32,7 +33,7 @@
  *
  * `GET /api/models` carries no `?project=` — it reports THIS gateway's own
  * installation (the model-capability matrix + a live NVIDIA probe), not a
- * per-project view — see `models.mjs`'s own header. The other three take the
+ * per-project view — see `models.mjs`'s own header. The other four take the
  * selected project's name, exactly like `gateway-recovery.ts`'s hooks
  * (`state.activeProjectId`, `''` meaning none selected yet).
  */
@@ -479,4 +480,169 @@ export function parseGatewayCapabilities(data: Record<string, unknown>): Gateway
 export function useGatewayCapabilities(projectName: string): GatewayFetchState<GatewayCapabilities> {
   const url = projectName !== '' ? `/api/capabilities?project=${encodeURIComponent(projectName)}` : null;
   return useGatewayPoll(url, parseGatewayCapabilities, EMPTY_GATEWAY_CAPABILITIES);
+}
+
+/* ========================================================================== */
+/*  5. Forge settings — GET /api/config?project= (read-only)                 */
+/* ========================================================================== */
+
+/** A setting's raw value as the tool reports it — on/off, a number or a word. */
+export type GatewayForgeSettingValue = boolean | number | string;
+
+export interface GatewayForgeSetting {
+  readonly key: string;
+  readonly value: GatewayForgeSettingValue | null;
+  readonly defaultValue: GatewayForgeSettingValue | null;
+  readonly display: string | null;
+  /** `'on'`, `'off'`, or `null` for a setting with no on/off meaning. */
+  readonly status: string | null;
+  readonly source: string | null;
+  readonly scope: string | null;
+  readonly group: string | null;
+  readonly type: string | null;
+  readonly unit: string | null;
+  readonly desc: string | null;
+  readonly offMeans: string | null;
+  readonly disclosure: string | null;
+  readonly flags: readonly string[];
+  readonly setAt: string | null;
+  readonly setBy: string | null;
+}
+
+export interface GatewayForgeGroup {
+  readonly id: string;
+  readonly title: string | null;
+}
+
+export interface GatewayForgeLocked {
+  readonly id: string;
+  readonly text: string | null;
+  readonly source: string | null;
+}
+
+export interface GatewayForgeConfigFile {
+  readonly path: string | null;
+  readonly pretty: string | null;
+  readonly present: boolean;
+}
+
+export interface GatewayForgeConfig {
+  readonly ok: boolean;
+  readonly available: boolean;
+  readonly state: string | null;
+  readonly note: string | null;
+  readonly settings: readonly GatewayForgeSetting[];
+  readonly locked: readonly GatewayForgeLocked[];
+  readonly groups: readonly GatewayForgeGroup[];
+  readonly globalFile: GatewayForgeConfigFile | null;
+  readonly projectFile: GatewayForgeConfigFile | null;
+  readonly notes: readonly string[];
+  readonly hidden: number | null;
+  readonly lang: string | null;
+  readonly project: string | null;
+  readonly capturedAt: string | null;
+  readonly provenance: string | null;
+}
+
+export const EMPTY_GATEWAY_FORGE_CONFIG: GatewayForgeConfig = {
+  ok: false,
+  available: false,
+  state: null,
+  note: null,
+  settings: [],
+  locked: [],
+  groups: [],
+  globalFile: null,
+  projectFile: null,
+  notes: [],
+  hidden: null,
+  lang: null,
+  project: null,
+  capturedAt: null,
+  provenance: null,
+};
+
+/** A raw setting value: kept only when it is a real on/off, finite number or
+ *  non-empty word — anything else is `null`, never a coerced stand-in. */
+function pickSettingValue(row: Record<string, unknown>, key: string): GatewayForgeSettingValue | null {
+  const value = row[key];
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim().length > 0) return value;
+  return null;
+}
+
+function toForgeSetting(row: Record<string, unknown>): GatewayForgeSetting {
+  return {
+    key: pickString(row, ['key']) ?? '',
+    value: pickSettingValue(row, 'value'),
+    defaultValue: pickSettingValue(row, 'default'),
+    display: pickString(row, ['display']),
+    status: pickString(row, ['status']),
+    source: pickString(row, ['source']),
+    scope: pickString(row, ['scope']),
+    group: pickString(row, ['group']),
+    type: pickString(row, ['type']),
+    unit: pickString(row, ['unit']),
+    desc: pickString(row, ['desc']),
+    offMeans: pickString(row, ['off_means']),
+    disclosure: pickString(row, ['disclosure']),
+    flags: pickStringArray(row, ['flags']),
+    setAt: pickString(row, ['set_at']),
+    setBy: pickString(row, ['set_by']),
+  };
+}
+
+function toForgeGroup(row: Record<string, unknown>): GatewayForgeGroup {
+  return { id: pickString(row, ['id']) ?? '', title: pickString(row, ['title']) };
+}
+
+function toForgeLocked(row: Record<string, unknown>): GatewayForgeLocked {
+  return {
+    id: pickString(row, ['id']) ?? '',
+    text: pickString(row, ['text']),
+    source: pickString(row, ['source']),
+  };
+}
+
+function toForgeConfigFile(row: Record<string, unknown> | null): GatewayForgeConfigFile | null {
+  if (row === null) return null;
+  return {
+    path: pickString(row, ['path']),
+    pretty: pickString(row, ['pretty']),
+    present: pickBool(row, ['present']) ?? false,
+  };
+}
+
+/** Maps `GET /api/config`'s real response 1:1 — the selected project's own
+ *  `forge-config.cjs list --json --all`, spawned read-only by the gateway
+ *  (see `config.mjs`'s own header). `state: 'UNAVAILABLE'` (no script, a
+ *  timeout, a damaged settings file) is reported honestly with the real
+ *  note, never masked as a set of default settings. */
+export function parseGatewayForgeConfig(data: Record<string, unknown>): GatewayForgeConfig {
+  const files = pickRecord(data, ['files']);
+  return {
+    ok: pickBool(data, ['ok']) ?? false,
+    available: pickBool(data, ['available']) ?? false,
+    state: pickString(data, ['state']),
+    note: pickString(data, ['note']),
+    settings: pickArray(data, ['settings']).map(toForgeSetting),
+    locked: pickArray(data, ['locked']).map(toForgeLocked),
+    groups: pickArray(data, ['groups']).map(toForgeGroup),
+    globalFile: toForgeConfigFile(pickRecord(files, ['global'])),
+    projectFile: toForgeConfigFile(pickRecord(files, ['project'])),
+    notes: pickStringArray(data, ['notes']),
+    hidden: pickNumber(data, ['hidden']),
+    lang: pickString(data, ['lang']),
+    project: pickString(data, ['project']),
+    capturedAt: pickString(data, ['captured_at']),
+    provenance: pickString(data, ['provenance']),
+  };
+}
+
+/** Polls the selected project's own Forge settings (read-only — a setting is
+ *  changed in chat or with `/forge config set`, never from this hook). */
+export function useGatewayForgeConfig(projectName: string): GatewayFetchState<GatewayForgeConfig> {
+  const url = projectName !== '' ? `/api/config?project=${encodeURIComponent(projectName)}` : null;
+  return useGatewayPoll(url, parseGatewayForgeConfig, EMPTY_GATEWAY_FORGE_CONFIG);
 }
