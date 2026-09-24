@@ -125,6 +125,85 @@ function Copy-ForgeFile {
   Write-ForgeLog "  wrote: $DestFile"
 }
 
+# Test-ForgeReparsePoint -- true when $Path itself (no ancestor walk, not the target it points at) is a
+# symlink or a Windows reparse point (a directory junction -- `mklink /J` -- reports ReparsePoint too, the
+# same class Node's fs.lstatSync(...).isSymbolicLink() catches on Windows). Used by the guarded settings
+# writers below (V07, wp-g2 2026-09-24 Codex re-check out-p7.md) so a junction/link planted at .claude\ is
+# refused instead of silently followed.
+function Test-ForgeReparsePoint {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  try {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+  } catch {
+    return $false
+  }
+}
+
+# New-ForgeGuardedFile -- creates a NEW $DestFile (no existing file yet) from $SourceFile without following
+# a symlink/junction at $DestDir, and without clobbering/following a path that already exists at $DestFile.
+# [System.IO.FileMode]::CreateNew is the .NET equivalent of POSIX O_EXCL/`wx` -- it throws if ANY filesystem
+# entry (including a symlink) already exists at that exact path, and never follows one to write elsewhere.
+# This is the PowerShell-only (no `node`) equivalent of forge-settings-merge.cjs's own guarded create path.
+function New-ForgeGuardedFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$DestDir,
+    [Parameter(Mandatory = $true)][string]$DestFile,
+    [Parameter(Mandatory = $true)][string]$SourceFile
+  )
+  if (Test-ForgeReparsePoint -Path $DestDir) {
+    Write-ForgeError "refusing: $DestDir is a symlink/junction, not a real directory"
+    return $false
+  }
+  $stream = $null
+  try {
+    $stream = [System.IO.File]::Open($DestFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+    $bytes = [System.IO.File]::ReadAllBytes($SourceFile)
+    $stream.Write($bytes, 0, $bytes.Length)
+    return $true
+  } catch {
+    Write-ForgeError "could not create $DestFile (it already exists, or $DestDir cannot be written to) -- refusing to overwrite or follow a link: $($_.Exception.Message)"
+    return $false
+  } finally {
+    if ($stream) { $stream.Dispose() }
+  }
+}
+
+# Write-ForgeGuardedRecommended -- AUXILIARY-FILE-CLOBBER for the PowerShell-only (no `node`) fallback: a
+# uniquely timestamp+random-suffixed settings.forge-recommended-<stamp>-<rand>.json, exclusively created
+# (CreateNew -- never overwrites/follows a prior recovery file or a planted symlink at that exact name),
+# mirroring forge-settings-merge-guards.cjs's own writeExclusiveUnique (V07). Never targets a FIXED
+# settings.forge-recommended.json path -- a pre-existing file or link already sitting at that fixed name is
+# simply never touched, by construction. Returns the written path, or $null on failure/refusal.
+function Write-ForgeGuardedRecommended {
+  param(
+    [Parameter(Mandatory = $true)][string]$DestDir,
+    [Parameter(Mandatory = $true)][string]$SourceFile
+  )
+  if (Test-ForgeReparsePoint -Path $DestDir) {
+    Write-ForgeError "refusing: $DestDir is a symlink/junction -- could not write a recommended-hooks file"
+    return $null
+  }
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  for ($attempt = 0; $attempt -lt 8; $attempt++) {
+    $rand = Get-Random -Maximum 1000000
+    $recFile = Join-Path $DestDir "settings.forge-recommended-$stamp-$rand.json"
+    $stream = $null
+    try {
+      $stream = [System.IO.File]::Open($recFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+      $bytes = [System.IO.File]::ReadAllBytes($SourceFile)
+      $stream.Write($bytes, 0, $bytes.Length)
+      return $recFile
+    } catch {
+      continue
+    } finally {
+      if ($stream) { $stream.Dispose() }
+    }
+  }
+  Write-ForgeError "could not create a unique recommended-hooks file in $DestDir after 8 attempts"
+  return $null
+}
+
 # Merge handling for <project>\.claude\settings.json (security #4, review #10; MERGED instead of
 # "kept, merge by hand" since wp22 / owner directive 2026-09-24 "alles standaard aan" -- Forge does the
 # merge itself). A user's own settings.json carries their own permissions/hooks and must never be silently
@@ -134,6 +213,14 @@ function Copy-ForgeFile {
 # forge-settings-merge.cjs tool (foreign hooks/rules/keys kept byte-for-byte, backed up first): only when
 # `node` is on PATH. Without `node`, this falls back to the OLD recommended-file behaviour and says why --
 # never silently drops the merge.
+#
+# V07 (wp-g2, 2026-09-24 Codex re-check out-p7.md): EVERY settings destination now goes through a guarded
+# path -- the merge tool's own guarded create (with -ProjectRoot / --project-root so PROJECT-DIRECTORY-ESCAPE
+# applies even to a brand-new settings.json), or the PowerShell-only guarded helpers above when `node` is
+# unavailable -- never an unrestricted `Copy-Item -Force` to a fixed path. This function now returns an
+# explicit [bool] on every path (never a bare `return`) and $script:ForgeSettingsGateFailed is set whenever
+# the gate hook does NOT end up installed, so Copy-ForgeTree/Main can propagate that into a real,
+# non-success exit code instead of a false "installed successfully" (this used to always report success).
 function Copy-ForgeSettingsFile {
   param(
     [Parameter(Mandatory = $true)][string]$SourceFile,
@@ -150,7 +237,6 @@ function Copy-ForgeSettingsFile {
   )
 
   $destDir = Split-Path -Parent -Path $DestFile
-  $recommendedFile = Join-Path $destDir 'settings.forge-recommended.json'
   $mergeTool = $MergeToolPath
   $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
   $haveMergeTool = $nodeCmd -and $mergeTool -and (Test-Path -LiteralPath $mergeTool -PathType Leaf)
@@ -163,35 +249,32 @@ function Copy-ForgeSettingsFile {
     if ($IsDryRun) {
       Write-ForgeLog "  [dry-run] REFUSING: $DestFile exists but is not a regular file (e.g. a directory) -- settings.json would be left untouched"
     } else {
-      Write-ForgeError "$DestFile exists but is not a regular file (e.g. a directory) -- refusing to touch it; settings.json was left untouched"
+      Write-ForgeError "$DestFile exists but is not a regular file (e.g. a directory) -- refusing to touch it; settings.json was left untouched; the PreToolUse gate hook was NOT installed"
+      $script:ForgeSettingsGateFailed = $true
     }
-    # Bare `return` (no value), matching every other early-exit in this function -- Copy-ForgeTree's caller
-    # does not capture Copy-ForgeSettingsFile's per-file return value, and this loop's own output becomes
-    # Copy-ForgeTree's own output (assigned straight to $projectOk/$globalOk as a single boolean); emitting a
-    # value here would corrupt that into a mixed array.
-    return
+    return $false
   }
 
   if ($IsDryRun) {
-    if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
+    if ($haveMergeTool) {
+      # $ErrorActionPreference is 'Stop' script-wide; a native tool's stderr line captured via 2>&1 can be
+      # wrapped as a terminating ErrorRecord under that setting, so it is relaxed for this one call only.
+      $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile --project-root $destDir --dry-run 2>&1 }
+      finally { $ErrorActionPreference = $prevEap }
+      Write-ForgeLog "  [dry-run] $mergeOut"
+    } elseif (Test-Path -LiteralPath $DestFile -PathType Leaf) {
       $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
       $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
       if ($srcHash -eq $dstHash) {
         Write-ForgeLog "  [dry-run] unchanged: $DestFile"
-      } elseif ($haveMergeTool) {
-        # $ErrorActionPreference is 'Stop' script-wide; a native tool's stderr line captured via 2>&1 can be
-        # wrapped as a terminating ErrorRecord under that setting, so it is relaxed for this one call only.
-        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-        try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile --dry-run 2>&1 }
-        finally { $ErrorActionPreference = $prevEap }
-        Write-ForgeLog "  [dry-run] $mergeOut"
       } else {
-        Write-ForgeLog "  [dry-run] node not found -- would keep your settings.json unmerged; would write: $recommendedFile"
+        Write-ForgeLog "  [dry-run] node not found -- would keep your settings.json unmerged; would write a recommended-hooks file (guarded, uniquely named)"
       }
     } else {
-      Write-ForgeLog "  [dry-run] would create: $DestFile"
+      Write-ForgeLog "  [dry-run] node not found -- would create: $DestFile (guarded -- refuses a symlinked/junctioned .claude)"
     }
-    return
+    return $true
   }
 
   if (-not (Test-Path -LiteralPath $destDir -PathType Container)) {
@@ -202,33 +285,70 @@ function Copy-ForgeSettingsFile {
     $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
     $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
     if ($srcHash -eq $dstHash) {
-      # identical, no-op
-      return
+      return $true # identical, no-op
     }
     if ($haveMergeTool) {
       $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-      try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile 2>&1 }
+      try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile --project-root $destDir 2>&1 }
       finally { $ErrorActionPreference = $prevEap }
       if ($LASTEXITCODE -eq 0) {
         Write-ForgeLog "  $mergeOut"
-        return
+        return $true
       }
-      Write-ForgeLog "  settings.json merge refused ($mergeOut) -- falling back to settings.forge-recommended.json"
-    } else {
-      Write-ForgeLog "  node not found on PATH -- cannot merge settings.json automatically; writing $recommendedFile instead"
+      # The merge tool's OWN refusal already wrote a guarded, uniquely-named settings.forge-recommended-
+      # <stamp>-<rand>.json next to the target (or explains in $mergeOut why it could not) -- never re-copy
+      # over that with a second, unguarded Copy-Item -Force (V07: that was the actual junction/link bypass).
+      Write-ForgeError "settings.json merge refused ($mergeOut) -- the PreToolUse gate hook was NOT installed into $DestFile"
+      $script:ForgeSettingsGateFailed = $true
+      return $false
     }
-    Copy-Item -LiteralPath $SourceFile -Destination $recommendedFile -Force
-    Write-ForgeLog "  kept your settings.json; Forge's hooks are in $recommendedFile -- merge what you want"
-    return
+    Write-ForgeLog "  node not found on PATH -- cannot merge settings.json automatically; writing a recommended-hooks file instead"
+    $rec = Write-ForgeGuardedRecommended -DestDir $destDir -SourceFile $SourceFile
+    if ($rec) {
+      Write-ForgeError "kept your settings.json unmerged (node not found on PATH) -- the PreToolUse gate hook was NOT installed into $DestFile; Forge's recommended hooks are in $rec"
+    } else {
+      Write-ForgeError "kept your settings.json unmerged (node not found on PATH) and could not write a recommended-hooks file either -- the PreToolUse gate hook was NOT installed into $DestFile"
+    }
+    $script:ForgeSettingsGateFailed = $true
+    return $false
   }
 
-  Copy-Item -LiteralPath $SourceFile -Destination $DestFile -Force
-  Write-ForgeLog "  wrote: $DestFile"
+  # $DestFile does not exist yet -- route through the SAME guarded create path forge-settings-merge.cjs uses
+  # for an existing target (never a raw Copy-Item): -ProjectRoot makes a symlinked/junctioned .claude refuse
+  # exactly like the merge helper does (PROJECT-DIRECTORY-ESCAPE), even for a brand-new settings.json.
+  if ($haveMergeTool) {
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $mergeOut = & node $mergeTool apply --target $DestFile --source $SourceFile --project-root $destDir 2>&1 }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($LASTEXITCODE -eq 0) {
+      Write-ForgeLog "  $mergeOut"
+      return $true
+    }
+    Write-ForgeError "could not create settings.json ($mergeOut) -- the PreToolUse gate hook was NOT installed into $DestFile"
+    $script:ForgeSettingsGateFailed = $true
+    return $false
+  }
+
+  # node unavailable and nothing to merge with yet -- guarded PowerShell-only raw create (still refuses a
+  # symlinked/junctioned .claude and never follows/overwrites a path that already exists at $DestFile).
+  if (New-ForgeGuardedFile -DestDir $destDir -DestFile $DestFile -SourceFile $SourceFile) {
+    Write-ForgeLog "  wrote: $DestFile"
+    return $true
+  }
+  Write-ForgeError "the PreToolUse gate hook was NOT installed into $DestFile"
+  $script:ForgeSettingsGateFailed = $true
+  return $false
 }
 
 # Recursively merge-copy every file under $SourceDir into $DestDir.
 # -ProtectSettings routes <dir>\settings.json through Copy-ForgeSettingsFile instead of the generic
 # backup-then-overwrite path (used for the project payload only — see Copy-ForgeSettingsFile).
+#
+# V07 (wp-g2, 2026-09-24 Codex re-check out-p7.md): this used to `return $true` UNCONDITIONALLY regardless
+# of what Copy-ForgeSettingsFile reported for settings.json -- a directory-shaped (or any other) settings
+# refusal never propagated past this point, so $projectOk in Main stayed $true and the installer reported
+# "installed successfully" even though the gate hook was never installed. Every per-file result is now
+# captured and AND-ed into the tree's own overall result.
 function Copy-ForgeTree {
   param(
     [Parameter(Mandatory = $true)][string]$SourceDir,
@@ -245,18 +365,20 @@ function Copy-ForgeTree {
     return $false
   }
 
+  $allOk = $true
   $files = Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force
   foreach ($file in $files) {
     $rel = $file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')
     $dest = Join-Path -Path $DestDir -ChildPath $rel
     if ($ProtectSettings -and $rel -eq 'settings.json') {
-      Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun -MergeToolPath $MergeToolPath
+      $fileOk = Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun -MergeToolPath $MergeToolPath
+      if (-not $fileOk) { $allOk = $false }
     } else {
       Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
     }
   }
 
-  return $true
+  return $allOk
 }
 
 # Seed the project-root files Forge needs but the .claude payload does not carry:
@@ -545,7 +667,7 @@ function Main {
     if ($doProject) { Write-ForgeLog "  - $projectDir\.claude           (per-project payload: skills, agents, dashboard, config)" }
     if ($doProject) { Write-ForgeLog "  - $projectDir\CLAUDE.md         (only if missing) and $projectDir\.gitignore (Forge lines appended)" }
     Write-ForgeLog ''
-    Write-ForgeLog 'Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced -- except .claude\settings.json, which is always kept: the payload version is written next to it as settings.forge-recommended.json instead.'
+    Write-ForgeLog 'Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced -- except .claude\settings.json, which is MERGED (your own hooks/rules kept, a backup taken first); when a merge is not possible, a settings.forge-recommended-<timestamp>.json is written next to it instead and settings.json itself is left untouched.'
     Write-ForgeLog 'Identical files are left untouched. This installer never deletes your existing .claude tree.'
     Write-ForgeLog ''
 
@@ -581,6 +703,12 @@ function Main {
     # -------------------------------------------------------------------------
     $globalOk = $true
     $projectOk = $true
+    # Set by Copy-ForgeSettingsFile (V07, wp-g2 2026-09-24 Codex re-check out-p7.md) whenever the PreToolUse
+    # gate hook did NOT end up merged into <project>\.claude\settings.json for any reason (refused merge, a
+    # directory/unreadable/malformed target, node unavailable, a guarded write itself failing) -- checked
+    # below so the final summary names the gate specifically, never just a generic "install failed". `$script:`
+    # scope is required: Copy-ForgeSettingsFile runs several call frames below this one.
+    $script:ForgeSettingsGateFailed = $false
 
     if ($doGlobal) {
       Write-ForgeLog ''
@@ -649,7 +777,11 @@ function Main {
       exit 1
     }
     if ($doProject -and -not $projectOk) {
-      Write-ForgeError 'project install failed -- see errors above'
+      if ($script:ForgeSettingsGateFailed) {
+        Write-ForgeError "project install failed: the PreToolUse gate hook was NOT installed into $projectDir\.claude\settings.json -- see errors above"
+      } else {
+        Write-ForgeError 'project install failed -- see errors above'
+      }
       exit 1
     }
 

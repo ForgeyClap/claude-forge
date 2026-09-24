@@ -213,6 +213,52 @@ forge_copy_file() {
   return 0
 }
 
+# forge_guarded_write_new — creates a NEW dst_file (no existing file yet) from src_file WITHOUT following a
+# symlink/junction planted at dst_dir, and WITHOUT clobbering a path that appears at dst_file between the
+# caller's check and this write. This is the bash-only (no `node`) equivalent of forge-settings-merge.cjs's
+# own guarded create path (UNREADABLE-MEANS-ABSENT + PROJECT-DIRECTORY-ESCAPE) — used ONLY when `node`/the
+# merge tool are unavailable (wp-g2, 2026-09-24 Codex re-check out-p7.md V07). `( set -C; ... > "$dst_file" )`
+# (noclobber, in a subshell so it never changes the caller's shell options) makes the redirection FAIL rather
+# than truncate/follow an existing path at that exact name — including an existing symlink.
+forge_guarded_write_new() {
+  local dst_dir="$1" dst_file="$2" src_file="$3"
+  if [ -L "$dst_dir" ]; then
+    forge_err "refusing: $dst_dir is a symlink/junction, not a real directory"
+    return 1
+  fi
+  if ( set -C; cat -- "$src_file" > "$dst_file" ) 2>/dev/null; then
+    return 0
+  fi
+  forge_err "could not create $dst_file (it already exists, or $dst_dir cannot be written to) — refusing to overwrite or follow a link"
+  return 1
+}
+
+# forge_guarded_write_recommended — AUXILIARY-FILE-CLOBBER for the bash-only (no `node`) fallback: a
+# uniquely timestamp+random-suffixed settings.forge-recommended-<stamp>-<rand>.json, exclusively created
+# (`set -C` noclobber — never overwrites/follows a prior recovery file or a planted symlink at that exact
+# name), mirroring forge-settings-merge-guards.cjs's own writeExclusiveUnique (V07). Never targets a FIXED
+# `settings.forge-recommended.json` path — a pre-existing file or symlink already sitting at that fixed name
+# is simply never touched, by construction.
+forge_guarded_write_recommended() {
+  local dst_dir="$1" src_file="$2" stamp rand rec_file attempt=0
+  if [ -L "$dst_dir" ]; then
+    forge_err "refusing: $dst_dir is a symlink/junction — could not write a recommended-hooks file"
+    return 1
+  fi
+  stamp=$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)
+  while [ "$attempt" -lt 8 ]; do
+    rand=$((RANDOM % 1000000))
+    rec_file="$dst_dir/settings.forge-recommended-$stamp-$rand.json"
+    if ( set -C; cat -- "$src_file" > "$rec_file" ) 2>/dev/null; then
+      forge_log "  Forge's recommended hooks are in $rec_file — merge what you want"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  forge_err "could not create a unique recommended-hooks file in $dst_dir after $attempt attempts"
+  return 1
+}
+
 # Merge handling for <project>/.claude/settings.json (security #4, review #10; MERGED instead of
 # "kept, merge by hand" since wp22 / owner directive 2026-09-24 "alles standaard aan" — Forge does the
 # merge itself). A user's own settings.json carries their own permissions/hooks and must never be silently
@@ -220,15 +266,21 @@ forge_copy_file() {
 # settings.forge-recommended.json (the pre-wp22 behaviour) meant the owner's new default hooks (the gate
 # hook, the deny rules) never reached an existing project either. Real merge, via the dedicated
 # forge-settings-merge.cjs tool (foreign hooks/rules/keys kept byte-for-byte, backed up first): only when
-# `node` is on PATH. Without `node`, this falls back to the OLD recommended-file behaviour and says why —
-# never silently drops the merge.
+# `node` is on PATH. Without `node`, this falls back to a guarded recommended-file (or raw-create) fallback
+# and says why — never silently drops the merge.
+#
+# V07 (wp-g2, 2026-09-24 Codex re-check out-p7.md): EVERY settings destination now goes through a guarded
+# path — the merge tool's own guarded create (with --project-root so PROJECT-DIRECTORY-ESCAPE applies even
+# to a brand-new settings.json), or the bash-only guarded helpers above when `node` is unavailable — never an
+# unrestricted `cp` to a fixed path. Every non-merge outcome (refused merge, node unavailable, a guarded
+# write itself failing) now returns 1 so the gate hook's absence propagates to a NONZERO overall exit code
+# instead of a false "installed successfully" (this function used to `return 0` after every fallback).
 forge_copy_settings_file() {
   local src_file="$1"
   local dst_file="$2"
-  local dst_dir rec_file merge_tool merge_out
+  local dst_dir merge_tool merge_out
 
   dst_dir=$(dirname -- "$dst_file")
-  rec_file="$dst_dir/settings.forge-recommended.json"
   merge_tool="$SOURCE_DIR/.claude/forge-bin/forge-settings-merge.cjs"
 
   # UNSAFE-FIRST-COPY (wp-f2, 2026-09-24 Codex re-check): a destination that EXISTS but is not a regular file
@@ -240,25 +292,26 @@ forge_copy_settings_file() {
     if [ "$DRY_RUN" = "1" ]; then
       forge_log "  [dry-run] REFUSING: $dst_file exists but is not a regular file (e.g. a directory) — settings.json would be left untouched"
     else
-      forge_err "$dst_file exists but is not a regular file (e.g. a directory) — refusing to touch it; settings.json was left untouched"
+      forge_err "$dst_file exists but is not a regular file (e.g. a directory) — refusing to touch it; settings.json was left untouched; the PreToolUse gate hook was NOT installed"
+      FORGE_SETTINGS_GATE_FAILED=1
     fi
     return 1
   fi
 
   if [ "$DRY_RUN" = "1" ]; then
-    if [ -f "$dst_file" ]; then
+    if forge_have_cmd node && [ -f "$merge_tool" ]; then
+      # guarded via `if` (not a bare assignment / not piped) — see the real-run branch below for why
+      # `set -e`/`set -o pipefail` make that unsafe with a tool that can legitimately exit non-zero.
+      if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" --project-root "$dst_dir" --dry-run 2>&1); then :; fi
+      forge_log "  [dry-run] $merge_out"
+    elif [ -f "$dst_file" ]; then
       if cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
         forge_log "  [dry-run] unchanged: $dst_file"
-      elif forge_have_cmd node && [ -f "$merge_tool" ]; then
-        # guarded via `if` (not a bare assignment / not piped) — see the real-run branch below for why
-        # `set -e`/`set -o pipefail` make that unsafe with a tool that can legitimately exit non-zero.
-        if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" --dry-run 2>&1); then :; fi
-        forge_log "  [dry-run] $merge_out"
       else
-        forge_log "  [dry-run] node not found — would keep your settings.json unmerged; would write: $rec_file"
+        forge_log "  [dry-run] node not found — would keep your settings.json unmerged; would write a recommended-hooks file (guarded, uniquely named)"
       fi
     else
-      forge_log "  [dry-run] would create: $dst_file"
+      forge_log "  [dry-run] node not found — would create: $dst_file (guarded — refuses a symlinked .claude)"
     fi
     return 0
   fi
@@ -277,28 +330,49 @@ forge_copy_settings_file() {
       # `if var=$(cmd)` (not a bare `var=$(cmd)`) is deliberate: under this script's `set -e`, a bare
       # assignment whose command substitution exits non-zero would abort the WHOLE installer the moment the
       # merge tool refuses (exit 1) — using it as an `if` condition is the one form `set -e` does not apply to.
-      if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" 2>&1); then
+      if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" --project-root "$dst_dir" 2>&1); then
         forge_log "  $merge_out"
         return 0
       fi
-      forge_err "settings.json merge refused ($merge_out) — falling back to settings.forge-recommended.json"
-    else
-      forge_log "  node not found on PATH — cannot merge settings.json automatically; writing $rec_file instead"
-    fi
-    if ! cp -- "$src_file" "$rec_file"; then
-      forge_err "failed to write: $rec_file"
+      # The merge tool's OWN refusal already wrote a guarded, uniquely-named settings.forge-recommended-
+      # <stamp>-<rand>.json next to the target (or explains in $merge_out why it could not) — never re-copy
+      # over that with a second, unguarded `cp` (V07: that was the actual junction/link bypass).
+      forge_err "settings.json merge refused ($merge_out) — the PreToolUse gate hook was NOT installed into $dst_file"
+      FORGE_SETTINGS_GATE_FAILED=1
       return 1
     fi
-    forge_log "  kept your settings.json; Forge's hooks are in $rec_file — merge what you want"
-    return 0
-  fi
-
-  if ! cp -- "$src_file" "$dst_file"; then
-    forge_err "failed to copy: $src_file -> $dst_file"
+    forge_log "  node not found on PATH — cannot merge settings.json automatically; writing a recommended-hooks file instead"
+    if forge_guarded_write_recommended "$dst_dir" "$src_file"; then
+      forge_err "kept your settings.json unmerged (node not found on PATH) — the PreToolUse gate hook was NOT installed into $dst_file"
+    else
+      forge_err "kept your settings.json unmerged (node not found on PATH) and could not write a recommended-hooks file either — the PreToolUse gate hook was NOT installed into $dst_file"
+    fi
+    FORGE_SETTINGS_GATE_FAILED=1
     return 1
   fi
-  forge_log "  wrote: $dst_file"
-  return 0
+
+  # dst_file does not exist yet — route through the SAME guarded create path forge-settings-merge.cjs uses
+  # for an existing target (never a raw `cp`): --project-root makes a symlinked/junctioned .claude refuse
+  # exactly like the merge helper does (PROJECT-DIRECTORY-ESCAPE), even on a brand-new settings.json.
+  if forge_have_cmd node && [ -f "$merge_tool" ]; then
+    if merge_out=$(node "$merge_tool" apply --target "$dst_file" --source "$src_file" --project-root "$dst_dir" 2>&1); then
+      forge_log "  $merge_out"
+      return 0
+    fi
+    forge_err "could not create settings.json ($merge_out) — the PreToolUse gate hook was NOT installed into $dst_file"
+    FORGE_SETTINGS_GATE_FAILED=1
+    return 1
+  fi
+
+  # node unavailable and nothing to merge with yet — guarded bash-only raw create (still refuses a
+  # symlinked/junctioned .claude and never follows/overwrites a path that already exists at dst_file).
+  if forge_guarded_write_new "$dst_dir" "$dst_file" "$src_file"; then
+    forge_log "  wrote: $dst_file"
+    return 0
+  fi
+  forge_err "the PreToolUse gate hook was NOT installed into $dst_file"
+  FORGE_SETTINGS_GATE_FAILED=1
+  return 1
 }
 
 # Recursively merge-copy every file under $1 (source dir) into $2 (dest dir).
@@ -527,7 +601,7 @@ main() {
   [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/.claude           (per-project payload: skills, agents, dashboard, config)"
   [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/CLAUDE.md         (only if missing) and $PROJECT_DIR/.gitignore (Forge lines appended)"
   forge_log ""
-  forge_log "Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced — except .claude/settings.json, which is always kept: the payload version is written next to it as settings.forge-recommended.json instead."
+  forge_log "Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced — except .claude/settings.json, which is MERGED (your own hooks/rules kept, a backup taken first); when a merge is not possible, a settings.forge-recommended-<timestamp>.json is written next to it instead and settings.json itself is left untouched."
   forge_log "Identical files are left untouched. This installer never deletes your existing .claude tree."
   forge_log ""
 
@@ -574,6 +648,12 @@ main() {
   # -------------------------------------------------------------------------
   GLOBAL_OK="1"
   PROJECT_OK="1"
+  # Set by forge_copy_settings_file (V07, wp-g2 2026-09-24 Codex re-check out-p7.md) whenever the
+  # PreToolUse gate hook did NOT end up merged into <project>/.claude/settings.json for any reason
+  # (refused merge, a directory/unreadable/malformed target, node unavailable, a guarded write itself
+  # failing) — checked below so the final summary names the gate specifically, never just a generic
+  # "install failed".
+  FORGE_SETTINGS_GATE_FAILED="0"
 
   if [ "$DO_GLOBAL" = "1" ]; then
     forge_log ""
@@ -646,7 +726,11 @@ main() {
     exit 1
   fi
   if [ "$DO_PROJECT" = "1" ] && [ "$PROJECT_OK" != "1" ]; then
-    forge_err "project install failed — see errors above"
+    if [ "$FORGE_SETTINGS_GATE_FAILED" = "1" ]; then
+      forge_err "project install failed: the PreToolUse gate hook was NOT installed into $PROJECT_DIR/.claude/settings.json — see errors above"
+    else
+      forge_err "project install failed — see errors above"
+    fi
     exit 1
   fi
 
