@@ -429,6 +429,15 @@ const SYSTEM = [
   // wave 3, wp-h1: the command-position helper (opener stripping, later case arms / PowerShell branches, escaped
   // substitution context) split out of forge-actiongate.cjs to keep it under 500 lines. SYSTEM_GLOB-covered — pinned too.
   'forge-bin/forge-actiongate-position.cjs',
+  // wave 5, wp-j1 (Codex p10): the ONE shared quote/heredoc scanner (scanQuotes with a termination guard,
+  // stripHeredocs, cArgLiveAfterFlag) every gate consumer reads from with original offsets — the root-cause fix
+  // for the N02/N04/N05 regressions. forge-gate-data.cjs and forge-actiongate-position.cjs require it, so it must
+  // ship alongside them. SYSTEM_GLOB-covered — pinned too.
+  'forge-bin/forge-gate-quotes.cjs',
+  // wave 5, wp-j2 (Codex p10, V15 defense in depth): the override decision is derived every tick from the
+  // authoritative owner-grant record (forge-ownergrant.cjs) instead of the state file's cached flag; the small
+  // decision module + its test ship with usage-guard.cjs, which requires it. SYSTEM_GLOB-covered — pinned too.
+  'forge-bin/usage-guard-override.cjs', 'forge-bin/usage-guard-override.test.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by

@@ -13,6 +13,7 @@ const assert = require('assert');
 const { spawnSync } = require('child_process');
 const gate = require('./forge-actiongate.cjs');
 const position = require('./forge-actiongate-position.cjs'); // split out 2026-09-24 (codex-recheck wave 2)
+const quotes = require('./forge-gate-quotes.cjs'); // shared quote/heredoc mask (2026-09-24, wave 5, wp-j1)
 
 let passed = 0, failed = 0;
 function t(name, fn) {
@@ -468,6 +469,118 @@ t('V06: commandPositionCandidates() widens without ever mutating entry.segment (
   assert.ok(cands.includes(entry.segment), 'the plain segment must still be a candidate');
   assert.ok(cands.some((c) => c.includes('$(')), 'a candidate must re-attach the swallowed "$(" evidence');
   assert.strictEqual(entry.segment, 'bash -c "', 'entry.segment itself must be untouched');
+});
+
+// ---------------------------------------------------------------------------
+// 2c-quinquies (codex-recheck p10, wave 5 / wp-j1) — ROOT-CAUSE quoting-layer redesign. N02/N04/N05 were all
+// the SAME bug shape: a scanner rebuilt fresh over a fragment disagreed with a scanner built over the whole
+// original text. This section pins the fix directly, not only through classify()'s end result.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave5-a) quoting-layer redesign — shared full-text mask + original offsets (N02/N04 root cause)');
+
+t('splitCommandsDetailed() reports each segment\'s absolute offset in the ORIGINAL text', () => {
+  const text = 'if ($false) { Write-Output "a;b" } else { iex $cmd }';
+  const entries = gate.splitCommandsDetailed(text);
+  for (const e of entries) {
+    assert.strictEqual(text.slice(e.offset, e.offset + e.segment.length), e.segment,
+      'offset ' + e.offset + ' does not point at segment ' + JSON.stringify(e.segment) + ' in the original text');
+  }
+});
+
+t('N04 root cause: a shared full-text mask resolves what a per-segment mask cannot — the quoted ";" case', () => {
+  const text = 'if ($false) { Write-Output "a;b" } else { iex $cmd }';
+  const mask = quotes.scanQuotes(text);
+  const entries = gate.splitCommandsDetailed(text);
+  const tail = entries[entries.length - 1]; // the "b\" } else { iex $cmd }" stump the naive split produces
+  assert.ok(tail.segment.startsWith('b"'), 'fixture assumption: the split really does cut inside the quote: ' + tail.segment);
+  const withMask = position.laterBranchStarts(tail.segment, mask, tail.offset);
+  assert.ok(withMask.some((s) => s.startsWith('else')), 'the ORIGINAL-offset mask must still find the later else: ' + JSON.stringify(withMask));
+  // counterfactual: a mask rebuilt fresh over JUST the stump text (the pre-fix shape) misreads the stray
+  // closing quote as an opener and swallows the branch — proving the fix is load-bearing, not a no-op.
+  const freshMask = quotes.scanQuotes(tail.segment);
+  const withoutOriginalOffset = position.laterBranchStarts(tail.segment, freshMask, 0);
+  assert.strictEqual(withoutOriginalOffset.length, 0, 'counterfactual: a mask rebuilt over the stump alone must (wrongly) hide the branch — proves the fix is load-bearing');
+});
+
+t('N04 fourth pass: quoted-";" branch fixtures FIRE through the full classify() pipeline (else/elseif/catch/finally)', () => {
+  for (const cmd of [
+    'if ($false) { Write-Output "a;b" } else { iex $cmd }',
+    'if ($false) { Write-Output "a;b" } elseif ($true) { iex $cmd }',
+    'try { Write-Output "a;b" } catch { iex $cmd }',
+    'try { Write-Output "a;b" } finally { iex $cmd }',
+  ]) {
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), cmd + ' -> matched: ' + JSON.stringify(r.matched));
+  }
+});
+
+t('N04 fourth pass counterfactual: the quoted-keyword negatives from the third pass stay silent', () => {
+  for (const cmd of ['node docs.cjs "else eval report"', 'Write-Host "catch iex is an alias"']) {
+    const r = gate.classify(cmd);
+    assert.ok(!r.matched.includes('opaque-exec'), 'unexpectedly matched: ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// N02 FOURTH pass (codex-recheck p10) — the -c ARGUMENT POLICY for all three outer quoting forms (none/
+// single/double), implemented in forge-gate-quotes.cjs::cArgLiveAfterFlag and documented in hard-gates.json's
+// opaque-exec _pattern_doc. The double-quoted cases already existed (third pass); bare and single-quoted are
+// new, and the double-quoted "always live when unescaped, regardless of nearby literal quotes" rule is fixed.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave5-b) N02 fourth pass — the -c argument policy for bare/single/double outer quoting');
+
+const N02_FOURTH_FIRE = [
+  '/bin/bash -c $x',            // bare/unquoted: outer shell expands it before -c ever runs
+  "/bin/bash -c '$x'",          // single-quoted: verbatim becomes the INNER script, which then expands it
+  "bash -c \"printf '$(word)'\"", // double-quoted, UNESCAPED: outer shell expands it regardless of the '...' around it
+];
+for (const cmd of N02_FOURTH_FIRE) {
+  t('N02 fourth pass must FIRE opaque-exec: "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'matched: ' + JSON.stringify(r.matched));
+  });
+}
+const N02_FOURTH_SILENT = [
+  '/bin/bash -c echo',          // bare, fully static, no $/backtick at all
+  "/bin/bash -c 'echo hello'",  // single-quoted, fully static
+  "bash -c \"printf '\\$(word)'\"", // double-quoted, ESCAPED and inner-protected (wave-3 fixture, must not reopen)
+];
+for (const cmd of N02_FOURTH_SILENT) {
+  t('N02 fourth pass counterfactual must stay SILENT: "' + cmd + '"', () => {
+    const r = gate.classify(cmd);
+    assert.ok(!r.matched.includes('opaque-exec'), 'unexpectedly matched: ' + cmd);
+  });
+}
+
+t('N02 fourth pass: cArgLiveAfterFlag() direct unit — bare/single/double outer forms, and an unbounded quote fails toward fire', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c $x'), true, 'bare token with $ is live');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c echo'), false, 'bare static token is not live');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash -c '$x'"), true, 'single-quoted content with $ is live');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash -c 'echo hi'"), false, 'single-quoted static content is not live');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x"'), true, 'unescaped $ in double quotes is always live');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash -c \"printf '$(word)'\""), true, 'unescaped $ stays live despite nearby literal quotes');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash -c \"printf '\\$(word)'\""), false, 'escaped $ protected by real inner single-quoting stays silent');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash -c '$x"), true, 'an unterminated single-quoted argument fails toward fire');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x'), true, 'an unterminated double-quoted argument fails toward fire');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('node script.js'), false, 'no -c token at all -> never live');
+});
+
+// ---------------------------------------------------------------------------
+// N05 (codex-recheck p10) — TERMINATION. scanQuotes() must never hang, proven both as a direct timing bound
+// and as an adversarial-input stress case, not only through the (already fixed) empty-heredoc fixture.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave5-c) N05 termination — scanQuotes() never hangs, even under adversarial input');
+
+t('N05: scanQuotes() resolves a 10 kB adversarial input (many empty heredocs + unbalanced quotes) within 100 ms', () => {
+  const parts = [];
+  for (let i = 0; i < 300; i++) parts.push("cat > f" + i + ".txt <<'EOF" + i + "'\nEOF" + i);
+  parts.push("echo 'unbalanced start with no closing quote and many $( $( $( markers");
+  const adversarial = parts.join('\n').padEnd(10 * 1024, ' x');
+  const t0 = Date.now();
+  const mask = quotes.scanQuotes(adversarial);
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 100, 'scanQuotes() took ' + elapsed + 'ms on a 10kB adversarial input, expected < 100ms');
+  assert.strictEqual(typeof mask.unterminated, 'boolean');
 });
 
 // ---------------------------------------------------------------------------

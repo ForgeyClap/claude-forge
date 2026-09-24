@@ -85,20 +85,18 @@ t5('V15: a GENUINELY abandoned lock (no heartbeat — the holder process is gone
 t5('V15: A\'s release NEVER deletes B\'s lock once B has genuinely reclaimed it (A was reclaimed while suspended, e.g. GC pause / crash-then-resume)', async () => {
   const { dir, lockPath } = tmpLock();
   try {
-    // A acquires, then goes silent (no heartbeat call happens here because we bypass withStateLock's own
-    // loop and simulate A's fd being held open by directly controlling the token file — mirrors "A is
-    // suspended past staleMs with no live heartbeat", the crash-recovery case reclamation exists for).
+    // A acquires, then goes silent (no heartbeat call happens here — simulates "A is suspended past staleMs
+    // with no live heartbeat", the crash-recovery case reclamation exists for).
     fs.writeFileSync(lockPath, 'A-token');
     const old = new Date(Date.now() - 5000);
     fs.utimesSync(lockPath, old, old);
     // B reclaims it for real via the module's own reclaim path.
-    const st = fs.statSync(lockPath);
-    const reclaimed = S.tryReclaimStaleLock(lockPath, 'A-token', st.mtimeMs, 'B-token');
+    const reclaimed = S.tryReclaimStaleLock(lockPath, 'B-token', 200);
     assert.strictEqual(reclaimed, true, 'B must successfully reclaim the genuinely stale A-held lock');
     assert.strictEqual(S.readLockToken(lockPath), 'B-token');
-    // A "wakes up" and releases what it believes is still its own lock — release must be a no-op now.
-    // (release logic lives inside withStateLock's finally; exercise the same rule directly here.)
-    if (S.readLockToken(lockPath) !== 'A-token') { /* A's release must see this and do nothing */ } else { fs.unlinkSync(lockPath); }
+    // A "wakes up" and releases what it believes is still its own lock — via the REAL release primitive,
+    // not a hand-duplicated copy of the rule.
+    S.releaseLockIfOwned(lockPath, 'A-token');
     assert.strictEqual(S.readLockToken(lockPath), 'B-token', 'A\'s stale release must never remove B\'s lock');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -125,18 +123,18 @@ t5('V15: full withStateLock schedule — A holds > stale interval and stays ACTI
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('V15: a failed stale-lock reclaim (injected EACCES on the reclaim capture) falls through to the ordinary bounded deadline — never a tight immediate-retry loop', async () => {
+t5('V15: a failed stale-lock reclaim (injected EACCES on the atomic replace) falls through to the ordinary bounded deadline — never a tight immediate-retry loop', async () => {
   const { dir, lockPath } = tmpLock();
   try {
     fs.writeFileSync(lockPath, 'stale-token');
     const old = new Date(Date.now() - 5000);
     fs.utimesSync(lockPath, old, old);
-    // V15 (third recheck): reclamation's ONE mutation is now `fs.renameSync(lockPath, <.capture. path>)`
-    // (captureLock), not a write-a-temp-file-then-rename pair — inject the failure at that exact call.
+    // V15 (FOURTH recheck): reclamation's ONE mutation is now `fs.renameSync(<.reclaim. tmp>, lockPath)` —
+    // a rename ONTO the existing lock path (never a rename AWAY from it) — inject the failure at that call.
     const origRenameSync = fs.renameSync;
     let reclaimAttempts = 0;
     fs.renameSync = function (src, dest, ...rest) {
-      if (typeof dest === 'string' && dest.includes('.capture.')) { reclaimAttempts++; const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; }
+      if (typeof src === 'string' && src.includes('.reclaim.')) { reclaimAttempts++; const e = new Error('EACCES: permission denied'); e.code = 'EACCES'; throw e; }
       return origRenameSync.call(fs, src, dest, ...rest);
     };
     const started = Date.now();
@@ -169,55 +167,109 @@ t5('V15: release only unlinks a lock whose content still matches this holder\'s 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-// ---- V15, THIRD Codex recheck (2026-09-24): capture-first reclaim/release + fenced publication ----
+// ---- V15, THIRD Codex recheck (2026-09-24, now SUPERSEDED — see the FOURTH recheck below): capture-first
+// reclaim/release + fenced publication ----
 const G = require('./usage-guard.cjs');
 
-t5('V15 (third recheck): a stale claimant can never replace a NEWER holder — reclaim only succeeds against the EXACT token/mtime just inspected, and loses the lock completely intact when it does not', () => {
+t5('V15 (FOURTH recheck): a stale claimant can never replace a NEWER holder — reclaim verifies staleness FRESHLY, in place, immediately before acting; the newer holder\'s lock survives completely intact', () => {
   const { dir, lockPath } = tmpLock();
   try {
     fs.writeFileSync(lockPath, 'ORIGINAL');
     const old = new Date(Date.now() - 120000);
     fs.utimesSync(lockPath, old, old);
-    const staleSt = fs.statSync(lockPath);
-    const expectedToken = S.readLockToken(lockPath);
-    const expectedMtimeMs = staleSt.mtimeMs;
-    // B reclaims for real FIRST (wins the race).
-    assert.strictEqual(S.tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, 'TOKEN_B'), true, 'B must win the stale reclaim');
-    // A now tries to reclaim using the SAME (now stale) snapshot it captured before B acted — this is
-    // Codex's exact "A passes its stale check and pauses; B reclaims ... A resumes" schedule, applied
-    // directly to the reclaim primitive itself.
-    assert.strictEqual(S.tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, 'TOKEN_A'), false, 'A must lose — B is now the newer holder');
+    // B reclaims for real FIRST (wins the race) — this makes the lock's mtime FRESH (just replaced).
+    assert.strictEqual(S.tryReclaimStaleLock(lockPath, 'TOKEN_B', 60000), true, 'B must win the stale reclaim');
+    // A now tries to reclaim too, immediately after, with the SAME staleMs budget every caller uses — A's
+    // own check is a FRESH read (there is no longer any caller-supplied snapshot to act on), so it correctly
+    // sees B's lock is no longer stale and refuses. This is Codex's exact "a stale claimant reclaims a lock
+    // that has, in the meantime, become live again" schedule, applied directly to the reclaim primitive.
+    assert.strictEqual(S.tryReclaimStaleLock(lockPath, 'TOKEN_A', 60000), false, 'A must lose — B is now the newer holder');
     assert.strictEqual(S.readLockToken(lockPath), 'TOKEN_B', 'B\'s lock must be completely intact — A must never have touched it');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('V15 (third recheck): a heartbeat-refreshed lock (same token, newer mtime) cannot be reclaimed even against a stale mtime snapshot, and is restored byte-for-byte intact on a failed attempt', () => {
+t5('V15 (FOURTH recheck): a lock that WAS stale but has since been heartbeat-refreshed can never be reclaimed — the check is a single FRESH read, never a value assembled from an earlier, separate stat', () => {
   const { dir, lockPath } = tmpLock();
   try {
     fs.writeFileSync(lockPath, 'LIVE_TOKEN');
     const old = new Date(Date.now() - 120000);
-    const staleSnapshotMtimeMs = old.getTime();
-    fs.utimesSync(lockPath, old, old);
-    // simulate the live holder's heartbeat ticking (same token, fresh mtime) AFTER a waiter already
-    // captured an old mtime snapshot but BEFORE that waiter acts on it.
-    const now = new Date();
-    fs.utimesSync(lockPath, now, now);
-    assert.strictEqual(S.tryReclaimStaleLock(lockPath, 'LIVE_TOKEN', staleSnapshotMtimeMs, 'INTRUDER'), false);
+    fs.utimesSync(lockPath, old, old); // looked stale a moment ago
+    fs.utimesSync(lockPath, new Date(), new Date()); // the live holder's heartbeat just refreshed it
+    assert.strictEqual(S.tryReclaimStaleLock(lockPath, 'INTRUDER', 60000), false);
     assert.strictEqual(S.readLockToken(lockPath), 'LIVE_TOKEN', 'the live holder\'s lock must survive completely untouched');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('V15 (third recheck): release is also capture-based — a lock already reclaimed by someone else DURING our own transaction is restored untouched, never silently discarded', async () => {
+t5('V15 (FOURTH recheck): the lock path is NEVER absent during a reclaim — a concurrent exclusive-create attempt mid-reclaim still sees the path occupied, closing the exact vacancy the THIRD recheck\'s capture-then-verify design left open', () => {
   const { dir, lockPath } = tmpLock();
   try {
-    const r = await S.withStateLock(lockPath, async () => {
-      // simulate: while we are "mid-transaction", a second holder's real reclaim completes (direct fs
-      // mutation, exactly what tryReclaimStaleLock leaves behind on the disk).
-      fs.writeFileSync(lockPath, 'RECLAIMED_BY_OTHER');
-      return 'done';
-    }, { staleMs: 100000, timeoutMs: 200 });
-    assert.strictEqual(r.ok, true, JSON.stringify(r));
-    assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), 'RECLAIMED_BY_OTHER', 'a lock reclaimed out from under us during our own transaction must survive OUR release untouched');
+    fs.writeFileSync(lockPath, 'STALE');
+    const old = new Date(Date.now() - 120000);
+    fs.utimesSync(lockPath, old, old);
+    const origRename = fs.renameSync;
+    let checkedMidRename = false;
+    fs.renameSync = function (src, dest, ...rest) {
+      if (dest === lockPath) {
+        // exactly the moment the OLD (third-recheck) design would have had lockPath vacant (post-capture,
+        // pre-restore-or-claim) — the NEW design never removes lockPath at all; this must still see it
+        // occupied right now.
+        assert.ok(fs.existsSync(lockPath), 'lockPath must never be absent mid-reclaim');
+        let creationErrorCode = null;
+        try { fs.closeSync(fs.openSync(lockPath, 'wx')); } catch (e) { creationErrorCode = e.code; }
+        assert.strictEqual(creationErrorCode, 'EEXIST', 'a fresh exclusive-create must NEVER succeed mid-reclaim (the path was never vacant) — the only expected refusal reason is EEXIST');
+        checkedMidRename = true;
+      }
+      return origRename.call(fs, src, dest, ...rest);
+    };
+    let reclaimed;
+    try { reclaimed = S.tryReclaimStaleLock(lockPath, 'FRESH_TOKEN', 60000); }
+    finally { fs.renameSync = origRename; }
+    assert.strictEqual(checkedMidRename, true, 'the instrumentation must actually have run during the real reclaim');
+    assert.strictEqual(reclaimed, true);
+    assert.strictEqual(S.readLockToken(lockPath), 'FRESH_TOKEN');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('N07 (Codex recheck out-p10, 2026-09-24): a THROWN token write during RECLAMATION leaves the ORIGINAL stale lock byte-for-byte untouched (never a fresh zero-byte orphan) — an immediate successor can retry right away, without waiting out the full stale interval', () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    fs.writeFileSync(lockPath, 'STALE_TOKEN');
+    const old = new Date(Date.now() - 120000);
+    fs.utimesSync(lockPath, old, old);
+    const realWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = function (p, ...rest) {
+      if (typeof p === 'string' && p.includes('.reclaim.')) { const e = new Error('EIO simulated'); e.code = 'EIO'; throw e; }
+      return realWriteFileSync.call(fs, p, ...rest);
+    };
+    let reclaimed;
+    try { reclaimed = S.tryReclaimStaleLock(lockPath, 'NEW_TOKEN', 60000); }
+    finally { fs.writeFileSync = realWriteFileSync; }
+    assert.strictEqual(reclaimed, false, 'a thrown token write during reclamation must report failure, never a false success');
+    assert.strictEqual(S.readLockToken(lockPath), 'STALE_TOKEN', 'the ORIGINAL stale lock must survive completely untouched — no zero-byte orphan left behind');
+    // an immediate successor (no waiting) must be able to retry the SAME stale lock right away.
+    const immediateRetry = S.tryReclaimStaleLock(lockPath, 'NEW_TOKEN_2', 60000);
+    assert.strictEqual(immediateRetry, true, 'the very next attempt must succeed immediately — the stale lock was never corrupted into a fresh-looking orphan that would have fooled the next staleness check');
+    assert.strictEqual(S.readLockToken(lockPath), 'NEW_TOKEN_2');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+t5('N07 (Codex recheck out-p10, 2026-09-24): a write that reports success but silently writes the WRONG bytes during ACQUISITION is caught by an independent readback — refuses outright, never a fence() that can only ever report false, and no partial lock is left behind', async () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    const realWriteSync = fs.writeSync;
+    fs.writeSync = function (fd, ...rest) {
+      // silently write garbage instead of the real token — only a readback can catch this (the write
+      // itself neither throws nor reports a short count).
+      const garbage = Buffer.from('WRONG-BYTES-ENTIRELY');
+      return realWriteSync.call(fs, fd, garbage, 0, garbage.length, 0);
+    };
+    let fnCalled = false, r;
+    try { r = await S.withStateLock(lockPath, () => { fnCalled = true; return 'unreachable'; }, {}); }
+    finally { fs.writeSync = realWriteSync; }
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(r.reason, 'lock-write-failed');
+    assert.strictEqual(fnCalled, false, 'fn() must never be invoked after a readback-mismatched token write');
+    assert.strictEqual(fs.existsSync(lockPath), false, 'the mismatched partial lock must be cleaned up, never left as an ownerless orphan');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -268,12 +320,17 @@ t5('V15 (third recheck): a fence() check that passed EARLIER in a callback must 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('V15 (third recheck): Codex\'s two-reclaimer schedule through the REAL publication path — a stale holder A can never resurrect an override that a legitimate reclaimer B already cleared', () => {
+t5('V15 (FOURTH recheck): Codex\'s two-reclaimer schedule through the REAL publication path — a stale holder A can never resurrect an override that a legitimate reclaimer B already cleared', () => {
   const { dir, lockPath } = tmpLock();
   const statePath = path.join(dir, 'state.json');
   try {
     fs.writeFileSync(statePath, JSON.stringify({ ownerOverride: { active: true } }));
-    const tokenA = S.randomToken();
+    // A's token must name a pid that is genuinely NOT alive — `S.randomToken()` would embed THIS test
+    // process's own (very much alive) pid, which the liveness-aware reclaim check (V15, fourth recheck)
+    // would then correctly refuse to touch regardless of age. 999999 mirrors this project's own
+    // established "definitely-not-a-real-pid" convention (see usage-guard.test.cjs's own awaitChildClaim
+    // fixtures).
+    const tokenA = '999999:' + S.randomToken().split(':')[1];
     fs.writeFileSync(lockPath, tokenA);
     const past = new Date(Date.now() - 120000);
     fs.utimesSync(lockPath, past, past);
@@ -281,8 +338,7 @@ t5('V15 (third recheck): Codex\'s two-reclaimer schedule through the REAL public
     // B reclaims (the real function) and PUBLISHES a real "override cleared" write, exactly like a genuine
     // concurrent override-off/account-switch would.
     const tokenB = S.randomToken();
-    const staleSt = fs.statSync(lockPath);
-    const reclaimedByB = S.tryReclaimStaleLock(lockPath, S.readLockToken(lockPath), staleSt.mtimeMs, tokenB);
+    const reclaimedByB = S.tryReclaimStaleLock(lockPath, tokenB, 60000);
     assert.strictEqual(reclaimedByB, true, 'B must win the stale reclaim');
     const fenceB = () => S.readLockToken(lockPath) === tokenB;
     G.writeStateTo(statePath, {}, fenceB); // B clears the override (fresh object without it)

@@ -38,21 +38,25 @@
  *      safer of the two options the finding names, since replicating PowerShell's own open/close matching
  *      exactly is not something a zero-dependency classifier should attempt.
  *
+ * QUOTING-LAYER REDESIGN (2026-09-24, codex-recheck wave 5 / wp-j1): quoteMask() and stripHeredocs() are now
+ * thin wrappers around the shared engine in forge-gate-quotes.cjs (scanQuotes()/findHeredocDelim()), the ONE
+ * place that resolves quote/heredoc structure for both this file's INERT-DATA rule AND
+ * forge-actiongate-position.cjs's command-position/`-c`-argument reading — see that file's own header for the
+ * full "why" (three straight regressions, N02/N04/N05, were all two divergent scanners disagreeing at a seam)
+ * and its N05 termination fix (an empty heredoc used to hang this function forever).
+ *
  * API: stripInertData(command, shell) -> { text, regions } · stripHeredocs(text) · scanWords(s, shell) ·
  *      literalDataSpans(segs) · laterRisk(text) · quoteMask(text) · gitSubcommand(ws). `shell` is the tool
  *      name: 'Bash' or 'PowerShell'.
  */
+const QUOTES = require('./forge-gate-quotes.cjs');
 const INTERPRETER_RE = /^(bash|sh|zsh|dash|ksh|fish|node|nodejs|deno|bun|python\d*(\.\d+)?|py|perl|ruby|php|pwsh|powershell|cmd|eval|source|iex|invoke-expression|xargs|chmod|env|exec|command|builtin)$/;
 const LAYOUT = new Set(['mv', 'move', 'move-item', 'mi', 'ln', 'mklink', 'cp', 'copy', 'copy-item', 'cpi', 'rename', 'ren',
   'rename-item', 'rni', 'robocopy', 'xcopy', 'new-item', 'ni']);
 const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'ag', 'select-string', 'sls', 'findstr']);
 const SCRIPT_EXT_RE = /\.(sh|bash|zsh|ps1|psm1|cmd|bat|js|cjs|mjs|ts|py|rb|pl|php)$/i;
-const MARKER_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_]\w*))/g;
-// N05 (codex-recheck 2026-09-24, third independent pass): the STICKY twin of MARKER_RE, used only by
-// quoteMask() below to recognise a heredoc marker exactly AT the scanner's current position (never searching
-// ahead) so it can skip the marker's own literal BODY before treating an apostrophe/quote/paren inside it as
-// shell syntax — see quoteMask()'s own header for the full "why".
-const MARKER_AT_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^'\n]+)'|"([^"\n]+)"|([A-Za-z_]\w*))/y;
+// MARKER_RE/MARKER_AT_RE (the heredoc-marker regexes) now live in forge-gate-quotes.cjs — this file no longer
+// scans for a marker itself, it only supplies the writer/commit-head detection stripHeredocs() there consumes.
 // C02: `^\s*` admits leading indentation before the writer; the `between` group now also accepts a fully
 // single- or double-quoted destination token (not just the bare, quote-free character set it used to).
 const WRITER_HEAD_RE = /^\s*(?:[^'"`$()#\n]*?(?:&&|\|\||;)\s*)?(cat|tee|printf|echo)\b((?:[\w\s.\-/\\:=+>@,]|'[^'\n]*'|"[^"\n]*")*?)(?<!<)<<(?!<)-?\s*(?:'[^'\n]+'|"[^"\n]+"|[A-Za-z_]\w*)((?:\s*\d?>>?\s*(?:'[^'\n]*'|"[^"\n]*"|[\w.\-/\\:@+]+))*)\s*$/;
@@ -72,145 +76,19 @@ function laterRisk(text) {
   return false;
 }
 
-/** skipSubstitution(text, at) -> { end, balanced }. `end` is the index just past the matching `)` of a `$(`
- *  starting at `at` (naive balanced paren count over the raw characters — this classifier does not lex the
- *  substitution's own quoting while counting, mergeNestedSubstitution() below does that separately);
- *  `balanced` is false when depth never reached 0 before the text ran out (an unbalanced/truncated
- *  substitution), which the caller must treat as unresolved (fail closed, same as an unterminated quote). A
- *  command substitution is its own lexical context — bash evaluates it regardless of an enclosing quote, so
- *  its content (including a real heredoc inside it, the Claude Code `git commit -m "$(cat <<'EOF' ...)"`
- *  form) must never be swallowed by the OUTER quote scan. */
-function skipSubstitution(text, at) {
-  let depth = 1;
-  let j = at + 2;
-  for (; j < text.length && depth > 0; j++) {
-    if (text[j] === '(') depth++;
-    else if (text[j] === ')') depth--;
-  }
-  return { end: j, balanced: depth === 0 };
-}
-
-/** mergeNestedSubstitution(text, at, marks) -> { end, unterminated }. V05 wave 2 (codex-recheck 2026-09-24):
- *  a `$(...)` command substitution is bash's own fresh lexical context, so a heredoc marker or quote sitting
- *  INSIDE it must be judged on ITS OWN nested quote structure, not on the enclosing quote (or lack of one)
- *  that merely contains the substitution. The wave-1 fix only ever SKIPPED a substitution's raw text wholesale
- *  when scanning for an enclosing quote's own closing character — it never looked inside that text at all, so
- *  a fake heredoc hidden inside a single-quoted literal nested inside a substitution nested inside a
- *  double-quoted string (`echo "$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)"`) was never recognised as
- *  "inside a quote" anywhere, and stripHeredocs() swallowed the real `rm -rf ./src` line as if it were inert
- *  heredoc data. Recursing quoteMask() over the substitution's own inner text and merging its "inside"
- *  positions (offset-adjusted) into the outer `marks` array resolves arbitrary nesting depth through ordinary
- *  recursion — this same function is what quoteMask() itself calls, both at the top level (outside any quote)
- *  and from inside a double-quote scan. An unbalanced substitution or an unresolved nested quote is reported
- *  as unterminated so the caller poisons the rest of the scan (fail toward "strip nothing"). */
-function mergeNestedSubstitution(text, at, marks) {
-  const sub = skipSubstitution(text, at);
-  const innerStart = at + 2;
-  const innerEnd = sub.balanced ? Math.max(innerStart, sub.end - 1) : sub.end;
-  const inner = quoteMask(text.slice(innerStart, innerEnd));
-  for (let p = 0; p < innerEnd - innerStart; p++) if (inner.inside(p)) marks[innerStart + p] = true;
-  return { end: sub.end, unterminated: !sub.balanced || inner.unterminated };
-}
-
-/** findHeredocDelim(text, bodyStart, dash, delim) -> { delimStart, delimEnd } | null. N05 (codex-recheck
- *  2026-09-24, third independent pass): locates the line (scanning forward from `bodyStart`, exactly like
- *  stripHeredocs()'s own line-by-line search) whose content equals `delim` — leading tabs stripped first when
- *  `dash` is truthy, the SAME rule stripHeredocs() itself uses, so the two never disagree on where a body
- *  ends. Returns the matching delimiter line's own character offsets, or null when the text ends with no such
- *  line — the caller must then treat this as an unresolved shape and fall back to ordinary character-by-
- *  character scanning (quoteMask's pre-N05 behaviour), never invent a body boundary it cannot prove. */
-function findHeredocDelim(text, bodyStart, dash, delim) {
-  let pos = bodyStart;
-  while (pos <= text.length) {
-    const nl = text.indexOf('\n', pos);
-    const lineEnd = nl === -1 ? text.length : nl;
-    const line = text.slice(pos, lineEnd);
-    if ((dash ? line.replace(/^\t+/, '') : line) === delim) return { delimStart: pos, delimEnd: lineEnd };
-    if (nl === -1) return null;
-    pos = nl + 1;
-  }
-  return null;
-}
-
-/** quoteMask(text) -> { inside(pos), unterminated } — a BASH-ONLY, whole-text (never per-line) scan of `'`/`"`
- *  runs, so a heredoc operator that only LOOKS like one while sitting inside an already-open multi-line quote
- *  is never mistaken for a real one (codex-recheck S01). Backslash escaping is honoured only inside double
- *  quotes, mirroring scanWords()'s own bash rules. A `$(...)` command substitution at the OUTER (not-yet-
- *  inside-any-quote) scan level — even one found WHILE scanning for a DOUBLE quote's closing character — is
- *  skipped over unmarked: its content is not "inside" the outer quote for this scanner's purposes, and a
- *  genuinely nested heredoc inside it is judged on its own. SINGLE QUOTES ARE DIFFERENT (codex-recheck V05,
- *  fixing a real bypass): bash gives single quotes ZERO special characters until the next literal `'` — not
- *  even `$(`. Skipping `$(...)` while scanning FOR that closing `'` used to jump straight to whatever `)`
- *  balanced it, silently leaving every character in between UNMARKED (not "inside" the quote) even though it
- *  truly is; a fake `<<EOF` heredoc marker sitting inside a single-quoted literal like `echo '$(\ncat
- *  <<EOF\n)'` then looked "outside" any quote to stripHeredocs() and swallowed the real command that followed
- *  it. Inside a single quote every character up to the literal closing `'` is now marked one at a time — no
- *  substitution, no backslash escaping, exactly like a real shell. An unterminated quote poisons everything
- *  from its opening character to the end of the text; `unterminated` tells the caller to refuse the whole
- *  heredoc pass.
- *  LITERAL HEREDOC BODIES (N05, codex-recheck 2026-09-24, third independent pass — a new false-positive
- *  regression): a heredoc body is bash's own opaque data — none of its characters are ever read as shell
- *  quote syntax, quoted delimiter or not. This scanner used to have no concept of a heredoc body at all, so
- *  an ordinary apostrophe inside one (`git commit -m "$(cat <<'EOF'\ndon't document that git reset --hard is
- *  gated\nEOF\n)"`) was read as OPENING a real single quote that then never closed, poisoning the whole scan
- *  as `unterminated` and blocking a benign commit message. Recognising a marker ONLY at the point the main
- *  loop is not already inside some other quote/substitution (exactly the position a real heredoc redirect can
- *  occur at) and, when a matching delimiter line genuinely exists (findHeredocDelim), jumping straight from
- *  the body's first character to the delimiter line without inspecting anything in between fixes this without
- *  a blanket exemption: an ADVERSARIAL fake marker — one with NO matching delimiter line, or one sitting
- *  inside an already-open quote's own per-character scan (V05a/V05b/wave-2 above, which never reach this
- *  check at all) — is completely unaffected and still resolved exactly as before. */
+/** quoteMask(text) -> { inside(pos), unterminated } — thin wrapper over forge-gate-quotes.cjs::scanQuotes(),
+ *  kept as a same-named/same-shape export so every existing caller and test in this project keeps working
+ *  unchanged. See forge-gate-quotes.cjs's own header for the full quote-semantics and N05-termination story;
+ *  this file no longer has its own copy of that scanning logic (2026-09-24 quoting-layer redesign). */
 function quoteMask(text) {
-  const marks = new Array(text.length + 1).fill(false);
-  let unterminated = false;
-  let i = 0;
-  const skipTo = new Map(); // N05: literal heredoc body start -> its own delimiter line's start, THIS scan only
-  while (i < text.length) {
-    if (skipTo.has(i)) { i = skipTo.get(i); continue; }
-    const ch = text[i];
-    if (ch === '<' && text[i + 1] === '<') {
-      MARKER_AT_RE.lastIndex = i;
-      const hm = MARKER_AT_RE.exec(text);
-      if (hm) {
-        const delim = hm[2] || hm[3] || hm[4];
-        const nl = text.indexOf('\n', i + hm[0].length);
-        if (nl !== -1) {
-          const body = findHeredocDelim(text, nl + 1, hm[1], delim);
-          if (body) skipTo.set(nl + 1, body.delimStart);
-        }
-      }
-    }
-    if (ch === '$' && text[i + 1] === '(') {
-      // V05 wave 2: a substitution reached OUTSIDE any quote is still its own lexical context — recurse into
-      // it (mergeNestedSubstitution) rather than merely skipping its raw text, so a fake heredoc nested inside
-      // it (in a quote of its own) is still recognised as "inside" for stripHeredocs()'s purposes.
-      const sub = mergeNestedSubstitution(text, i, marks);
-      if (sub.unterminated) { for (let k = i; k <= text.length; k++) marks[k] = true; unterminated = true; break; }
-      i = sub.end;
-      continue;
-    }
-    if (ch !== "'" && ch !== '"') { i++; continue; }
-    marks[i] = true;
-    let j = i + 1;
-    let closed = false;
-    while (j < text.length) {
-      // V05: a single quote suppresses `$(` too — only a double quote lets a substitution run inside it.
-      if (ch === '"' && text[j] === '$' && text[j + 1] === '(') {
-        const sub = mergeNestedSubstitution(text, j, marks);
-        if (sub.unterminated) { j = text.length; break; } // unresolved nested quote -> the outer quote-open-to-end poison below fires
-        j = sub.end;
-        continue;
-      }
-      if (ch === '"' && text[j] === '\\') { marks[j] = true; if (j + 1 < text.length) marks[j + 1] = true; j += 2; continue; }
-      if (text[j] === ch) { marks[j] = true; closed = true; j++; break; }
-      marks[j] = true;
-      j++;
-    }
-    if (!closed) { for (let k = i; k <= text.length; k++) marks[k] = true; unterminated = true; break; }
-    i = j;
-  }
-  return { inside: (pos) => marks[pos] === true, unterminated };
+  const r = QUOTES.scanQuotes(text);
+  return { inside: r.inside, unterminated: r.unterminated };
 }
+
+/** findHeredocDelim — re-exported unchanged from forge-gate-quotes.cjs (single source of truth; see that
+ *  file's own doc). Kept here too so `data.findHeredocDelim(...)` (existing tests, and any future caller that
+ *  only ever required this file) keeps working without a second implementation to drift out of sync. */
+const findHeredocDelim = QUOTES.findHeredocDelim;
 
 function writerDests(consumer, between, tail) {
   const dests = [];
@@ -228,56 +106,13 @@ function writerDests(consumer, between, tail) {
   return dests;
 }
 
-/** stripHeredocs(text) -> { text, regions, unstripped }. Two markers on one line, an unterminated quote
- *  anywhere in the WHOLE text, or an unterminated heredoc strip nothing; a heredoc that fails the rule is kept
- *  verbatim and skipped whole (an executed body is never re-read). `offset`/`lineOffset` track each line's
- *  real byte position in the ORIGINAL `text` so qmask.inside() (built once against that original text) is
- *  asked about the right position — codex-recheck V05: after successfully recognising a heredoc the loop
- *  jumps `i` straight to its `end` line to avoid re-scanning the body, but `offset` used to advance ONLY by
- *  the marker line's own length, never by the SKIPPED body+delimiter lines' lengths too. Every later line's
- *  `lineOffset` then understated the true offset by exactly that skipped span, so a second, FAKE heredoc
- *  marker sitting inside an earlier still-open single-quoted literal got checked against the WRONG (too-early,
- *  unquoted) position in the mask and wrongly looked "outside" any quote — exactly the bypass this fixes. */
+/** stripHeredocs(text) -> { text, regions, unstripped } — thin wrapper over forge-gate-quotes.cjs::stripHeredocs(),
+ *  supplying this file's own writer/commit-head detection so both the quote/heredoc SCANNING (shared, single
+ *  source of truth) and the STRIPPING POLICY (which heredocs are safe to remove — pure writers, no script-file
+ *  destination, no later interpreter/layout risk; this file's own concern) stay in their respective files. See
+ *  forge-gate-quotes.cjs's own header for the N05 termination fix and the delimiter-search unification. */
 function stripHeredocs(text) {
-  const qmask = quoteMask(text);
-  if (qmask.unterminated) return { text, regions: 0, unstripped: true }; // S01: cannot tell "inside" from "outside"
-  const lines = text.split('\n');
-  const out = [];
-  let regions = 0;
-  let unstripped = false;
-  let offset = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    out.push(line);
-    const lineOffset = offset;
-    offset += line.length + 1; // '\n' consumed by split
-    // S01: a `<<` sitting inside an already-open quote (from an earlier or the same line) is not a real marker.
-    const markers = [...line.matchAll(MARKER_RE)].filter((m) => !qmask.inside(lineOffset + m.index));
-    if (!markers.length) continue;
-    if (markers.length > 1) return { text, regions: 0, unstripped: true };
-    const [, dash, sq, dq, bare] = markers[0];
-    const delim = sq || dq || bare;
-    let end = -1;
-    for (let k = i + 1; k < lines.length; k++) if ((dash ? lines[k].replace(/^\t+/, '') : lines[k]) === delim) { end = k; break; }
-    if (end < 0) return { text, regions: 0, unstripped: true };
-    const body = lines.slice(i + 1, end).join('\n');
-    const rest = lines.slice(end + 1).join('\n');
-    let ok = false;
-    const w = WRITER_HEAD_RE.exec(line);
-    if (w && (!bare || !/\$\(|`|\$\{/.test(body))) {
-      ok = !writerDests(w[1], w[2], w[3]).some((d) => SCRIPT_EXT_RE.test(d)) && !laterRisk(rest);
-    } else if (!bare && COMMIT_HEAD_RE.test(line)) {
-      const closer = lines[end + 1] || '';
-      ok = /^\)"/.test(closer) && !laterRisk(closer.slice(2) + '\n' + lines.slice(end + 2).join('\n'));
-    }
-    if (ok) regions++; else { unstripped = true; out.push(...lines.slice(i + 1, end)); }
-    out.push(lines[end]);
-    // V05: account for the body+delimiter lines' length BEFORE jumping `i` — offset must reflect their real
-    // span in `text` even though the outer loop never visits them as their own iteration.
-    for (let k = i + 1; k <= end; k++) offset += lines[k].length + 1;
-    i = end;
-  }
-  return { text: out.join('\n'), regions, unstripped };
+  return QUOTES.stripHeredocs(text, { WRITER_HEAD_RE, COMMIT_HEAD_RE, writerDests, laterRisk, SCRIPT_EXT_RE });
 }
 
 /** scanWords(s, shell) -> [{words:[{start,end,raw,spans}], sepAfter}] | null — refuses what it cannot read exactly:

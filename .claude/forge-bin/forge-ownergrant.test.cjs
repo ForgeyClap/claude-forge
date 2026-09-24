@@ -96,6 +96,62 @@ t('relativeSecretLabel: a path outside root (or a bare relative secretFile made 
   assert.ok(!label.includes(os.tmpdir()));
 });
 
+// ---- V15 (FOURTH Codex recheck, 2026-09-24): the AUTHORITATIVE override-grant record ----
+// See usage-guard-override.cjs's own header for WHY this exists: usage-guard.cjs's state.json cache is no
+// longer trusted on its own for the pause/don't-pause decision — this record is.
+t('readOverrideGrant: an ABSENT file reads as inactive', () => {
+  const r = G.readOverrideGrant({ projectRoot: root(undefined) });
+  assert.strictEqual(r.active, false);
+});
+t('writeOverrideGrant then readOverrideGrant: an active, unexpired grant round-trips', () => {
+  const dir = root(undefined);
+  const ok = G.writeOverrideGrant({ active: true, at: '2026-09-24T00:00:00.000Z', until: null, reason: 'test' }, { projectRoot: dir });
+  assert.strictEqual(ok, true);
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.active, true);
+  assert.strictEqual(r.reason, 'test');
+  assert.strictEqual(r.at, '2026-09-24T00:00:00.000Z');
+});
+t('readOverrideGrant: an EXPIRED `until` reads as inactive, even though the file itself still says active:true', () => {
+  const dir = root(undefined);
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: '2020-01-01T00:00:00.000Z', reason: 'long expired' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.active, false, 'an expired grant must never read as active');
+  assert.strictEqual(r.expired, true);
+});
+t('readOverrideGrant: an UNEXPIRED `until` (in the future) still reads as active', () => {
+  const dir = root(undefined);
+  const future = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: future, reason: 'still good' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.active, true);
+});
+t('readOverrideGrant: a CORRUPT/unparseable grant file reads as inactive, never throws', () => {
+  const dir = root(undefined);
+  const file = G.overrideGrantFilePath({ projectRoot: dir });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{ not json');
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.active, false);
+});
+t('writeOverrideGrant({active:false}) removes an existing grant file; a second call on an already-absent file still reports success', () => {
+  const dir = root(undefined);
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString() }, { projectRoot: dir });
+  const file = G.overrideGrantFilePath({ projectRoot: dir });
+  assert.ok(fs.existsSync(file));
+  assert.strictEqual(G.writeOverrideGrant({ active: false }, { projectRoot: dir }), true);
+  assert.ok(!fs.existsSync(file));
+  assert.strictEqual(G.writeOverrideGrant({ active: false }, { projectRoot: dir }), true, 'clearing an already-absent grant is still a success');
+});
+t('overrideGrantFilePath: a DIFFERENT file from the plain owner-grant SECRET file — the two never collide', () => {
+  const dir = root('SOME-SECRET');
+  const secretFile = path.join(dir, '.claude', 'config', 'forge-owner-grant.txt');
+  const grantFile = G.overrideGrantFilePath({ projectRoot: dir });
+  assert.notStrictEqual(secretFile, grantFile);
+  assert.ok(fs.existsSync(secretFile));
+  assert.ok(!fs.existsSync(grantFile), 'writing the secret must never also create the override-grant record');
+});
+
 t('CLI: exit 3 on refusal, 0 on a verified token, 2 on usage error', () => {
   const r1 = spawnSync(process.execPath, [CLI, 'check', '--token', 'nope', '--root', root('YES')], { encoding: 'utf8' });
   assert.strictEqual(r1.status, 3, r1.stdout + r1.stderr);

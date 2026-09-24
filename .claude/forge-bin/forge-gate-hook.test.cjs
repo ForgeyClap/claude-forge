@@ -550,6 +550,7 @@ t('forge-config.cjs ABSENT -> the hook still blocks (copied hook + classifier, n
   fs.copyFileSync(HOOK, path.join(bin, 'forge-gate-hook.cjs'));
   fs.copyFileSync(path.join(__dirname, 'forge-actiongate.cjs'), path.join(bin, 'forge-actiongate.cjs'));
   fs.copyFileSync(path.join(__dirname, 'forge-actiongate-position.cjs'), path.join(bin, 'forge-actiongate-position.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-gate-quotes.cjs'), path.join(bin, 'forge-gate-quotes.cjs'));
   fs.copyFileSync(gate.CONFIG_PATH, path.join(cfgDir, 'hard-gates.json'));
   assert.ok(!fs.existsSync(path.join(bin, 'forge-config.cjs')), 'fixture must lack forge-config.cjs');
   const r = spawnHook(bash('git checkout .'), { hookPath: path.join(bin, 'forge-gate-hook.cjs'), projectRoot: root });
@@ -561,7 +562,7 @@ t('M2: hard-gates.json MISSING (classifier cannot load) -> destructive verbs blo
   const root = path.join(TMP, 'no-hard-gates');
   const bin = path.join(root, '.claude', 'forge-bin');
   fs.mkdirSync(bin, { recursive: true });
-  for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-actiongate-position.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(bin, f));
+  for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-actiongate-position.cjs', 'forge-gate-quotes.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(bin, f));
   const hookAt = path.join(bin, 'forge-gate-hook.cjs');
   const r = spawnHook(bash('rm -rf ./x'), { hookPath: hookAt, projectRoot: root });
   assert.strictEqual(r.status, 2, 'fail-CLOSED fallback: exit ' + r.status + ' ' + r.stderr);
@@ -986,7 +987,7 @@ const TP = path.join(TP_PARENT, 'proj');
 const SIBLING = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gate-sibling-'));
 fs.mkdirSync(path.join(TP, '.claude', 'forge-bin'), { recursive: true });
 fs.mkdirSync(path.join(TP, '.claude', 'config', 'orchestration'), { recursive: true });
-for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-actiongate-position.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(TP, '.claude', 'forge-bin', f));
+for (const f of ['forge-gate-hook.cjs', 'forge-actiongate.cjs', 'forge-actiongate-position.cjs', 'forge-gate-quotes.cjs', 'forge-gate-data.cjs', 'forge-gate-scratch.cjs']) fs.copyFileSync(path.join(__dirname, f), path.join(TP, '.claude', 'forge-bin', f));
 fs.copyFileSync(gate.CONFIG_PATH, path.join(TP, '.claude', 'config', 'orchestration', 'hard-gates.json'));
 const fwd = (p) => p.replace(/\\/g, '/');
 function spawnInTmpProject(command, claudeProjectDir) {
@@ -1233,6 +1234,61 @@ t('N05: findHeredocDelim() locates the exact delimiter line, honours the dash ta
 
   const missing = "cat <<'EOF'\nbody line\nNOTEOF";
   assert.strictEqual(data.findHeredocDelim(missing, missing.indexOf('\n') + 1, '', 'EOF'), null, 'no matching line -> null, never a guess');
+});
+
+// ---------------------------------------------------------------------------
+// 4c-wave5) N05 (codex-recheck p10) — TERMINATION, proven through the REAL spawned hook with a hard external
+// bound, not only through the module API. An empty heredoc (`cat <<'EOF'` immediately followed by `EOF`) used
+// to hang forge-gate-data.cjs::quoteMask() forever via a self-referencing skip entry — see
+// forge-gate-quotes.cjs's own header for the root-cause fix. CRLF and trailing-space delimiter lines are
+// covered too (CRLF handled/tolerated; trailing-space deliberately still fails closed, mirroring real bash).
+// ---------------------------------------------------------------------------
+console.log('\n4c-wave5) N05 termination — externally bounded spawns for empty heredocs, CRLF, and the wrapped V05 fixtures');
+
+const HANG_BOUND_MS = 1500;
+function spawnBounded(input) {
+  const stdin = typeof input === 'string' ? input : JSON.stringify(input);
+  const t0 = Date.now();
+  const r = spawnSync(process.execPath, [HOOK], { input: stdin, encoding: 'utf8', env: envFor(), timeout: HANG_BOUND_MS });
+  return { status: r.status, signal: r.signal, stderr: r.stderr || '', elapsedMs: Date.now() - t0 };
+}
+
+const N05_BOUNDED_CASES = [
+  ['top-level empty heredoc', "cat > tmp/prompt.txt <<'EOF'\nEOF", 0],
+  ['empty heredoc nested inside a commit heredoc (empty commit message)', "git commit -m \"$(cat <<'EOF'\nEOF\n)\"", 0],
+  ['CRLF-terminated writer heredoc (real \\r\\n bytes)', "cat > f.txt <<'EOF'\r\nhello\r\nEOF", 0],
+  // a trailing-space delimiter line deliberately fails CLOSED (mirrors real bash, which would not close on it
+  // either) — nothing is stripped, but the plain-text command still classifies silent; bounded and correct.
+  ['a trailing-space delimiter line (fails closed, still bounded)', "cat > f.txt <<'EOF'\nhello\nEOF \nafter", 0],
+  // V05a/V05b replayed with an explicit hard bound — the fix must not merely be correct, it must be FAST.
+  ['V05a wrapped fixture (fake heredoc inside single quotes) stays bounded', "echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF", 2],
+  ['V05b wrapped fixture (offset tracking after a skipped real heredoc) stays bounded', "cat <<'FIRST'\njust data\nFIRST\necho '\ncat <<EOF\n'\nrm -rf ./src\nEOF", 2],
+  ['V05 wave 2 wrapped fixture (nested substitution) stays bounded', "echo \"$(echo '$(\ncat <<EOF\n)'\nrm -rf ./src\nEOF\n)\"", 2],
+];
+for (const [label, command, want] of N05_BOUNDED_CASES) {
+  t('N05 bounded: ' + label + ' -> exit ' + want + ' within ' + HANG_BOUND_MS + 'ms', () => {
+    const r = spawnBounded(bash(command));
+    assert.strictEqual(r.signal, null, 'must not be killed by the external timeout (signal=' + r.signal + ', ' + r.elapsedMs + 'ms elapsed)');
+    assert.strictEqual(r.status, want, 'exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0] + ' (' + r.elapsedMs + 'ms)');
+    assert.ok(r.elapsedMs < HANG_BOUND_MS, 'took ' + r.elapsedMs + 'ms, expected well under the ' + HANG_BOUND_MS + 'ms external bound');
+  });
+}
+
+t('N05: a trailing-space delimiter line deliberately fails CLOSED (does not match), mirroring real bash — never a hang, never a mis-strip', () => {
+  const text = "cat > f.txt <<'EOF'\nhello\nEOF \nafter";
+  const t0 = Date.now();
+  const r = data.stripHeredocs(text);
+  assert.ok(Date.now() - t0 < 100, 'must resolve near-instantly, not hang');
+  assert.strictEqual(r.unstripped, true, 'a trailing-space delimiter line must not be recognised as the closer (real bash would not close on it either)');
+  assert.strictEqual(r.regions, 0);
+});
+
+t('N05: findHeredocDelim() tolerates a CRLF-terminated delimiter line (a trailing \\r is never part of the word)', () => {
+  const text = "cat <<'EOF'\r\nbody\r\nEOF\r\nrest";
+  const bodyStart = text.indexOf('\n') + 1;
+  const hit = data.findHeredocDelim(text, bodyStart, '', 'EOF');
+  assert.ok(hit, 'a CRLF-terminated delimiter line must still resolve');
+  assert.strictEqual(text.slice(hit.delimStart, hit.delimEnd).replace(/\r$/, ''), 'EOF');
 });
 
 // ---------------------------------------------------------------------------

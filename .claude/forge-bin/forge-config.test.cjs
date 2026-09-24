@@ -1309,13 +1309,23 @@ t('CFG-09: a stale/held lock on the target file is serialized, not clobbered —
   assert.deepStrictEqual([d.settings.council.value, d.settings.nvidia.value], ['auto', false], 'both updates survive — nothing was lost');
 });
 
-t('CFG-09: a lock older than lockStaleMs is reclaimed instead of wedging forever', () => {
+t('CFG-09: a lock older than lockStaleMs is reclaimed instead of wedging forever (V09 out-p10: reclaim also requires the recorded holder pid to be provably dead, so this fixture\'s token must encode one)', () => {
   const fx = fixture();
   const lockPath = fx.projectFile + '.lock';
-  fs.writeFileSync(lockPath, '999999');
+  const DEAD_PID = 999999; // never a real pid this test process has — mocked dead below, same as forge-config-once.test.cjs
+  fs.writeFileSync(lockPath, DEAD_PID + ':stale-holder-token');
   const old = new Date(Date.now() - 60000);
   fs.utimesSync(lockPath, old, old);
-  cfg.set('council', 'off', withOpts(fx, { lockStaleMs: 1000, lockTimeoutMs: 2000, lockPollMs: 5 }));
+  const origKill = process.kill;
+  process.kill = function (pid, sig2) {
+    if (pid === DEAD_PID) { const e = new Error('simulated: no such process'); e.code = 'ESRCH'; throw e; }
+    return origKill.apply(process, arguments);
+  };
+  try {
+    cfg.set('council', 'off', withOpts(fx, { lockStaleMs: 1000, lockTimeoutMs: 2000, lockPollMs: 5 }));
+  } finally {
+    process.kill = origKill;
+  }
   assert.strictEqual(readJson(fx.projectFile).settings.council.value, 'off');
 });
 

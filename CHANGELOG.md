@@ -153,21 +153,38 @@ evidence or deferred with a reason before this release went out. The code fixes:
   restore on mismatch; a failed token write fails acquisition) and gitignore negation repair asks `git check-ignore`
   about every candidate. Docs: every copy of the beginner promise (README, AI-INSTALL handoff, FEATURES, plugin and
   global-install command and skill copies) carries the same qualified wording — never "always".
-- **Fourth pass (Codex verified the third pass: 12 closed, 5 partly, 1 regression, 3 new; 4 highs open — all fixed,
-  each proven red on the old code first).** Gate hook: the escaped-marker exemption is replaced by a real two-layer
-  read of a `-c` argument (an escaped `$` inside double quotes is live for the inner shell and fires; the same marker
-  protected by the inner single quotes stays literal), branch keywords count as command positions only outside quoted
-  data (a script argument or a `Write-Host` string that merely mentions `else` or `catch` is data again), and the
-  quote scanner skips established literal heredoc bodies (an apostrophe in a commit message is data, not an open
-  quote). Usage guard: ownership and state publication happen in one fenced step (a stale claimant can never replace a
-  newer holder or restore a cleared override; a failed token write refuses), a pause request cancelled mid-flight keeps
-  its agent pending and is retried on the next tick, and the owner-grant root can no longer be chosen through an
-  environment variable — production authorization is anchored to the trusted project root only (the test seam is
-  unreachable from a real invocation). Config: the once-lock verifies another holder's lock in place without ever
-  vacating it, keeps a captured lock when restoration fails, and rejects a short token write. Remaining, written down
-  as known limitations: the dashboard can show COMPLETE only from a positive contract check (a real receipt-acceptance
-  endpoint in the gateway is still to do); an event-loop heartbeat cannot prove liveness of a suspended process; the
-  success path of continuous forced watching is proven at function level, not through a spawned CLI. Deferred with reason: a bare
+- **Fourth pass (Codex verified the third pass: 12 closed, 5 partly, 1 regression, 3 new; 4 highs open).** Gate
+  hook: a two-layer read of `-c` arguments, branch keywords only outside quoted data, literal heredoc bodies skipped by
+  the quote scanner. Usage guard: a cancelled pause keeps its agent pending and is retried; the owner-grant root can no
+  longer be chosen through an environment variable (production authorization is anchored to the trusted project root;
+  the test seam is unreachable from a real invocation); lock ownership hardened. Config: the once-lock stops renaming
+  locks it does not own during validation and rejects a short token write. **Codex's fifth verification then showed
+  that three of these gate-hook fixes were themselves regressions** (unquoted and single-quoted `-c` arguments passed,
+  a quoted `;` could hide a real branch, and an EMPTY heredoc made the hook loop forever) and that both lock protocols
+  still had a capture window. Those results are why the fifth pass below is a redesign rather than another patch.
+- **Fifth pass (redesign, not patches; Codex's fifth verification had 4 highs open: 3 gate-hook regressions + lock
+  ownership).** Gate hook: ONE shared, offset-aware quote/heredoc engine (`forge-gate-quotes.cjs`) is computed once
+  per command and every consumer (inert-data stripping, later-branch detection, the `-c` argument reader) reads from
+  it with original offsets — the root cause of three waves of regressions was two scanners disagreeing at a fragment
+  seam. The scanner is termination-guarded (an empty heredoc returns in under 100 ms; the pre-fix hang was reproduced
+  and killed at a 1.5 s bound in the test), heredoc delimiters tolerate CRLF (trailing spaces deliberately still fail
+  closed, like bash), and the written `-c` policy holds for bare, single- and double-quoted arguments: a `$` or
+  backtick is live unless it is literal for BOTH shells (`bash -c "printf '\$(word)'"` stays silent; `bash -c $x`,
+  `bash -c '$x'`, `bash -c "$x"`, `bash -c "printf '$(word)'"` all stop). Usage guard: the lock is reclaimed only
+  after an in-place stale check (heartbeat age AND a dead recorded pid) by an atomic rename ONTO the existing lock —
+  there is never a vacancy — and, more importantly, the pause decision no longer trusts the state file at all: the
+  owner override is derived on every tick from an independent, single-writer, expiry-aware grant record written only
+  by `override-on`/`override-off`, so a stale writer restoring the flag cannot suppress pausing. Node's own request
+  timeout is a completed failure, never a shutdown; pending pause work runs after the resume evaluation. Config: the
+  once-lock never renames or captures a lock it does not own — reclaim requires stale age AND a dead pid on a fresh
+  in-place read, then re-verifies the renamed copy; release is read-then-unlink on an exact match.
+  **Known limitations, written down and tested rather than claimed away:** any file-based lock without OS-level
+  locking still has a two-syscall window at release and at publication — the guard's grant-derived decision removes
+  the impact, and the config lock's fence check refuses a stale write, but exclusion against a process that resumes
+  after being reclaimed is not guaranteed; an event-loop heartbeat cannot prove that a suspended process is gone;
+  `override-on`/`override-off` writing the grant record and the success path of continuous forced watching are proven
+  at function/structure level, not through a spawned CLI; the dashboard shows COMPLETE only from a positive contract
+  check (a receipt-acceptance endpoint in the gateway is still to do). Deferred with reason: a bare
   `git checkout <path>` without `--` (a classifier cannot tell a branch from a path without repository state, and a
   blocking hook that fires on `git checkout main` would break the most common everyday git command).
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,

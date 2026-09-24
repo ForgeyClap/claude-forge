@@ -14,9 +14,26 @@
  * command-kind pattern is tested against to cover all three, WITHOUT ever touching entry.segment itself — the
  * exact split() text isExcusedSegment() and every other caller pins.
  *
+ * QUOTING-LAYER REDESIGN (2026-09-24, codex-recheck wave 5 / wp-j1, root-cause fix for N04 — a REGRESSION, not a
+ * first bug). Before this rewrite, laterBranchStarts() built its OWN fresh quote mask over just the ONE segment
+ * text it was given — but forge-actiongate.cjs's own segment SPLIT is deliberately not quote-aware (a separator
+ * inside quoted data still splits, "the safe direction for detection"), so a quoted `;` inside e.g.
+ * `Write-Output "a;b"` cut the command into two segments, and the SECOND segment's own fresh mask started
+ * "outside any quote" at its own position 0 even though, in the ORIGINAL text, that position is really still
+ * INSIDE the still-open double quote from the first segment. A stray leftover `"` at the start of that second
+ * segment then looked like a fresh OPENING quote, wrongly swallowing the real `else`/`catch`/`finally` branch
+ * that followed it as "quoted data" and hiding it. laterBranchStarts()/commandPositionCandidates() now take the
+ * SAME shared quote mask forge-gate-quotes.cjs::scanQuotes() computes ONCE over the FULL original command text
+ * (see forge-actiongate.cjs::testCommandGate/testCommandGateRaw), plus each segment's own absolute `offset`
+ * within that text (see forge-actiongate.cjs::splitCommandsDetailed), so a keyword match is judged against
+ * where it REALLY sits in the original text — never a mask restarted at a segment boundary. A caller with no
+ * mask/offset (direct unit tests, kept working unchanged) gets a mask built fresh over just the text given, the
+ * same fallback behaviour this file always had standalone.
+ *
  * API: AMPUTATING_SEPARATORS · COMMAND_OPENER_STEPS · stripCommandOpeners(segment) ·
- *      LATER_BRANCH_RE · laterBranchStarts(text) · commandPositionCandidates(entry).
+ *      LATER_BRANCH_RE · laterBranchStarts(text, mask?, baseOffset?) · commandPositionCandidates(entry, mask?).
  */
+const QUOTES = require('./forge-gate-quotes.cjs');
 
 /** AMPUTATING_SEPARATORS — the two separators that do NOT end a command: they OPEN a nested one inside the
  *  current command's argument list. Splitting on them is necessary for detection (the nested command must be
@@ -81,40 +98,25 @@ function stripCommandOpeners(segment) {
  *  an actual command word, so a real command's own preceding context (e.g. `git ` immediately before `rm` for
  *  git-destructive's/destructive-delete's lookbehind exceptions) is never severed by this — whatever precedes
  *  `rm` in the ORIGINAL segment still precedes it in every slice that still contains it.
- *  N04 (codex-recheck 2026-09-24, third independent pass — a new false-positive regression): the keyword scan
- *  used to match the plain WORD anywhere, including inside quoted DATA — `node docs.cjs "else eval report"`
- *  and `Write-Host "catch iex is an alias"` both promoted their quoted argument's own text to a fake
- *  command-position candidate, which then matched opaque-exec's eval/iex alternative on ordinary output text
- *  and a file name. `simpleQuoteMask()` below skips a match sitting inside a `'...'`/`"..."` span; every
- *  wave-2 positive above has NO quoting around its else/elseif/catch/finally keyword at all, so none of them
- *  are affected. */
-function simpleQuoteMask(text) {
-  const marks = new Array(text.length + 1).fill(false);
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch !== "'" && ch !== '"') { i++; continue; }
-    let j = i + 1;
-    let closed = false;
-    for (; j < text.length; j++) {
-      if (ch === '"' && text[j] === '\\') { j++; continue; }
-      if (text[j] === ch) { closed = true; j++; break; }
-    }
-    for (let k = i; k < j; k++) marks[k] = true;
-    if (!closed) { for (let k = j; k <= text.length; k++) marks[k] = true; break; }
-    i = j;
-  }
-  return (pos) => marks[pos] === true;
-}
+ *  N04 (codex-recheck 2026-09-24, third pass — a false-positive regression; FOURTH pass — a regression of THAT
+ *  fix, see this file's header): the keyword scan used to match the plain WORD anywhere, including inside
+ *  quoted DATA — `node docs.cjs "else eval report"` and `Write-Host "catch iex is an alias"` both promoted
+ *  their quoted argument's own text to a fake command-position candidate. A `mask` built fresh per segment then
+ *  regressed the OPPOSITE way: a segment cut mid-quote by the classifier's own naive split looked like it
+ *  OPENED a quote at its own position 0, hiding a genuine later branch. Consulting the shared, whole-original-
+ *  text mask (see this file's header) at each match's ABSOLUTE position — `baseOffset + m.index` — resolves
+ *  both directions at once: a keyword truly inside a quote (in the ORIGINAL text) is skipped; one truly outside
+ *  it (even if the local segment text alone looks ambiguous) is not. */
 const LATER_BRANCH_RE = /\b(?:else|elseif|catch|finally)\b/ig;
-function laterBranchStarts(text) {
+function laterBranchStarts(text, mask, baseOffset) {
   const starts = [];
-  const inside = simpleQuoteMask(text);
+  const m = mask || QUOTES.scanQuotes(text);
+  const base = baseOffset || 0;
   LATER_BRANCH_RE.lastIndex = 0;
-  let m;
-  while ((m = LATER_BRANCH_RE.exec(text)) !== null) {
-    if (m.index > 0 && !inside(m.index)) starts.push(text.slice(m.index));
-    if (m[0].length === 0) LATER_BRANCH_RE.lastIndex++; // defensive: never spin on a zero-width match
+  let mm;
+  while ((mm = LATER_BRANCH_RE.exec(text)) !== null) {
+    if (mm.index > 0 && !m.inside(base + mm.index)) starts.push(text.slice(mm.index));
+    if (mm[0].length === 0) LATER_BRANCH_RE.lastIndex++; // defensive: never spin on a zero-width match
   }
   return starts;
 }
@@ -133,9 +135,17 @@ function laterBranchStarts(text) {
 function ampSuffix(entry) {
   return entry.sepAfter && AMPUTATING_SEPARATORS.has(entry.sepAfter) ? entry.sepAfter : '';
 }
-function commandPositionCandidates(entry) {
+/** commandPositionCandidates(entry, mask) -> see this file's header. `mask` should be the shared
+ *  forge-gate-quotes.cjs::scanQuotes() result computed ONCE over the FULL original command text by the caller
+ *  (forge-actiongate.cjs); `entry.offset` (set by splitCommandsDetailed) anchors `entry.segment`'s own absolute
+ *  position within that text so laterBranchStarts() below can query the mask with ORIGINAL offsets. A caller
+ *  with no mask (direct unit tests) gets a fresh per-text mask and offset 0 — the same standalone behaviour
+ *  this function always had. */
+function commandPositionCandidates(entry, mask) {
   const withSuffix = entry.segment + ampSuffix(entry);
-  const bases = [entry.segment, withSuffix].concat(laterBranchStarts(withSuffix));
+  const effectiveMask = mask || QUOTES.scanQuotes(withSuffix);
+  const offset = mask ? (entry.offset || 0) : 0;
+  const bases = [entry.segment, withSuffix].concat(laterBranchStarts(withSuffix, effectiveMask, offset));
   const out = [];
   const seen = new Set();
   const add = (s) => { if (!seen.has(s)) { seen.add(s); out.push(s); } };
@@ -147,55 +157,26 @@ function commandPositionCandidates(entry) {
   return out;
 }
 
-/** hasLiveCArg(text) -> boolean — N02 (codex-recheck 2026-09-24, THIRD independent pass): a live variable or
- *  substitution inside a `sh -c`/`bash -c`/`pwsh -c`/`powershell -c` argument cannot be told apart from a
- *  genuinely inert one by a single declarative regex, so this replaces forge-actiongate.cjs's own wave-2
- *  blanket "an escaped $/backtick is always inert" exemption — itself a live bypass Codex reproduced
- *  (`x='printf SAFE_N02_PROBE'`; `/bin/bash -c "\$x"` really ran it). A backslash before `$`/backtick inside a
- *  DOUBLE-quoted `-c` argument is escaped for the OUTER shell ONLY: the outer shell strips exactly that one
- *  backslash and hands the INNER `-c` interpreter the resulting bare `$x` / `` `cmd` ``, which it then expands
- *  and executes. The escape is genuinely inert only when the character it protects ALSO sits inside a pair of
- *  literal single quotes within that same argument — bash gives single quotes zero special characters,
- *  including backslash, so the outer shell passes a `'...'` span straight through untouched and the inner
- *  shell re-reads that exact span as its OWN real single-quoting (`bash -c "printf '\$(word)'"` stays literal
- *  — the wave-1 fixture this must not reopen). cArgHasLiveMarker() walks every double-quoted span in `text`
- *  and fires the moment ANY `$`/backtick inside one — escaped or not — is not currently inside an open
- *  single-quote run; a fully static `-c "echo hello"` argument, with no `$`/backtick at all, stays silent
- *  exactly as documented. Both PURE, never throw. */
+/** hasLiveCArg(text) -> boolean — the -c ARGUMENT POLICY (N02, FOURTH pass, codex-recheck p10): a live
+ *  variable or substitution inside a `sh -c`/`bash -c`/`pwsh -c`/`powershell -c` argument cannot be told apart
+ *  from a genuinely inert one by a single declarative regex. THIRD pass (cArgHasLiveMarker, now retired)
+ *  fixed the DOUBLE-quoted-argument case only — an escaped `\$`/backtick is inert for the outer shell but
+ *  still live at the inner `-c` interpreter unless protected by the argument's OWN nested single-quoting.
+ *  FOURTH pass: Codex reproduced the SAME class of bypass one layer up — `/bin/bash -c $x` (no quoting at all)
+ *  and `/bin/bash -c '$x'` (single-quoted) both changed the exit code from blocked to silent, because the
+ *  double-quote-only reader never looked at those two other outer forms at all. cArgLiveAfterFlag() (shared,
+ *  forge-gate-quotes.cjs) now reads ALL THREE outer forms — none/single/double — for every genuine `-c` token
+ *  in the FULL original text (not a per-segment fragment, so a naive split can never cut this argument in two
+ *  and hide half of it); see that file's own header for the exact two-shell-layer policy this implements,
+ *  which hard-gates.json's opaque-exec `_pattern_doc` states as the canonical contract. Pure, never throws. */
 const C_SHAPE_RE = /\b(?:sh|bash|pwsh|powershell)\b/i;
-const C_FLAG_RE = /\s-c\b/i;
-function cArgHasLiveMarker(text) {
-  const s = String(text);
-  let i = 0;
-  while (i < s.length) {
-    if (s[i] !== '"') { i++; continue; }
-    let j = i + 1;
-    let singleOpen = false;
-    let live = false;
-    for (; j < s.length; j++) {
-      const c = s[j];
-      if (c === '\\' && j + 1 < s.length) {
-        const n = s[j + 1];
-        if (n === '$' || n === '`') { if (!singleOpen) live = true; j++; continue; }
-        if (n === '"' || n === '\\' || n === '\n') { j++; continue; }
-        continue; // an unrecognised double-quote escape: the backslash is a literal char, protects nothing
-      }
-      if (c === "'") { singleOpen = !singleOpen; continue; }
-      if (c === '"') break; // closing quote of this double-quoted span
-      if ((c === '$' || c === '`') && !singleOpen) live = true;
-    }
-    if (live) return true;
-    i = j + 1;
-  }
-  return false;
-}
 function hasLiveCArg(text) {
   const s = String(text);
-  return C_SHAPE_RE.test(s) && C_FLAG_RE.test(s) && cArgHasLiveMarker(s);
+  return C_SHAPE_RE.test(s) && QUOTES.cArgLiveAfterFlag(s);
 }
 
 module.exports = {
   AMPUTATING_SEPARATORS, COMMAND_OPENER_STEPS, stripCommandOpeners,
   LATER_BRANCH_RE, laterBranchStarts, commandPositionCandidates,
-  hasLiveCArg, cArgHasLiveMarker,
+  hasLiveCArg,
 };

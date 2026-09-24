@@ -869,6 +869,125 @@ test('N01 (second Codex recheck, 2026-09-24): a first low-usage tick stamps acco
   assert.strictEqual(h.calls.doPause[0].ident && h.calls.doPause[0].ident.fp, 'n01-account-b');
 });
 
+// ---- V15 (Codex recheck out-p10, 2026-09-24, FOURTH recheck of usage-guard's own lock/override design):
+// state.json's `ownerOverride` cache is no longer trusted on its own for the pause/don't-pause decision —
+// it is recomputed FRESH, every tick, from an independent, single-writer, expiry-aware grant record
+// (forge-ownergrant.cjs's readOverrideGrant/writeOverrideGrant, see usage-guard-override.cjs's own header).
+// This maps directly onto Codex's five-step schedule (B reclaims and passes its fence; a delayed reclaimer R
+// captures B's fresh lock; C clears the override through a real writeStateTo; R's restore fails against C's
+// lock; B's already-approved rename still resurrects `active:true`): the SPECIFIC vacancy that schedule
+// depended on is now structurally impossible (usage-guard-state.test.cjs's own "the lock path is NEVER
+// absent during a reclaim" proof), but the file's own honest residual note stands — writeStateTo's adjacent
+// fence-check-then-rename remains two syscalls, and a real OS can in principle still interleave another
+// process's action between them. These three tests prove the CONSEQUENCE that residual would produce (a
+// resurrected or wrongly-cleared cache) can no longer change the real outcome.
+//
+// `__setOwnerGrantRootForTests` is a MODULE-LEVEL mutation (see usage-guard.cjs's own N06 history for why
+// it exists as an in-process, require()-only seam). This project's own documented hazard — a synchronous
+// mutation made by an earlier, still-pending ASYNC test body leaks into every LATER test's view, because
+// nothing in this shared test file's queueing model runs a `finally` block until that specific test's own
+// awaited promise actually resolves, which happens well after every OTHER test() call in this file has
+// already been registered and started running — applies here just as much as to `process.env`/`global.fetch`
+// (a first attempt at these three tests set/reset this exact seam in-process and measurably corrupted TWO
+// unrelated, pre-existing tests elsewhere in this same file). Each test below therefore runs in its own
+// SPAWNED SUBPROCESS (this file's own established convention for this entire class of hazard), so the seam
+// lives and dies with a single, disposable process and can never leak into anything else.
+function runV15OverrideProbe(scriptLines) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v15-override-'));
+  const script = path.join(dir, 'probe.cjs');
+  fs.writeFileSync(script, scriptLines.join('\n'), 'utf8');
+  const env = Object.assign({}, process.env, {
+    FORGE_USAGE_GUARD_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v15-override-home-')),
+    FORGE_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v15-override-cfghome-')),
+    FORGE_PROJECT_ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-v15-override-proj-')),
+    FORGE_USAGE_GUARD_STATE: path.join(dir, 'state.json'),
+    NVIDIA_SKIP_ENV_FILES: '1',
+  });
+  delete env.FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS;
+  const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+  const lastLine = (r.stdout || '').trim().split('\n').pop();
+  let out; try { out = JSON.parse(lastLine); } catch { out = { parseError: (r.stdout || '') + (r.stderr || '') }; }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  return out;
+}
+const V15_PROBE_FETCH_MOCK = [
+  'global.fetch = async (url) => {',
+  '  const u = String(url);',
+  '  if (/\\/api\\/companies$/.test(u)) return { ok: true, status: 200, json: async () => [] };', // zero agents — only the OVERRIDE DECISION is under test here
+  '  return { ok: true, status: 200, json: async () => ({}) };',
+  '};',
+];
+
+test('V15: a genuinely GRANTED, unexpired override still suppresses pausing at 100% usage — the grant must actively PERMIT this, not merely fail to forbid it', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-v15-grant-on-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ').writeOverrideGrant({ active: true, at: new Date().toISOString(), reason: "test grant" }, { projectRoot: grantRoot });',
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "ok", ownerOverride: { active: true, at: new Date().toISOString(), reason: "test grant" } }));',
+    '(async () => {',
+    '  const ident = { fp: null, source: "unknown" };',
+    '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(out.st, 'state file must have been written: ' + JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'ok', 'a genuinely granted override must still suppress pausing at 100% usage (mode must stay ok, never paused): ' + JSON.stringify(out.st));
+  assert.strictEqual(out.st.ownerOverride && out.st.ownerOverride.active, true, 'the cache must still show the override active: ' + JSON.stringify(out.st));
+});
+
+test('V15 (FOURTH recheck): a resurrected/stale ownerOverride cache with NO matching authoritative grant does NOT suppress pausing — the next 100% tick still PAUSES and rewrites the cache to match reality', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    // NO grant is ever written anywhere — TRUSTED_OWNERGRANT_ROOT stays at its real default, which this
+    // scratch sandbox (fresh FORGE_PROJECT_ROOT/HOME, unrelated to the real trusted root) never populates —
+    // mirrors "grant absent" (a stale writer resurrected the CACHE's active:true, but never actually re-granted).
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "ok", ownerOverride: { active: true, at: new Date().toISOString(), reason: "stale resurrection" } }));',
+    '(async () => {',
+    '  const ident = { fp: null, source: "unknown" };',
+    '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(out.st, 'state file must have been written: ' + JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'paused', 'a cached override with no backing grant must NOT suppress a real 100% pause: ' + JSON.stringify(out.st));
+  assert.strictEqual(out.st.ownerOverride, undefined, 'the phantom cache entry must be reconciled away, not left to keep lying next tick: ' + JSON.stringify(out.st));
+});
+
+test('V15 (FOURTH recheck, mirror case): a valid, unexpired grant keeps the override ACTIVE even though the cache was cleared/absent — the grant decides, never the cache', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-v15-grant-nocache-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ').writeOverrideGrant({ active: true, at: new Date().toISOString(), reason: "granted, cache lost" }, { projectRoot: grantRoot });',
+    // the CACHE shows nothing at all (as if a stale writer, or a crash, wiped it) — the grant alone must decide.
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "ok" }));',
+    '(async () => {',
+    '  const ident = { fp: null, source: "unknown" };',
+    '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(out.st, 'state file must have been written: ' + JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'ok', 'the authoritative grant must suppress pausing even with an empty cache: ' + JSON.stringify(out.st));
+  assert.strictEqual(out.st.ownerOverride && out.st.ownerOverride.active, true, 'the cache must be REBUILT from the grant, not left absent: ' + JSON.stringify(out.st));
+});
+
 test('#13 accountStamp maakt de expliciete stempel; zonder identiteit blijft de write ongewijzigd', () => {
   const withId = G.accountStamp({ fp: 'cccc55556666', source: 'account-uuid' });
   assert.strictEqual(withId.account.fp, 'cccc55556666');
@@ -1736,6 +1855,37 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     const writeIdx = body.indexOf('writeState(st, fence)');
     assert.ok(grantIdx >= 0 && stampIdx > grantIdx && writeIdx > stampIdx, 'order must be grant-check -> account-stamp -> write: ' + JSON.stringify({ grantIdx, stampIdx, writeIdx }));
   });
+  // V15 (FOURTH Codex recheck, 2026-09-24) structural check: override-on/override-off both write the
+  // AUTHORITATIVE override-grant record (usage-guard-override.cjs / forge-ownergrant.cjs), at the SAME
+  // trusted root, and override-on writes it BEFORE ever touching the (lock-contended) state cache — exactly
+  // like the N06/N01 structural check above, this proves wiring that cannot safely be exercised end-to-end
+  // via a live CLI subprocess without either writing a real secret into this project's own live
+  // `.claude/config/forge-owner-grant.txt` (unsafe) or extracting a separately-exported `runCli()` (out of
+  // this narrow fix's scope — the SAME named, disclosed gap the N06 fix already accepted). The actual
+  // grant-record READ/WRITE behavior itself (readOverrideGrant/writeOverrideGrant, and tick()'s use of it)
+  // IS fully exercised end-to-end below and in forge-ownergrant.test.cjs / usage-guard-override.test.cjs.
+  t5('V15 (FOURTH recheck) structural check: override-on writes the authoritative grant BEFORE the state lock; override-off clears it unconditionally', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'usage-guard.cjs'), 'utf8').replace(/\r\n/g, '\n');
+    const onMatch = src.match(/if \(cmd === 'override-on'\) \{[\s\S]*?\n  \}\n  if \(cmd === 'override-off'\)/);
+    assert.ok(onMatch, 'override-on handler must be present and structurally intact');
+    const onBody = onMatch[0];
+    const writeGrantCall = "og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })";
+    assert.ok(onBody.includes(writeGrantCall), 'override-on must write the authoritative grant record: ' + onBody.slice(0, 800));
+    const grantCheckIdx = onBody.indexOf('projectRoot: TRUSTED_OWNERGRANT_ROOT'); // the verifyOwnerGrant() call, first occurrence
+    const writeGrantIdx = onBody.indexOf(writeGrantCall);
+    const lockIdx = onBody.indexOf('withStateLock(async (fence)');
+    assert.ok(grantCheckIdx >= 0 && writeGrantIdx > grantCheckIdx && lockIdx > writeGrantIdx,
+      'order must be token-check -> write authoritative grant -> (only then) attempt the state lock: ' + JSON.stringify({ grantCheckIdx, writeGrantIdx, lockIdx }));
+
+    const offIdx = src.indexOf("if (cmd === 'override-off') {");
+    assert.ok(offIdx >= 0, 'override-off handler must be present');
+    const offBody = src.slice(offIdx, offIdx + 1000);
+    assert.ok(offBody.includes("writeOverrideGrant({ active: false }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })"),
+      'override-off must clear the authoritative grant record, at the SAME trusted root: ' + offBody);
+    const offLockIdx = offBody.indexOf('withStateLock((fence)');
+    const offGrantIdx = offBody.indexOf('writeOverrideGrant({ active: false }');
+    assert.ok(offGrantIdx >= 0 && offLockIdx > offGrantIdx, 'override-off must clear the grant BEFORE attempting the state lock: ' + JSON.stringify({ offGrantIdx, offLockIdx }));
+  });
   // ---- GUARD-OFF-BYPASS (Codex recheck wp-f4, 2026-09-24): with usage-guard OFF, no command path may
   // read the login token or contact the network/Paperclip — enforced at the SAME two choke points
   // (fetchUsage/pc) every caller (check/status/credits/watch --once/tick/doPause/doResume/override-on)
@@ -2289,6 +2439,108 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
       'the ONLY agent, cancelled mid-request, must be recorded as pending — never a silently completed round: ' + JSON.stringify(out.st));
     assert.strictEqual(out.st.mode, 'paused');
     assert.deepStrictEqual(out.st.pausedAgents || [], [], 'the aborted agent must never appear in pausedAgents — it was never confirmed paused');
+  });
+
+  // ---- N08 (Codex recheck out-p10, 2026-09-24): abort classification + pending-retry-vs-reset ordering ----
+  t5('N08: an ordinary request-deadline failure (Node\'s own TimeoutError, message "The operation was aborted due to timeout") is a COMPLETED failure, never a shutdown cancellation — the caller\'s own shutdown signal never fired, so the agent is journalled as a real pause-failed miss, never left dangling as "pending" forever', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08a-'));
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'const ac = new AbortController();', // the caller's OWN shutdown signal — NEVER aborted in this test
+      'global.fetch = async (url, init) => {',
+      '  const u = String(url);',
+      '  if (/\\/api\\/companies$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "c1", name: "Co" }] };',
+      '  if (/\\/api\\/companies\\/c1\\/agents$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "a1", name: "Agent1", company: "Co", status: "running" }] };',
+      '  if (/\\/pause$/.test(u)) {',
+      '    // mirrors Node\'s OWN internal AbortSignal.timeout(10000) firing — NOT a shutdown: o.signal (ac.signal)',
+      '    // is never aborted anywhere in this test, only the (unrelated) internal 10s deadline would fire in reality.',
+      '    const e = new Error("The operation was aborted due to timeout"); e.name = "TimeoutError";',
+      '    throw e;',
+      '  }',
+      '  return { ok: true, status: 200, json: async () => ({}) };',
+      '};',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      '(async () => {',
+      '  const ident = { fp: "n08a-account", source: "account-uuid" };',
+      '  const u = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null } };',
+      '  const crossed = [{ id: "session|session|session", name: "session", metric: "session", pct: 100, resetsAt: null }];',
+      '  await G.doPause(u, crossed, ident, { signal: ac.signal });',
+      '  const st = JSON.parse(require("fs").readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+      '  process.stdout.write(JSON.stringify({ st, callerSignalAborted: ac.signal.aborted }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const stateFile = path.join(dir, 'state.json');
+    const env = Object.assign({}, process.env, {
+      FORGE_USAGE_GUARD_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08a-home-')),
+      FORGE_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08a-cfghome-')),
+      FORGE_PROJECT_ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08a-proj-')),
+      FORGE_USAGE_GUARD_STATE: stateFile,
+      NVIDIA_SKIP_ENV_FILES: '1',
+    });
+    delete env.FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS; // TEST-ISOLATION (see the V29 SIGTERM test's own comment)
+    const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    const lastLine = (r.stdout || '').trim().split('\n').pop();
+    let out; try { out = JSON.parse(lastLine); } catch { out = { parseError: (r.stdout || '') + (r.stderr || '') }; }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    assert.strictEqual(out.callerSignalAborted, false, 'sanity: the caller never aborted its own shutdown signal in this scenario: ' + JSON.stringify(out));
+    assert.ok(out.st, 'state file must have been written: ' + JSON.stringify(out));
+    assert.deepStrictEqual(out.st.pausePending || [], [], 'a genuine (non-shutdown) request-deadline failure must NEVER be recorded as pending/unfinished work: ' + JSON.stringify(out.st));
+  });
+
+  t5('N08: pending pause work never preempts reset/resume evaluation — with usage back at 0%, one never-yet-paused pending agent and one already-paused agent, the paused agent is RESUMED and ZERO new pause requests are issued', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08b-'));
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, [
+      "'use strict';",
+      'let pauseCalls = 0, resumeCalls = [];',
+      'global.fetch = async (url, init) => {',
+      '  const u = String(url);',
+      '  if (/\\/api\\/companies$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "c1", name: "Co" }] };',
+      // LIVE Paperclip status: a1 already paused for real; a2 still running (never actually paused) — the
+      // exact "one repeatedly timing-out pending agent (a2) + one already-paused agent (a1)" schedule.
+      '  if (/\\/api\\/companies\\/c1\\/agents$/.test(u)) return { ok: true, status: 200, json: async () => [{ id: "a1", name: "Agent1", company: "Co", status: "paused" }, { id: "a2", name: "Agent2", company: "Co", status: "running" }] };',
+      '  if (/\\/api\\/agents\\/a2\\/pause$/.test(u)) { pauseCalls++; return { ok: true, status: 200, json: async () => ({}) }; }',
+      '  const m = u.match(/\\/api\\/agents\\/(a\\d)\\/resume$/);',
+      '  if (m) { resumeCalls.push(m[1]); return { ok: true, status: 200, json: async () => ({}) }; }',
+      '  return { ok: true, status: 200, json: async () => ({}) };',
+      '};',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      'const fs = require("fs");',
+      // pre-seed state: mode paused, a1 already confirmed paused, a2 STILL pending from an earlier interrupted round.
+      'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({',
+      '  mode: "paused",',
+      '  trigger: [{ id: "session|session|session", name: "session", metric: "session", pct: 100, resetsAt: null }],',
+      '  pauseAt: 98, resumeAt: 0,',
+      '  pausedAgents: [{ id: "a1", name: "Agent1", company: "Co" }],',
+      '  pausePending: [{ id: "a2", name: "Agent2", company: "Co" }],',
+      '}));',
+      '(async () => {',
+      '  const ident = { fp: "n08b-account", source: "account-uuid" };',
+      // usage is now back at 0% — well below resume-at (0) is false (0 is not > 0) => NOT stillHigh => resume wins.
+      '  const u = { session: { pct: 0, resetsAt: null }, week: { pct: 0, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 0, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+      '  await G.tick({ fetchUsage: async () => u, readIdentity: () => ident, readCredentialFp: () => null });',
+      '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+      '  process.stdout.write(JSON.stringify({ st, pauseCalls, resumeCalls }));',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+    ].join('\n'), 'utf8');
+    const stateFile = path.join(dir, 'state.json');
+    const env = Object.assign({}, process.env, {
+      FORGE_USAGE_GUARD_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08b-home-')),
+      FORGE_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08b-cfghome-')),
+      FORGE_PROJECT_ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n08b-proj-')),
+      FORGE_USAGE_GUARD_STATE: stateFile,
+      NVIDIA_SKIP_ENV_FILES: '1',
+    });
+    delete env.FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS;
+    const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+    const lastLine = (r.stdout || '').trim().split('\n').pop();
+    let out; try { out = JSON.parse(lastLine); } catch { out = { parseError: (r.stdout || '') + (r.stderr || '') }; }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    assert.strictEqual(out.pauseCalls, 0, 'zero NEW pause requests may be issued once usage has genuinely recovered — the old order kept retrying a2\'s pause forever: ' + JSON.stringify(out));
+    assert.ok(Array.isArray(out.resumeCalls) && out.resumeCalls.includes('a1'), 'the already-paused agent must be RESUMED: ' + JSON.stringify(out));
+    assert.ok(out.st, 'state file must have been written: ' + JSON.stringify(out));
+    assert.strictEqual(out.st.mode, 'ok', 'the account must actually resume, not stay stuck in "paused" retrying pause work that is no longer warranted: ' + JSON.stringify(out.st));
   });
 
   // ---- GUARD-STOP (Codex recheck wp-f4, 2026-09-24): retained timer handles, a shutdown check BEFORE

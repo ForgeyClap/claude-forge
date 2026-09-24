@@ -166,6 +166,10 @@ const SHELL_SPLIT_RE = /&&|\|\||;;|;|\||&|\r\n|\n|\r|\$\(|`/g;
 // keeps working with no call-site change.
 const POSITION = require('./forge-actiongate-position.cjs');
 const { AMPUTATING_SEPARATORS, stripCommandOpeners, commandPositionCandidates, laterBranchStarts, COMMAND_OPENER_STEPS } = POSITION;
+// forge-gate-quotes.cjs — the shared quote/heredoc mask (2026-09-24 quoting-layer redesign, wp-j1); computed
+// ONCE per classify() call in testCommandGate()/testCommandGateRaw() below and threaded through with ORIGINAL
+// offsets so command-position detection never restarts a mask at a segment boundary. See that file's header.
+const QUOTES = require('./forge-gate-quotes.cjs');
 
 /** isIntactSegment(entry) -> boolean — can this segment's LAST TOKEN be trusted to be whole?
  *  NO when: the segment sits inside a command substitution (`sepBefore` is `$(`/backtick); or a separator
@@ -184,9 +188,13 @@ function isIntactSegment(entry) {
   return true;
 }
 
-/** splitCommandsDetailed(text) -> [{segment, raw, sepBefore, sepAfter, gluedAfter, hasFollowing, intact}]
+/** splitCommandsDetailed(text) -> [{segment, raw, offset, sepBefore, sepAfter, gluedAfter, hasFollowing, intact}]
  *  The split WITH the evidence the except valve needs to know whether it is looking at a whole command or
- *  at a stump. `splitCommands()` is this function's `segment` column and is unchanged in behaviour.
+ *  at a stump. `splitCommands()` is this function's `segment` column and is unchanged in behaviour. `offset`
+ *  (2026-09-24, N04 root-cause fix) is `entry.segment`'s own absolute character position in the ORIGINAL
+ *  `text` — added so callers (commandPositionCandidates/laterBranchStarts) can query a quote mask built ONCE
+ *  over the FULL text with the segment's real position, instead of a mask restarted at each segment's own
+ *  local index 0 (see forge-actiongate-position.cjs's header for the exact bug that caused).
  *  PURE, never throws. Deliberately NOT a shell parser: quoting/escaping is not honoured, so a separator
  *  inside a quoted argument still splits. That direction fails SAFE for detection — splitting more can only
  *  ever produce MORE segments to test, never fewer — and since 2026-08-01 it no longer weakens the valve
@@ -197,12 +205,14 @@ function splitCommandsDetailed(text) {
   const re = new RegExp(SHELL_SPLIT_RE.source, 'g');
   const entries = [];
   let last = 0, prevSep = null, m;
+  const leadTrim = (raw) => raw.length - raw.replace(/^\s+/, '').length;
   while ((m = re.exec(s)) !== null) {
     if (m[0].length === 0) { re.lastIndex++; continue; } // defensive: never spin on a zero-width match
     const raw = s.slice(last, m.index);
     entries.push({
       raw,
       segment: raw.trim(),
+      offset: last + leadTrim(raw),
       sepBefore: prevSep,
       sepAfter: m[0],
       gluedAfter: raw.length > 0 && !/\s$/.test(raw),
@@ -212,7 +222,10 @@ function splitCommandsDetailed(text) {
     last = m.index + m[0].length;
   }
   const tail = s.slice(last);
-  entries.push({ raw: tail, segment: tail.trim(), sepBefore: prevSep, sepAfter: null, gluedAfter: false, hasFollowing: false });
+  entries.push({
+    raw: tail, segment: tail.trim(), offset: last + leadTrim(tail), sepBefore: prevSep, sepAfter: null,
+    gluedAfter: false, hasFollowing: false,
+  });
 
   const out = [];
   for (const e of entries) {
@@ -261,9 +274,10 @@ function isExcusedSegment(m, segment) {
   return excusedSegments(m.except).has(String(segment));
 }
 
-// hasLiveCArg()/cArgHasLiveMarker() (N02, codex-recheck 2026-09-24, third pass) live in the sibling
-// forge-actiongate-position.cjs (kept there for the same reason as the rest of that file — staying under the
-// 500-line budget here); re-exported below unchanged. See that file's own header for the full "why".
+// hasLiveCArg() (N02, codex-recheck 2026-09-24, fourth pass — the -c argument policy, root-cause rewrite) lives
+// in the sibling forge-actiongate-position.cjs (kept there for the same reason as the rest of that file —
+// staying under the 500-line budget here); re-exported below unchanged. See that file's own header for the
+// full "why", and forge-gate-quotes.cjs for the shared two-shell-layer read.
 const { hasLiveCArg } = POSITION;
 
 /** COMMAND_EXTRA_FIRE — per-gate-id extra JS predicates a command-kind gate ALSO fires on, beyond its JSON
@@ -271,28 +285,38 @@ const { hasLiveCArg } = POSITION;
  *  removing an entry here can only ever narrow a gate's coverage back toward the regex alone. */
 const COMMAND_EXTRA_FIRE = { 'opaque-exec': hasLiveCArg };
 
-/** testCommandGate(gate, text) -> boolean — true when gate.match.pattern_line matches the WHOLE text, or
- *  when ANY single command segment of `text` matches gate.match.pattern (or the gate's own extra predicate,
- *  see COMMAND_EXTRA_FIRE) and is NOT excused by gate.match.except (see the COMMAND gate note in the header).
- *  The except valve is consulted ONLY for a segment the splitter marked `intact`. An amputated segment —
- *  one the split cut mid-argument — is judged on its pattern match alone, because the string it appears to
- *  be is not the command that will run. That guard is what stops `rm -rf node_modules$(echo /../.claude)`
- *  from being excused on the strength of its stump, and it is the ONLY thing besides exact equality that
- *  the valve depends on. */
+/** testCommandGate(gate, text) -> boolean — true when gate.match.pattern_line matches the WHOLE text, or when
+ *  the gate's own extra predicate (see COMMAND_EXTRA_FIRE) fires on the FULL text, or when ANY single command
+ *  segment of `text` matches gate.match.pattern and is NOT excused by gate.match.except (see the COMMAND gate
+ *  note in the header). The except valve is consulted ONLY for a segment the splitter marked `intact`. An
+ *  amputated segment — one the split cut mid-argument — is judged on its pattern match alone, because the
+ *  string it appears to be is not the command that will run. That guard is what stops `rm -rf
+ *  node_modules$(echo /../.claude)` from being excused on the strength of its stump, and it is the ONLY thing
+ *  besides exact equality that the valve depends on.
+ *
+ *  2026-09-24 (N02/N04 root-cause fix, wp-j1): `extra` (today: opaque-exec's `-c`-argument liveness check) is
+ *  now evaluated ONCE against the FULL original text rather than per split candidate — a `-c` argument can
+ *  itself be cut in two by the classifier's own quote-blind segment split, which would hide half of it from a
+ *  per-segment reader; opaque-exec has no `except` valve, so there is nothing this ordering could ever excuse
+ *  away. A single shared quote mask (forge-gate-quotes.cjs::scanQuotes(), computed ONCE over `text`) is passed
+ *  to commandPositionCandidates() for every segment so later-branch keyword detection is judged against where
+ *  a match REALLY sits in the original text, never a mask restarted at a segment boundary (see
+ *  forge-actiongate-position.cjs's header for the exact bug this fixes). */
 function testCommandGate(gate, text) {
   if (!text) return false;
   const m = gate.match;
   if (m.kind !== 'command') return false;
   const flags = m.flags || 'i';
-  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(String(text))) return true;
+  const full = String(text);
+  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(full)) return true;
   const extra = COMMAND_EXTRA_FIRE[gate.id];
-  if (!m.pattern && !extra) return false;
-  const re = m.pattern ? new RegExp(m.pattern, flags) : null;
-  for (const entry of splitCommandsDetailed(text)) {
-    const cands = commandPositionCandidates(entry);
-    const patternHit = re ? cands.some((c) => re.test(c)) : false;
-    const extraHit = extra ? cands.some((c) => extra(c)) : false;
-    if (!patternHit && !extraHit) continue;
+  if (extra && extra(full)) return true;
+  if (!m.pattern) return false;
+  const re = new RegExp(m.pattern, flags);
+  const mask = QUOTES.scanQuotes(full);
+  for (const entry of splitCommandsDetailed(full)) {
+    const cands = commandPositionCandidates(entry, mask);
+    if (!cands.some((c) => re.test(c))) continue;
     if (entry.intact && isExcusedSegment(m, entry.segment)) continue;
     return true;
   }
@@ -311,13 +335,16 @@ function testCommandGateRaw(gate, text) {
   const m = gate.match;
   if (m.kind !== 'command') return false;
   const flags = m.flags || 'i';
-  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(String(text))) return true;
+  const full = String(text);
+  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(full)) return true;
   const extra = COMMAND_EXTRA_FIRE[gate.id];
-  if (!m.pattern && !extra) return false;
-  const re = m.pattern ? new RegExp(m.pattern, flags) : null;
-  for (const entry of splitCommandsDetailed(text)) {
-    const cands = commandPositionCandidates(entry);
-    if ((re && cands.some((c) => re.test(c))) || (extra && cands.some((c) => extra(c)))) return true;
+  if (extra && extra(full)) return true;
+  if (!m.pattern) return false;
+  const re = new RegExp(m.pattern, flags);
+  const mask = QUOTES.scanQuotes(full);
+  for (const entry of splitCommandsDetailed(full)) {
+    const cands = commandPositionCandidates(entry, mask);
+    if (cands.some((c) => re.test(c))) return true;
   }
   return false;
 }

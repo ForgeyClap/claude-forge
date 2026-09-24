@@ -94,6 +94,10 @@ const guardRedact = require('./usage-guard-redact.cjs');
 // The exclusive state-lock primitive (GUARD-STATE-RACE fail-closed fix, V15, 2026-09-24) — split out for
 // the same file-size reason as usage-guard-redact.cjs above; see that file's own header.
 const guardState = require('./usage-guard-state.cjs');
+// The credits-override DEFENSE IN DEPTH layer (V15, FOURTH Codex recheck, 2026-09-24) — split out for the
+// same file-size reason; see that file's own header for why state.json's ownerOverride cache is no longer
+// trusted on its own for the pause/don't-pause decision.
+const guardOverride = require('./usage-guard-override.cjs');
 
 // TEST-DENY-NETWORK seam (Codex recheck wp-f4 V20, 2026-09-24): a NARROW, explicit, environment-selected
 // interception seam for tests that spawn a REAL watcher process (`start`/`watch`). Without this, a test
@@ -979,7 +983,22 @@ async function pc(method, p, body, opts) {
     // unfinished work. Without `aborted:true` here, the caller could not tell "this agent's pause/resume
     // genuinely failed" from "shutdown cut this one off mid-request", and treated both identically as a
     // resolved miss (Codex's exact finding: the interrupted agent was lost, never retried).
-    const wasAborted = !!(o.signal && o.signal.aborted) || (e && (e.name === 'AbortError' || /abort/i.test(String(e.message))));
+    //
+    // N08 (Codex recheck out-p10, 2026-09-24 — FOURTH recheck of this file): shutdown cancellation is now
+    // detected SOLELY from the guard's OWN AbortSignal — `o.signal` is the caller's shutdown signal (thread-
+    // ed down from tick()'s own cancellation), a DIFFERENT signal from the `signal` this call actually gave
+    // fetch() (that one is `combinedSignal([AbortSignal.timeout(10000), o.signal])` — also trips on the
+    // plain 10s per-request deadline). The OLD check also matched `e.name === 'AbortError'` or a message
+    // regex (`/abort/i`) — Node's own request-deadline error, once the internal 10s timer fires, is a
+    // TimeoutError whose MESSAGE TEXT is "The operation was aborted due to timeout": the regex matched the
+    // word "aborted" inside it and misclassified an ordinary, COMPLETED transport failure as a shutdown
+    // cancellation. That single wrong flag then fed doPause()'s own `pending` bookkeeping (see tick()'s own
+    // N08 fix below) — repeatedly re-queuing a genuinely-failing (never actually cancelled) request as
+    // "unfinished work" forever, instead of resolving it as a real failure. `o.signal.aborted` is the ONLY
+    // thing checked now: it is `true` if, and only if, the CALLER's own shutdown signal is the one that
+    // fired (it flips synchronously the instant `.abort()` is called on it, before any 'abort' listener
+    // runs, so it is already correct by the time this catch block observes it).
+    const wasAborted = !!(o.signal && o.signal.aborted);
     return { status: 0, json: null, err: String(e.message), ...(wasAborted ? { aborted: true } : {}) };
   }
 }
@@ -1343,24 +1362,41 @@ async function tick(deps, opts) {
   }
   // OWNER OVERRIDE (usage credits): while purchased credits remain, do NOT pause on the plan limit.
   // Auto re-arm the normal guard the moment credits are exhausted (or the override's optional expiry passes).
-  if (st.ownerOverride && st.ownerOverride.active !== false) {
-    // an unparseable `until` = NO expiry (ignore it) so hook + watchdog agree (fix 2026-07-09 checkup)
-    const untilMs = st.ownerOverride.until ? Date.parse(st.ownerOverride.until) : NaN;
-    const expired = Number.isFinite(untilMs) && Date.now() > untilMs;
+  // V15 (FOURTH Codex recheck, 2026-09-24) — DEFENSE IN DEPTH: `st.ownerOverride` (state.json's own cache)
+  // is no longer trusted for this decision on its own. A stale writer resurrecting `active:true` in the
+  // cache (the honest residual usage-guard-state.cjs's own header names — an adjacent fence-check-then-
+  // publish pair is still, in principle, two separate syscalls) can no longer suppress pausing by itself:
+  // the decision is recomputed FRESH from the authoritative, single-writer, expiry-aware grant record every
+  // tick (see usage-guard-override.cjs's own header). Absent/expired grant -> override OFF, regardless of
+  // what the cache says; a valid, unexpired grant keeps it ON even if a stale writer cleared the cache.
+  const overrideNow = guardOverride.resolveOwnerOverride({ projectRoot: TRUSTED_OWNERGRANT_ROOT });
+  if (overrideNow.active) {
     const c = u.credits;
-    if (!expired && !creditsExhausted(c)) {
+    if (!creditsExhausted(c)) {
       await withLockedState(D, (fresh) => {
         fresh.mode = 'ok'; fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.credits = c;
         fresh.lastCheckAt = new Date().toISOString(); delete fresh.lastError;
+        // the cache is REBUILT from the fresh grant record every tick, never carried forward as-is.
+        fresh.ownerOverride = guardOverride.cachedOverrideFrom(overrideNow.record);
       }, 'OVERRIDE active write');
       const low = Number.isFinite(c.remaining) && Number.isFinite(c.limit) && c.limit > 0 && (c.remaining / c.limit) <= 0.1;
       D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : ''));
       return;
     }
-    D.log('OVERRIDE lifted — ' + (expired ? 'override expired' : 'credits exhausted') + ' (used ' + fmtMoney(c && c.used, c && c.currency, c && c.decimals) + '/' + fmtMoney(c && c.limit, c && c.currency, c && c.decimals) + ') → normal guard re-armed');
+    D.log('OVERRIDE lifted — credits exhausted (used ' + fmtMoney(c && c.used, c && c.currency, c && c.decimals) + '/' + fmtMoney(c && c.limit, c && c.currency, c && c.decimals) + ') → normal guard re-armed');
+    // credits exhaustion clears the AUTHORITATIVE grant itself, not just the cache — otherwise the very
+    // next tick would still see the grant active and immediately re-enter this branch.
+    require('./forge-ownergrant.cjs').writeOverrideGrant({ active: false }, { projectRoot: TRUSTED_OWNERGRANT_ROOT });
     await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE lifted write');
     delete st.ownerOverride; // keep this run's in-memory decision consistent with the write just attempted
     // fall through to the normal pause/resume logic below (pauses if still over the plan limit)
+  } else if (st.ownerOverride) {
+    // the cache still shows an override, but the authoritative grant is absent/expired — this tick is NOT
+    // suppressed (the grant decides, never the cache); reconcile the cache to match reality so `status`
+    // does not keep showing a phantom override.
+    D.log('OVERRIDE cache mismatch — state.json showed an override but the authoritative grant is absent/expired; NOT suppressing this tick (V15: the grant decides, never a cached flag)');
+    await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write');
+    delete st.ownerOverride;
   }
   if (st.mode !== 'paused') {
     // GUARD-CORRUPT (2026-09-24): a corrupt state is ONLY ever allowed to move forward via a fresh,
@@ -1411,19 +1447,6 @@ async function tick(deps, opts) {
     // is invisible in the log as well as in the decision (fix 2026-08-03).
     D.log('ok — ' + (u.windows || []).map((w) => w.label + ' ' + w.pct + '%').join(' · ') + ' (pause-at ' + PAUSE_AT + '%)');
   } else {
-    // V29 (second Codex recheck, 2026-09-24): a PREVIOUS pause round that was interrupted mid-flight
-    // (shutdown) leaves specific agents still genuinely unpaused even though mode already says 'paused' —
-    // retry them BEFORE evaluating stillHigh/rhythm below, or a persistently-high trigger takes the
-    // "still high, wait, do nothing" branch forever while those agents keep consuming quota. This check is
-    // independent of stillHigh/rhythmDue on purpose: unfinished pause work is not "waiting for a reset",
-    // it is an incomplete round that must never be reported as complete. doPause() re-derives `toPause`
-    // from LIVE Paperclip status, so re-calling it here naturally skips whatever a prior round already
-    // paused and only (re-)attempts what is still not paused.
-    if (Array.isArray(st.pausePending) && st.pausePending.length) {
-      D.log('PAUSE RETRY — een eerdere pauzeronde werd onderbroken (' + st.pausePending.length + ' agent(s) nog niet gepauzeerd); dit telt nog niet als compleet, opnieuw proberen / a previous pause round was interrupted (' + st.pausePending.length + ' agent(s) not yet paused); not yet complete, retrying');
-      await D.doPause(u, st.trigger || [], ident, { signal: tickOpts.signal });
-      return;
-    }
     // AUDIT #15 (2026-08-05): the old lookup was `find(x.kind === t.metric)` — the FIRST window with the
     // same bare kind decided the resume, so with two weekly_scoped windows the guard could resume off the
     // wrong model's percentage (flapping) or stay paused on a window that never crossed. The decision now
@@ -1446,7 +1469,28 @@ async function tick(deps, opts) {
         await D.doPause(u, nowCrossed, ident, { signal: tickOpts.signal });
         return;
       }
+      // N08 (Codex recheck out-p10, 2026-09-24): usage has genuinely recovered (or rhythm is due) — RESUME
+      // now wins over any still-outstanding pause retry from an earlier, interrupted round. This check used
+      // to sit ABOVE stillHigh/rhythm and return unconditionally, so pending pause work for an account whose
+      // usage had ALREADY reset kept re-issuing pause requests forever (Codex's exact schedule: one
+      // repeatedly timing-out pending agent + one already-paused agent, usage now 0% — the old order
+      // produced two pause requests and zero resumes across two ticks). Reset/resume state now GOVERNS
+      // outstanding pause work, rather than being preempted by it — see the pausePending check moved below.
       await D.doResume(u, st, ident, { signal: tickOpts.signal }); return;
+    }
+    // V29 (second Codex recheck, 2026-09-24): a PREVIOUS pause round that was interrupted mid-flight
+    // (shutdown) leaves specific agents still genuinely unpaused even though mode already says 'paused'.
+    // N08 (2026-09-24, FOURTH recheck): this check now runs AFTER the resume/re-pause evaluation above, not
+    // before it — reaching here means usage is STILL genuinely above the resume threshold (stillHigh, not
+    // rhythmDue), so completing an interrupted pause round is still warranted; retry it now, or a
+    // persistently-high trigger would take the "still high, wait, do nothing" branch below forever while
+    // those agents keep consuming quota. doPause() re-derives `toPause` from LIVE Paperclip status, so
+    // re-calling it here naturally skips whatever a prior round already paused and only (re-)attempts what
+    // is still not paused.
+    if (Array.isArray(st.pausePending) && st.pausePending.length) {
+      D.log('PAUSE RETRY — een eerdere pauzeronde werd onderbroken (' + st.pausePending.length + ' agent(s) nog niet gepauzeerd); dit telt nog niet als compleet, opnieuw proberen / a previous pause round was interrupted (' + st.pausePending.length + ' agent(s) not yet paused); not yet complete, retrying');
+      await D.doPause(u, st.trigger || [], ident, { signal: tickOpts.signal });
+      return;
     }
     await withLockedState(D, (fresh) => { fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.lastCheckAt = new Date().toISOString(); }, 'paused waiting write');
     D.log('paused — waiting for reset (session ' + u.session.pct + '% · week ' + u.week.pct + '% · resume at <= ' + RESUME_AT + '%' + (Number.isFinite(resumeAtEpoch) ? ' · or rhythm-resume at ' + new Date(resumeAtEpoch).toISOString() : '') + ')');
@@ -1830,10 +1874,23 @@ if (require.main === module) {
       console.error('  run: node .claude/forge-bin/usage-guard.cjs override-on --owner-approval <token> --reason "<why>"');
       process.exit(3);
     }
+    let until = argv('until', null) || null;
+    if (until && !Number.isFinite(Date.parse(until))) { console.error('ignoring invalid --until "' + until + '" (not a parseable date) — override will have no time expiry'); until = null; }
+    const reason = argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn');
+    // V15 (FOURTH Codex recheck, 2026-09-24): write the AUTHORITATIVE grant record FIRST and
+    // UNCONDITIONALLY — before ever touching the (lock-contended) state cache below. The override must take
+    // effect even when the state lock is busy; every subsequent tick reconciles the cache from THIS record,
+    // never the other way around (see usage-guard-override.cjs's own header).
+    if (!og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
+      console.error('usage-guard override-on FAILED — could not write the authoritative override-grant record to disk; no change made; try again');
+      process.exit(1);
+    }
     // GUARD-STATE-RACE (2026-09-24): the whole read-resume-write sequence runs inside the state lock, so
     // it can never interleave with a concurrent tick()'s doPause()/doResume() (or a concurrent
     // override-off) reading/writing the same file mid-sequence. V15: a lock refusal is REPORTED honestly
-    // (never a silent unlocked write) — this is a direct CLI command the owner is waiting on.
+    // (never a silent unlocked write) — this is a direct CLI command the owner is waiting on. The grant
+    // above has ALREADY taken effect regardless of this lock's outcome — this is best-effort cache/agent
+    // bookkeeping, not the security-relevant decision.
     const onLock = await withStateLock(async (fence) => {
       const st = readState();
       let resumed = 0;
@@ -1845,8 +1902,6 @@ if (require.main === module) {
       const wasPaused = (st.pausedAgents || []).length;
       for (const a of (st.pausedAgents || [])) { const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true }); if (r.status >= 200 && r.status < 300) resumed++; }
       st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
-      let until = argv('until', null) || null;
-      if (until && !Number.isFinite(Date.parse(until))) { console.error('ignoring invalid --until "' + until + '" (not a parseable date) — override will have no time expiry'); until = null; }
       // N01 (second Codex recheck, 2026-09-24): stamp the account this override is being granted FOR,
       // exactly like a real tick would — without this, a state file with no prior successful tick (or one
       // whose earlier "normal ok write" predates the N01 fix) never records WHICH account the override
@@ -1854,12 +1909,10 @@ if (require.main === module) {
       // "first-stamp (adoption)" rather than a real switch, and the foreign override survives instead of
       // being cleared. Only ever narrows/confirms identity — never overrides a fresher stamp with a stale one.
       Object.assign(st, accountStamp(readAccountIdentity()));
-      st.ownerOverride = { active: true, at: new Date().toISOString(),
-        reason: argv('reason', 'Eigenaar kocht usage credits — doorwerken op credits tot ze op zijn'),
-        reArmWhenCreditsExhausted: true, until };
+      st.ownerOverride = { active: true, at: new Date().toISOString(), reason, reArmWhenCreditsExhausted: true, until };
       if (fence && !fence()) return { fenced: true };
       try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
-      return { fenced: false, resumed, wasPaused, until };
+      return { fenced: false, resumed, wasPaused };
     });
     if (!onLock.ok) {
       console.error('usage-guard override-on FAILED — could not acquire the state lock (' + onLock.reason + ') — no change made; try again');
@@ -1869,11 +1922,18 @@ if (require.main === module) {
       console.error('usage-guard override-on FAILED — the state lock was reclaimed mid-transaction (fenced) — no change made; try again');
       process.exit(1);
     }
-    const { resumed, wasPaused, until: untilOut } = onLock.value;
-    console.log('usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + '; auto re-arm when credits exhausted' + (untilOut ? ' or after ' + untilOut : ''));
+    const { resumed, wasPaused } = onLock.value;
+    console.log('usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + '; auto re-arm when credits exhausted' + (until ? ' or after ' + until : ''));
     process.exit(0);
   }
   if (cmd === 'override-off') {
+    // V15 (FOURTH Codex recheck, 2026-09-24): clear the AUTHORITATIVE grant record FIRST and
+    // unconditionally — this is the safety direction (re-arming the guard), so it must never wait on lock
+    // contention for the cache write below. A failure here is a WARNING, not a hard stop: the cache clear
+    // below still runs best-effort.
+    if (!require('./forge-ownergrant.cjs').writeOverrideGrant({ active: false }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
+      console.error('usage-guard override-off WARNING — could not clear the authoritative override-grant record on disk; the guard may remain suppressed until this is fixed');
+    }
     // GUARD-STATE-RACE: serialized against a concurrent doPause()/doResume()/override-on write. V15: a
     // lock refusal is REPORTED honestly rather than silently doing nothing.
     const offLockResult = await withStateLock((fence) => {

@@ -93,6 +93,49 @@
  *     - TOKEN WRITES must return their FULL byte length. `fs.writeSync` can legitimately write fewer bytes
  *       than asked without throwing; the old code treated any non-throwing call as success. A short write is
  *       now treated exactly like a thrown write error: acquisition fails and the half-written file is removed.
+ *
+ *   V09 FOURTH fix (out-p10 — "A reads its own stale lock; B reclaims immediately after that read; A then
+ *   captures B's fresh lock; C acquires during the vacancy. B's bytes survive only under the private
+ *   `.release.*` name, while C owns the shared pathname. Both B and C acquired successfully."): out-p9 still
+ *   let RELEASE rename (steal) whatever currently sat at the lock's name whenever its own prior in-place read
+ *   happened to match — but that read and the later rename were still two separate steps, so a genuine
+ *   reclaimer landing in between them got its brand-new, live lock vacated for the instant between release's
+ *   rename and its restore-if-wrong. A CAPTURE-BY-RENAME OF A LOCK THIS CALL DOES NOT ALREADY KNOW, IN PLACE,
+ *   TO BE ITS OWN IS REMOVED ENTIRELY — not narrowed, removed:
+ *     - RELEASE no longer renames at all. It performs exactly one filesystem inspection
+ *       (`readLockInPlace` — open+fstat+read on one fd) and, ONLY when that read's token already matches this
+ *       call's own token, removes the file with a plain `fs.unlinkSync`. A mismatch returns immediately —
+ *       nothing is ever renamed, so a live, different holder's lock can never be vacated even for an instant.
+ *     - RECLAIM no longer treats a caller-supplied, possibly-already-outdated snapshot as license to steal.
+ *       `tryReclaimStaleLock(lockPath, staleMs, newToken)` takes a fresh, IN-PLACE look at `lockPath` itself,
+ *       immediately before touching anything: it reads the CURRENT token+mtime (never a snapshot handed in by
+ *       a caller from an earlier poll) and requires BOTH signals to agree the recorded holder is genuinely
+ *       gone — the heartbeat/mtime is older than `staleMs` AND `process.kill(pid, 0)` on the token's own
+ *       recorded pid fails with ESRCH (EPERM, or any other unexpected error, still counts as "alive" — fail
+ *       closed, never treat an unproven death as a green light). Only when BOTH agree does it rename that
+ *       specific lock to a private name — and even then, the private copy's token+mtime are re-verified
+ *       against what was just confirmed reclaimable a moment ago; a mismatch (something changed in the
+ *       instant between the check and the rename) restores it untouched and this call simply loses the
+ *       reclaim. Age alone (the out-p9 design) let a caller whose OWN remembered snapshot was already stale
+ *       drive a rename against whatever a legitimate reclaimer had *already* replaced it with; requiring the
+ *       recorded pid to be provably dead means a live holder's lock — however old its heartbeat looks — is
+ *       simply never eligible for reclaim in the first place, so the capture-worthy rename is never even
+ *       attempted against it.
+ *     - RESIDUAL (documented, not fixed by this or any rename-based design, and not claimed otherwise): the
+ *       in-place read and the later act (unlink in release; rename in reclaim) are still two separate
+ *       syscalls, so a true OS-level TOCTOU instant remains between them. This design closes it as far as a
+ *       pid-based liveness signal can: a lock cannot be reclaimed while its recorded holder pid is real and
+ *       running, so a merely-slow-but-alive holder is now safe from ever being captured (unlike out-p9's
+ *       time-only staleness test). The one case this cannot close is pid REUSE: if a holder's process exits
+ *       and the OS immediately hands that exact pid number to a brand-new, unrelated process before this lock
+ *       is reclaimed, `isPidAlive` cannot tell that new process apart from the original holder still running —
+ *       a known, textbook limit of any liveness check keyed on a bare numeric pid rather than a kernel-tracked
+ *       process handle/incarnation. This module has no analogous "fence" a transaction can re-check
+ *       immediately before its own write (the way a stateful in-memory guard elsewhere in this codebase does)
+ *       — `withLock`'s callers only re-read `file` itself after acquiring, they never re-verify the LOCK is
+ *       still theirs mid-transaction. Closing either gap fully needs real OS-level locking (e.g. an advisory
+ *       byte-range lock the kernel itself revokes on process exit), which this cross-platform,
+ *       dependency-free, rename-based file lock intentionally does not depend on.
  */
 const fs = require('fs');
 const path = require('path');
@@ -166,6 +209,43 @@ function readLockInPlace(lockPath) {
   finally { try { fs.closeSync(fd); } catch { /* already closed, or a platform quirk */ } }
 }
 
+/** parseTokenPid(token) -> a positive integer pid, or NaN when `token` is not a string, has no ':' separator,
+ *  or the part before it is not a positive integer. Every token this module ever WRITES is
+ *  `process.pid + ':' + <random hex>` (see randomToken below), so this only ever fails to parse a token this
+ *  module did not itself create (hand-edited, corrupted, or from some future format). */
+function parseTokenPid(token) {
+  if (typeof token !== 'string') return NaN;
+  const idx = token.indexOf(':');
+  if (idx <= 0) return NaN;
+  const pid = Number(token.slice(0, idx));
+  return Number.isInteger(pid) && pid > 0 ? pid : NaN;
+}
+
+/** isPidAlive(pid) -> boolean, FAIL CLOSED (V09 out-p10): true means "never treat this as a provably dead
+ *  holder" and is returned for an unparseable/invalid pid, a successful `process.kill(pid, 0)` (the process
+ *  exists and we may signal it), and EPERM (the process exists — just owned by someone else, or by us without
+ *  permission to signal it — still running either way). Only ESRCH (no such process) returns false: the one
+ *  signal this module trusts as genuine proof the recorded holder is gone. Signal 0 sends nothing; it only
+ *  probes existence, so this never disturbs the pid it inspects. */
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return true; // cannot verify — never treated as provably dead
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return !(e && e.code === 'ESRCH'); } // ESRCH = definitively gone; anything else fails closed
+}
+
+/** reclaimEligibility(lockPath, staleMs) -> null (vanished/unreadable — nothing here to reclaim) | { token,
+ *  mtimeMs, eligible } — a FRESH `readLockInPlace` of `lockPath`'s CURRENT content, taken immediately before
+ *  any attempt to touch the file (V09 out-p10: never a snapshot a caller observed on an earlier poll, which
+ *  can already be outdated by the time a reclaim is actually attempted). `eligible` requires BOTH signals to
+ *  agree the recorded holder is genuinely gone: the heartbeat/mtime is older than `staleMs` AND the token's
+ *  own recorded pid fails isPidAlive. Read-only — never renames or removes anything. */
+function reclaimEligibility(lockPath, staleMs) {
+  const seen = readLockInPlace(lockPath);
+  if (!seen) return null;
+  const ageMs = Date.now() - seen.mtimeMs;
+  return { token: seen.token, mtimeMs: seen.mtimeMs, eligible: ageMs > staleMs && !isPidAlive(parseTokenPid(seen.token)) };
+}
+
 /** stealLockFile(lockPath, privatePath) -> boolean — atomically removes whatever CURRENTLY sits at
  *  `lockPath` by renaming it to `privatePath` (a name only this call knows about). Returns false (nothing
  *  to do, never throws) when `lockPath` does not currently exist — already released or already reclaimed by
@@ -187,7 +267,9 @@ function stealLockFile(lockPath, privatePath) {
  *  restoration itself fails, the private copy is now left EXACTLY as stolen rather than discarded — the old
  *  code unconditionally unlinked it on this branch too, silently destroying a still-live lock nobody else
  *  could reach ("restoration encounters C's lock and discards B's captured lock"). The caller must treat a
- *  `false` return as a real, honest failure of the current operation — never as a quiet no-op. */
+ *  `false` return as a real, honest failure of the current operation — never as a quiet no-op. V09 out-p10:
+ *  this is now called ONLY from tryReclaimStaleLock's post-rename re-verify — releaseLock no longer renames
+ *  anything at all, so it never has a stolen copy to restore. */
 function restoreStolenLock(privatePath, lockPath) {
   try { fs.linkSync(privatePath, lockPath); }
   catch { return false; } // lockPath already holds ANOTHER (newer) lock — preserve the captured copy, fail honestly
@@ -227,27 +309,28 @@ function createOwnedLock(lockPath, token) {
   return true;
 }
 
-/** tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken) -> boolean (true = this call now
- *  holds the lock, at `lockPath`, with `newToken`). V09 out-p8: acts FIRST (steals the lock's current name
- *  atomically) and verifies SECOND — never the reverse — so no window exists between a check and an act for
- *  a second caller to exploit. Steals whatever currently sits at `lockPath`; if that turns out NOT to be the
- *  specific stale entry inspected a moment ago (a concurrent reclaimer, or the original holder, already
- *  replaced it), the stolen copy is restored untouched and this call reports failure — it NEVER proceeds to
- *  create a lock of its own on top of someone else's live entry. Only once the steal is CONFIRMED to be the
- *  expected stale lock does it create a fresh lock of its own at the now-empty name (createOwnedLock, which
- *  may still legitimately lose a race to a third, brand-new acquirer — that is ordinary contention, not a
- *  bug, and is reported the same way: false). */
-function tryReclaimStaleLock(lockPath, expectedToken, expectedMtimeMs, newToken) {
+/** tryReclaimStaleLock(lockPath, staleMs, newToken) -> boolean (true = this call now holds the lock, at
+ *  `lockPath`, with `newToken`). V09 out-p10: NO CAPTURE OF A LOCK THIS CALL DOES NOT ALREADY KNOW, IN PLACE,
+ *  TO BE RECLAIMABLE. This takes its OWN fresh look (reclaimEligibility — never a caller-supplied snapshot
+ *  from an earlier poll, which can already be outdated) and only proceeds when BOTH the heartbeat/mtime is
+ *  older than `staleMs` AND the recorded holder pid is not alive. A live holder's lock — however old its
+ *  heartbeat — is simply never eligible, so the rename below is never even attempted against it. Only once
+ *  eligible does it rename that SPECIFIC lock to a private name, then re-verify the private copy's token+mtime
+ *  against what was just confirmed a moment ago; a mismatch (something changed in the instant between the
+ *  check and the rename — a genuine competing reclaimer, most likely) restores it untouched and this call
+ *  reports failure — it NEVER proceeds to create a lock of its own on top of someone else's live entry. */
+function tryReclaimStaleLock(lockPath, staleMs, newToken) {
+  const info = reclaimEligibility(lockPath, staleMs);
+  if (!info || !info.eligible) return false; // vanished, not yet stale, or its holder pid is still alive
   const privatePath = lockPath + '.reclaim.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
-  if (!stealLockFile(lockPath, privatePath)) return false; // gone already — someone else reclaimed/released it first
-  let st, tok, readOk = true;
-  try { st = fs.statSync(privatePath); tok = fs.readFileSync(privatePath, 'utf8'); }
-  catch { readOk = false; } // cannot verify what was stolen — never claim ownership of the unknown, and never
-  // leave it un-identifiable either: restore it below exactly like a genuine mismatch would be.
-  if (!readOk || st.mtimeMs !== expectedMtimeMs || tok !== expectedToken) {
-    // Stole a DIFFERENT (very likely fresher, live) lock — put it back. If a THIRD lock has since taken
-    // the name, restoration fails and the captured copy is preserved on disk rather than discarded (V09
-    // out-p9); either way this call did not win the reclaim, so it fails honestly.
+  if (!stealLockFile(lockPath, privatePath)) return false; // vanished between the check above and this rename
+  const after = readLockInPlace(privatePath); // ours exclusively now — no rename needed to inspect it
+  if (!after || after.token !== info.token || after.mtimeMs !== info.mtimeMs) {
+    // What was actually captured is NOT what was just confirmed eligible a moment ago — a competing
+    // reclaimer (or the original holder resuming and refreshing before ever truly dying) replaced it in
+    // that instant. Put it back. If a THIRD lock has since taken the name, restoration fails and the
+    // captured copy is preserved on disk rather than discarded (V09 out-p9); either way this call did not
+    // win the reclaim, so it fails honestly.
     restoreStolenLock(privatePath, lockPath);
     return false;
   }
@@ -274,11 +357,10 @@ function acquireLock(file, opts) {
     // to propagate straight out of acquireLock and FAIL the whole acquisition, never be retried silently.
     const created = createOwnedLock(lockPath, token);
     if (created) return { path: lockPath, token };
-    // EEXIST: genuine contention — inspect for staleness, maybe reclaim. readLockInPlace never renames or
-    // removes anything (V09 out-p9): it only ever looks, on the SAME fd it opened, so a live holder is
-    // never disturbed just because someone else is checking whether it is stale yet.
-    const seen = readLockInPlace(lockPath); // null = vanished (or became unreadable) between the failed create and this inspection — retry below
-    if (seen && Date.now() - seen.mtimeMs > staleMs && tryReclaimStaleLock(lockPath, seen.token, seen.mtimeMs, token)) {
+    // EEXIST: genuine contention. tryReclaimStaleLock performs its OWN fresh in-place staleness+liveness
+    // check immediately before ever touching the file (V09 out-p10) — this call never hands it a snapshot
+    // that might already be outdated by the time an attempt actually happens.
+    if (tryReclaimStaleLock(lockPath, staleMs, token)) {
       return { path: lockPath, token };
     }
     if (Date.now() >= deadline) {
@@ -291,34 +373,28 @@ function acquireLock(file, opts) {
 }
 
 /** releaseLock(lock) -> boolean (true = this call's own lock was genuinely released; false = nothing of
- *  ours was there — never throws). V09 out-p9: release no longer renames FIRST and verifies second. The old
- *  sequence stole whatever currently sat at `lock.path` unconditionally, so a stale holder's release could
- *  vacate a LIVE, different holder's lock for the instant between the rename and the restore — long enough
- *  for a concurrent acquirer to walk in and start its own critical section ("Its rename temporarily removes
- *  B's live lock. Injecting C's acquisition at that point succeeds"). Ownership is now verified IN PLACE
- *  (readLockInPlace — one open, one fstat, one read; no rename) BEFORE the file is ever touched: a mismatch
- *  means this call is no longer the owner, and it returns immediately without renaming anything at all. Only
- *  once the in-place read confirms real ownership does release perform the same steal-verify-restore-if-wrong
- *  sequence as reclaim, and only to close the now-tiny remaining gap between that read and the rename itself
- *  (a genuine reclaimer landing in a single-syscall window) — never as the primary ownership check. */
+ *  ours was there — never throws). V09 out-p10: release no longer renames AT ALL. out-p9 still verified
+ *  ownership in place FIRST but then performed the same steal-verify-restore-if-wrong rename as reclaim to
+ *  close "the now-tiny remaining gap" — and that rename is exactly what let a genuine reclaimer's brand-new,
+ *  live lock get vacated for an instant when this call's earlier in-place read happened to still see its own
+ *  token (the reclaim landed AFTER that read but BEFORE this rename): "A reads its own stale lock; B reclaims
+ *  immediately after that read; A then captures B's fresh lock; C acquires during the vacancy." Release now
+ *  performs exactly ONE filesystem inspection — readLockInPlace (one open, one fstat, one read, on the same
+ *  fd) — and, ONLY when that read's token already matches this call's own `lock.token`, removes the file
+ *  directly with a plain `fs.unlinkSync`. A mismatch returns immediately: nothing is ever renamed, so a live,
+ *  different holder's lock can never be vacated even for an instant, and there is no vacancy left for a third
+ *  party to walk into. RESIDUAL (documented, not eliminated): the in-place read and the unlink remain two
+ *  separate syscalls — a true OS-level instant between them is not closeable without real OS-level locking.
+ *  What this design DOES guarantee is that a lock is never reclaimable at all while its recorded holder pid
+ *  is genuinely alive (see tryReclaimStaleLock/isPidAlive), so the only way this call's own token can already
+ *  be gone by the time it reads is a reclaimer who first proved, independently, that THIS process's pid was
+ *  not alive — which cannot happen while this call is the one executing it. */
 function releaseLock(lock) {
   if (!lock || !lock.path) return false; // defensive: never throw on release
   const seen = readLockInPlace(lock.path);
   if (!seen || seen.token !== lock.token) return false; // not ours (already gone or reclaimed) — untouched, never renamed
-  const privatePath = lock.path + '.release.' + process.pid + '.' + crypto.randomBytes(4).toString('hex');
-  if (!stealLockFile(lock.path, privatePath)) return false; // vanished between our in-place read and this rename
-  let tok = null;
-  try { tok = fs.readFileSync(privatePath, 'utf8'); } catch { /* unreadable — treated as "not ours" below */ }
-  if (tok === lock.token) {
-    try { fs.unlinkSync(privatePath); } catch { /* best effort */ }
-    return true; // correctly released
-  }
-  // A reclaimer landed in the single-syscall gap between our in-place read and this rename — the rename
-  // captured THEIR live lock, not ours. Put it back (or, if a third lock has since taken the name,
-  // restoration fails and the captured copy is preserved rather than discarded — V09 out-p9). Either way
-  // this call's OWN lock was already gone before we ever touched the file, so this release did nothing.
-  restoreStolenLock(privatePath, lock.path);
-  return false;
+  try { fs.unlinkSync(lock.path); return true; }
+  catch { return false; } // vanished or became unremovable between the read and the unlink — never throw
 }
 
 /** withLock(file, fn, opts) -> fn()'s return value, run while holding file's lock. Always releases, even
@@ -334,5 +410,5 @@ module.exports = {
   ONCE_KEYS, ONCE_MS, ONCE_QUOTE_MAX,
   sanitizeQuote, onceState, onceQuote,
   acquireLock, releaseLock, withLock,
-  randomToken, tryReclaimStaleLock, // exported for direct V09 lock-ownership tests only
+  randomToken, tryReclaimStaleLock, isPidAlive, // exported for direct V09 lock-ownership tests only
 };

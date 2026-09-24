@@ -89,7 +89,78 @@ function verifyOwnerGrant(opts) {
   return { ok: true, source: secret.source, reason: 'owner authorisation verified (' + secret.source + ')' };
 }
 
-module.exports = { verifyOwnerGrant, readOwnerSecret, relativeSecretLabel, DEFAULT_ROOT };
+/** overrideGrantFilePath(opts) -> the path to the AUTHORITATIVE, single-writer, expiry-aware record of
+ *  whether the usage-guard credits override is currently granted (V15, FOURTH Codex recheck, 2026-09-24 —
+ *  see usage-guard-override.cjs's own header for WHY this exists: an event-loop heartbeat can never prove
+ *  a suspended lock-holder is truly gone, so usage-guard.cjs's state.json cache is no longer trusted for
+ *  the pause/don't-pause DECISION on its own — this file is). `opts.projectRoot` must be the SAME trusted
+ *  root every other owner-authorisation check in this repo anchors to (never an environment-selected root
+ *  — see this file's own header on why an env var is never accepted for a security-relevant root/scope
+ *  selector, exactly like the secret itself). */
+function overrideGrantFilePath(opts) {
+  const root = (opts && opts.projectRoot) ? path.resolve(opts.projectRoot) : DEFAULT_ROOT;
+  return path.join(root, '.claude', 'config', 'forge-usage-guard-override-grant.json');
+}
+
+/** readOverrideGrant(opts) -> { active, at, until, reason, expired? }. ABSENT, UNPARSEABLE, or EXPIRED
+ *  (`until` in the past) all read as `{active:false}` — a missing or lapsed grant is never treated as "on".
+ *  This is the ONLY function usage-guard.cjs's tick() may trust for the actual suppress-pausing decision;
+ *  state.json's own cached copy is a display/bookkeeping convenience, recomputed FROM this on every tick,
+ *  never the other way around. Never throws. */
+function readOverrideGrant(opts) {
+  const file = overrideGrantFilePath(opts);
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { active: false, at: null, until: null, reason: null }; }
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return { active: false, at: null, until: null, reason: null }; }
+  if (!parsed || typeof parsed !== 'object' || parsed.active !== true) {
+    return {
+      active: false,
+      at: (parsed && typeof parsed.at === 'string') ? parsed.at : null,
+      until: (parsed && typeof parsed.until === 'string') ? parsed.until : null,
+      reason: (parsed && typeof parsed.reason === 'string') ? parsed.reason : null,
+    };
+  }
+  const untilMs = parsed.until ? Date.parse(parsed.until) : NaN;
+  if (Number.isFinite(untilMs) && Date.now() > untilMs) {
+    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, expired: true };
+  }
+  return { active: true, at: parsed.at || null, until: parsed.until || null, reason: parsed.reason || null };
+}
+
+/** writeOverrideGrant(record, opts) -> boolean (true = the authoritative state on disk now matches the
+ *  request; false = a real write/removal failure — the caller must decide whether that is safe to ignore).
+ *  SINGLE WRITER in practice: only `usage-guard.cjs override-on`/`override-off` (owner-invoked CLI commands
+ *  — override-on gated on verifyOwnerGrant() above) ever call this; the watcher's own tick() only ever
+ *  READS via readOverrideGrant(). `record.active !== true` removes the file outright (an absent file
+ *  already reads as inactive — removing it keeps the directory clean rather than accumulating a growing
+ *  history of "off" records). An atomic temp-file + rename write otherwise, the same shape as
+ *  usage-guard.cjs's own writeStateTo. Never throws. */
+function writeOverrideGrant(record, opts) {
+  const file = overrideGrantFilePath(opts);
+  if (!record || record.active !== true) {
+    try { fs.unlinkSync(file); return true; }
+    catch (e) { return !e || e.code === 'ENOENT'; }
+  }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    const body = {
+      active: true,
+      at: (typeof record.at === 'string' && record.at) || new Date().toISOString(),
+      until: (typeof record.until === 'string' && record.until) || null,
+      reason: (typeof record.reason === 'string' && record.reason) || null,
+    };
+    fs.writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n');
+    fs.renameSync(tmp, file);
+    return true;
+  } catch { return false; }
+}
+
+module.exports = {
+  verifyOwnerGrant, readOwnerSecret, relativeSecretLabel, DEFAULT_ROOT,
+  overrideGrantFilePath, readOverrideGrant, writeOverrideGrant,
+};
 
 // ---- CLI: `node forge-ownergrant.cjs check --token <t> [--secret-file <rel>] [--root <dir>]` ----
 if (require.main === module) {
