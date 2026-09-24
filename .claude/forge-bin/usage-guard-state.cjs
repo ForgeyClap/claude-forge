@@ -257,9 +257,25 @@ async function withStateLock(lockPath, fn, opts) {
     if (wroteOk && readLockToken(lockPath) === myToken) break; // acquired, and independently confirmed (N07)
     // N07 (2026-09-24): a write that threw, or that neither threw nor produced the expected content on
     // readback — this must REFUSE outright rather than proceed into fn() with a fence() that can only ever
-    // report false. Safe to remove unconditionally: we created this file moments ago via our own exclusive
-    // open, so it cannot belong to anyone else.
-    try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
+    // report false.
+    //
+    // L2-R (Security Boss addendum, 2026-09-24, Codex p12 wave 7 finding L2-R — CORRECTS N07's own "we
+    // created this file moments ago via our own exclusive open, so it cannot belong to anyone else" claim):
+    // that claim assumed no real time passes between the exclusive open above and this point, but an
+    // arbitrarily long delay (a GC pause, a slow synchronous transform) genuinely can happen there — long
+    // enough for this EMPTY, still-ours lock to age past `staleMs` while this call is stalled. A concurrent
+    // waiter's `tryReclaimStaleLock()` then legitimately judges it stale (an empty, unrecognised-shape token
+    // falls back to age-only staleness) and performs a REAL, live reclaim: its atomic replace-rename lands
+    // on this exact path, and its `fn()` may already be genuinely running by the time this delayed caller
+    // resumes. An unconditional unlink here would delete THAT live successor's lock out from under it —
+    // exactly the vacancy this whole file's V15 redesign otherwise eliminated everywhere else. Cleanup here
+    // must be just as ownership-safe as the normal release path: only remove the file when its CURRENT
+    // content still carries THIS call's own token (`releaseLockIfOwned` already does exactly that
+    // read-then-unlink-on-exact-match check) — never on a mismatch. A genuine leftover empty stub that nobody
+    // else ever reclaims is not permanently stuck either: `verifyLockStaleInPlace()`'s own age-only fallback
+    // for an unrecognised-shape token still reclaims it once `staleMs` elapses, exactly like any other stale
+    // lock — just self-healing on the ordinary staleness clock instead of an immediate, unsafe delete.
+    releaseLockIfOwned(lockPath, myToken);
     return { ok: false, reason: 'lock-write-failed' };
   }
   // LIVENESS (V15, second recheck): refresh this lock's mtime while `fn()` runs, so a genuinely live

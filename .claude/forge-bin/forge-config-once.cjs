@@ -172,8 +172,9 @@
  *       identical fourth-recheck fix (mitigated there, as here, by its own fence-at-publish discipline);
  *       closing it fully needs real OS-level locking, which this dependency-free design intentionally does
  *       not depend on. CRITICALLY, THIS RESIDUAL NEVER DETERMINES THE SECURITY PROPERTY OUT-P11 ACTUALLY
- *       CARES ABOUT — consumeOnce()'s exactly-once guarantee (the third change below) does not depend on this
- *       lock's acquisition being race-free at all.
+ *       CARES ABOUT — consumeOnce()'s at-most-once authorization guarantee (the third change below; see
+ *       forge-config-once-store.cjs's own header for why "exactly-once" over-promises this and is not used
+ *       to describe it) does not depend on this lock's acquisition being race-free at all.
  *     - A REAL FENCE: `withLock(file, fn, opts)` now calls `fn(fence)`, where `fence()` re-reads `lockPath`
  *       IN PLACE and reports whether it still holds this exact token, right now. Every write forge-config.cjs
  *       performs inside a `withLock` callback re-checks `fence()` as the LAST synchronous step before the one

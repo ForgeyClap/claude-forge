@@ -747,7 +747,7 @@ t('withLock still calls fn(fence) and releases normally when fn never calls fenc
 });
 
 // ---------------------------------------------------------------------------------------------------
-console.log('\n11) V09 FIFTH fix (out-p11 + addendum): the exactly-once PENDING/CONSUMED grant store');
+console.log('\n11) V09 FIFTH fix (out-p11 + addendum): the at-most-once PENDING/CONSUMED grant store');
 console.log('    (forge-config-once-store.cjs) — the real safety property, independent of the lock above');
 const onceStore = require('./forge-config-once-store.cjs');
 function storeDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-config-once-store-')); }
@@ -839,6 +839,36 @@ t('THE CORE V09 FIX, genuinely interleaved via a real fs-seam on the rename itse
   const successes = results.filter((r) => r && r.ok === true);
   assert.strictEqual(successes.length, 1, 'exactly one of the two genuinely interleaved calls must succeed: ' + JSON.stringify(results));
   assert.ok(results.some((r) => r && r.ok === false && r.reason === 'consumed'), 'the loser must be refused with reason:consumed: ' + JSON.stringify(results));
+});
+t('consumeOnceGrant: a non-ENOENT rename failure (standing in for a real EPERM/EBUSY/destination-directory problem) is reported as reason:absent, never consumes the fresh pending grant, and never touches an EARLIER, already-consumed record for the same key (out-p12: "consumed record survives a failed consume attempt")', () => {
+  const dir = storeDir();
+  const now = Date.now();
+  // First cycle: a real, successful consumption leaves a genuine consumed record on disk.
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now));
+  const first = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 1000, 'first-caller-sha');
+  assert.strictEqual(first.ok, true);
+  const consumedBefore = fs.readdirSync(dir).filter((f) => f.includes('.consumed.'));
+  assert.strictEqual(consumedBefore.length, 1, consumedBefore.join(','));
+  const consumedRecordPath = path.join(dir, consumedBefore[0]);
+  const consumedBytesBefore = fs.readFileSync(consumedRecordPath, 'utf8');
+  // Second cycle: a fresh pending grant for the SAME key, whose own publishing rename hits a simulated
+  // non-transient, non-ENOENT filesystem error — EPERM/EBUSY/a missing destination directory all surface to
+  // this function the same way: neither ENOENT (someone else's rename won) nor success.
+  onceStore.writePendingOnceGrant(dir, 'gate-hook', grantEntry(now + 5000));
+  const pendingPath2 = onceStore.oncePendingPath(dir, 'gate-hook');
+  const origRename = fs.renameSync;
+  let injected = false;
+  fs.renameSync = function (src, dest) {
+    if (!injected && src === pendingPath2) { injected = true; const e = new Error('simulated EPERM'); e.code = 'EPERM'; throw e; }
+    return origRename.apply(fs, arguments);
+  };
+  let result;
+  try { result = onceStore.consumeOnceGrant(dir, 'gate-hook', now + 6000, 'second-caller-sha'); }
+  finally { fs.renameSync = origRename; }
+  assert.ok(injected, 'the injected rename failure must actually have fired');
+  assert.deepStrictEqual(result, { ok: false, reason: 'absent' }, 'a non-ENOENT rename failure must never be treated as an approval');
+  assert.strictEqual(fs.existsSync(pendingPath2), true, 'a failed rename must leave the pending grant exactly where it was, for a legitimate retry');
+  assert.strictEqual(fs.readFileSync(consumedRecordPath, 'utf8'), consumedBytesBefore, 'the EARLIER, already-consumed record must survive the later failed attempt byte-for-byte');
 });
 t('removePendingOnceGrant is a safe, best-effort no-op when nothing is armed, and actually removes an armed-but-not-yet-consumed grant', () => {
   const dir = storeDir();

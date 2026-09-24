@@ -591,6 +591,15 @@ cannot be undone with an allow rule, because deny always wins. Every Forge build
 - **Reading a secret through the shell** (`cat .env`, `Get-Content .env`). Deny rules govern Claude's Read
   tool, not the commands a shell runs. The gate hook does not treat a read as a destructive command either.
 - Unlisted names such as `.env.staging2` or any other variant not in the 29-rule list above.
+- **Path anchoring (Codex p12 M5-B, 2026-09-24 — documented, not changed).** Every rule here uses the `./path`
+  form, which Claude Code resolves against the CURRENT WORKING DIRECTORY; the `/path` form would resolve against the
+  settings source (the project). The two coincide whenever Claude is started in the project root — and project
+  settings, hooks included, are only loaded from the current working directory's `.claude/` anyway, so a session
+  started elsewhere loads none of these 29 rules rather than mis-anchored ones. Changing one rule to `/path` while
+  the other 28 stay `./` would buy nothing and break the fixture parity; the owner-approval secret is therefore
+  guarded by three layers that do not depend on anchoring: it is gitignored (source, installer snippet and the
+  distribution's own `.gitignore`), the gate hook never reads it, and `forge-ownergrant.cjs` reads it only from the
+  fixed trusted project root (`TRUSTED_OWNERGRANT_ROOT`), never from an environment-selected path.
 
 **No `_doc` key inside `permissions`.** Claude Code is proven to tolerate an unknown key on a hook-matcher
 object: the existing `_matcher_doc` is there and the ledger keeps recording. It is not proven to tolerate one

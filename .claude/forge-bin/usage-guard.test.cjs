@@ -1049,6 +1049,44 @@ test('N10: an otherwise-valid grant is refused when the current identity is UNKN
   assert.strictEqual(out.st.mode, 'paused', 'an unknown/unverifiable current identity must never be able to consume someone else\'s grant: ' + JSON.stringify(out.st));
 });
 
+// ---- N10 residual (2026-09-24, Codex p12 wave 7 finding N10) — STALE PROFILE, ROTATED CREDENTIAL, proven
+// END-TO-END through tick(): Codex's exact `N10_stale_profile_stable_new_credential` reproduction had the
+// profile-derived identity NEVER change (always reports the SAME account the grant was issued for) while the
+// credential FILE's own generation (mtime+size) changes underneath it — the MEASURED DEFECT was ZERO pauses
+// forever. This proves the fix's one-tick grace window: the FIRST tick after the generation changes is NOT
+// suppressed (a real pause fires — closing "zero pauses"), and the SECOND tick (same new generation observed
+// again, identity still matching) is confirmed and honoured again (see usage-guard-override.cjs's own header
+// for the honestly-documented limitation of this non-secret, metadata-only signal). ----
+test('N10 residual: a stable (never-changing) profile identity plus a credential-file generation change causes ONE real pause, then re-honours the override once the new generation is confirmed on a second tick', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10gen-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    // granted under generation G0 — a real future expiry, bound to the one account this whole scenario uses.
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n10gen-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n10gen-account", source: "account-uuid" };', // the SAME identity every single tick — a permanently stale profile
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    // tick 1: the credential FILE has already rotated to generation G1 (the profile has not caught up) —
+    // this must NOT be silently honoured; a real pause must fire (the measured defect was zero pauses ever).
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => "G1" });',
+    '  const stAfterTick1 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    // tick 2: the SAME generation G1 observed again, identity still matching — now confirmed and honoured.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => "G1" });',
+    '  const stAfterTick2 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ stAfterTick1, stAfterTick2 }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.stAfterTick1.mode, 'paused', 'a credential that rotated since the grant was issued, while the profile stayed stale, must NOT silently suppress a real pause forever (the measured defect was ZERO pauses): ' + JSON.stringify(out.stAfterTick1));
+  assert.strictEqual(out.stAfterTick2.mode, 'ok', 'once the SAME new generation is confirmed on a second tick (identity still matching), the override must be honoured again: ' + JSON.stringify(out.stAfterTick2));
+  assert.strictEqual(out.stAfterTick2.ownerOverride && out.stAfterTick2.ownerOverride.active, true, JSON.stringify(out.stAfterTick2));
+});
+
 test('#13 accountStamp maakt de expliciete stempel; zonder identiteit blijft de write ongewijzigd', () => {
   const withId = G.accountStamp({ fp: 'cccc55556666', source: 'account-uuid' });
   assert.strictEqual(withId.account.fp, 'cccc55556666');
@@ -1935,7 +1973,7 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     const onMatch = src.match(/async function runOverrideOn\(\) \{[\s\S]*?\n\}/);
     assert.ok(onMatch, 'runOverrideOn must be present and structurally intact');
     const onBody = onMatch[0];
-    const writeGrantCall = "og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })";
+    const writeGrantCall = "og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp, credentialGeneration: grantCredentialGeneration }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })";
     assert.ok(onBody.includes(writeGrantCall), 'runOverrideOn must write the authoritative grant record: ' + onBody.slice(0, 800));
     const grantCheckIdx = onBody.indexOf('projectRoot: TRUSTED_OWNERGRANT_ROOT'); // the verifyOwnerGrant() call, first occurrence
     const writeGrantIdx = onBody.indexOf(writeGrantCall);
@@ -2005,6 +2043,10 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
       'G.__setOwnerGrantRootForTests(grantRoot);',
       'fs.mkdirSync(path.join(grantRoot, ".claude", "config"), { recursive: true });',
       'fs.writeFileSync(path.join(grantRoot, ".claude", "config", "forge-owner-grant.txt"), "N11-TEST-TOKEN\\n");',
+      // U02 (2026-09-24, Codex p12 wave 7): runOverrideOn() now REFUSES outright when the current account
+      // identity is unknown — a real, KNOWN identity is required here so this test still exercises its own
+      // original scenario (an activation-time LOCK failure), not the new identity-refusal path.
+      'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_IDENTITY, JSON.stringify({ oauthAccount: { accountUuid: "n11-on-account-uuid", organizationUuid: "n11-org" } }));',
       // pre-hold the state lock with a token naming THIS script's own (very much alive) pid — withStateLock
       // must genuinely refuse to acquire it within the short wait budget below, never treat it as stale.
       'const stateFile = process.env.FORGE_USAGE_GUARD_STATE;',
@@ -2023,7 +2065,10 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
       '  process.stdout.write(JSON.stringify({ exitCode, logs, grantActive: grantAfter.active }));',
       '  realExit(0);',
       '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); realExit(1); });',
-    ], { FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS: '200' });
+    ], {
+      FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS: '200',
+      FORGE_USAGE_GUARD_IDENTITY: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n11-on-identity-')), '.claude.json'),
+    });
     assert.ok(!out.uncaught, JSON.stringify(out));
     assert.strictEqual(out.grantActive, true, 'the authoritative grant must be genuinely active despite the lock failure: ' + JSON.stringify(out));
     assert.strictEqual(out.exitCode, 0, 'the security-relevant action (the grant) DID succeed — this must exit 0, not fail: ' + JSON.stringify(out));
@@ -2032,6 +2077,173 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     assert.match(text, /state lock could not be acquired/, 'must name the actual (lock) failure: ' + text);
     assert.ok(!/no change made/.test(text), 'must never claim "no change made" once the grant genuinely took effect: ' + text);
   });
+
+  // ---- U02 (2026-09-24, Codex p12 wave 7): runOverrideOn() must VALIDATE before any write or resume — a
+  // grant that could never actually protect anything (unknown identity to bind it to, or an expiry already
+  // in the past) is refused outright, never silently written and reported as a success. ----
+  function runOverrideOnRefusalProbe(extraArgv, extraEnv) {
+    return runV15OverrideProbe([
+      "'use strict';",
+      'const fs = require("fs"); const path = require("path");',
+      'process.argv = [process.execPath, "usage-guard.cjs", "override-on", "--owner-approval", "U02-TEST-TOKEN", "--reason", "u02 test"' + (extraArgv ? ', ' + extraArgv : '') + '];',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+      'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-u02-scratch-"));',
+      'G.__setOwnerGrantRootForTests(grantRoot);',
+      'fs.mkdirSync(path.join(grantRoot, ".claude", "config"), { recursive: true });',
+      'fs.writeFileSync(path.join(grantRoot, ".claude", "config", "forge-owner-grant.txt"), "U02-TEST-TOKEN\\n");',
+      'class ExitSignal { constructor(c) { this.code = c; } }',
+      'const realExit = process.exit.bind(process);',
+      'process.exit = (c) => { throw new ExitSignal(c); };',
+      'const logs = []; const realErr = console.error, realLog = console.log;',
+      'console.error = (m) => logs.push({ level: "error", m: String(m) });',
+      'console.log = (m) => logs.push({ level: "log", m: String(m) });',
+      '(async () => {',
+      '  let exitCode = null;',
+      '  try { await G.runOverrideOn(); } catch (e) { if (e instanceof ExitSignal) exitCode = e.code; else throw e; }',
+      '  console.error = realErr; console.log = realLog;',
+      '  const grantAfter = Grant.readOverrideGrant({ projectRoot: grantRoot });',
+      '  const stateFileExists = fs.existsSync(process.env.FORGE_USAGE_GUARD_STATE);',
+      '  process.stdout.write(JSON.stringify({ exitCode, logs, grantActive: grantAfter.active, grantFileExists: fs.existsSync(Grant.overrideGrantFilePath({ projectRoot: grantRoot })), stateFileExists }));',
+      '  realExit(0);',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); realExit(1); });',
+    ], extraEnv || {});
+  }
+  t5('on_unknown — U02: override-on REFUSES when the current account identity is unknown, BEFORE any write — no grant file, no state change', () => {
+    // no FORGE_USAGE_GUARD_IDENTITY override: the default sandbox profile file does not exist, so identity
+    // is genuinely unknown here, exactly like the real "not signed in yet" case.
+    const out = runOverrideOnRefusalProbe();
+    assert.ok(!out.uncaught, JSON.stringify(out));
+    assert.strictEqual(out.exitCode, 3, JSON.stringify(out));
+    assert.match(out.logs.map((l) => l.m).join('\n'), /cannot bind the override to an account.*identity is unknown|identity unknown/i, JSON.stringify(out));
+    assert.strictEqual(out.grantFileExists, false, 'no grant file may be written on refusal: ' + JSON.stringify(out));
+    assert.strictEqual(out.stateFileExists, false, 'no state file may be touched on refusal (no resume/lock attempt at all): ' + JSON.stringify(out));
+  });
+  t5('on_expired — U02: override-on REFUSES when the resolved expiry is already in the past, BEFORE any write — no grant file, no state change', () => {
+    const identityFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-u02-expired-identity-')), '.claude.json');
+    fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'u02-expired-account-uuid', organizationUuid: 'u02-org' } }));
+    const out = runOverrideOnRefusalProbe('"--until", "2020-01-01T00:00:00.000Z"', { FORGE_USAGE_GUARD_IDENTITY: identityFile });
+    assert.ok(!out.uncaught, JSON.stringify(out));
+    assert.strictEqual(out.exitCode, 3, JSON.stringify(out));
+    assert.match(out.logs.map((l) => l.m).join('\n'), /not in the future/i, JSON.stringify(out));
+    assert.strictEqual(out.grantFileExists, false, 'no grant file may be written on refusal: ' + JSON.stringify(out));
+    assert.strictEqual(out.stateFileExists, false, 'no state file may be touched on refusal: ' + JSON.stringify(out));
+  });
+  t5('on_valid — U02 counterweight: a KNOWN identity and a future expiry are NOT refused by the new validation — the positive case is not accidentally broken', () => {
+    const identityFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-u02-valid-identity-')), '.claude.json');
+    fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'u02-valid-account-uuid', organizationUuid: 'u02-org' } }));
+    const out = runOverrideOnRefusalProbe(null, { FORGE_USAGE_GUARD_IDENTITY: identityFile });
+    assert.ok(!out.uncaught, JSON.stringify(out));
+    assert.strictEqual(out.exitCode, 0, JSON.stringify(out));
+    assert.strictEqual(out.grantActive, true, JSON.stringify(out));
+  });
+
+  // ---- Finding 5 (2026-09-24, Codex p12 wave 7): an explicit --until beyond the 30-day maximum is clamped
+  // down, and override-on says so on stdout/stderr rather than silently granting an unbounded window. ----
+  t5('Finding 5: override-on with a --until far beyond 30 days is CLAMPED to the maximum, and prints a clamp note', () => {
+    const identityFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-clamp-identity-')), '.claude.json');
+    fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'clamp-account-uuid', organizationUuid: 'clamp-org' } }));
+    const farFuture = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+    const out = runOverrideOnRefusalProbe('"--until", ' + JSON.stringify(farFuture), { FORGE_USAGE_GUARD_IDENTITY: identityFile });
+    assert.ok(!out.uncaught, JSON.stringify(out));
+    assert.strictEqual(out.exitCode, 0, JSON.stringify(out));
+    assert.strictEqual(out.grantActive, true, JSON.stringify(out));
+    const text = out.logs.map((l) => l.m).join('\n');
+    assert.match(text, /clamped/i, 'must tell the owner the requested --until was clamped: ' + text);
+    assert.ok(!text.includes(farFuture), 'must not have granted the unbounded window verbatim: ' + text);
+  });
+
+  // ---- U01 (2026-09-24, Codex p12 wave 7): a NON-fencing exception thrown by POST-MUTATION bookkeeping (a
+  // resume call, or a writeState failure that is not the expected EFENCED reclaim signal) must never escape
+  // uncaught past the point where the already-succeeded grant outcome gets reported — reported honestly via
+  // describeOverrideLockOutcome's "cache lagging" wording, exit 0 either way (the grant itself DID succeed). ----
+  t5('on_cache — U01: a thrown, non-EFENCED writeState failure inside override-on\'s bookkeeping is caught and reported as "override active, cache lagging", exit 0, and the grant is genuinely active', () => {
+    const identityFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-u01-on-identity-')), '.claude.json');
+    fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: 'u01-on-account-uuid', organizationUuid: 'u01-org' } }));
+    const out = runV15OverrideProbe([
+      "'use strict';",
+      'const fs = require("fs"); const path = require("path");',
+      'process.argv = [process.execPath, "usage-guard.cjs", "override-on", "--owner-approval", "U01-TEST-TOKEN", "--reason", "u01 on cache test"];',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+      'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-u01-on-scratch-"));',
+      'G.__setOwnerGrantRootForTests(grantRoot);',
+      'fs.mkdirSync(path.join(grantRoot, ".claude", "config"), { recursive: true });',
+      'fs.writeFileSync(path.join(grantRoot, ".claude", "config", "forge-owner-grant.txt"), "U01-TEST-TOKEN\\n");',
+      // inject a NON-EFENCED throw from inside the bookkeeping transaction — a plain, ordinary write failure
+      // (EIO-shaped, never {code:"EFENCED"}), which must NOT be confused with a benign reclaim signal.
+      'const realWriteFileSync = fs.writeFileSync;',
+      'let injected = false;',
+      'fs.writeFileSync = function (p, ...rest) {',
+      '  if (!injected && typeof p === "string" && p.indexOf(process.env.FORGE_USAGE_GUARD_STATE + ".") === 0 && p.endsWith(".tmp")) { injected = true; const e = new Error("EIO simulated (non-EFENCED)"); e.code = "EIO"; throw e; }',
+      '  return realWriteFileSync.call(fs, p, ...rest);',
+      '};',
+      'class ExitSignal { constructor(c) { this.code = c; } }',
+      'const realExit = process.exit.bind(process);',
+      'process.exit = (c) => { throw new ExitSignal(c); };',
+      'const logs = []; const realErr = console.error, realLog = console.log;',
+      'console.error = (m) => logs.push({ level: "error", m: String(m) });',
+      'console.log = (m) => logs.push({ level: "log", m: String(m) });',
+      '(async () => {',
+      '  let exitCode = null;',
+      '  try { await G.runOverrideOn(); } catch (e) { if (e instanceof ExitSignal) exitCode = e.code; else throw e; }',
+      '  fs.writeFileSync = realWriteFileSync;',
+      '  console.error = realErr; console.log = realLog;',
+      '  const grantAfter = Grant.readOverrideGrant({ projectRoot: grantRoot });',
+      '  process.stdout.write(JSON.stringify({ exitCode, logs, grantActive: grantAfter.active, injected }));',
+      '  realExit(0);',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); realExit(1); });',
+    ], { FORGE_USAGE_GUARD_IDENTITY: identityFile });
+    assert.ok(!out.uncaught, 'the exception must be caught — never an uncaught rejection: ' + JSON.stringify(out));
+    assert.strictEqual(out.injected, true, 'the injected failure must actually have fired: ' + JSON.stringify(out));
+    assert.strictEqual(out.grantActive, true, 'the authoritative grant must be genuinely active despite the bookkeeping throw: ' + JSON.stringify(out));
+    assert.strictEqual(out.exitCode, 0, 'the grant DID succeed — this must exit 0: ' + JSON.stringify(out));
+    const text = out.logs.map((l) => l.m).join('\n');
+    assert.match(text, /override active, cache lagging/i, JSON.stringify(out));
+    assert.match(text, /EIO simulated/, 'must name the actual bookkeeping error: ' + text);
+  });
+  t5('off_cache — U01: a thrown, non-EFENCED writeState failure inside override-off\'s bookkeeping is caught and reported as "protection re-armed, cache lagging", exit 0, and the grant is genuinely cleared', () => {
+    const out = runV15OverrideProbe([
+      "'use strict';",
+      'const fs = require("fs"); const path = require("path");',
+      'process.argv = [process.execPath, "usage-guard.cjs", "override-off"];',
+      'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+      'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+      'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-u01-off-scratch-"));',
+      'G.__setOwnerGrantRootForTests(grantRoot);',
+      // a real, active grant exists — override-off must clear it regardless of the injected bookkeeping throw.
+      'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "pre-existing", accountLabel: "u01-off-account" }, { projectRoot: grantRoot });',
+      'const realWriteFileSync = fs.writeFileSync;',
+      'let injected = false;',
+      'fs.writeFileSync = function (p, ...rest) {',
+      '  if (!injected && typeof p === "string" && p.indexOf(process.env.FORGE_USAGE_GUARD_STATE + ".") === 0 && p.endsWith(".tmp")) { injected = true; const e = new Error("EIO simulated (non-EFENCED)"); e.code = "EIO"; throw e; }',
+      '  return realWriteFileSync.call(fs, p, ...rest);',
+      '};',
+      'class ExitSignal { constructor(c) { this.code = c; } }',
+      'const realExit = process.exit.bind(process);',
+      'process.exit = (c) => { throw new ExitSignal(c); };',
+      'const logs = []; const realErr = console.error, realLog = console.log;',
+      'console.error = (m) => logs.push({ level: "error", m: String(m) });',
+      'console.log = (m) => logs.push({ level: "log", m: String(m) });',
+      '(async () => {',
+      '  let exitCode = null;',
+      '  try { await G.runOverrideOff(); } catch (e) { if (e instanceof ExitSignal) exitCode = e.code; else throw e; }',
+      '  fs.writeFileSync = realWriteFileSync;',
+      '  console.error = realErr; console.log = realLog;',
+      '  const grantAfter = Grant.readOverrideGrant({ projectRoot: grantRoot });',
+      '  process.stdout.write(JSON.stringify({ exitCode, logs, grantActive: grantAfter.active, injected }));',
+      '  realExit(0);',
+      '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); realExit(1); });',
+    ]);
+    assert.ok(!out.uncaught, 'the exception must be caught — never an uncaught rejection: ' + JSON.stringify(out));
+    assert.strictEqual(out.injected, true, 'the injected failure must actually have fired: ' + JSON.stringify(out));
+    assert.strictEqual(out.grantActive, false, 'the authoritative grant must be genuinely cleared despite the bookkeeping throw: ' + JSON.stringify(out));
+    assert.strictEqual(out.exitCode, 0, 'protection IS re-armed — this must exit 0: ' + JSON.stringify(out));
+    const text = out.logs.map((l) => l.m).join('\n');
+    assert.match(text, /protection re-armed, cache lagging/i, JSON.stringify(out));
+    assert.match(text, /EIO simulated/, 'must name the actual bookkeeping error: ' + text);
+  });
+
   // ---- GUARD-OFF-BYPASS (Codex recheck wp-f4, 2026-09-24): with usage-guard OFF, no command path may
   // read the login token or contact the network/Paperclip — enforced at the SAME two choke points
   // (fetchUsage/pc) every caller (check/status/credits/watch --once/tick/doPause/doResume/override-on)

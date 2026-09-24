@@ -219,8 +219,44 @@ evidence or deferred with a reason before this release went out. The code fixes:
   tool calls alike; an apostrophe inside an inner escaped double-quoted span no longer masks a later escaped dollar.
   Named, unfixed gaps written into `hard-gates.json`: a clustered flag such as `-xc`, an option between `-c` and its
   argument, and PowerShell's case-insensitive `-C`/`-Command` are not recognised; a full PowerShell quoting dialect
-  (backtick escapes, backslash literal) is not implemented — the mask reads every command with bash rules and fails
-  closed where they disagree.
+  (backtick escapes, backslash literal) is not implemented — the mask reads every command with bash rules, so where
+  the dialects differ the result is either a conservative false positive (a quoted Windows path ending in a
+  backslash) or one of the named misses above, not a guaranteed stop.
+- **Seventh pass (Codex's seventh verification returned 3 highs: one residual and two regressions the sixth pass had
+  introduced in the `-c` argument reader; plus six mediums).** Gate hook: a `$` followed by a digit or one of `@ * # ? - $ !`
+  is a genuine positional or special-parameter expansion, so an interpreter argument carrying one stops again — the
+  sixth pass had read it as a currency amount, and the wrong test expectation is reversed; ordinary commands that merely
+  mention a shell or a dollar stay silent through statement attribution alone. Attribution now strips a wrapper's options
+  (`sudo -u root`, `env -i`, `timeout 5`, `nice -n 5`), unquotes the executable word, treats a variable or command
+  substitution standing as the executable as an unknown interpreter, and scans statement starts depth-aware with
+  backtick boundaries, so wrapped, quoted, dynamic and nested interpreter calls stop again (each shape was shown to fire
+  on the pre-sixth-pass classifier and on the fixed one). Of the two alleged over-blocks, an apostrophe in a trailing
+  comment was real and is fixed (comment recognition in the shared scanner); a heredoc with an unbalanced parenthesis was
+  probed three ways and did not reproduce — written down as checked, not as a limitation. The scanner-budget wording is
+  now exact: exhaustion disables inert-data stripping and widens detection, it does not reject every unresolved
+  command, and decisions are deterministic. Config: the lock fence is re-checked before EVERY publishing attempt, so a
+  stale writer whose first publish hit a transient error and whose lock was reclaimed by a newer owner is refused with
+  `EFENCED` on the retry and the newer configuration survives byte-for-byte; the `--once` store is described as
+  at-most-once authorization, not guaranteed execution (a crash after the consuming rename burns the approval without
+  running the command — the safe direction), and only simulated Windows rename errors are tested. Secrets: the
+  distribution's own `.gitignore` now carries the two approval-file exclusions the installer snippet already added, and
+  the deny rule's `./` form is documented as resolving against the current working directory like the other 28 rules
+  (project settings are only loaded from that directory's `.claude/`, so the secret is guarded by gitignore, the fixed
+  trusted root in `forge-ownergrant.cjs` and the hook, not by anchoring). Usage guard: the override grant now also
+  carries a NON-SECRET credential generation (the credential file's modification time and size, never its contents); on a
+  tick whose credential generation differs from the grant's, the override is not honoured until the account profile has
+  been re-read after that change and still matches, so a profile that lags behind a completed account switch can no
+  longer carry account A's approval into account B's decision (the watcher still never writes the grant; the
+  re-confirmation lives in the state cache); `override-on` validates a known identity and a future expiry BEFORE any
+  write or agent resume and refuses otherwise with no change; a bookkeeping error after the grant was already written or
+  cleared keeps the authoritative outcome and exit code, and the command line has a top-level rejection handler; lock
+  cleanup after a failed acquisition only removes a lock the process provably owns; an explicit expiry beyond 30 days is
+  clamped to 30 days and announced (renew by running `override-on` again). **Known limitations, written down:** the
+  generation stamp is file metadata, so an ordinary token refresh that rewrites the credential file can trigger the
+  one-tick re-confirmation and briefly pause a normal single-account session (inferred, not observed live); live
+  multi-account credential rotation was exercised only with synthetic fixture files; the grant record stays a plain
+  unsigned JSON file under the trusted-local-writer model. Named, unfixed gaps unchanged: a clustered `-xc`, an option
+  between `-c` and its argument, PowerShell's `-C`/`-Command`.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every

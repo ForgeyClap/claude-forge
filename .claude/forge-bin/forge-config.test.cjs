@@ -1420,6 +1420,65 @@ t('V09 FIFTH fix, item 3: a NORMAL write (no reclaim in between) still succeeds 
   assert.strictEqual(cfg.get('council', fx.o).value, 'off');
 });
 
+// ---- V09-R (codex-recheck-2026-09-24 out-p12): the fence was only checked ONCE, before the FIRST publishing
+// attempt — a transient rename error that sends renameWithRetry into its own retry/backoff loop let a stale
+// write publish on a LATER attempt without ever rechecking the fence again, even though a replacement lock
+// owner had taken over and published a newer configuration in the meantime.
+t('V09-R: the fence must be rechecked before EVERY publishing attempt, not only the first — a transient rename error on attempt 1, followed by a replacement lock owner publishing a newer configuration, must refuse the retry with EFENCED and leave the newer configuration untouched', () => {
+  const fx = fixture();
+  cfg.set('nvidia', 'off', fx.o); // a real, valid project file + a real lock acquisition/release cycle first
+  const lockPath = fx.projectFile + '.lock';
+  const NEWER_CONFIG = { version: 1, settings: { 'usage-guard': { value: true, set_at: '2026-09-24T12:05:00.000Z', set_by: 'replacement owner' } } };
+  const realRename = fs.renameSync;
+  let transientThrown = false;
+  let injectedNewer = false;
+  fs.renameSync = function (from, to) {
+    if (!transientThrown && to === fx.projectFile) {
+      transientThrown = true;
+      // The FIRST publishing attempt hits a transient Windows-shaped rename error. Before this call's own
+      // retry/backoff loop gets a chance to try again, simulate a REPLACEMENT lock owner reclaiming the lock
+      // (a different token) and publishing its OWN newer, protection-enabled configuration — exactly the
+      // schedule out-p12's V09-R finding describes.
+      fs.writeFileSync(lockPath, 'replacement-owner-token');
+      fs.writeFileSync(fx.projectFile, JSON.stringify(NEWER_CONFIG, null, 2) + '\n');
+      injectedNewer = true;
+      const e = new Error('simulated transient: EBUSY'); e.code = 'EBUSY';
+      throw e;
+    }
+    return realRename.apply(fs, arguments);
+  };
+  let threw = null;
+  try { cfg.set('nvidia', 'on', fx.o); }
+  catch (e) { threw = e; }
+  finally {
+    fs.renameSync = realRename;
+    try { fs.unlinkSync(lockPath); } catch { /* cleanup the injected replacement-owner lock */ }
+  }
+  assert.ok(transientThrown, 'the injected transient rename error on attempt 1 must actually have fired');
+  assert.ok(injectedNewer, "the replacement owner's newer configuration must actually have been written");
+  assert.strictEqual(threw && threw.code, 'EFENCED', 'the stale retry must be refused once the fence no longer matches on re-check: ' + (threw && threw.message));
+  assert.deepStrictEqual(readJson(fx.projectFile), NEWER_CONFIG, 'the newer configuration must survive byte-for-byte — the stale retry must never publish over it');
+  const leftovers = fs.readdirSync(path.dirname(fx.projectFile)).filter((f) => f.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], 'no temp file left behind after the refused retry: ' + leftovers.join(','));
+});
+t('V09-R: a transient rename error that clears up on its own (no reclaim in between) still succeeds via the existing retry — the added recheck must never falsely refuse a genuinely still-held lock', () => {
+  const fx = fixture();
+  cfg.set('nvidia', 'off', fx.o);
+  const realRename = fs.renameSync;
+  let calls = 0;
+  fs.renameSync = function (from, to) {
+    if (to === fx.projectFile) {
+      calls++;
+      if (calls === 1) { const e = new Error('simulated transient: EBUSY'); e.code = 'EBUSY'; throw e; }
+    }
+    return realRename.apply(fs, arguments);
+  };
+  try { cfg.set('nvidia', 'on', fx.o); } // must NOT throw — the transient error must still be retried and succeed
+  finally { fs.renameSync = realRename; }
+  assert.ok(calls >= 2, 'the publish rename must actually have been retried: ' + calls);
+  assert.strictEqual(cfg.get('nvidia', fx.o).value, true, 'the retried write must have taken effect');
+});
+
 t('CFG-10: atomicWriteJson leaves no temp file and the written bytes read back byte-identical after fsync', () => {
   const fx = fixture();
   cfg.set('council', 'off', fx.o);

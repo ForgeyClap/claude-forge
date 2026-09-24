@@ -372,6 +372,10 @@ under `_not_caught`, and each one is executed by the test suite so the list cann
   only on the flags, a whole command in a variable fires only through the `opaque-exec` shapes above;
 - **other interpreters**: a data stream piped into `node` or `python` as a script, a fully literal
   `sh -c "echo hi"`, an encoded payload reaching PowerShell by any route other than the `-EncodedCommand` flag;
+- **spellings of the `-c` flag it does not read**: a clustered flag such as `-xc`, an option placed between `-c` and
+  its argument, and PowerShell's `-C` / `-Command` spelling — only a standalone lowercase `-c` is recognised, and
+  every command is read with Bash quoting rules (a PowerShell-only quoting form can be missed, or stopped by
+  mistake when a quoted Windows path ends in a backslash);
 - a bare `git checkout <path>` **without `--`** (it looks exactly like a branch switch), the PowerShell `kill -n`
   alias, mirroring and overwriting tools (`robocopy /MIR`, `rsync --delete`), truncation and raw device writes
   (`dd`, `mkfs`);

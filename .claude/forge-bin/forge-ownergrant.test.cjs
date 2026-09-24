@@ -178,6 +178,28 @@ t('writeOverrideGrant({active:false}) removes an existing grant file; a second c
   assert.ok(!fs.existsSync(file));
   assert.strictEqual(G.writeOverrideGrant({ active: false }, { projectRoot: dir }), true, 'clearing an already-absent grant is still a success');
 });
+// ---- N10 residual (2026-09-24, Codex p12 wave 7 finding N10): a non-secret credential-file generation
+// stamp (mtime+size only, never content) persists alongside the account label — see usage-guard-override.cjs
+// resolveOwnerOverride() for how a mismatch is used. ----
+t('N10 residual: writeOverrideGrant persists credentialGeneration; readOverrideGrant returns it back unchanged', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'test', accountLabel: 'a', credentialGeneration: '12345:678' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.credentialGeneration, '12345:678');
+});
+t('N10 residual: a grant written WITHOUT credentialGeneration (old-style/legacy record) reads back credentialGeneration: null', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'legacy', accountLabel: 'a' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.credentialGeneration, null);
+});
+t('N10 residual: an ABSENT grant file also reports credentialGeneration: null (never throws, never a stale leftover)', () => {
+  const r = G.readOverrideGrant({ projectRoot: root(undefined) });
+  assert.strictEqual(r.credentialGeneration, null);
+});
+
 t('overrideGrantFilePath: a DIFFERENT file from the plain owner-grant SECRET file — the two never collide', () => {
   const dir = root('SOME-SECRET');
   const secretFile = path.join(dir, '.claude', 'config', 'forge-owner-grant.txt');

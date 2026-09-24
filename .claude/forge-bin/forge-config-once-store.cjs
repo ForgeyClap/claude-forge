@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * forge-config-once-store.cjs — the exactly-once PENDING/CONSUMED grant store for a `--once` approval
+ * forge-config-once-store.cjs — the AT-MOST-ONCE PENDING/CONSUMED grant store for a `--once` approval
  * (V09 FIFTH fix, Codex recheck 2026-09-24, out-p11 + Security Boss addendum: "a delayed reclaimer
  * captured a newer live holder... two actual consumeOnce() calls return success for one approval").
  * Split out of forge-config-once.cjs to keep that file under this project's file-size guidance.
@@ -22,6 +22,20 @@
  * FORGE_CONFIG.json mirror entry (consumed_at, consumed_command_sha256) stays for `list`/`explain`/`get`
  * display only; it is written by the caller (forge-config.cjs::consumeOnce) AFTER this store already
  * decided the real outcome, never before, and never as part of what makes the guarantee true.
+ *
+ * HONEST WORDING (out-p12 finding, Codex recheck 2026-09-24 — this file no longer calls itself
+ * "exactly-once"): consumption here is AT-MOST-ONCE AUTHORIZATION, NOT GUARANTEED EXECUTION. Winning the
+ * pendingPath -> consumedPath rename means the approval is spent and can never be won again by any other
+ * caller — but it does NOT mean the guarded hard-gate action actually ran. A crash after this rename
+ * commits but BEFORE the caller's own guarded operation executes (a process kill, a power loss, an
+ * unhandled exception in between) burns the one approval WITHOUT ever executing it. That is the SAFE
+ * direction — an approval can be lost, but it can never be duplicated or replayed — so it is not treated as
+ * a defect, but "exactly-once" over-promises what is actually guaranteed and this file does not use that
+ * phrase for the guarantee any more. Native Windows rename-then-crash behaviour has not been reproduced
+ * live: every rename-failure path this module's own tests exercise (forge-config-once.test.cjs, section 11)
+ * is a SIMULATED fs-seam injection (a non-ENOENT error standing in for EPERM/EBUSY/a destination-directory
+ * problem, plus a genuinely interleaved ENOENT for the real two-caller race), never an actual OS-level
+ * crash mid-rename.
  *
  * API  oncePendingPath, onceConsumedPath, readOnceEntryInPlace, writePendingOnceGrant,
  *      removePendingOnceGrant, consumeOnceGrant. Zero-dependency (fs/path/crypto).
@@ -97,14 +111,19 @@ function removePendingOnceGrant(configDir, key) {
 }
 
 /** consumeOnceGrant(configDir, key, nowMs, commandSha256) -> { ok:true, entry } |
- *  { ok:false, reason:'absent'|'clock'|'expired'|'consumed' }. THE single atomic use, independent of any
- *  lock (see file header). Validates the pending file's own content with the EXACT SAME clock-rollback /
- *  tampered-expiry / real-expiry rules onceState() already applies to the mirror (forge-config-once.cjs),
- *  so a hand-edited or backdated pending file can never extend its own window. Only when still armed does
- *  it attempt ONE `fs.renameSync(pendingPath, consumedPath)`; ENOENT there means a DIFFERENT caller's
- *  rename already won (reason:'consumed'); any other failure is reported as 'absent' — never as an
- *  approval. The post-rename content update on the now-exclusively-owned consumedPath is best effort: the
- *  single use already happened via the rename itself and cannot be undone by a failed follow-up write. */
+ *  { ok:false, reason:'absent'|'clock'|'expired'|'consumed' }. THE at-most-once authorization step,
+ *  independent of any lock (see file header) — ok:true means the approval was spent and can never be won
+ *  again, NOT that the guarded action is guaranteed to run afterward (see the file header's HONEST WORDING
+ *  paragraph). Validates the pending file's own content with the EXACT SAME clock-rollback / tampered-expiry
+ *  / real-expiry rules onceState() already applies to the mirror (forge-config-once.cjs), so a hand-edited
+ *  or backdated pending file can never extend its own window. Only when still armed does it attempt ONE
+ *  `fs.renameSync(pendingPath, consumedPath)`; ENOENT there means a DIFFERENT caller's rename already won
+ *  (reason:'consumed'); any other failure (a simulated or real EPERM/EBUSY/a destination-directory problem)
+ *  is reported as 'absent' — never as an approval, and the pending grant is left exactly where it was for a
+ *  legitimate retry. The post-rename content update on the now-exclusively-owned consumedPath is best
+ *  effort: the one use already happened via the rename itself and cannot be undone by a failed follow-up
+ *  write, and a failed later attempt for the same key can never reach or alter an earlier, already-consumed
+ *  record (each consumedPath is unique — see onceConsumedPath). */
 function consumeOnceGrant(configDir, key, nowMs, commandSha256) {
   const pendingPath = oncePendingPath(configDir, key);
   const ent = readOnceEntryInPlace(pendingPath);

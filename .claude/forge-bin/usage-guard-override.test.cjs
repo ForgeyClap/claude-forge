@@ -77,6 +77,93 @@ t('N10: a matching accountLabel on both sides is honoured — the positive case 
   assert.strictEqual(r.active, true, JSON.stringify(r));
 });
 
+// ---- N10 residual (2026-09-24, Codex p12 wave 7 finding N10) — STALE PROFILE, ROTATED CREDENTIAL: an
+// account-label match alone is not enough once the credential FILE has changed since the grant was issued.
+// See the file header for the full rationale, the GUARD-TOKEN-FINGERPRINT constraint that shaped this design
+// (mtime/size metadata only, never anything credential-derived), and its honestly-documented limitation. ----
+t('N10 residual: a matching account label but a DIFFERENT credentialGeneration than the grant is REJECTED (credential-generation-unconfirmed), never silently honoured', () => {
+  const dir = scratchRoot();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under generation G0', accountLabel: 'acct-gen', credentialGeneration: 'G0' }, { projectRoot: dir });
+  const r = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen', credentialGeneration: 'G1' });
+  assert.strictEqual(r.active, false, 'a credential that rotated since the grant was issued must not silently keep suppressing pausing: ' + JSON.stringify(r));
+  assert.strictEqual(r.rejected, 'credential-generation-unconfirmed');
+  assert.strictEqual(r.currentGeneration, 'G1');
+});
+t('N10 residual: an UNCHANGED credentialGeneration (same as the grant\'s own stamp) is honoured normally — no false positive on the ordinary, nothing-changed case', () => {
+  const dir = scratchRoot();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted', accountLabel: 'acct-gen2', credentialGeneration: 'G0' }, { projectRoot: dir });
+  const r = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen2', credentialGeneration: 'G0' });
+  assert.strictEqual(r.active, true, JSON.stringify(r));
+});
+t('N10 residual: once the CALLER supplies a confirmedGeneration equal to the current one, the grant is honoured again despite the generation mismatch against the original grant stamp (the one-tick-grace re-confirmation)', () => {
+  const dir = scratchRoot();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen3', credentialGeneration: 'G0' }, { projectRoot: dir });
+  const r = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen3', credentialGeneration: 'G1', confirmedGeneration: 'G1' });
+  assert.strictEqual(r.active, true, 'a caller-confirmed generation must re-honour the grant: ' + JSON.stringify(r));
+});
+t('N10 residual: an OLD-STYLE grant with no credentialGeneration at all is unaffected — backward compatible with every existing N10 account-binding test', () => {
+  const dir = scratchRoot();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'legacy, no generation stamp', accountLabel: 'acct-gen4' }, { projectRoot: dir });
+  const r = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen4', credentialGeneration: 'G1' });
+  assert.strictEqual(r.active, true, 'a grant written before this field existed must not suddenly start refusing: ' + JSON.stringify(r));
+});
+t('N10 residual: no credentialGeneration supplied by the caller at all (e.g. the credential file became unreadable mid-tick) also does not trigger the new check — falls back to pre-existing account-binding behaviour only', () => {
+  const dir = scratchRoot();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen5', credentialGeneration: 'G0' }, { projectRoot: dir });
+  const r = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen5' });
+  assert.strictEqual(r.active, true, JSON.stringify(r));
+});
+
+// ---- Finding 5 (2026-09-24, Codex p12 wave 7) — resolveGrantUntil: 30 days is now a MAXIMUM, not merely a
+// default; an explicit later --until is clamped, never accepted verbatim (an unbounded suppression window). ----
+t('resolveGrantUntil: a rawUntil well within 30 days is returned unchanged, clamped:false', () => {
+  const soon = new Date(Date.now() + 3600000).toISOString();
+  const r = O.resolveGrantUntil(soon);
+  assert.strictEqual(r.until, soon);
+  assert.strictEqual(r.clamped, false);
+});
+t('resolveGrantUntil: a rawUntil LATER than 30 days is clamped DOWN to the 30-day maximum, clamped:true', () => {
+  const farFuture = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString(); // ~400 days out
+  const r = O.resolveGrantUntil(farFuture);
+  assert.strictEqual(r.clamped, true, JSON.stringify(r));
+  assert.notStrictEqual(r.until, farFuture);
+  const days = (Date.parse(r.until) - Date.now()) / (24 * 60 * 60 * 1000);
+  assert.ok(days > 29 && days <= 30.01, 'clamped value must land at ~30 days: ' + days);
+});
+t('resolveGrantUntil: a missing/unparseable rawUntil falls back to the 30-day default, clamped:false (nothing explicit was clamped)', () => {
+  const r1 = O.resolveGrantUntil(null);
+  const r2 = O.resolveGrantUntil('not-a-real-date');
+  assert.strictEqual(r1.clamped, false, JSON.stringify(r1));
+  assert.strictEqual(r2.clamped, false, JSON.stringify(r2));
+  const days1 = (Date.parse(r1.until) - Date.now()) / (24 * 60 * 60 * 1000);
+  assert.ok(days1 > 29 && days1 <= 30.01, JSON.stringify(r1));
+});
+
+// ---- Finding 3 (U01, 2026-09-24, Codex p12 wave 7) — describeOverrideLockOutcome's new `bookkeepingThrew`
+// wording: a post-mutation bookkeeping exception (caught by usage-guard.cjs's runOverrideOn/runOverrideOff
+// around their whole withStateLock() call) must be reported as "cache lagging", never as a lock-acquisition
+// failure (which would be misleading — the lock WAS acquired; the bookkeeping inside it threw). ----
+t('describeOverrideLockOutcome: kind "on", bookkeepingThrew -> "override active, cache lagging" wording, partial:true, exit-0-worthy', () => {
+  const r = O.describeOverrideLockOutcome('on', { ok: false, reason: 'boom', bookkeepingThrew: true }, { until: FUTURE });
+  assert.strictEqual(r.partial, true, JSON.stringify(r));
+  assert.match(r.line, /override active, cache lagging/i, r.line);
+  assert.match(r.line, /boom/, r.line);
+});
+t('describeOverrideLockOutcome: kind "off", bookkeepingThrew -> "protection re-armed, cache lagging" wording, partial:true, exit-0-worthy', () => {
+  const r = O.describeOverrideLockOutcome('off', { ok: false, reason: 'boom', bookkeepingThrew: true }, {});
+  assert.strictEqual(r.partial, true, JSON.stringify(r));
+  assert.match(r.line, /protection re-armed, cache lagging/i, r.line);
+  assert.match(r.line, /boom/, r.line);
+});
+t('describeOverrideLockOutcome: a plain lock-timeout (no bookkeepingThrew) keeps its ORIGINAL wording — the new branch never changes the pre-existing N11 case', () => {
+  const r1 = O.describeOverrideLockOutcome('on', { ok: false, reason: 'lock-timeout' }, { until: FUTURE });
+  assert.match(r1.line, /state lock could not be acquired/, r1.line);
+  assert.ok(!/cache lagging/.test(r1.line), r1.line);
+  const r2 = O.describeOverrideLockOutcome('off', { ok: false, reason: 'lock-timeout' }, {});
+  assert.match(r2.line, /state-lock cache bookkeeping failed/, r2.line);
+  assert.ok(!/cache lagging/.test(r2.line), r2.line);
+});
+
 t('cachedOverrideFrom: an inactive record -> undefined (so a caller can delete/omit the field cleanly)', () => {
   assert.strictEqual(O.cachedOverrideFrom({ active: false }), undefined);
   assert.strictEqual(O.cachedOverrideFrom(null), undefined);

@@ -199,7 +199,7 @@ t5('L2: a non-EEXIST create failure (simulated Windows EPERM while a file is mid
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('L2: a successful exclusive open with a subsequent write failure IS provably ours (no other holder existed) and is still cleaned up — N07\'s original guarantee is preserved for the case it actually proves', async () => {
+t5('L2 / L2-R (2026-09-24, Codex p12 wave 7 — UPDATED): a successful exclusive open with a subsequent write failure refuses outright; cleanup is ownership-safe (exact-token match only), so the untouched empty stub is left in place rather than deleted on a guess', async () => {
   const { dir, lockPath } = tmpLock();
   try {
     const realWriteSync = fs.writeSync;
@@ -208,7 +208,12 @@ t5('L2: a successful exclusive open with a subsequent write failure IS provably 
     try { r = await S.withStateLock(lockPath, () => 'unreachable', { staleMs: 60000, timeoutMs: 50 }); }
     finally { fs.writeSync = realWriteSync; }
     assert.strictEqual(r.ok, false, JSON.stringify(r));
-    assert.strictEqual(fs.existsSync(lockPath), false, 'a lock WE just exclusively created must still be cleaned up on a failed write — never left as an ownerless orphan');
+    // L2-R (Security Boss addendum, 2026-09-24): the write threw before any bytes of this call's own token
+    // landed, so lockPath's content is exactly empty — not this call's own token, so ownership-safe cleanup
+    // (see usage-guard-state.cjs's own L2-R comment) does not delete it. A leftover empty stub self-heals via
+    // the ordinary age-only staleness reclaim once `staleMs` elapses, same as any other stale lock.
+    assert.strictEqual(fs.existsSync(lockPath), true, 'an empty stub that is not this call\'s own token must be left in place, not guessed at and deleted');
+    assert.strictEqual(S.readLockToken(lockPath), '', 'the stub must be exactly as this call left it — untouched');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -298,7 +303,7 @@ t5('N07 (Codex recheck out-p10, 2026-09-24): a THROWN token write during RECLAMA
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-t5('N07 (Codex recheck out-p10, 2026-09-24): a write that reports success but silently writes the WRONG bytes during ACQUISITION is caught by an independent readback — refuses outright, never a fence() that can only ever report false, and no partial lock is left behind', async () => {
+t5('N07 (Codex recheck out-p10, 2026-09-24): a write that reports success but silently writes the WRONG bytes during ACQUISITION is caught by an independent readback — refuses outright, never a fence() that can only ever report false', async () => {
   const { dir, lockPath } = tmpLock();
   try {
     const realWriteSync = fs.writeSync;
@@ -314,7 +319,65 @@ t5('N07 (Codex recheck out-p10, 2026-09-24): a write that reports success but si
     assert.strictEqual(r.ok, false, JSON.stringify(r));
     assert.strictEqual(r.reason, 'lock-write-failed');
     assert.strictEqual(fnCalled, false, 'fn() must never be invoked after a readback-mismatched token write');
-    assert.strictEqual(fs.existsSync(lockPath), false, 'the mismatched partial lock must be cleaned up, never left as an ownerless orphan');
+    // L2-R (Security Boss addendum, 2026-09-24, Codex p12 wave 7 — INTENTIONAL TRADE-OFF, supersedes N07's
+    // original "always clean up" claim for this exact case): the garbage content is NOT this call's own
+    // token, so cleanup is no longer unconditional — it is just as ownership-safe as the normal release path
+    // (see usage-guard-state.cjs's own L2-R comment), because in a real adversarial interleaving this exact
+    // "readback mismatch" shape is indistinguishable from a genuine LIVE successor's takeover. The garbage
+    // stub is left in place rather than risking a successor's real lock; it self-heals via the ordinary
+    // age-only staleness reclaim once `staleMs` elapses, same as any other stale lock.
+    assert.strictEqual(fs.existsSync(lockPath), true, 'content that is not exactly this call\'s own token must be left untouched, not guessed at and deleted');
+    assert.strictEqual(S.readLockToken(lockPath), 'WRONG-BYTES-ENTIRELY', 'ownership-safe cleanup must not have touched content that could belong to a successor');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- L2-R (Security Boss addendum, 2026-09-24, Codex p12 wave 7 finding L2-R) — a DELAYED creator whose own
+// readback later mismatches must NEVER unconditionally delete lockPath: by the time the mismatch is noticed,
+// an arbitrarily long real-world delay may have let a genuine, LIVE successor's reclaim land on this exact
+// path. Reproduced deterministically, single-process (this project's own established backdating technique):
+// the successor's reclaim is driven for real (the actual `tryReclaimStaleLock` primitive, a real atomic
+// replace-rename), injected right after this call's own `fs.closeSync(fd)` — LIVE-VERIFIED on this Windows
+// runtime that renaming onto a still-open destination throws EPERM, so the exploitable gap is specifically
+// AFTER close, before the readback, never while the creator's own fd is still open. The reclaim's staleness
+// check must not see the creator's own (very much alive) pid embedded in its just-written token, so
+// `process.kill` is mocked to report ESRCH for that ONE check only (a real different, dead holder would
+// naturally fail the SAME liveness check; there is no other way to simulate "a different holder" within one
+// process, since the creator's own token always embeds a live pid — see this project's own wp-j2/wp-j3
+// memory on the identical constraint for the `randomToken()` reclaim tests). ----
+t5('L2-R: a delayed creator whose own write/readback mismatches must NEVER delete lockPath once it belongs to a different, LIVE successor — cleanup is ownership-safe (exact-token match only), just like the normal release path', async () => {
+  const { dir, lockPath } = tmpLock();
+  try {
+    const successorToken = 'SUCCESSOR-LIVE-TOKEN';
+    const realCloseSync = fs.closeSync;
+    const realKill = process.kill;
+    let patched = false;
+    let reclaimResult = null;
+    fs.closeSync = function (fd) {
+      const result = realCloseSync.call(fs, fd);
+      if (!patched) {
+        patched = true;
+        // this caller's own token was already written and is now sitting at lockPath — back-date it so a
+        // reclaim judges it stale by age, and lie about the embedded (very much alive, our own) pid being
+        // dead for this ONE staleness check, so the reclaim proceeds exactly as it would against a genuinely
+        // different, crashed holder.
+        const past = new Date(Date.now() - 10 * 60 * 1000);
+        fs.utimesSync(lockPath, past, past);
+        process.kill = function (pid, sig) {
+          if (sig === 0) { const e = new Error('ESRCH simulated'); e.code = 'ESRCH'; throw e; }
+          return realKill.call(process, pid, sig);
+        };
+        try { reclaimResult = S.tryReclaimStaleLock(lockPath, successorToken, 1000); }
+        finally { process.kill = realKill; }
+      }
+      return result;
+    };
+    let r;
+    try { r = await S.withStateLock(lockPath, () => 'unreachable', { staleMs: 60000, timeoutMs: 50 }); }
+    finally { fs.closeSync = realCloseSync; }
+    assert.strictEqual(patched, true, 'the injected close-time reclaim must actually have run');
+    assert.strictEqual(reclaimResult, true, 'test setup: the simulated successor reclaim must actually have won');
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(S.readLockToken(lockPath), successorToken, 'the successor\'s LIVE lock must survive completely untouched — an unconditional unlink here would have deleted it out from under the successor');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -340,7 +403,14 @@ t5('V15 (third recheck): a token-write failure during acquisition REFUSES outrig
     assert.strictEqual(r.ok, false, JSON.stringify(r));
     assert.strictEqual(r.reason, 'lock-write-failed');
     assert.strictEqual(fnCalled, false, 'fn() must never be invoked after a failed token write');
-    assert.strictEqual(fs.existsSync(lockPath), false, 'no empty/ownerless lock file may be left behind');
+    // L2-R (Security Boss addendum, 2026-09-24, Codex p12 wave 7 — INTENTIONAL TRADE-OFF): the throw left
+    // lockPath's content still exactly empty (never any bytes of myToken landed), which is NOT this call's
+    // own token either — ownership-safe cleanup (exact-match-only, same as the normal release path) does not
+    // delete it, since an adversarial interleaving could have let a genuine successor's reclaim happen here
+    // too. A leftover empty stub self-heals via the ordinary age-only staleness reclaim once `staleMs`
+    // elapses — see usage-guard-state.cjs's own L2-R comment.
+    assert.strictEqual(fs.existsSync(lockPath), true, 'an empty stub that is not this call\'s own token must be left in place, not guessed at and deleted');
+    assert.strictEqual(S.readLockToken(lockPath), '', 'the stub must be exactly as this call left it — untouched');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

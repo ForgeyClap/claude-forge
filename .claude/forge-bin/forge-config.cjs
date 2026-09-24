@@ -81,7 +81,7 @@ const text = require('./forge-config-text.cjs');
 // contract. ONCE_KEYS/ONCE_MS stay exported here unchanged for existing consumers.
 const onceLib = require('./forge-config-once.cjs');
 const { ONCE_KEYS, ONCE_MS, ONCE_QUOTE_MAX } = onceLib;
-// The exactly-once PENDING/CONSUMED grant store (V09 FIFTH fix, out-p11 + addendum) — split into its own
+// The at-most-once PENDING/CONSUMED grant store (V09 FIFTH fix, out-p11 + addendum) — split into its own
 // sibling so forge-config-once.cjs stays under this project's file-size guidance; see that file's header.
 const onceStore = require('./forge-config-once-store.cjs');
 
@@ -425,8 +425,25 @@ function readConfigFile(file, schema, locked, lang, P, nowMs) {
   }
   return out;
 }
-function renameWithRetry(from, to) {
+/** renameWithRetry(from, to, fence) — `fence`, when given, is re-checked immediately before EVERY publishing
+ *  attempt inside this retry loop, not only once before the first one (V09-R, codex-recheck-2026-09-24
+ *  out-p12: a transient EPERM/EBUSY/EACCES on attempt 1 used to send this loop into its own retry/backoff
+ *  without the caller ever getting a chance to recheck the fence in between — a replacement lock owner could
+ *  reclaim the lock and publish a newer configuration during that window, and this loop's LATER attempt would
+ *  still publish the original, now-stale write on top of it). Checking here, at the top of every iteration
+ *  (including after a backoff sleep), closes that gap: a fence failure on any attempt throws EFENCED and never
+ *  calls fs.renameSync again, so a reclaimed lock's newer write is never overwritten. HONEST RESIDUAL
+ *  (documented, not eliminated): the fence check and the immediately-following fs.renameSync call remain two
+ *  separate syscalls, so a reclaim landing in that exact instant is still possible in principle — the same
+ *  class of check-to-rename gap forge-config-once.cjs's own header documents for its lock, closeable only with
+ *  real OS-level locking. */
+function renameWithRetry(from, to, fence) {
   for (let i = 0; ; i++) {
+    if (typeof fence === 'function' && !fence()) {
+      const err = new Error('forge-config: write refused — the file lock was reclaimed by another writer before this write could publish');
+      err.code = 'EFENCED';
+      throw err;
+    }
     try { fs.renameSync(from, to); return; }
     catch (e) {
       // Windows: a reader holding the target open for a moment gives EPERM/EBUSY; retry briefly, then fail loudly.
@@ -460,15 +477,17 @@ function fsyncDir(dir) {
   }
 }
 /** atomicWriteJson(file, obj, fence) — `fence`, when given, is onceLib.withLock's own zero-arg fence
- *  function (V09 FIFTH fix, out-p11 + Security Boss addendum), re-checked IMMEDIATELY BEFORE the rename that
- *  actually publishes this write — not only by the caller, earlier, before its own read-modify-write. A
- *  caller whose EARLIER fence() check passed (or who never checked at all) can still have lost the lock by
- *  the time this function finally renames its temp file into place; re-checking here, as the LAST synchronous
- *  step before the one mutation that makes the write visible, closes that gap to the practical minimum — the
- *  same fence-at-publish pattern usage-guard.cjs::writeStateTo already uses for usage-guard-state.cjs's own
- *  lock. On a failed re-check this throws an Error with `.code === 'EFENCED'`, cleans up the temp file, and
- *  never runs the rename — this is what makes the CHANGELOG's "the config lock's fence refuses a stale
- *  write" claim actually true; before this fix no such check existed anywhere in this write path. */
+ *  function (V09 FIFTH fix, out-p11 + Security Boss addendum), re-checked IMMEDIATELY BEFORE EVERY publishing
+ *  rename attempt inside renameWithRetry — not only once by the caller, earlier, before its own
+ *  read-modify-write, and not only once before the FIRST attempt (V09-R, codex-recheck-2026-09-24 out-p12: a
+ *  transient rename error used to send the retry loop into its own backoff/retry without ever rechecking the
+ *  fence again, so a lock reclaimed and republished with a newer configuration DURING that backoff could still
+ *  be overwritten by this call's later, now-stale retry). renameWithRetry itself re-checks `fence()` at the top
+ *  of every iteration, including after each backoff sleep — see its own header for the exact contract and the
+ *  honest residual gap. On a failed re-check the write throws an Error with `.code === 'EFENCED'`, cleans up
+ *  the temp file, and never runs the rename that would have published it — this is what makes the CHANGELOG's
+ *  "the config lock's fence refuses a stale write" claim actually true across retries, not only on the first
+ *  attempt. */
 function atomicWriteJson(file, obj, fence) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
@@ -480,12 +499,7 @@ function atomicWriteJson(file, obj, fence) {
     fsyncFile(fd);
     fs.closeSync(fd);
     fd = undefined;
-    if (typeof fence === 'function' && !fence()) {
-      const err = new Error('forge-config: write refused — the file lock was reclaimed by another writer before this write could publish');
-      err.code = 'EFENCED';
-      throw err;
-    }
-    renameWithRetry(tmp, file);
+    renameWithRetry(tmp, file, fence);
     fsyncDir(dir);
   } catch (e) {
     if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }

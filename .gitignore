@@ -40,6 +40,10 @@ NVIDIA Build and NIM Model Mapping for Permanent Forge Agent Roles.pdf
 # Editor/checkup backups + local guard ack state (never commit — fix 2026-07-09 checkup)
 *.bak-*
 .claude/FORGE_USAGE_GUARD_ACK.json
+# Owner approval files of the usage guard (security review M5 + Codex p12 M5-A, 2026-09-24): the owner secret and the
+# per-machine override grant record are never committed — the same two lines the installer snippet adds to a project.
+.claude/config/forge-owner-grant.txt
+.claude/config/forge-usage-guard-override-grant.json
 # Forge onboarding — temp key fill-file + runtime markers (never commit)
 .env.forge-setup
 .env.forge-tmp

@@ -615,16 +615,190 @@ for (const cmd of N09_SILENT) {
   });
 }
 
-t('N09: cArgLiveAfterFlag() direct unit — currency dollar is never live, a real -c must belong to its own statement', () => {
+t('N09: cArgLiveAfterFlag() direct unit — a currency-shaped dollar is silenced by ATTRIBUTION, not by its shape; a real -c must belong to its own statement', () => {
   assert.strictEqual(quotes.cArgLiveAfterFlag('bash build.sh && node report.cjs -c "total $5 due"'), false,
     'the -c belongs to node report.cjs, not to the unrelated bash invocation');
   assert.strictEqual(quotes.cArgLiveAfterFlag('cp install.sh /tmp/ && node report.cjs -c "$5 total"'), false,
     'a .sh file EXTENSION is not a shell invocation');
-  assert.strictEqual(quotes.cArgLiveAfterFlag('node report.cjs -c "$5"'), false, 'a literal currency dollar is not substitution syntax');
-  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$5"'), false, 'even a REAL bash -c stays silent for a currency amount');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('node report.cjs -c "$5"'), false, 'the -c belongs to node, not a shell -> attribution silences it, regardless of the dollar');
+  // N14 (codex-recheck 2026-09-24, wave 7 / wp-m1 — a REGRESSION this fixture itself used to assert wrongly):
+  // $5 is a genuine positional parameter (GNU Bash "Positional Parameters"), so a REAL bash -c argument
+  // containing it DOES fire, exactly like $x does — the fifth pass wrongly carved out every digit/special
+  // character after "$" as inert "currency" and this assertion baked that regression in as if it were correct.
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$5"'), true, 'a REAL bash -c with a genuine positional parameter fires, same as $x');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "cost 5$"'), false, 'a trailing lone $ with nothing to substitute stays literal');
   assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x"'), true, 'a REAL substitution in a REAL invocation still fires');
   assert.strictEqual(quotes.cArgLiveAfterFlag('sudo bash -c "$x"'), true, 'a wrapper prefix (sudo) does not hide the real invocation');
   assert.strictEqual(quotes.cArgLiveAfterFlag('{ bash -c "$x"; }'), true, 'a grouping opener does not hide the real invocation');
+});
+
+// ---------------------------------------------------------------------------
+// N14 (codex-recheck 2026-09-24, wave 7 / wp-m1) — a REGRESSION the fifth pass (N09) introduced: isSubstitutionDollar()
+// treated ANY digit or special character after "$" as inert currency, silently passing a genuine positional or
+// special parameter inside a REAL interpreter's own -c argument. Every form below is a real Bash expansion (GNU
+// Bash manual, "Positional Parameters" / "Special Parameters") and must fire when it belongs to a REAL invocation,
+// exactly like $name/$(...) always did; the currency negatives stay silent through ATTRIBUTION alone, never
+// through the shape of the dollar (proven directly above).
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave7-a) N14 — a genuine positional/special parameter inside a REAL -c argument still fires');
+
+const N14_POSITIVE_FORMS = [
+  ['bash -c "$1"', 'double-quoted positional parameter'],
+  ['bash -c $1', 'bare positional parameter'],
+  ["bash -c '$?'", 'single-quoted special parameter ($?) — literal to the outer shell, live at the inner one'],
+  ['bash -c "$@"', 'double-quoted $@ (all positional parameters)'],
+  ['sh -c "$*"', 'double-quoted $* (all positional parameters, joined)'],
+  ['bash -c "$$"', 'double-quoted $$ (this shell\'s own PID)'],
+  ['bash -c "$!"', 'double-quoted $! (last background PID)'],
+  ['bash -c "$-"', 'double-quoted $- (current option flags)'],
+  ['bash -c "$#"', 'double-quoted $# (argument count)'],
+  ['bash -c "$0"', 'double-quoted $0 (the script/shell name)'],
+];
+for (const [cmd, why] of N14_POSITIVE_FORMS) {
+  t('N14 must FIRE (' + why + '): "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not treated as live: ' + cmd);
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'classify() did not fire opaque-exec: ' + cmd + ' -> ' + JSON.stringify(r.matched));
+  });
+}
+
+const N14_NEGATIVE_FORMS = [
+  ['node report.cjs -c "total $5 due"', 'the -c belongs to node, not a shell'],
+  ['git commit -m "saved $20 total"', 'no -c token at all — pure commit prose'],
+  ['bash build.sh && node report.cjs -c "$5 total"', 'the -c belongs to node; the earlier bash is unrelated'],
+  ['bash -c "cost 5$"', 'a trailing lone $ with nothing after it to substitute'],
+];
+for (const [cmd, why] of N14_NEGATIVE_FORMS) {
+  t('N14 must stay SILENT (' + why + '): "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'wrongly treated as live: ' + cmd);
+    const r = gate.classify(cmd);
+    assert.ok(!r.matched.includes('opaque-exec'), 'classify() unexpectedly fired opaque-exec: ' + cmd + ' -> ' + JSON.stringify(r.matched));
+  });
+}
+
+// (base-vs-fixed proof for N14 — that the pre-wave-6 classifier, before any currency exemption existed, already
+// fired on `bash -c "$5"` — was run once, read-only, against `git show 1bc7026:...` extracted to the session
+// scratchpad; not re-run here on every test pass because a hardcoded internal dev commit hash would break this
+// suite the moment it ships to an installed project with different git history. See the work-package report /
+// memory topic for the actual base-vs-HEAD transcript.)
+
+// ---------------------------------------------------------------------------
+// N15 (codex-recheck 2026-09-24, wave 7 / wp-m1) — a REGRESSION: statementCommandWord() stripped a wrapper WORD
+// but never its OWN OPTIONS, a QUOTED executable word kept its quotes (failing SHELL_WORD_RE), a leading word
+// that is itself a substitution was rejected outright instead of treated as an unknown interpreter, and nested
+// command-substitution/subshell context was invisible to statementStart() entirely.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave7-b) N15 — wrapper options, quoted/dynamic executable words, and nested substitution context');
+
+const N15_WRAPPER_OPTION_FORMS = [
+  'sudo -u root bash -c "$x"', 'env -i bash -c "$x"', 'env -u FOO bash -c "$x"',
+  'timeout 5 bash -c "$x"', 'nice -n 5 bash -c "$x"', 'time -p bash -c "$x"',
+  'nohup bash -c "$x" &', 'command -p bash -c "$x"', 'exec -a name bash -c "$x"',
+  'doas bash -c "$x"', 'stdbuf -oL bash -c "$x"',
+];
+for (const cmd of N15_WRAPPER_OPTION_FORMS) {
+  t('N15 wrapper option must not hide the real invocation: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd + ' -> ' + JSON.stringify(r.matched));
+  });
+}
+
+const N15_QUOTED_OR_DYNAMIC_FORMS = [
+  '"bash" -c "$x"', "'/bin/bash' -c \"$x\"", '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -c "$x"',
+  '"$SHELL" -c "$x"', '$(which bash) -c "$x"', '${SHELL} -c "$x"',
+];
+for (const cmd of N15_QUOTED_OR_DYNAMIC_FORMS) {
+  t('N15 quoted/dynamic executable word must still associate: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd + ' -> ' + JSON.stringify(r.matched));
+  });
+}
+t('N15: a STATIC dynamic-word invocation stays silent — dynamic association fires only if the -c argument itself is live', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('"$SHELL" -c "echo hi"'), false, 'a static -c argument behind an unknown interpreter must not fire on shape alone');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('$(which bash) -c echo'), false, 'same, unquoted bare static argument');
+});
+
+const N15_NESTED_SUBSTITUTION_FORMS = [
+  'echo $(bash -c "$x")', 'echo "$(bash -c "$x")"', 'echo `bash -c "$x"`',
+  'x=$(bash -c "$y")', '(bash -c "$x")',
+];
+for (const cmd of N15_NESTED_SUBSTITUTION_FORMS) {
+  t('N15 nested substitution/subshell context must attribute to its own statement: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    const r = gate.classify(cmd);
+    assert.ok(r.matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd + ' -> ' + JSON.stringify(r.matched));
+  });
+}
+
+// (base-vs-fixed proof for N15 — that the pre-wave-6 classifier, which had no shell-name association step at
+// all, already fired on `sudo -u root bash -c "$x"` — was likewise run once against the extracted pre-wave-6
+// source rather than baked into this suite as a hardcoded-commit dependency; see the work-package report.)
+
+t('N15 counterfactual: an ordinary non-interpreter statement is unaffected by the wrapper/dynamic-word widening', () => {
+  for (const cmd of ['sudo -u root node report.cjs -c "$x"', 'timeout 5 wc -c "$file"', 'exec -a name grep -c pattern file.txt']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a real non-shell command behind a wrapper must stay silent: ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// codex-recheck 2026-09-24, wave 7 / wp-m1 — the "two alleged overblocks" the p12 review could not dynamically
+// reproduce or disprove (static inspection only, no scratch files allowed in that pass). Both were reproduced
+// here, read-only, against classify() directly.
+//
+// (a) "raw parenthesis counting precedes heredoc skipping" (forge-gate-quotes.cjs's own boundedParenEnd vs its
+//     heredoc skip) — CHECKED, NOT REPRODUCIBLE. scanQuotes() resolves and records a heredoc's own skip range
+//     the INSTANT it recognises the `<<` marker, before any later character of the body (including a stray
+//     unbalanced `(`) is ever individually visited — the skip is unconditional and never touches per-character
+//     paren counting inside the body at all. All three shapes below stay exactly as silent/resolved as an
+//     equivalent heredoc with no stray paren.
+// (b) an apostrophe inside a trailing `#` comment — REAL, and FIXED (this file's own scanQuotes() now treats an
+//     unquoted `#` at the start of a shell word as a comment to end-of-line, so the apostrophe inside "don't"
+//     never opens a literal quote that fails to close). Before the fix, `wc -c "$file" # don't count this` —an
+//     entirely ordinary command, "wc -c" is not a shell interpreter, "don't" is just a comment — fired
+//     opaque-exec anyway, because an unresolved ("unterminated") quote mask made cArgLiveAfterFlag's own
+//     "cannot bound it -> fire" rule trigger on the unrelated `-c` flag.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave7-c) item 3 — the two alleged over-blocks: (a) checked/not reproducible, (b) real/fixed');
+
+t('(a) heredoc skipping is unconditional: a heredoc body\'s own unbalanced "(" cannot confuse the scanner — checked, NOT reproducible', () => {
+  const cases = [
+    "git commit -F - <<'MSG'\nfix(parser): drop the unmatched (\nMSG",
+    "cat <<'EOF'\nnote (unbalanced\nEOF\nrm -rf ./src",
+    "echo $(true) <<'EOF'\nnote (unbalanced\nEOF",
+  ];
+  for (const c of cases) {
+    const mask = quotes.scanQuotes(c);
+    assert.strictEqual(mask.unterminated, false, 'a resolvable heredoc with a stray "(" in its body must not read as unterminated: ' + JSON.stringify(c));
+  }
+  // the neighbouring rm -rf in case 2 proves the heredoc body was genuinely skipped (and the classifier is
+  // genuinely live), not merely silent by luck
+  assert.deepStrictEqual(gate.classify(cases[1]).matched, ['destructive-delete'], 'only the real rm -rf after the heredoc should fire, nothing from inside the heredoc body');
+});
+
+t('(b) an apostrophe inside a trailing # comment no longer over-blocks an unrelated -c flag (Security Boss finding, REAL, fixed)', () => {
+  const silentCases = [
+    "echo hi # it's fine",
+    'git commit -m "x" # don\'t',
+    "wc -c \"$file\" # don't count this",
+    "bash setup.sh; wc -c \"$file\" # don't count this",
+  ];
+  for (const c of silentCases) {
+    const mask = quotes.scanQuotes(c);
+    assert.strictEqual(mask.unterminated, false, 'a trailing # comment with an apostrophe must not poison the whole scan: ' + JSON.stringify(c));
+    assert.deepStrictEqual(gate.classify(c).matched, [], 'must not fire on an ordinary command with a harmless commented apostrophe: ' + JSON.stringify(c));
+  }
+});
+
+t('(b) counterfactual: a genuinely unterminated quote (no comment involved) still fails toward fire, unaffected by the # fix', () => {
+  assert.strictEqual(quotes.scanQuotes('echo "unterminated').unterminated, true, 'a real unterminated double quote must still be caught');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x'), true, 'an unterminated -c argument still fails toward fire');
+});
+
+t('(b) a "#" not at a word start is still an ordinary character, never a comment opener', () => {
+  assert.strictEqual(quotes.scanQuotes('echo foo#bar "unterminated').unterminated, true,
+    'foo#bar is one word — the # here does not start a comment, so this string is genuinely unterminated (sanity check on the boundary condition)');
 });
 
 t('N09 counterfactual: real -c positives (bare/single/double, wrapped, sudo-prefixed) still fire through classify()', () => {

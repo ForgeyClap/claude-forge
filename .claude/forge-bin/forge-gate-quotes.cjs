@@ -52,12 +52,23 @@
  * ENCLOSING STATEMENT's own leading command word — after skipping env assignments and wrapper prefixes
  * (`sudo`/`time`/`nohup`/`exec`/`command`/`builtin`/`env`, an optional path prefix on `env`) and openers
  * (`{`/`(`/`!`/a bare `then`/`do`/`else`/`elif`/`while`/`until`/`for`/`if`/`try`/`catch`/`finally`) — is itself
- * one of `sh`/`bash`/`zsh`/`dash`/`ksh`/`pwsh`/`powershell`, bare or path-qualified (`/bin/bash`, `pwsh.exe`).
- * Statement boundaries are found by scanning backward from the flag to the nearest UNQUOTED `;`/`&`/`|`/
- * newline (never a separator sitting inside quoted data — the exact class of bug N04 was, reused here to keep
- * a quoted `;` inside a commit message from ever looking like a fresh statement start). Separately, a literal
- * currency dollar (`$5`, `$20`, a trailing lone `$`) is no longer confused with real substitution syntax
- * (`$name`, `${...}`, `$(...)`, a backtick) — see isSubstitutionDollar()/hasLiveSubstitution() below.
+ * one of `sh`/`bash`/`zsh`/`dash`/`ksh`/`pwsh`/`powershell`, bare or path-qualified (`/bin/bash`, `pwsh.exe`), a
+ * QUOTED form of one of those (`"bash"`, `'/bin/bash'`), OR a word this classifier cannot resolve at all
+ * (`$SHELL`, `"$SHELL"`, `${SHELL}`, `$(which bash)`) — treated as an unknown interpreter per this file's own
+ * "cannot bound it -> fire" principle, so it still only fires when the `-c` argument itself turns out live.
+ * Statement boundaries are found by scanning backward from the flag to the nearest UNQUOTED `;`/`&`/`|`/newline,
+ * OR an unquoted, unmatched opening `(`/backtick whose own substitution or subshell contains the flag (N15,
+ * codex-recheck 2026-09-24, wave 7 / wp-m1 — a REGRESSION: `x=$(bash -c "$y")` used to resolve its leading word
+ * from "x=$(bash", the env-assignment regex reading straight through the substitution boundary; never a
+ * separator sitting inside quoted data — the exact class of bug N04 was, reused here to keep a quoted `;`
+ * inside a commit message from ever looking like a fresh statement start). A wrapper prefix's own OPTIONS
+ * (`sudo -u root`, `env -i`, `nice -n 5`, `exec -a name`) are now stripped along with the wrapper word itself
+ * (N15 — wave 6 stripped only the word, leaving an option like `-u` as the apparent, non-shell "leading word").
+ * Separately, a `$` followed by a digit or a special parameter character (`$5`, `$1`, `$@`) is genuine shell
+ * substitution syntax too (N14, codex-recheck 2026-09-24, wave 7 / wp-m1 — a REGRESSION the fifth pass
+ * introduced by treating every digit/special character after `$` as inert currency); see isSubstitutionDollar()/
+ * hasLiveSubstitution() below — what keeps a currency amount in an UNRELATED program's argument silent is
+ * attribution (the leading-word check above), never the shape of its dollar.
  *
  * API: scanQuotes(text) -> {inside(pos), unterminated, spans} · stripHeredocs(text) [bash-only heredoc removal,
  *      moved here unchanged in external contract from forge-gate-data.cjs] · findHeredocDelim(text, bodyStart,
@@ -150,6 +161,23 @@ function scanQuotes(text) {
           continue;
         }
         const ch = text[f.i];
+        // Security Boss over-blocking review (codex-recheck 2026-09-24, wave 7 / wp-m1) — checked, REAL: an
+        // unquoted `#` at the start of a shell WORD (start of text, or right after whitespace/`;`/`&`/`|`/`(`/
+        // newline) begins a bash COMMENT to the end of the line; everything in it is inert and must never be
+        // quote-scanned. Before this fix an apostrophe inside a trailing comment (`echo hi # it's fine`) opened
+        // a literal single quote that never closed, poisoning the REST OF THE SCAN as `unterminated` — which,
+        // combined with cArgLiveAfterFlag's own pre-existing "cannot bound the quote structure -> fire" rule,
+        // made an entirely unrelated `-c` flag anywhere else in the text (`wc -c "$file" # don't count this`)
+        // fire opaque-exec. `#` NOT at a word start (`foo#bar`) is correctly left alone — bash only treats it as
+        // a comment opener at that position. Metered like every other search in this file (N13).
+        if (ch === '#' && (f.i === f.start || /[\s;&|(`\n]/.test(text[f.i - 1]))) {
+          const nl = text.indexOf('\n', f.i);
+          const end = nl === -1 || nl > f.end ? f.end : nl;
+          work += end - f.i;
+          if (work > WORK_CAP) { unterminated = true; break scan; }
+          f.i = end;
+          continue;
+        }
         if (ch === '<' && text[f.i + 1] === '<') {
           MARKER_AT_RE.lastIndex = f.i;
           const hm = MARKER_AT_RE.exec(text);
@@ -277,16 +305,25 @@ function stripHeredocs(text, deps) {
 /** skipWs(s, i) -> the index of the next non-whitespace character at/after i (or s.length). */
 function skipWs(s, i) { while (i < s.length && /\s/.test(s[i])) i++; return i; }
 
-/** isSubstitutionDollar(s, i) -> true when s[i] is a `$` character that begins REAL shell substitution syntax
- *  (a `$NAME`/`$_name` variable, a `${...}` parameter expansion, or a `$(...)` command substitution) rather
- *  than a literal currency amount (N09, codex-recheck 2026-09-24, wave 6 / wp-k3 — over-blocking regression
- *  fix). A currency dollar is always immediately followed by a digit, whitespace, punctuation, or the end of
- *  the string — none of which real shell substitution syntax ever produces right after the `$` itself. */
+/** isSubstitutionDollar(s, i) -> true when s[i] is a `$` character that begins REAL shell substitution syntax:
+ *  a `$NAME`/`$_name` variable, a `${...}` parameter expansion, a `$(...)` command substitution, a positional
+ *  parameter (`$0`..`$9`), or a special parameter (`$@ $* $# $? $- $$ $!`) — every one of these is a genuine
+ *  Bash expansion (GNU Bash manual, "Positional Parameters" / "Special Parameters"). N09 (codex-recheck
+ *  2026-09-24, wave 6 / wp-k3) first drew this distinction to stop a literal currency amount (`$5`, `$20`)
+ *  inside an UNRELATED program's own argument from being misread as substitution syntax, but its own rule was
+ *  too wide: it treated ANY digit or special character right after `$` as inert currency, which also silently
+ *  passed a genuine `bash -c "$1"` / `bash -c "$@"` call (N14, codex-recheck 2026-09-24, wave 7 / wp-m1 — a
+ *  REGRESSION; the existing fixture `cArgLiveAfterFlag('bash -c "$5"')` flipped from firing on the pre-wave-6
+ *  classifier to silent on wave 6's own head). The distinction that actually matters was never the SHAPE of the
+ *  dollar — it is WHOSE statement it sits in: cArgLiveAfterFlag()'s own attribution (statementCommandWord()) is
+ *  what correctly keeps `node report.cjs -c "total $5 due"` silent (the `-c` belongs to `node`, not to an
+ *  unrelated `bash` elsewhere in the line), never this function pretending `$5` itself can never be live. Only
+ *  a trailing lone `$` (nothing after it) or a `$` followed by whitespace/other punctuation is ever literal. */
 function isSubstitutionDollar(s, i) {
   if (s[i] !== '$') return false;
   const nx = s[i + 1];
   if (nx === undefined) return false; // a trailing lone "$" has nothing to substitute -> literal, not live
-  return nx === '(' || nx === '{' || /[A-Za-z_]/.test(nx);
+  return nx === '(' || nx === '{' || /[A-Za-z_0-9@*#?$!-]/.test(nx);
 }
 
 /** hasLiveSubstitution(s) -> true when `s` contains a backtick (always a substitution marker) or a `$` that
@@ -358,39 +395,128 @@ const C_FLAG_OCCUR_RE = /(?:^|\s)-c\b/g;
 // paths are). STATEMENT_BOUNDARY_RE is the (unquoted-only, see statementStart) set of characters that end one
 // statement and begin another for this purpose. ENV_ASSIGN_RE/WRAPPER_RE/OPENER_RE are stripped, repeatedly,
 // from a statement's own start before its leading word is read — an env assignment, a sudo/time/nohup/exec/
-// command/builtin/env wrapper (optionally path-qualified, matching hard-gates.json's own `(?:\S*/)?env` shape
-// for the pipe-into-interpreter rule), or a grouping/control-flow opener must not hide the real interpreter
-// word behind it (`sudo bash -c $x`, `{ bash -c $x; }`, `if true; then bash -c $x; fi` all still associate).
+// command/builtin/env/doas/nice/timeout/stdbuf wrapper (optionally path-qualified, matching hard-gates.json's
+// own `(?:\S*/)?env` shape for the pipe-into-interpreter rule) AND its own OPTIONS (N15 below), or a
+// grouping/control-flow opener must not hide the real interpreter word behind it (`sudo bash -c $x`,
+// `{ bash -c $x; }`, `if true; then bash -c $x; fi` all still associate).
 const SHELL_WORD_RE = /^(?:.*[\\/])?(?:sh|bash|zsh|dash|ksh|pwsh|powershell)(?:\.exe)?$/i;
 const STATEMENT_BOUNDARY_RE = /[;&|\n]/;
 const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s*/;
-const WRAPPER_RE = /^(?:\S*[\\/])?(?:sudo|time|nohup|exec|command|builtin|env)\b\s*/i;
+// N15 (codex-recheck 2026-09-24, wave 7 / wp-m1 — a REGRESSION): the wrapper list grows (doas/nice/timeout/
+// stdbuf joined sudo/time/nohup/exec/command/builtin/env), and the wrapper WORD's own capture group lets
+// stripWrapperOptions() below know which wrapper's option grammar to apply — wave 6 stripped the word but not
+// its options, so `sudo -u root bash -c "$x"` resolved its leading word to "-u" and was rejected outright.
+const WRAPPER_RE = /^(?:\S*[\\/])?(sudo|time|nohup|exec|command|builtin|env|doas|nice|timeout|stdbuf)\b\s*/i;
 const OPENER_RE = /^(?:[{(!]\s*|(?:then|do|else|elif|while|until|for|if|try|catch|finally)\b\s*)/i;
 
+// WRAPPER_VALUE_OPTS — per-wrapper short options that consume the NEXT token as their own value (real getopt
+// semantics: `sudo -u user`/`-g group`, `env -u NAME`/`-C dir`, `exec -a name`, `nice -n adjustment`). Any other
+// wrapper option (`env -i`, `command -p`, `time -p`, a glued `stdbuf -oL`) is a flag with no separate value —
+// deliberately NOT generalised across all wrappers: `command -p`/`time -p` take no value at all, so treating
+// EVERY wrapper's own `-p` as value-taking would wrongly swallow the real interpreter word right after it.
+const WRAPPER_VALUE_OPTS = { sudo: 'ug', env: 'uC', exec: 'a', nice: 'n' };
+// NUMERIC_ARG_WRAPPERS — the two wrappers whose OWN bare positional argument is a number (`timeout 5`, and
+// `nice`'s fallback form without `-n`), consulted only after the value/generic option steps below have already
+// had a chance to consume a `-n`-style flag first.
+const NUMERIC_ARG_WRAPPERS = new Set(['timeout', 'nice']);
+const WRAPPER_OPT_VALUE_RE = /^-([A-Za-z])\s+\S+\s*/;
+const WRAPPER_OPT_RE = /^--?[A-Za-z][\w-]*(?:=\S+)?\s*/;
+const WRAPPER_NUMERIC_RE = /^\d+\s*/;
+
+/** stripWrapperOptions(s, wrapperName) -> `s` with the wrapper's OWN leading option tokens stripped (N15,
+ *  codex-recheck 2026-09-24, wave 7 / wp-m1). Tries, in order, each iteration (bounded to 8 — real invocations
+ *  never carry more than a handful): a value-taking short option FOR THIS WRAPPER plus its following token
+ *  (`-u root `); any other single flag token, short or long, with or without a glued `=value` (`-i `, `-oL `,
+ *  `--foo=bar `); and, only for timeout/nice, a bare leading number (`5 `) once no more flags match. Stops the
+ *  instant none of the three apply — the next token is the real command. */
+function stripWrapperOptions(s, wrapperName) {
+  const valueOpts = WRAPPER_VALUE_OPTS[String(wrapperName || '').toLowerCase()] || '';
+  const numeric = NUMERIC_ARG_WRAPPERS.has(String(wrapperName || '').toLowerCase());
+  let out = s;
+  for (let i = 0; i < 8; i++) {
+    let m = WRAPPER_OPT_VALUE_RE.exec(out);
+    if (m && valueOpts.includes(m[1])) { out = out.slice(m[0].length); continue; }
+    m = WRAPPER_OPT_RE.exec(out);
+    if (m) { out = out.slice(m[0].length); continue; }
+    if (numeric && (m = WRAPPER_NUMERIC_RE.exec(out))) { out = out.slice(m[0].length); continue; }
+    break;
+  }
+  return out;
+}
+
 /** statementStart(s, mask, pos) -> the absolute index where the statement CONTAINING `pos` begins: the
- *  character right after the nearest UNQUOTED statement-boundary character before `pos`, or 0. Respecting the
- *  shared quote mask here is exactly the N04 lesson reapplied: a `;` sitting inside a quoted commit message
- *  (`git commit -m "run; bash -c $x"`) must never look like a fresh statement start. */
+ *  character right after the nearest UNQUOTED statement-boundary character before `pos` (`;`/`&`/`|`/newline),
+ *  OR an unquoted, UNMATCHED opening `(`/backtick whose own substitution/subshell contains `pos` (N15, codex-
+ *  recheck 2026-09-24, wave 7 / wp-m1 — a REGRESSION: this function previously knew nothing about nested
+ *  command-substitution context at all, so `x=$(bash -c "$y")` read its leading word from "x=$(bash" — the env-
+ *  assignment regex consuming straight through the substitution boundary — and `$(which bash) -c "$x"` had no
+ *  way to see that its own leading word is unresolvable). A `)` seen while scanning backward means everything
+ *  between it and `pos` sits inside one CLOSED parenthesised span that finished entirely BEFORE `pos` — its
+ *  matching `(` does not enclose `pos` and is not a boundary, so scanning continues past both; only a `(` with
+ *  no unmatched `)` still owed truly encloses `pos`. A backtick has no distinct open/close character, so the
+ *  NEAREST unquoted one is treated as the boundary — correct for a single, non-nested `` `...` `` span, the only
+ *  shape these gates need. Respecting the shared quote mask throughout is the N04 lesson reapplied: none of
+ *  `;`/`(`/`)`/backtick sitting inside quoted DATA may ever look like a fresh boundary. */
 function statementStart(s, mask, pos) {
   let i = pos - 1;
+  let closeDepth = 0;
   while (i >= 0) {
-    if (STATEMENT_BOUNDARY_RE.test(s[i]) && !mask.inside(i)) return i + 1;
+    if (!mask.inside(i)) {
+      const ch = s[i];
+      if (ch === ')') { closeDepth++; i--; continue; }
+      if (ch === '(') {
+        if (closeDepth > 0) { closeDepth--; i--; continue; }
+        return i + 1;
+      }
+      if (ch === '`') return i + 1;
+      if (STATEMENT_BOUNDARY_RE.test(ch)) return i + 1;
+    }
     i--;
   }
   return 0;
 }
 
-/** statementCommandWord(stmt) -> the leading command word of a statement's own text, after repeatedly
- *  stripping env assignments, wrapper prefixes and grouping/control-flow openers from its start (capped so a
- *  pathological input cannot loop unboundedly; ordinary statements resolve in one or two strips). */
+/** readInterpreterWord(s) -> { word, dynamic } — the leading executable word of `s` (a statement already
+ *  stripped of env assignments/wrapper prefixes/openers), in every quoting form this policy must recognise
+ *  (N15, codex-recheck 2026-09-24, wave 7 / wp-m1). A bare word reads exactly as before (readBareWord). A
+ *  QUOTED word (`"bash"`, `'/bin/bash'`, `"C:\Program Files\...\pwsh.exe"`) has its own wrapping quotes
+ *  stripped before SHELL_WORD_RE ever sees it — single-quoted content is always literal to the outer shell;
+ *  double-quoted content is literal too UNLESS it holds a live substitution marker itself, in which case the
+ *  word is DYNAMIC (`"$SHELL"`). A leading `$(`, `${`, a bare `$NAME`, or a backtick — unquoted — is also
+ *  DYNAMIC (`$(which bash)`, `${SHELL}`). `dynamic:true` means this classifier cannot read what the statement
+ *  will actually run, so — this file's own "cannot bound it -> fire" principle, already applied to an
+ *  unresolved quote mask elsewhere — the caller treats it as an interpreter for the ASSOCIATION test alone; it
+ *  still only fires once the `-c` argument itself turns out live, so a static `"$SHELL" -c "echo hi"` stays
+ *  silent exactly like a known `bash -c "echo hi"` does. */
+function readInterpreterWord(s) {
+  const c = s[0];
+  if (c === '"' || c === "'") {
+    const close = s.indexOf(c, 1);
+    if (close !== -1 && (close + 1 >= s.length || /[\s;|&()<>]/.test(s[close + 1]))) {
+      const content = s.slice(1, close);
+      if (c === '"' && hasLiveSubstitution(content)) return { word: null, dynamic: true };
+      return { word: content, dynamic: false };
+    }
+  }
+  if (/^(?:\$\(|\$\{|\$[A-Za-z_]|`)/.test(s)) return { word: null, dynamic: true };
+  return { word: readBareWord(s, 0), dynamic: false };
+}
+
+/** statementCommandWord(stmt) -> { word, dynamic } — the leading command word of a statement's own text (see
+ *  readInterpreterWord), after repeatedly stripping env assignments, wrapper prefixes AND THEIR OWN OPTIONS
+ *  (N15), and grouping/control-flow openers from its start (capped so a pathological input cannot loop
+ *  unboundedly; ordinary statements resolve in one or two strips). */
 function statementCommandWord(stmt) {
   let s = String(stmt).replace(/^\s+/, '');
   for (let i = 0; i < 12; i++) {
     const before = s;
-    s = s.replace(ENV_ASSIGN_RE, '').replace(WRAPPER_RE, '').replace(OPENER_RE, '');
+    s = s.replace(ENV_ASSIGN_RE, '');
+    const wm = WRAPPER_RE.exec(s);
+    if (wm) s = stripWrapperOptions(s.slice(wm[0].length), wm[1]);
+    s = s.replace(OPENER_RE, '');
     if (s === before) break;
   }
-  return readBareWord(s, 0);
+  return readInterpreterWord(s);
 }
 
 /** cArgLiveAfterFlag(text) -> boolean. The -c ARGUMENT POLICY (see this file's header) implemented for all
@@ -413,7 +539,10 @@ function cArgLiveAfterFlag(text) {
     const cStart = m.index + m[0].length - 2; // m[0] is "-c" or "\s-c"; the flag itself is its last 2 chars
     if (mask.unterminated) return true; // cannot bound the quote structure at all -> fail toward fire
     if (mask.inside(cStart)) continue; // N09: "-c" sitting inside quoted DATA (e.g. a commit message) is not a real flag
-    if (!SHELL_WORD_RE.test(statementCommandWord(s.slice(statementStart(s, mask, cStart), cStart)))) continue; // N09: associate with the real invocation
+    const attribution = statementCommandWord(s.slice(statementStart(s, mask, cStart), cStart));
+    // N09/N15: associate with the real invocation — a known shell word, OR an unresolvable ("dynamic") one,
+    // both count; a resolvable word that is NOT a shell (e.g. "node", "wc", a leftover option) does not.
+    if (!attribution.dynamic && !SHELL_WORD_RE.test(attribution.word || '')) continue;
     const i = skipWs(s, m.index + m[0].length);
     if (i >= s.length) continue; // a trailing "-c" with nothing after it: no argument to judge
     const ch = s[i];
