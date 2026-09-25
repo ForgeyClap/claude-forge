@@ -631,6 +631,41 @@ function credentialGeneration() {
     return String(st.mtimeMs) + ':' + String(st.size);
   } catch { return null; }
 }
+/** readCredentialSnapshot() -> { generation, credentialFp } — N10 WAVE 10 (2026-09-24, Codex out-p15
+ *  finding N10, "snapshot race"): readCredentialFp() and credentialGeneration() used to be called
+ *  SEPARATELY inside tick() — once for the mid-check rotation gate, again (after other work ran in
+ *  between) for the owner-override resolver call — each opening/reading CRED_FILE on its own. A credential
+ *  rotation landing in the gap between those two independent reads could pair a STALE fingerprint with a
+ *  FRESH generation (or the reverse). Codex's `N10_mixed_snapshot_real_override_on_new_uuid` proved this
+ *  torn pairing lets a replacement grant's in-memory proof (usage-guard-override.cjs's own
+ *  credentialProofByAccount) get seeded with a fingerprint that never actually belonged to the generation
+ *  it was recorded against — a later, genuinely different credential can then replay that stale fingerprint
+ *  and wrongly inherit an override it was never confirmed under. THE FIX: open CRED_FILE exactly ONCE — a
+ *  single file descriptor, `fstatSync(fd)` for the mtime+size generation stamp, THEN `readFileSync(fd)` for
+ *  the refresh-token fingerprint from that SAME open handle, then close. This project's credential writer
+ *  replaces the file via write-temp-then-rename (atomic replace); a handle already open on the OLD inode
+ *  keeps reading the OLD file's bytes even after a concurrent rename swaps in a new one, so the metadata and
+ *  the content returned here are always drawn from the SAME underlying file state — the two halves can never
+ *  straddle a rewrite relative to EACH OTHER again. GUARD-TOKEN-FINGERPRINT: derives a fingerprint of the
+ *  refresh token, never the token itself; nothing this function returns is ever persisted or logged — see
+ *  tick()'s own N10 history for how the result is used. Null-safe in every field; never throws. */
+function readCredentialSnapshot() {
+  let fd;
+  try {
+    fd = fs.openSync(CRED_FILE, 'r');
+    const st = fs.fstatSync(fd);
+    const generation = String(st.mtimeMs) + ':' + String(st.size);
+    let credentialFp = null;
+    try {
+      const raw = fs.readFileSync(fd, 'utf8');
+      const cred = JSON.parse(raw);
+      const rt = cred && cred.claudeAiOauth && cred.claudeAiOauth.refreshToken;
+      if (typeof rt === 'string' && rt) credentialFp = crypto.createHash('sha256').update('rt:' + rt).digest('hex').slice(0, 12);
+    } catch { /* opened fine (generation is valid) but content was unparsable/rotated mid-read — fp stays null, never guessed */ }
+    return { generation, credentialFp };
+  } catch { return { generation: null, credentialFp: null }; }
+  finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* best effort */ } } }
+}
 /** detectAccountSwitch(state, ident) -> {switched, from, to, reason}. Pure. A switch requires TWO known
  *  fingerprints that differ: an unstamped legacy state (adoption) and an unknown current identity both
  *  degrade to "no switch" — wiping real state on a missing profile file would be worse than the bug. */
@@ -1465,7 +1500,7 @@ async function tick(deps, opts) {
   // identical: every default is the real function.
   const D = Object.assign({
     fetchUsage, readIdentity: readAccountIdentity, readState, writeState, doPause, doResume, log,
-    writePressureFile, readCredentialFp, readCredentialGeneration: credentialGeneration,
+    writePressureFile, readCredentialSnapshot,
   }, deps || {});
   // GUARD-OFF-BYPASS (2026-09-24): opts.force is the ONE way a caller may tell fetchUsage() to proceed
   // even while the owner's usage-guard switch is off — used ONLY by watchStep(), and ONLY for the single
@@ -1494,7 +1529,23 @@ async function tick(deps, opts) {
   // account B's token liep. De fetch draagt daarom de vingerafdruk van het credential dat hij ECHT
   // gebruikte; is het credential NU al anders (geroteerd/gewisseld tijdens de fetch), dan zijn deze
   // cijfers niet meer aan een consistente identiteit te binden — verwerpen, volgende tick meet opnieuw.
-  const credNow = D.readCredentialFp();
+  //
+  // GUARD-CREDENTIAL-SNAPSHOT (2026-09-24, N10 WAVE 10, Codex out-p15): read the fingerprint AND the
+  // generation from ONE atomic snapshot, right here, and reuse the SAME snapshot for the owner-override
+  // resolver call further down — see readCredentialSnapshot()'s own doc comment for the exact torn-pairing
+  // bug this replaces. LEGACY TEST SEAM: when a caller supplies the OLD `readCredentialFp`/
+  // `readCredentialGeneration` deps directly (existing tests only — never a real caller, and never a test
+  // that means to exercise the atomicity itself) without also supplying `readCredentialSnapshot`, the two
+  // are combined here for backward compatibility — that combination is NOT atomic (two separate calls,
+  // exactly like the pre-wave-10 code), but every one of those tests uses a fixed-value mock with nothing to
+  // race against, so the distinction is invisible to them. Every real caller, and any test that means to
+  // prove the atomicity guarantee, must use `readCredentialSnapshot` directly.
+  const usesLegacyCredDeps = !!(deps && typeof deps.readCredentialSnapshot !== 'function'
+    && (typeof deps.readCredentialFp === 'function' || typeof deps.readCredentialGeneration === 'function'));
+  const credSnap = usesLegacyCredDeps
+    ? { credentialFp: (deps.readCredentialFp ? deps.readCredentialFp() : null), generation: (deps.readCredentialGeneration ? deps.readCredentialGeneration() : null) }
+    : (D.readCredentialSnapshot() || { generation: null, credentialFp: null });
+  const credNow = credSnap.credentialFp;
   if (u.credentialFp && credNow && u.credentialFp !== credNow) {
     // GUARD-TOKEN-FINGERPRINT (2026-09-24): u.credentialFp/credNow are sha256 fingerprints of the
     // REFRESH TOKEN (an actual bearer secret) — kept ENTIRELY in memory for this one comparison, never
@@ -1569,7 +1620,11 @@ async function tick(deps, opts) {
   // Nothing about this decision is persisted in state.json any more; `credNow` (this tick's bearer-credential
   // fingerprint, already read above for the mid-check-rotation gate) is passed straight through to the
   // resolver's in-memory-only proof — never written to disk, never logged, never returned by the resolver.
-  const curCredGen = D.readCredentialGeneration ? D.readCredentialGeneration() : null;
+  //
+  // WAVE 10: `curCredGen` comes from `credSnap` — the SAME single atomic read taken above, never a second,
+  // separately-timed call — so this pairing with `credNow` can never be torn relative to the mid-check
+  // gate's own comparison (see credSnap's own comment and readCredentialSnapshot()'s doc comment).
+  const curCredGen = credSnap.generation;
   const overrideNow = guardOverride.resolveOwnerOverride({
     projectRoot: TRUSTED_OWNERGRANT_ROOT, accountLabel: ident.fp,
     credentialGeneration: curCredGen, credentialFp: credNow,
@@ -1577,28 +1632,42 @@ async function tick(deps, opts) {
   if (overrideNow.active) {
     const c = u.credits;
     if (!creditsExhausted(c)) {
-      // N17 (2026-09-24, Codex p13 wave 8 finding N17/N16 regression): captured BEFORE the write below — a
-      // legitimately re-honoured override (owner reran override-on, or the memory-proof match fired) must
-      // never leave GUARD-OWNED agents stuck paused while state now reports 'ok'. Codex's reproduction: one
-      // pause, zero resumes, agent still paused, state 'ok' — because this branch used to return right after
-      // the plain cache write, before any resume/reconciliation ever ran.
+      // N17 (2026-09-24, Codex p13 wave 8 finding N17/N16 regression): a legitimately re-honoured override
+      // (owner reran override-on, or the memory-proof match fired) must never leave GUARD-OWNED agents stuck
+      // paused while state now reports 'ok'. Codex's original reproduction: one pause, zero resumes, agent
+      // still paused, state 'ok' — because this branch used to return right after the plain cache write,
+      // before any resume/reconciliation ever ran.
+      //
+      // N17 WAVE 10 RESIDUAL (2026-09-24, Codex out-p15 finding N17): the wave-8/9 fix above still wrote
+      // `mode:'ok'` in THIS transaction, before doResume() ever ran — so a refused or fenced bookkeeping
+      // write INSIDE doResume()'s own reconciliation left no further write to correct it: state stayed 'ok'
+      // with an unresolved agent, and the NEXT tick's `wasPaused` check (st.mode === 'paused', read from that
+      // wrongly-healthy cache) never even retried the resume (Codex's exact schedule: resume calls stuck at
+      // 1 -> 2 -> 2). THE FIX: `mode` is withheld from this write whenever there is something to reconcile
+      // (`wasPaused`) — the informational fields (percents/credits/ownerOverride cache) are still refreshed
+      // immediately either way (doResume() re-reads them fresh from disk and preserves them in ITS OWN write
+      // regardless of outcome — see its own comment), but the actual 'ok' transition is left ENTIRELY to
+      // doResume()'s own outcome: full reconciliation writes 'ok' with a real resumed count; a partial,
+      // refused, or fenced outcome leaves (or restores) 'paused' + resumePending, retried from the pending
+      // list/journal on every following tick independently of this branch — bounded only by the existing
+      // retry policy, exactly like an ordinary usage-reset resume already behaves elsewhere in this file.
       const wasPaused = st.mode === 'paused';
       await withLockedState(D, (fresh) => {
-        fresh.mode = 'ok'; fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.credits = c;
-        fresh.lastCheckAt = new Date().toISOString(); delete fresh.lastError;
+        fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.credits = c;
+        fresh.lastCheckAt = new Date().toISOString();
         // the cache is REBUILT from the fresh grant record every tick, never carried forward as-is.
         fresh.ownerOverride = guardOverride.cachedOverrideFrom(overrideNow.record);
+        if (!wasPaused) { fresh.mode = 'ok'; delete fresh.lastError; } // nothing to reconcile — safe immediately
       }, 'OVERRIDE active write');
       if (wasPaused) {
         // N17: reconcile through the SAME resume path/retry semantics an ordinary usage-reset resume uses —
-        // `st` still carries the pausedAgents list from BEFORE this tick's override decision (doResume()
-        // itself re-reads ownerOverride/credits FRESH from disk, so it preserves what was just written above,
-        // and its own failed-resume retry/resumePending bookkeeping applies exactly as it already does
-        // elsewhere in this file).
+        // `st` still carries the pausedAgents list from BEFORE this tick's override decision. doResume() OWNS
+        // the mode transition from here (see the WAVE 10 note above) and logs the actual outcome itself
+        // (RESUMED / RESUME PARTIAL, with real counts) — this branch never repeats or overclaims that outcome.
         await D.doResume(u, st, ident, { signal: tickOpts.signal });
       }
       const low = Number.isFinite(c.remaining) && Number.isFinite(c.limit) && c.limit > 0 && (c.remaining / c.limit) <= 0.1;
-      D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : '') + (wasPaused ? ' · reconciled guard-owned pause(s) back to running' : ''));
+      D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : '') + (wasPaused ? ' · reconciliation attempted for guard-owned pause(s) — see the resume outcome above for the actual result' : ''));
       return;
     }
     // N12 (2026-09-24, Security Boss addendum reconfirmed) — MEASURED DEFECT (`V15-credits-exhaustion-
@@ -2413,7 +2482,7 @@ module.exports = {
   fingerprintAccount, readAccountIdentity, detectAccountSwitch, stateForAccount,
   normalizeWindows, crossedWindows, windowLabel, watcherHealth, fmtReset, stillHighTrigger,
   tick, doPause, doResume, accountStamp, ownsPid, readPosixCmdline, verdictFromCmdline, pidAlive, readCredentialFp,
-  credentialGeneration,
+  credentialGeneration, readCredentialSnapshot,
   claimWatcherSlot, releaseWatcherSlot, incumbentStatus, readPidRecordFrom, STALE_LOCK_MS,
   awaitChildClaim, journalAppend, unresolvedPausedAgents, rotateLogIfNeeded, compactJournalIfNeeded,
   computePressureLevel, buildPressureData, creditsExhausted,

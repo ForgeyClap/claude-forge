@@ -304,11 +304,11 @@ evidence or deferred with a reason before this release went out. The code fixes:
   silent on the pre-ninth-pass classifier and stopping on the fixed one; 21 tests and 26 welded claim probes were added
   (85 probes on this gate). Usage guard: the in-memory credential proof is now bound to the specific grant issuance —
   `override-on` writes a random, non-secret issuance id into the grant and the watcher's remembered proof only counts
-  for that same issuance, so a watcher that still remembers an earlier authorized credential can never honour a
-  REPLACEMENT grant issued for another credential (revoking and re-granting invalidates the old proof; a grant without
-  an issuance id gets no memory proof at all, only the exact-stamp match). `override-on` clears only the agents that
-  really resumed: any agent whose resume failed stays in the paused list and the watcher retries it every tick, the
-  command says so instead of claiming success, and the state never reads ok while an agent is still unresumed. The
+  for that same issuance: in the tested schedules a watcher that remembers an earlier authorized credential does not
+  honour a replacement grant, revoking and re-granting invalidates the old proof, and a grant without an issuance id
+  gets no memory proof at all (exact-stamp match only) — the tenth pass below closes the remaining timing window.
+  `override-on` clears only the agents that really resumed; any agent whose resume failed stays in the paused list
+  and the command says so instead of claiming success (the tenth pass below makes the retry survive a refused write). The
   restart sentence above is corrected: a grant whose stamp still equals the current generation is honoured directly
   after a restart; fresh authorization is needed only once the generation has drifted. Test-harness note: the
   distribution's gateway suite (nested `command-center`, unchanged in this release) is green when run alone or serially
@@ -316,6 +316,28 @@ evidence or deferred with a reason before this release went out. The code fixes:
   timeout) can fail under parallel whole-suite load on a busy machine — a harness limitation, not a gateway change.
   Named, unfixed gaps unchanged: a clustered `-xc`, an option between `-c` and its argument, PowerShell's
   `-C`/`-Command`.
+- **Tenth pass (Codex's tenth verification kept 2 highs open — a timing window in the credential proof and thirteen
+  wrapper grammar shapes — plus a refused-write retry medium and a documentation low).** Usage guard: the credential
+  fingerprint and the credential-file generation now come from ONE snapshot — a single open of the credential file,
+  `fstat` for the generation, then the read for the fingerprint — and the tick uses that one pair for both the mid-check
+  rotation gate and the override decision, so a replacement grant landing between two separate reads can no longer bind
+  an old fingerprint to a new issuance (Codex's interleaving now pauses on every high tick). The override-active branch
+  no longer writes a healthy state before reconciliation: the mode transition belongs to the resume outcome alone (all
+  guard-owned agents resumed → ok; a partial, refused or fenced bookkeeping write → still paused with the pending list
+  kept, retried every following tick), so an agent can no longer stay paused while the state reads ok. Gate hook: the
+  wrapper grammar is now CLOSED — after a recognised wrapper (`sudo`, `doas`, `env`, `command`, `builtin`, `exec`, `time`,
+  `nohup`, `nice`, `timeout`, `stdbuf`) only that wrapper's own tabled tokens are consumed: its known no-value flags, its
+  known value options in both `--name value` and `--name=value` form with the value read as a complete shell word (a
+  quoted operand with spaces is one token), its operand grammar (`timeout` accepts any strtod float, exponent and trailing
+  decimal included; `nice` a signed integer) and the `--` terminator. Any other token before the command word makes the
+  invocation unresolvable, so a live `-c` argument stops even when the classifier has never heard of that option; the
+  `env -S`/`--split-string` operand supplies executable arguments and is always unresolvable. The earlier "leftover dash
+  token" safety net is superseded by this rule. An escaped backtick never takes part in delimiter pairing. The thirteen
+  shapes the tenth verification named all stop now (each shown silent on the previous classifier, stopping on this one);
+  ordinary wrapped programs whose tokens are all tabled (`sudo -u root node app.js -c "$cfg"`) stay silent. One explored
+  shape is neither fixed nor claimed: an unpaired backtick between the interpreter and its flag attributes to the word
+  inside the still-open span, as it did before. Named, unfixed gaps unchanged: a clustered `-xc`, an option between `-c`
+  and its argument, PowerShell's `-C`/`-Command`.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every

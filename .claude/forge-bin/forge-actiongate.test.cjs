@@ -968,6 +968,124 @@ t('N18 (low, regression): the leftover-dash-option fallback fires only on genuin
 });
 
 // ---------------------------------------------------------------------------
+// WAVE 10 (2026-09-24, codex-recheck tenth pass / wp-q1 -- N15-R residual, DOC9) -- Codex's own recommendation:
+// "either recognize supported grammar or conservatively treat unresolved attribution as opaque." Every positive
+// below was dynamically verified silent on wave 9's own head (`git show 78b0ac7:.claude/forge-bin/
+// forge-gate-quotes.cjs`) and firing on this fix -- a genuine NEW protection, not a restoration -- via a
+// base-vs-fixed cArgLiveAfterFlag probe; see the work-package report for the transcript. Named after Codex's
+// own probe names where a name was given.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave10) closed per-wrapper grammar -- untabled long options, quoted-space values, timeout strtod grammar, env -S, escaped-backtick pairing');
+
+const WAVE10_LONG_OPTS = [
+  { name: 'P15-long-sudo-prompt', cmd: 'sudo --prompt "Enter password: " bash -c "$x"' },
+  { name: 'P15-long-stdbuf-input', cmd: 'stdbuf --input L bash -c "$x"' },
+  { name: 'P15-long-time-output', cmd: 'time --output /tmp/t.log bash -c "$x"' },
+];
+for (const p of WAVE10_LONG_OPTS) {
+  t(p.name + ': an untabled long option must not misread its own value as the leading word: "' + p.cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(p.cmd), true, 'not associated: ' + p.cmd);
+    assert.ok(gate.classify(p.cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + p.cmd);
+  });
+}
+
+t('P15-long-quoted-space-value: a quoted option value carrying its own internal space is read as ONE word, short and long forms', () => {
+  for (const cmd of ['sudo -p "Enter password: " bash -c "$x"', 'sudo --prompt "Enter password: " bash -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the value\'s internal space must not split it: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+const WAVE10_DURATIONS = [
+  { name: 'P15-duration-exponent', cmd: 'timeout 1e2 bash -c "$x"' },
+  { name: 'P15-duration-trailing-decimal', cmd: 'timeout 5. bash -c "$x"' },
+];
+for (const p of WAVE10_DURATIONS) {
+  t(p.name + ': a real GNU coreutils strtod duration form must not be misread as the leading word: "' + p.cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(p.cmd), true, 'not associated: ' + p.cmd);
+    assert.ok(gate.classify(p.cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + p.cmd);
+  });
+}
+
+t('P15-backtick-nested-no-argv-separator: adjacent, non-nesting backtick pairs with no separator between them still attribute to the outer interpreter (no regression)', () => {
+  const cmd = 'bash `echo `x`` -c "$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the leading "bash" must still resolve: ' + cmd);
+  assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+});
+
+t('escaped-backtick pairing: an ESCAPED backtick never toggles parity, so a real separator inside a legally nested (escaped) backtick substitution does not truncate the statement', () => {
+  const cmd = 'bash `echo \\`a; echo b\\`` -c "$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the leading "bash" must resolve past the escaped, nested substitution: ' + cmd);
+  assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+});
+
+t('P15-backtick-unpaired-before-outer-flag: an unpaired backtick attributes the flag to whatever starts INSIDE its own still-open span, not to a wrapper before it (explored and reported, not a fix)', () => {
+  // "bash `echo -c "$x"" has exactly one backtick between "bash" and the flag. Scanning backward from -c, the
+  // scan is still hunting for that backtick's own (missing) opener when it reaches the start of the text, so
+  // pos is judged to sit INSIDE that still-open candidate span -- whose own content starts right after the
+  // backtick ("echo"), not at "bash" before it. "echo" is not a shell, so this stays silent both before and
+  // after this wave; verified unchanged against the wave-9 head. This is the same, already-tested direction as
+  // 'echo `bash -c "$x"' (N15-R d's own counterfactual) applied with the roles of the two words swapped.
+  const cmd = 'bash `echo -c "$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'attributes to "echo", inside the still-open span, not to "bash" before it: ' + cmd);
+  assert.deepStrictEqual(gate.classify(cmd).matched, [], 'classify() unexpectedly fired: ' + cmd);
+});
+
+t('env -S / --split-string is unconditionally unresolvable, regardless of what follows it', () => {
+  for (const cmd of ['env -S "node -e 1" -c "$x"', 'env --split-string="node -e 1" -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+t('closed grammar: a value-taking option with nothing left to consume inside its own statement fails toward dynamic, not silence', () => {
+  for (const cmd of ['sudo -u -c "$x"', 'env --unset -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'a malformed/missing value must fail toward association: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+t('closed grammar: an unsupported glued/clustered shape on a no-value flag fails toward dynamic rather than being silently stripped', () => {
+  const cmd = 'command -px bash -c "$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'an unrecognised glued shape must fail toward association: ' + cmd);
+  assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+});
+
+t('benign controls (task item 3): a real non-shell command behind a fully-parsed wrapper stays silent', () => {
+  for (const cmd of ['sudo -u root node app.js -c "$cfg"', 'env NODE_ENV=x node cli.js -c "$c"', 'timeout 5s python tool.py -c "$c"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a real non-shell command must stay silent: ' + cmd);
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'classify() unexpectedly fired: ' + cmd);
+  }
+  // no lowercase -c token at all (git's own -C is a different, uppercase flag) -- trivially silent
+  assert.deepStrictEqual(gate.classify('nice -n 5 git -C dir status').matched, [], 'classify() unexpectedly fired on an unrelated uppercase -C flag');
+});
+
+t('regression guard: sudo -h / --help stay no-value flags (real GNU sudo semantics), unchanged by the new value-option table', () => {
+  for (const cmd of ['sudo -h bash -c "$x"', 'sudo --help bash -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'sudo -h/--help must still resolve to "bash" as a no-value flag: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+t('closed grammar counterfactual: every wave 6-9 wrapper positive keeps firing unchanged', () => {
+  const cmds = [
+    'sudo -u root bash -c "$x"', 'env -i bash -c "$x"', 'env -u FOO bash -c "$x"', 'timeout 5 bash -c "$x"',
+    'nice -n 5 bash -c "$x"', 'time -p bash -c "$x"', 'nohup bash -c "$x" &', 'command -p bash -c "$x"',
+    'exec -a name bash -c "$x"', 'doas bash -c "$x"', 'stdbuf -oL bash -c "$x"',
+    'sudo -- bash -c "$x"', 'env -- bash -c "$x"', 'command -- bash -c "$x"',
+    'sudo -p "pwd" bash -c "$x"', 'timeout -s KILL 5 bash -c "$x"', 'doas -u root bash -c "$x"',
+  ];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'a pre-existing positive must keep firing: ' + cmd);
+  }
+  const silentCmds = ['sudo -u root node report.cjs -c "$x"', 'timeout 5 wc -c "$file"', 'exec -a name grep -c pattern file.txt',
+    'env-runner $CONFIG -c "$x"', 'sudo-wrapper $CONFIG -c "$x"'];
+  for (const cmd of silentCmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a pre-existing negative must stay silent: ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Heredoc-claim (codex-recheck 2026-09-24, wave 8 / wp-n1) — REAL and reproduced dynamically, narrowing the
 // wave-7 "checked, NOT reproducible" claim above to exactly the context it was tested in (a heredoc NOT nested
 // inside a command substitution). Nested inside one, boundedParenEnd's own paren count used to walk INTO the

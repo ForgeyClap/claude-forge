@@ -320,6 +320,45 @@ t('N09 counterfactual: real -c positives still fire (exit 2) through the real ho
   }
 });
 
+// ---------------------------------------------------------------------------
+// WAVE 10 (2026-09-24, codex-recheck tenth pass / wp-q1) -- the closed per-wrapper grammar's own residual shapes
+// (forge-actiongate.test.cjs 2c-wave10 has the module-level classify()/cArgLiveAfterFlag proof of the same
+// fixtures), proven here a second time through the REAL spawned PreToolUse process, exactly as the live hook
+// receives them.
+// ---------------------------------------------------------------------------
+t('opaque-exec wave 10: an untabled long option, a quoted value with an internal space, a real GNU timeout strtod duration, env -S, and an escaped nested backtick all fire through the real hook', () => {
+  for (const cmd of [
+    'sudo --prompt "Enter password: " bash -c "$x"',
+    'stdbuf --input L bash -c "$x"',
+    'time --output /tmp/t.log bash -c "$x"',
+    'sudo -p "Enter password: " bash -c "$x"',
+    'timeout 1e2 bash -c "$x"',
+    'timeout 5. bash -c "$x"',
+    'env -S "node -e 1" -c "$x"',
+    'env --split-string="node -e 1" -c "$x"',
+    'bash `echo \\`a; echo b\\`` -c "$x"',
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+    assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('opaque-exec wave 10 counterfactual: benign wrapper-fronted real programs stay silent through the real hook', () => {
+  for (const cmd of ['sudo -u root node app.js -c "$cfg"', 'env NODE_ENV=x node cli.js -c "$c"',
+    'timeout 5s python tool.py -c "$c"', 'nice -n 5 git -C dir status']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 0, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('opaque-exec wave 10 regression guard: sudo -h/--help still fire as a no-value flag through the real hook, unchanged', () => {
+  for (const cmd of ['sudo -h bash -c "$x"', 'sudo --help bash -c "$x"']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  }
+});
+
 t('H2: a trailing-backslash quoted path before a later else/elseif/catch/finally branch still FIRES, for both Bash and PowerShell tool calls', () => {
   const prefix = 'Write-Output "C:\\Users\\foo\\" ; ';
   const bodies = [

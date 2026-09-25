@@ -1220,6 +1220,73 @@ test('N10 wave-8 (end-to-end via tick()): the CURRENT credential file being unre
   assert.strictEqual(out.st.mode, 'paused', 'an unverifiable current credential must never default to "assume it still matches": ' + JSON.stringify(out.st));
 });
 
+// ---- N10 WAVE 10 (2026-09-24, Codex out-p15 finding N10, "snapshot race") — readCredentialFp() and
+// credentialGeneration() used to be read SEPARATELY inside tick(), at two different moments; a credential
+// rotation landing in between could pair a STALE fingerprint with a FRESH generation. readCredentialSnapshot()
+// now reads both from ONE atomic pass (single fd: fstat, then read, then close) and tick() calls it exactly
+// once per tick, reusing the same pair for the mid-check rotation gate and the owner-override resolver call.
+// ----
+test('N10 wave 10: readCredentialSnapshot() derives generation and credentialFp from ONE consistent read, matching an independent fstat+hash of the same fixture', () => {
+  const credFile = path.join(ISOLATED_CLAUDE_HOME, '.credentials.json');
+  const refreshToken = 'unit-test-refresh-token-n10w10';
+  fs.writeFileSync(credFile, JSON.stringify({ claudeAiOauth: { accessToken: 'unit-test-access', refreshToken } }));
+  try {
+    const snap = G.readCredentialSnapshot();
+    const st = fs.statSync(credFile);
+    assert.strictEqual(snap.generation, String(st.mtimeMs) + ':' + String(st.size), JSON.stringify(snap));
+    const expectedFp = require('crypto').createHash('sha256').update('rt:' + refreshToken).digest('hex').slice(0, 12);
+    assert.strictEqual(snap.credentialFp, expectedFp, JSON.stringify(snap));
+    assert.ok(!JSON.stringify(snap).includes(refreshToken), 'the raw refresh token must never appear in the snapshot: ' + JSON.stringify(snap));
+  } finally { try { fs.unlinkSync(credFile); } catch { /* best effort */ } }
+});
+test('N10 wave 10: readCredentialSnapshot() is null-safe when the credentials file is absent', () => {
+  const credFile = path.join(ISOLATED_CLAUDE_HOME, '.credentials.json');
+  try { fs.unlinkSync(credFile); } catch { /* already absent */ }
+  const snap = G.readCredentialSnapshot();
+  assert.deepStrictEqual(snap, { generation: null, credentialFp: null });
+});
+test('N10 wave 10 (end-to-end via tick(), through the real runOverrideOn-equivalent grant writes, tick() and the real resolver): Codex\'s exact interleaving — a legitimate replacement grant (new issuanceId + generation) lands between two credential reads, then the OLD credential returns under yet a THIRD generation — must fire a real pause on the unconfirmed tick, never inherit the replacement grant\'s proof under a stale fingerprint (N10_mixed_snapshot_real_override_on_new_uuid)', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...n17FetchMock(),
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10w10-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'const ident = { fp: "n10w10-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '(async () => {',
+    '  const until = new Date(Date.now()+3600000).toISOString();',
+    // tick 1: the ORIGINAL grant (ISS-A/GA), credential genuinely at GA with fp FP-A — a real atomic read
+    // can only ever report the self-consistent pair for this moment.
+    '  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "original grant", accountLabel: "n10w10-account", credentialGeneration: "GA", issuanceId: "ISS-A" }, { projectRoot: grantRoot });',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialSnapshot: () => ({ credentialFp: "FP-A", generation: "GA" }) });',
+    '  const stAfterTick1 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    // a LEGITIMATE replacement grant lands (owner reran override-on after rotating credentials): new
+    // issuanceId ISS-B, stamped to the NEW generation GB. tick 2's real atomic snapshot at THIS moment can
+    // only be the self-consistent {GB, FP-B} pair — never a torn mix of the old fp with the new generation
+    // (that torn pairing is exactly what the pre-wave-10 two-separate-reads code could produce; see this
+    // file\'s wp-q2 report for the RED proof against the pre-fix baseline).
+    '  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "replacement grant", accountLabel: "n10w10-account", credentialGeneration: "GB", issuanceId: "ISS-B" }, { projectRoot: grantRoot });',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialSnapshot: () => ({ credentialFp: "FP-B", generation: "GB" }) });',
+    '  const stAfterTick2 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    // the OLD credential (FP-A) returns under a THIRD generation GC — no new grant issued. A correctly
+    // seeded proof (bound to FP-B, tick 2\'s real fingerprint) must NOT match FP-A — the grant\'s own
+    // generation (GB) no longer matches (GC) either, so this must fail closed to a REAL pause.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialSnapshot: () => ({ credentialFp: "FP-A", generation: "GC" }) });',
+    '  const stAfterTick3 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ stAfterTick1, stAfterTick2, stAfterTick3, pauseCalls, resumeCalls }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.stAfterTick1.mode, 'ok', 'the original grant is genuinely valid — no pause yet: ' + JSON.stringify(out.stAfterTick1));
+  assert.strictEqual(out.stAfterTick2.mode, 'ok', 'the replacement grant is ALSO genuinely valid for the new credential — still no pause: ' + JSON.stringify(out.stAfterTick2));
+  assert.strictEqual(out.stAfterTick3.mode, 'paused', 'the old credential returning under an unconfirmed generation must NOT inherit the replacement grant\'s proof — a real pause must fire: ' + JSON.stringify(out.stAfterTick3));
+  assert.strictEqual(out.pauseCalls, 1, 'exactly one real Paperclip pause call must have fired on the unconfirmed tick — Codex measured ZERO here on the pre-fix code: ' + JSON.stringify(out));
+  assert.ok(!JSON.stringify(out).includes('FP-A') && !JSON.stringify(out).includes('FP-B'), 'the bearer-derived fingerprint must never reach the state file: ' + JSON.stringify(out));
+});
+
 // ---- N17 (2026-09-24, Codex p13 out-p13 finding N17, regression on N16) — a legitimately re-honoured
 // override (owner reran override-on after a real, guard-owned pause) must actually RESUME the paused
 // Paperclip agent(s) through the existing resume path, not just flip state.json's `mode` back to 'ok' while
@@ -1367,6 +1434,109 @@ test('N17 wave 9: runOverrideOn() with a resume that FAILS never claims success 
   assert.strictEqual(out.stAfterTick2.mode, 'ok', 'once the resume genuinely succeeds, the state must say so: ' + JSON.stringify(out.stAfterTick2));
   assert.ok(!Array.isArray(out.stAfterTick2.pausedAgents) || out.stAfterTick2.pausedAgents.length === 0, JSON.stringify(out.stAfterTick2));
   assert.strictEqual(out.resumeCalls, 3, 'exactly three resume attempts must have been made — one from runOverrideOn, one from each retrying tick — never zero retries: ' + JSON.stringify(out));
+});
+
+// ---- N17 WAVE 10 RESIDUAL (2026-09-24, Codex out-p15 finding N17) — the wave-8/9 fix above still wrote
+// `mode:'ok'` in tick()'s own override-active transaction BEFORE doResume() ever ran. Codex's
+// `N17_retry_write_lock_refused`: when the bookkeeping write INSIDE doResume()'s own reconciliation is
+// refused (lock unavailable) or fenced (reclaimed mid-transaction), that earlier premature 'ok' write is the
+// only one that landed — state read 'ok' with an unresolved agent, and the NEXT tick's `wasPaused` check
+// (st.mode === 'paused') read the wrongly-healthy cache and never even retried (resume calls stuck at
+// 1 -> 2 -> 2). THE FIX: `mode` is withheld from tick()'s own write whenever there is something to
+// reconcile — doResume() alone decides 'ok' vs 'paused'+resumePending, from its OWN outcome. ----
+test('N17 wave 10: a REFUSED bookkeeping write inside doResume() during override reconciliation must never leave mode stuck at "ok" with an unresolved agent — the paused marker survives, and the very next tick still retries and eventually succeeds', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w10-'));
+  const script = path.join(dir, 'probe.cjs');
+  fs.writeFileSync(script, [
+    "'use strict';",
+    'let resumeCalls = 0;',
+    'global.fetch = async (url, init) => {',
+    '  const u = String(url); const m = (init && init.method) || "GET";',
+    '  if (/\\/api\\/agents\\/a1\\/resume$/.test(u) && m === "POST") { resumeCalls++; return { ok: true, status: 200, json: async () => ({}) }; }',
+    '  return { ok: true, status: 200, json: async () => ({}) };',
+    '};',
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n17w10-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'const ident = { fp: "n17w10-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    'const stateFile = process.env.FORGE_USAGE_GUARD_STATE;',
+    'const lockPath = stateFile + ".lock";',
+    'const realDoResume = G.doResume;',
+    'let doResumeCalls = 0;',
+    '(async () => {',
+    '  const until = new Date(Date.now()+3600000).toISOString();',
+    '  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "granted", accountLabel: "n17w10-account", credentialGeneration: "G0", issuanceId: "ISS-N17W10" }, { projectRoot: grantRoot });',
+    // pre-seed a guard-owned pause, exactly as a real prior tick would have left it.
+    '  fs.writeFileSync(stateFile, JSON.stringify({ mode: "paused", account: { fp: ident.fp, source: ident.source }, pausedAgents: [{ id: "a1", name: "Agent1", company: "Co" }] }));',
+    // tick 1: override honoured — reconciliation runs, but an EXTERNAL writer seizes the state lock the
+    // instant doResume() is invoked (a real lock-timeout refusal, not a mock of the write itself), exactly
+    // modelling a genuine refused/fenced bookkeeping write mid-reconciliation.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialSnapshot: () => ({ credentialFp: "fpX", generation: "G0" }),',
+    '    doResume: async (...a) => { doResumeCalls++; fs.writeFileSync(lockPath, "external-writer-holds-lock"); try { return await realDoResume(...a); } finally { try { fs.unlinkSync(lockPath); } catch {} } },',
+    '  });',
+    '  const stAfterTick1 = JSON.parse(fs.readFileSync(stateFile, "utf8"));',
+    // tick 2: lock is free — reconciliation must actually run again (proving the retry continues) and
+    // succeed for real this time.
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialSnapshot: () => ({ credentialFp: "fpX", generation: "G0" }),',
+    '    doResume: async (...a) => { doResumeCalls++; return await realDoResume(...a); },',
+    '  });',
+    '  const stAfterTick2 = JSON.parse(fs.readFileSync(stateFile, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ stAfterTick1, stAfterTick2, doResumeCalls, resumeCalls }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ].join('\n'), 'utf8');
+  const stateFile = path.join(dir, 'state.json');
+  const env = Object.assign({}, process.env, {
+    FORGE_USAGE_GUARD_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w10-home-')),
+    FORGE_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w10-cfghome-')),
+    FORGE_PROJECT_ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w10-proj-')),
+    FORGE_USAGE_GUARD_STATE: stateFile,
+    FORGE_USAGE_GUARD_IDENTITY: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w10-identity-')), '.claude.json'),
+    NVIDIA_SKIP_ENV_FILES: '1',
+    FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS: '150', // short, deterministic budget for the real lock-refusal
+  });
+  const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+  const lastLine = (r.stdout || '').trim().split('\n').pop();
+  let out; try { out = JSON.parse(lastLine); } catch { out = { parseError: (r.stdout || '') + (r.stderr || '') + '\n' + lastLine }; }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.stAfterTick1.mode, 'paused', 'a refused bookkeeping write during reconciliation must never leave "ok" behind — this is exactly Codex\'s N17 residual: ' + JSON.stringify(out.stAfterTick1));
+  assert.ok(Array.isArray(out.stAfterTick1.pausedAgents) && out.stAfterTick1.pausedAgents.some((a) => a.id === 'a1'), 'the unresolved agent must stay listed, never silently dropped: ' + JSON.stringify(out.stAfterTick1));
+  assert.strictEqual(out.doResumeCalls, 2, 'the SECOND tick must retry reconciliation — never stuck at 1 -> 2 -> 2: ' + JSON.stringify(out));
+  assert.strictEqual(out.stAfterTick2.mode, 'ok', 'once reconciliation genuinely succeeds, state must say so: ' + JSON.stringify(out.stAfterTick2));
+  assert.ok(!Array.isArray(out.stAfterTick2.pausedAgents) || out.stAfterTick2.pausedAgents.length === 0, JSON.stringify(out.stAfterTick2));
+});
+
+test('N17 wave 10: a no-op reconciliation outcome (modelling either a refused or a fenced bookkeeping write — indistinguishable from tick()\'s own override-active branch) never flips mode to "ok" on its own; only doResume()\'s own successful write may', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    ...V15_PROBE_FETCH_MOCK,
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n17w10b-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'const until = new Date(Date.now()+3600000).toISOString();',
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: "granted", accountLabel: "n17w10b-account", credentialGeneration: "G0", issuanceId: "ISS-N17W10B" }, { projectRoot: grantRoot });',
+    'const ident = { fp: "n17w10b-account", source: "account-uuid" };',
+    'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "paused", account: { fp: ident.fp, source: ident.source }, pausedAgents: [{ id: "a1", name: "Agent1", company: "Co" }] }));',
+    'let doResumeCalls = 0;',
+    '(async () => {',
+    // a doResume() that makes NO persisted change at all — exactly what a refused OR a fenced bookkeeping
+    // write both look like from this branch's own perspective (neither ever tells the caller "I wrote
+    // something"; both are logged and skipped internally).
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialSnapshot: () => ({ credentialFp: "fpY", generation: "G0" }), doResume: async () => { doResumeCalls++; } });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  process.stdout.write(JSON.stringify({ st, doResumeCalls }));',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.doResumeCalls, 1, JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'paused', 'a no-op reconciliation must never leave "ok" behind by itself — only doResume()\'s OWN successful write may transition mode: ' + JSON.stringify(out.st));
+  assert.ok(Array.isArray(out.st.pausedAgents) && out.st.pausedAgents.some((a) => a.id === 'a1'), JSON.stringify(out.st));
 });
 
 test('#13 accountStamp maakt de expliciete stempel; zonder identiteit blijft de write ongewijzigd', () => {
