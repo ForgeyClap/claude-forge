@@ -1245,6 +1245,38 @@ test('N10 wave 10: readCredentialSnapshot() is null-safe when the credentials fi
   const snap = G.readCredentialSnapshot();
   assert.deepStrictEqual(snap, { generation: null, credentialFp: null });
 });
+// ---- SB-L5 (2026-09-24, Security Boss wave 11, sec-w11) — this project does NOT write .credentials.json;
+// Claude Code does, and this file has no control over (or visibility into) whether that write is an atomic
+// rename-based replace or an IN-PLACE rewrite of the same inode. An in-place rewrite landing DURING the
+// single read this function performs can tear the content relative to the fstat taken just before it.
+// readCredentialSnapshot() now re-fstats the SAME fd immediately after the read and refuses the whole
+// snapshot (both fields null) when the two disagree, rather than pairing possibly-torn content with a stamp
+// that no longer describes it. ----
+test('SB-L5: readCredentialSnapshot() refuses the whole snapshot when the credentials file is rewritten IN PLACE during the read itself (fstat before/after the read disagree)', () => {
+  const credFile = path.join(ISOLATED_CLAUDE_HOME, '.credentials.json');
+  fs.writeFileSync(credFile, JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'rt-before-rewrite' } }));
+  const origReadFileSync = fs.readFileSync;
+  let rewrote = false;
+  fs.readFileSync = function guardTornReadProbe(p, opts) {
+    const result = origReadFileSync(p, opts);
+    if (typeof p === 'number' && !rewrote) {
+      rewrote = true;
+      // simulate an IN-PLACE rewrite (truncate+write to the SAME path/inode) landing DURING this read — a
+      // DIFFERENT size guarantees the post-read fstat disagrees with the pre-read one, regardless of mtime
+      // clock resolution.
+      fs.writeFileSync(credFile, JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'rt-after-in-place-rewrite-longer-value' } }));
+    }
+    return result;
+  };
+  try {
+    const snap = G.readCredentialSnapshot();
+    assert.ok(rewrote, 'sanity: the simulated in-place rewrite must actually have run during the read');
+    assert.deepStrictEqual(snap, { generation: null, credentialFp: null }, 'a torn read (the file moved during our own read) must refuse the whole snapshot rather than pair possibly-stale content with a now-wrong generation stamp: ' + JSON.stringify(snap));
+  } finally {
+    fs.readFileSync = origReadFileSync;
+    try { fs.unlinkSync(credFile); } catch { /* best effort */ }
+  }
+});
 test('N10 wave 10 (end-to-end via tick(), through the real runOverrideOn-equivalent grant writes, tick() and the real resolver): Codex\'s exact interleaving — a legitimate replacement grant (new issuanceId + generation) lands between two credential reads, then the OLD credential returns under yet a THIRD generation — must fire a real pause on the unconfirmed tick, never inherit the replacement grant\'s proof under a stale fingerprint (N10_mixed_snapshot_real_override_on_new_uuid)', () => {
   const out = runV15OverrideProbe([
     "'use strict';",
@@ -3619,6 +3651,89 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
   });
   try { fs.rmSync(CONFIG_SANDBOX, { recursive: true, force: true }); } catch { }
 }
+
+// ---- SB-M6 (2026-09-24, Security Boss wave 11, sec-w11) — a resume attempt that keeps failing must never
+// block an owner forever: (b) a 404/410 (the Paperclip agent no longer exists) counts as RESOLVED, never an
+// endless retry target; (c) a genuinely-transient failure is retried across ticks but CAPPED at
+// RESUME_RETRY_MAX, escalating with exactly ONE notice (never a repeated no-op status loop), while (d) the
+// wave-10 rule ("no ok before reconciliation succeeds") stays intact for real transient failures — a partial
+// failure never claims 'ok'. See forge-autonomy.test.cjs's own SB-M6 tests for the companion fix (autonomy
+// ignoring a guard-owned pause once an override is honoured). ----
+test('SB-M6(b): a resume answered with 404 (agent deleted) counts as RESOLVED — never retried forever, state clears to ok', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    'let resumeCalls = 0;',
+    'global.fetch = async (url, init) => {',
+    '  const u = String(url); const m = (init && init.method) || "GET";',
+    '  if (/\\/api\\/agents\\/a1\\/resume$/.test(u) && m === "POST") { resumeCalls++; return { ok: false, status: 404, json: async () => ({ error: "not found" }) }; }',
+    '  return { ok: true, status: 200, json: async () => ({}) };',
+    '};',
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const ident = { fp: "sb-m6-account", source: "account-uuid" };',
+    'const uLow = { session: { pct: 5, resetsAt: null }, week: { pct: 5, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 5, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "paused", account: { fp: ident.fp, source: ident.source }, pausedAgents: [{ id: "a1", name: "Agent1", company: "Co" }] }));',
+    // doResume() logs via the module\'s own internal log() helper (console.log + a log FILE), not via an
+    // injectable `log` dep — capture the real console.log stream directly, exactly like this file\'s own
+    // N17W9 test does for runOverrideOn()\'s log output.
+    'const logs = []; const realLog = console.log;',
+    'console.log = (m) => { logs.push(String(m)); };',
+    '(async () => {',
+    '  await G.tick({ fetchUsage: async () => uLow, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => null });',
+    '  const st = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  console.log = realLog;',
+    '  process.stdout.write(JSON.stringify({ st, resumeCalls, logs }));',
+    '})().catch((e) => { console.log = realLog; process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.resumeCalls, 1, JSON.stringify(out));
+  assert.strictEqual(out.st.mode, 'ok', 'a 404 (agent no longer exists) must resolve, never stay paused forever: ' + JSON.stringify(out.st));
+  assert.ok(!Array.isArray(out.st.pausedAgents) || out.st.pausedAgents.length === 0, JSON.stringify(out.st));
+  assert.ok(out.logs.some((l) => /no longer exist/.test(l)), 'the resolution must be named honestly in the log, not silently folded into an ordinary "resumed" count: ' + JSON.stringify(out.logs));
+});
+test('SB-M6(c/d): a genuinely-transient resume failure is retried across ticks, CAPPED, and escalates with exactly ONE notice — eventual success still fully clears the pause and its retry bookkeeping', () => {
+  const out = runV15OverrideProbe([
+    "'use strict';",
+    'let resumeCalls = 0;',
+    'global.fetch = async (url, init) => {',
+    '  const u = String(url); const m = (init && init.method) || "GET";',
+    '  if (/\\/api\\/agents\\/a1\\/resume$/.test(u) && m === "POST") {',
+    '    resumeCalls++;',
+    '    if (resumeCalls >= 12) return { ok: true, status: 200, json: async () => ({}) };',
+    '    return { ok: false, status: 500, json: async () => ({}) };',
+    '  }',
+    '  return { ok: true, status: 200, json: async () => ({}) };',
+    '};',
+    'const fs = require("fs"); const path = require("path");',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const ident = { fp: "sb-m6-retry-account", source: "account-uuid" };',
+    'const uLow = { session: { pct: 5, resetsAt: null }, week: { pct: 5, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 5, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "paused", account: { fp: ident.fp, source: ident.source }, pausedAgents: [{ id: "a1", name: "Agent1", company: "Co" }] }));',
+    'const logs = []; const realLog = console.log;',
+    'console.log = (m) => { logs.push(String(m)); };',
+    '(async () => {',
+    '  const states = [];',
+    '  for (let i = 0; i < 15; i++) {',
+    '    await G.tick({ fetchUsage: async () => uLow, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: () => null });',
+    '    states.push(JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8")));',
+    '  }',
+    '  console.log = realLog;',
+    '  process.stdout.write(JSON.stringify({ states, resumeCalls, logs }));',
+    '})().catch((e) => { console.log = realLog; process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); process.exitCode = 1; });',
+  ]);
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  const exhaustedStates = out.states.filter((s) => s.retriesExhausted === true);
+  assert.ok(exhaustedStates.length > 0, 'must reach retriesExhausted after enough consecutive failures: ' + JSON.stringify(out.states.map((s) => ({ mode: s.mode, count: s.resumeRetryCount, ex: s.retriesExhausted }))));
+  const escalationLogs = out.logs.filter((l) => /RETRIES EXHAUSTED/.test(l));
+  assert.strictEqual(escalationLogs.length, 1, 'the escalation notice must fire exactly ONCE, never every tick (no no-op status loop): ' + JSON.stringify(out.logs));
+  // (d) never claim 'ok' while reconciliation has not yet succeeded — every state before the real success must
+  // still say 'paused', never a premature 'ok'.
+  assert.ok(out.states.slice(0, 11).every((s) => s.mode === 'paused'), 'no state before the real success may claim ok: ' + JSON.stringify(out.states.map((s) => s.mode)));
+  const finalState = out.states[out.states.length - 1];
+  assert.strictEqual(finalState.mode, 'ok', 'eventual success must still fully clear the pause: ' + JSON.stringify(finalState));
+  assert.strictEqual(finalState.retriesExhausted, undefined, 'a successful resume must clear the exhausted flag: ' + JSON.stringify(finalState));
+  assert.strictEqual(finalState.resumeRetryCount, undefined, 'a successful resume must clear the retry counter: ' + JSON.stringify(finalState));
+});
 
 Promise.all(asyncQueue).then(() => {
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

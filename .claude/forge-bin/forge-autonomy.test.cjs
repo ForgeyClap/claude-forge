@@ -512,6 +512,38 @@ t('L8: decideLive on a stale pause proceeds instead of stopping every phase fore
   assert.strictEqual(r.usageLimit.source, 'stale');
 });
 
+// ---- SB-M6 (2026-09-24, Security Boss wave 11, sec-w11) — an owner who already PAID for a usage-override
+// must never be blocked forever by a guard-owned "paused" state that only persists because a resume attempt
+// keeps failing (e.g. an agent that no longer exists) — see usage-guard.cjs's own doResume()/runOverrideOn()
+// SB-M6 history. state.json's `ownerOverride` cache is written FRESH every tick directly from the
+// authoritative grant record whenever it is actually honoured (usage-guard.cjs's tick() /
+// usage-guard-override.cjs's resolveOwnerOverride()) — reading it here reads THAT already-honoured decision,
+// never a stale flag used to greenlight a NEW pause decision (that remains usage-guard.cjs's own rule). ----
+t('SB-M6: a guard-owned "paused" state with a CURRENTLY HONOURED, unexpired usage-override is NOT treated as a live usage-limit block (a resume-retry bookkeeping loop must never block an owner who already paid)', () => {
+  const g = guardState({ mode: 'paused', ownerOverride: { active: true, until: new Date(Date.now() + 3600000).toISOString() }, resumePending: true, pausedAgents: [{ id: 'a1' }] });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, false, u.reason);
+  assert.strictEqual(u.source, 'override-honoured');
+});
+t('SB-M6: an EXPIRED ownerOverride cache does NOT suppress the pause — fail toward blocking, exactly like the real guard behaves once it reconciles', () => {
+  const g = guardState({ mode: 'paused', ownerOverride: { active: true, until: new Date(Date.now() - 1000).toISOString() } });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true, u.reason);
+});
+t('SB-M6: a "paused" state with NO ownerOverride at all is unaffected by this fix — an ordinary pause still blocks normally', () => {
+  const g = guardState({ mode: 'paused' });
+  const u = autonomy.usageLimitActive({ statePath: g.statePath, configOpts: configFixture({}).configOpts });
+  assert.strictEqual(u.active, true, u.reason);
+  assert.notStrictEqual(u.source, 'override-honoured');
+});
+t('SB-M6: decideLive proceeds (even at full-auto-within-mission) when a guard-owned pause coexists with a currently-honoured override', () => {
+  const fx = configFixture({ autonomy: 'full-auto-within-mission' });
+  const g = guardState({ mode: 'paused', ownerOverride: { active: true, until: new Date(Date.now() + 3600000).toISOString() } });
+  const r = autonomy.decideLive({ text: 'moving on', phaseTransition: true }, { statePath: g.statePath, configOpts: fx.configOpts });
+  assert.strictEqual(r.proceed, true, r.reason);
+  assert.strictEqual(r.usageLimit.active, false);
+});
+
 try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch { /* best effort */ }
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');

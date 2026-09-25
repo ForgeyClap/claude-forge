@@ -73,10 +73,20 @@ const COMMAND_OPENER_STEPS = [
   /^case\b[\s\S]*?\)\s*/i,
   /^[^\s()\n]{1,40}\)\s*/,
 ];
+// SB-H1, wave 12 (codex-recheck twelfth pass / wp-t1). The iex/eval opaque-exec pattern's own inline env-
+// assignment prefix (`(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*`) stops at the first unquoted space in the VALUE, the
+// exact bug SB-H1 found and fixed at the root in forge-gate-quotes.cjs::stripEnvAssignment for the `-c`
+// attribution reader. Rather than duplicating a complete-shell-word reader inside a declarative regex (which
+// cannot express "read a quoted/escaped/substitution value as one word"), stripCommandOpeners tries that SAME
+// engine first, each iteration, so `FOO="a b" eval "$x"` produces the ADDITIONAL candidate `eval "$x"` (the
+// assignment already stripped) — the iex/eval pattern's own env-assignment branch then simply matches zero
+// times against it, exactly like it already does for a bare `eval "$x"` with no assignment at all.
 function stripCommandOpeners(segment) {
   let s = String(segment);
   for (let i = 0; i < 6; i++) {
     let changed = false;
+    const assigned = QUOTES.stripEnvAssignment(s);
+    if (assigned !== null && assigned !== s) { s = assigned; changed = true; }
     for (const re of COMMAND_OPENER_STEPS) {
       const m = re.exec(s);
       if (m && m[0].length) { s = s.slice(m[0].length); changed = true; }

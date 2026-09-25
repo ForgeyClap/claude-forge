@@ -220,8 +220,9 @@ evidence or deferred with a reason before this release went out. The code fixes:
   Named, unfixed gaps written into `hard-gates.json`: a clustered flag such as `-xc`, an option between `-c` and its
   argument, and PowerShell's case-insensitive `-C`/`-Command` are not recognised; a full PowerShell quoting dialect
   (backtick escapes, backslash literal) is not implemented — the mask reads every command with bash rules, so where
-  the dialects differ the result is either a conservative false positive (a quoted Windows path ending in a
-  backslash) or one of the named misses above, not a guaranteed stop.
+  the dialects differ the result is a conservative false positive (a quoted Windows path ending in a backslash), one
+  of the named misses above, or — a third outcome — a silent miss where a PowerShell-only quoting form such as a
+  doubled single quote inside a single-quoted string splits into several spans under bash rules; not a guaranteed stop.
 - **Seventh pass (Codex's seventh verification returned 3 highs: one residual and two regressions the sixth pass had
   introduced in the `-c` argument reader; plus six mediums).** Gate hook: a `$` followed by a digit or one of `@ * # ? - $ !`
   is a genuine positional or special-parameter expansion, so an interpreter argument carrying one stops again — the
@@ -321,7 +322,7 @@ evidence or deferred with a reason before this release went out. The code fixes:
   fingerprint and the credential-file generation now come from ONE snapshot — a single open of the credential file,
   `fstat` for the generation, then the read for the fingerprint — and the tick uses that one pair for both the mid-check
   rotation gate and the override decision, so a replacement grant landing between two separate reads can no longer bind
-  an old fingerprint to a new issuance (Codex's interleaving now pauses on every high tick). The override-active branch
+  an old fingerprint to a new issuance (the test proves a pause on the unconfirmed tick of Codex's interleaving). The override-active branch
   no longer writes a healthy state before reconciliation: the mode transition belongs to the resume outcome alone (all
   guard-owned agents resumed → ok; a partial, refused or fenced bookkeeping write → still paused with the pending list
   kept, retried every following tick), so an agent can no longer stay paused while the state reads ok. Gate hook: the
@@ -338,6 +339,49 @@ evidence or deferred with a reason before this release went out. The code fixes:
   shape is neither fixed nor claimed: an unpaired backtick between the interpreter and its flag attributes to the word
   inside the still-open span, as it did before. Named, unfixed gaps unchanged: a clustered `-xc`, an option between `-c`
   and its argument, PowerShell's `-C`/`-Command`.
+- **Eleventh pass (Codex's eleventh verification was cut off by its own usage limit before it could write a report,
+  but the probes it had already run through the real hook survived in our log; every silent executable shape and every
+  benign false positive in that list was treated as real residue and fixed here; an independent internal Security Boss
+  review then went over waves 9–11 and its findings are fixed in the twelfth pass below — that review is recorded as
+  the project's own fallback check, never as the Codex verdict, which is still owed and for which the release waits).** Gate hook: exhausting the option-strip budget (eight options) or the wrapper
+  strip budget (deeply nested wrappers) now makes the invocation unresolvable, so a live argument stops instead of an
+  unconsumed option silently standing in as the command word (two shapes had regressed against the ninth pass); option
+  values and the command word are read as complete shell words (quoted and bare segments glued together, escaped
+  spaces included); `timeout` durations follow the full strtod grammar (sign, hexadecimal, `inf`/`infinity`/`nan`,
+  quoted, and after the `--` terminator); a quoted wrapper word (`"sudo"`) is recognised; `sudo -h` followed by a
+  further token is treated as unresolvable because real sudo reads it as either help or a host; `su`, `runuser` (whose
+  own `-c` runs a shell) and the common process wrappers `setsid`, `ionice`, `chrt`, `taskset`, `unbuffer`, `flock`,
+  `caffeinate`, `systemd-run`, `chroot`, `strace`, `ltrace`, `valgrind`, `xargs` join the wrapper list with empty option
+  tables (any option makes them unresolvable); clustered short no-value flags (`env -i0`) and doas's complete no-value
+  table remove two benign false positives. 22 more welded claim probes (122 on this gate). Named, unfixed: `flock`,
+  `chrt`, `ionice` and `taskset` take a mandatory positional operand that is not modelled, so their bare, option-less
+  form can still miss a wrapped shell invocation; programs outside the wrapper list are treated as programs; the M2
+  gaps (a clustered `-xc`, an option between `-c` and its argument, PowerShell's `-C`/`-Command`) are unchanged.
+- **Twelfth pass (an independent, read-only Security Boss review of waves 9–11 — run as the project's own fallback check
+  while the external Codex reviewer was blocked by its usage limit, and recorded as exactly that, never as the Codex
+  verdict — found one high and fourteen mediums and lows that eleven Codex passes had not).** Gate hook: an environment
+  assignment before the command (`FOO="a b" bash -c "$x"`, also through `env` and in front of `eval`) is read as a
+  complete shell word, so a quoted or escaped value with whitespace no longer hides the interpreter (the high); a
+  `timeout` or `nice` operand is one word whatever it contains; attribution survives a `case` arm label and a function
+  header; `flock -c` runs a shell and `chroot`, `flock`, `chrt`, `taskset` consume their mandatory operand; the shell set
+  gains `fish`, `csh`, `tcsh`, `mksh`, `ash` and `busybox sh`, the wrapper list gains `pkexec`, `winpty`, `busybox`,
+  `fakeroot`, `unshare`, `nsenter` and a small `wsl` table, and Windows `cmd /c` / `cmd.exe /k` is an interpreter
+  invocation with the same live-or-literal argument rule; a shell or `source` reading from process substitution
+  (`bash <(curl …)`) or a here-string is stopped like the pipe form; an `env -S` operand carrying a live parameter
+  expansion stops on its own; wrapper and interpreter words are unquoted as complete words (`"C:\Program Files\…\env.exe"`,
+  `"ba"sh`); `sudo -h` inside a cluster and `--preserve-env=list` are handled. The hook can no longer outlive its own
+  10-second timeout unchecked: the `-c` reader has a work budget, a command above a size ceiling is stopped with
+  "too large to inspect" (exit 2, not 1), and an internal deadline exits 2. Usage guard: autonomy ignores a guard-owned
+  pause while an owner override the resolver honours is active (a paid override never blocks Forge on a vanished
+  agent); a resume answered 404/410 counts as resolved; retries are capped at ten with one escalation notice and an
+  honest state; the credential snapshot re-checks the file after the read and refuses a torn one; a fingerprint change
+  under the same issuance and generation is rejected rather than re-seeded; the doc premise about who writes the
+  credential file is corrected (Claude Code does, no atomicity assumed). **Written down:** the closed grammar's cost —
+  an unknown option after a wrapper stops even a harmless program when a live `-c` argument follows
+  (`valgrind --leak-check=full ./app -c "$cfg"`) — acceptable because it only bites with a live argument; a `case`
+  statement with an unrelated earlier arm before the target, `docker exec … sh -c`, `kubectl exec … -- sh -c` and
+  `find … -exec bash -c` are named, unmodelled shapes; a manual `watch --once` beside the watcher can pause once after
+  a token refresh (fails safe); the M2 gaps are unchanged.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every

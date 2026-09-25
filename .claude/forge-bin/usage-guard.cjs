@@ -32,6 +32,17 @@
  * (and the session hook) stop pausing on the plan limit; the watchdog auto-clears it the moment the
  * credits are exhausted (extra_usage used >= limit / disabled) and re-arms the normal guard.
  *
+ * SB-L6 (2026-09-24, Security Boss wave 11 — named limitation, not a bug): the credential-rotation memory
+ * proof this override relies on (usage-guard-override.cjs's credentialProofByAccount) lives ONLY in the
+ * long-running `watch` process's memory — it is never persisted, by design (see that file's own header). A
+ * manual `watch --once` run ALONGSIDE an already-running `watch` starts with an EMPTY proof map: if the
+ * credentials file happens to rotate (an ordinary access-token refresh) between the two, that one-off run can
+ * see the new generation as unconfirmed and pause on its own single tick even though the real long-running
+ * watcher, which already holds the matching proof, keeps honouring the grant normally. This fails SAFE (an
+ * extra, momentary pause attempt — never a wrongly-suppressed one) and self-resolves on the watcher's own
+ * next tick; it is not fixed here because doing so would require sharing a live-process secret comparison
+ * across processes, which the GUARD-TOKEN-FINGERPRINT rule (nothing token-derived is ever persisted) forbids.
+ *
  * RESET-RHYTHM AUTO-RESUME: on pause, the guard also stores `resumeAtEpoch` = the SOONEST crossed
  * metric's official `resets_at` + `--grace-min` (default 5) minutes. The exact reset second can flip
  * the usage endpoint before a poll observes it, so resume is deliberately timed ~5 min AFTER the
@@ -642,19 +653,34 @@ function credentialGeneration() {
  *  it was recorded against — a later, genuinely different credential can then replay that stale fingerprint
  *  and wrongly inherit an override it was never confirmed under. THE FIX: open CRED_FILE exactly ONCE — a
  *  single file descriptor, `fstatSync(fd)` for the mtime+size generation stamp, THEN `readFileSync(fd)` for
- *  the refresh-token fingerprint from that SAME open handle, then close. This project's credential writer
- *  replaces the file via write-temp-then-rename (atomic replace); a handle already open on the OLD inode
- *  keeps reading the OLD file's bytes even after a concurrent rename swaps in a new one, so the metadata and
- *  the content returned here are always drawn from the SAME underlying file state — the two halves can never
- *  straddle a rewrite relative to EACH OTHER again. GUARD-TOKEN-FINGERPRINT: derives a fingerprint of the
- *  refresh token, never the token itself; nothing this function returns is ever persisted or logged — see
- *  tick()'s own N10 history for how the result is used. Null-safe in every field; never throws. */
+ *  the refresh-token fingerprint from that SAME open handle, then close.
+ *
+ *  DOC CORRECTION (2026-09-24, Security Boss wave 11, SB-L5): the wording above used to claim "this project's
+ *  credential writer replaces the file via write-temp-then-rename (atomic replace)" — that is WRONG: this
+ *  project never writes `.credentials.json` at all. Claude Code's own login/refresh flow does, and this file
+ *  has no visibility into, or control over, HOW it writes it. An IN-PLACE rewrite (truncate + write to the
+ *  SAME inode — e.g. a plain overwrite, not a rename-based replace) can land its bytes WHILE this function's
+ *  own `readFileSync(fd, ...)` is mid-read, tearing the content relative to the fstat taken just before it;
+ *  separately, a fully-completed in-place rewrite whose new size happens to match the old one within the same
+ *  millisecond can produce an mtime+size "generation" stamp that COLLIDES with the previous one even though
+ *  the underlying bytes changed. THE FIX (a, here): fstat the SAME fd again immediately AFTER the read and
+ *  compare against the BEFORE-read stamp — a mismatch proves the file moved during our own read, so the whole
+ *  snapshot is reported unavailable (`{generation: null, credentialFp: null}`) rather than pairing a
+ *  fingerprint with a generation stamp that was never actually stable for the duration of the read. This does
+ *  NOT catch the separate "collision" case (same stamp, already-rewritten content, no tear during OUR own
+ *  read) — that residual is closed one layer up, in usage-guard-override.cjs's resolveOwnerOverride() (SB-L5,
+ *  wave 11), which refuses to silently re-seed its in-memory proof when a trivial generation match nonetheless
+ *  carries a DIFFERENT bearer-credential fingerprint than the one it already trusted for this account.
+ *
+ *  GUARD-TOKEN-FINGERPRINT: derives a fingerprint of the refresh token, never the token itself; nothing this
+ *  function returns is ever persisted or logged — see tick()'s own N10 history for how the result is used.
+ *  Null-safe in every field; never throws. */
 function readCredentialSnapshot() {
   let fd;
   try {
     fd = fs.openSync(CRED_FILE, 'r');
-    const st = fs.fstatSync(fd);
-    const generation = String(st.mtimeMs) + ':' + String(st.size);
+    const stBefore = fs.fstatSync(fd);
+    const generation = String(stBefore.mtimeMs) + ':' + String(stBefore.size);
     let credentialFp = null;
     try {
       const raw = fs.readFileSync(fd, 'utf8');
@@ -662,6 +688,13 @@ function readCredentialSnapshot() {
       const rt = cred && cred.claudeAiOauth && cred.claudeAiOauth.refreshToken;
       if (typeof rt === 'string' && rt) credentialFp = crypto.createHash('sha256').update('rt:' + rt).digest('hex').slice(0, 12);
     } catch { /* opened fine (generation is valid) but content was unparsable/rotated mid-read — fp stays null, never guessed */ }
+    // SB-L5 (2026-09-24, Security Boss wave 11): re-check the SAME fd's metadata AFTER the read — an
+    // in-place rewrite landing during the read above moves mtime/size on this SAME inode; a mismatch means
+    // the generation this content was actually read under is unknowable, so refuse the whole snapshot rather
+    // than pair possibly-torn content with a stamp that no longer describes it.
+    const stAfter = fs.fstatSync(fd);
+    const generationAfter = String(stAfter.mtimeMs) + ':' + String(stAfter.size);
+    if (generationAfter !== generation) return { generation: null, credentialFp: null };
     return { generation, credentialFp };
   } catch { return { generation: null, credentialFp: null }; }
   finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* best effort */ } } }
@@ -971,10 +1004,15 @@ async function runOverrideOn() {
       // could not resume; everything below is derived from THAT, never from `wasPaused` alone (which only
       // ever meant "there was something to resume", never "it worked").
       const stillPaused = [];
+      // SB-M6(b) (2026-09-24, Security Boss wave 11): same classification as doResume()'s own loop — an
+      // agent the Paperclip runtime no longer knows about (404/410) is RESOLVED, never a retry target.
+      const goneOn = [];
       let resumed = 0;
       for (const a of priorPaused) {
         const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true });
-        if (r.status >= 200 && r.status < 300) resumed++; else stillPaused.push(a);
+        if (r.status >= 200 && r.status < 300) resumed++;
+        else if (r.status === 404 || r.status === 410) goneOn.push(a);
+        else stillPaused.push(a);
       }
       if (stillPaused.length) {
         // Some agents did NOT resume — keep the guard's OWN 'paused' marker (never 'ok') so the tick's
@@ -982,8 +1020,9 @@ async function runOverrideOn() {
         // them through the SAME doResume() path on every following tick, exactly like an ordinary
         // partial-resume failure already does elsewhere in this file.
         st.mode = 'paused'; st.pausedAgents = stillPaused; st.resumePending = true;
-        st.lastError = 'override-on: resume gedeeltelijk: ' + resumed + '/' + wasPaused + ' agents hervat — '
-          + stillPaused.length + ' faalden; volgende tick probeert opnieuw';
+        st.lastError = 'override-on: resume gedeeltelijk: ' + resumed + '/' + wasPaused + ' agents hervat'
+          + (goneOn.length ? ' (' + goneOn.length + ' niet langer bestaand, als opgelost behandeld)' : '')
+          + ' — ' + stillPaused.length + ' faalden; volgende tick probeert opnieuw';
       } else {
         st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.resumePending; delete st.lastError;
       }
@@ -1407,6 +1446,14 @@ async function doPause(u, crossed, ident, opts) {
   else if (pauseLock.value && pauseLock.value.fenced) log('state-lock: PAUSE state write skipped (fenced — the lock was reclaimed mid-transaction) — ' + paused.length + ' agent(s) WERE paused via the API but the state file could not record it this round');
   log('PAUSED — ' + reason + ' · paperclip agents paused: ' + paused.length + (agents === null ? ' (runtime unreachable)' : '') + (Number.isFinite(resumeAtEpoch) ? ' · rhythm-resume at ' + new Date(resumeAtEpoch).toISOString() : ' · rhythm-resume: n/a (unparseable resets_at)') + (pending.length ? (' · pausePending: ' + pending.length) : ''));
 }
+// RESUME_RETRY_MAX (2026-09-24, Security Boss wave 11, SB-M6(c)): a genuinely-transient resume failure (never
+// a 404/410 — see the per-agent loop below) is retried, once per tick, for as long as the account keeps
+// calling doResume() — unbounded, by design, because giving up entirely would silently strand a real pause.
+// This cap does NOT stop the retries themselves (an eventual real recovery must still clear normally — SB-M6
+// "eventual success clears"); it only bounds how many CONSECUTIVE failed rounds accumulate SILENTLY before the
+// state is marked `retriesExhausted:true` and exactly ONE escalation notice is printed, so an owner watching
+// logs/state is not left guessing that something has gone wrong for an unbounded amount of time.
+const RESUME_RETRY_MAX = 10;
 async function doResume(u, st, ident, opts) {
   const o = opts || {};
   const signal = o.signal;
@@ -1421,6 +1468,10 @@ async function doResume(u, st, ident, opts) {
   for (const a of (st.pausedAgents || [])) byId.set(String(a.id), { id: a.id, name: a.name, company: a.company });
   for (const j of journalUnresolved) if (!byId.has(String(j.agentId))) byId.set(String(j.agentId), { id: j.agentId, name: j.name, company: j.company, fromJournal: true });
   const failed = [];
+  // SB-M6(b) (2026-09-24, Security Boss wave 11): agents the Paperclip runtime itself no longer knows about
+  // (404/410 on the resume call) collected separately — see the classification below for why these are
+  // RESOLVED, never retried.
+  const gone = [];
   const items = Array.from(byId.values());
   for (let i = 0; i < items.length; i++) {
     // V29 (Codex recheck wp-f4, 2026-09-24): once shutdown has begun, no SUBSEQUENT resume request may be
@@ -1434,25 +1485,45 @@ async function doResume(u, st, ident, opts) {
       // r4 #15: de resolve draagt de pauseId die hij afsluit — een laat arriverende oude resolve kan een
       // nieuwere pauze dan nooit meer maskeren (unresolvedPausedAgents matcht op pauseId).
       journalAppend({ agentId: a.id, action: 'resumed', pauseId: pauseIdByAgent.get(String(a.id)) || null, resolved: true });
+    } else if (r.status === 404 || r.status === 410) {
+      // SB-M6(b): the Paperclip API reports this agent no longer exists — there is nothing left to resume, so
+      // this is RESOLVED, never an endless retry target for an agent that can never come back (Codex/Security
+      // Boss finding: without this, an owner who already paid for a usage-override could be blocked forever
+      // by a deleted agent's own resume call failing on every single tick). Journalled as resolved, exactly
+      // like a genuine resume, so the account-switch compensation path (unresolvedPausedAgents) also stops
+      // chasing it.
+      gone.push({ id: a.id, name: a.name, company: a.company });
+      journalAppend({ agentId: a.id, action: 'resumed', pauseId: pauseIdByAgent.get(String(a.id)) || null, resolved: true, reason: 'agent-not-found' });
     } else {
       failed.push({ id: a.id, name: a.name, company: a.company });
     }
   }
+  const goneNote = gone.length ? (' · ' + gone.length + ' niet langer bestaand (behandeld als opgelost / no longer exist, treated as resolved): ' + gone.map((g) => g.id).join(',')) : '';
   // GUARD-STATE-RACE (2026-09-24): both writes below re-read the CURRENT ownerOverride from inside the
   // state lock, immediately before writing, instead of trusting the `st` snapshot this function was
   // called with (captured before the pc() awaits above) — the same fix shape as doPause(). V15: a lock
   // refusal never writes unlocked; it is logged and the next tick retries from a fresh read.
   if (failed.length) {
     // r4 #15: een GEDEELTELIJKE resume schrijft geen mode:'ok' meer — de staat blijft paused met
-    // resumePending, zodat de paused-tak van de volgende tick de rest opnieuw probeert.
+    // resumePending, zodat de paused-tak van de volgende tick de rest opnieuw probeert. (d, SB-M6, 2026-09-24:
+    // this rule is UNCHANGED by the retry cap below — a real transient failure still never writes 'ok'.)
     const partialLock = await withStateLock((fence) => {
       const fresh = readState();
+      // SB-M6(c) (2026-09-24, Security Boss wave 11): the retry counter is read from the FRESHEST on-disk
+      // state (never the `st` snapshot this function was called with, which can be stale relative to a prior
+      // tick's own write) so the count survives across ticks even when `st` itself came from a reset/switch.
+      const priorRetryCount = Number.isFinite(Number(fresh.resumeRetryCount)) ? Number(fresh.resumeRetryCount) : 0;
+      const retryCount = priorRetryCount + 1;
+      const retriesExhausted = retryCount >= RESUME_RETRY_MAX;
+      const wasExhausted = fresh.retriesExhausted === true;
       const next = Object.assign({}, st, {
-        mode: 'paused', pausedAgents: failed, resumePending: true,
+        mode: 'paused', pausedAgents: failed, resumePending: true, resumeRetryCount: retryCount,
         ...accountStamp(ident),
         lastCheckAt: new Date().toISOString(),
-        lastError: 'resume gedeeltelijk: ' + ok + '/' + byId.size + ' agents hervat — ' + failed.length + ' faalden; volgende tick probeert opnieuw',
+        lastError: 'resume gedeeltelijk: ' + ok + '/' + byId.size + ' agents hervat' + goneNote + ' — ' + failed.length
+          + ' faalden; volgende tick probeert opnieuw' + (retriesExhausted ? ' — RETRIES EXHAUSTED (' + retryCount + '/' + RESUME_RETRY_MAX + '), owner attention needed' : ''),
       });
+      if (retriesExhausted) next.retriesExhausted = true; else delete next.retriesExhausted;
       if (fresh.ownerOverride) next.ownerOverride = fresh.ownerOverride; else delete next.ownerOverride;
       // N17 (2026-09-24, Codex p13 wave 8): preserve the owner's paid-credits snapshot across a resume too —
       // this write is now also reachable from tick()'s override-reconciliation path (see the override-active
@@ -1461,11 +1532,16 @@ async function doResume(u, st, ident, opts) {
       if (fresh.credits) next.credits = fresh.credits; else delete next.credits;
       if (fence && !fence()) return { fenced: true };
       try { writeState(next, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
-      return { fenced: false };
+      return { fenced: false, retriesExhausted, wasExhausted, retryCount };
     });
     if (!partialLock.ok) log('state-lock: RESUME PARTIAL state write skipped (' + partialLock.reason + ') — the next tick still retries the unresolved agents via the journal');
     else if (partialLock.value && partialLock.value.fenced) log('state-lock: RESUME PARTIAL state write skipped (fenced — the lock was reclaimed mid-transaction) — the next tick still retries the unresolved agents via the journal');
-    log('RESUME PARTIAL — ' + ok + '/' + byId.size + ' hervat; ' + failed.length + ' gefaald (' + failed.map((f) => f.id).join(',') + ') — staat blijft paused/resumePending');
+    log('RESUME PARTIAL — ' + ok + '/' + byId.size + ' hervat' + goneNote + '; ' + failed.length + ' gefaald (' + failed.map((f) => f.id).join(',') + ') — staat blijft paused/resumePending');
+    // SB-M6(c): escalate exactly ONCE — the transition from "not yet exhausted" to "exhausted" — never repeat
+    // the same notice every following tick (a no-op status loop the owner would otherwise have to keep re-reading).
+    if (partialLock.ok && !(partialLock.value && partialLock.value.fenced) && partialLock.value.retriesExhausted && !partialLock.value.wasExhausted) {
+      log('RESUME RETRIES EXHAUSTED — ' + partialLock.value.retryCount + '/' + RESUME_RETRY_MAX + ' consecutive resume rounds failed for ' + failed.map((f) => f.id).join(',') + ' — the watcher keeps retrying every tick, but this needs owner attention now (state: resumePending + retriesExhausted)');
+    }
     return;
   }
   const resumeLock = await withStateLock((fence) => {
@@ -1480,18 +1556,22 @@ async function doResume(u, st, ident, opts) {
       // partial-failure write above for why this matters now that doResume() is reachable from the
       // override-reconciliation path.
       ...(fresh.credits ? { credits: fresh.credits } : {}),
+      // SB-M6(c): a full success (no `failed` left at all — genuine resumes and/or 404-resolved "gone" agents
+      // only) is a FRESH state object, same as before — resumeRetryCount/retriesExhausted are simply absent,
+      // which IS the clear: "eventual success clears" needs no extra code here, only that this object is
+      // never built by extending a stale `st`/`fresh` the way the partial-failure branch above must.
       lastResumeAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(), resumedAgents: ok, pendingCheckup: true,
       resumeNotice: '✅ USAGE GUARD — usage gereset (sessie ' + u.session.pct + '% · week ' + u.week.pct + '%). GA VERDER met waar je mee bezig was. '
         + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
         + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
-        + ok + '/' + byId.size + ' Paperclip agents hervat.',
+        + ok + '/' + byId.size + ' Paperclip agents hervat.' + goneNote,
     }, fence);
     } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
     return { fenced: false };
   });
   if (!resumeLock.ok) log('state-lock: RESUME state write skipped (' + resumeLock.reason + ') — agents WERE resumed via the API but the state file could not record it this round');
   else if (resumeLock.value && resumeLock.value.fenced) log('state-lock: RESUME state write skipped (fenced — the lock was reclaimed mid-transaction) — agents WERE resumed via the API but the state file could not record it this round');
-  log('RESUMED — session ' + u.session.pct + '% week ' + u.week.pct + '% · agents resumed: ' + ok + '/' + byId.size);
+  log('RESUMED — session ' + u.session.pct + '% week ' + u.week.pct + '% · agents resumed: ' + ok + '/' + byId.size + goneNote);
 }
 
 async function tick(deps, opts) {

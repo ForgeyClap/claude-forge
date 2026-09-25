@@ -359,6 +359,70 @@ t('opaque-exec wave 10 regression guard: sudo -h/--help still fire as a no-value
   }
 });
 
+// ---------------------------------------------------------------------------
+// WAVE 11 (2026-09-24, codex-recheck eleventh pass / wp-s1) -- Codex's eleventh spawned-`hook.run` verification
+// of wave 10's own head (7ce9cc8), cut off by a usage limit but leaving a before/after probe list behind.
+// forge-actiongate.test.cjs 2c-wave11 has the module-level classify()/cArgLiveAfterFlag proof of the same
+// fixtures; proven here a second time through the REAL spawned PreToolUse process, exactly as the live hook
+// receives them. Named after Codex's own probe names where one was given.
+// ---------------------------------------------------------------------------
+t('P16 wave 11: budget exhaustion (option and wrapper), complete-shell-word option values, and the full timeout strtod grammar all fire through the real hook', () => {
+  for (const cmd of [
+    'env -u A -u A -u A -u A -u A -u A -u A -u A -u A bash -c "$x"', // P16-option-budget-exhausted
+    'sudo '.repeat(15) + 'bash -c "$x"', // P16-wrapper-budget-exhausted
+    'sudo -u "A"B bash -c "$x"', // P16-option-value-quoted-suffix
+    'sudo -u A"B" bash -c "$x"', // P16-option-value-quoted-prefix
+    'sudo --user root\\ x bash -c "$x"', // P16-option-value-escaped-space
+    'timeout +5 bash -c "$x"', // P16-timeout-plus-duration
+    'timeout 0x10 bash -c "$x"', // P16-timeout-hex-duration
+    'timeout infinity bash -c "$x"', // P16-timeout-infinity-duration
+    'timeout "5" bash -c "$x"', // P16-timeout-quoted-duration
+    'timeout -- 5 bash -c "$x"', // P16-timeout-after-terminator
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+    assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('P16 wave 11: a quoted wrapper word and the newly recognised process wrappers (su/runuser/xargs/setsid) fire through the real hook', () => {
+  for (const cmd of [
+    '"sudo" -u root bash -c "$x"', // P16-wrapper-double-quoted
+    "'sudo' -u root bash -c \"$x\"", // P16-wrapper-single-quoted
+    'sudo -h host bash -c "$x"', // P16-sudo-host-operand
+    'su -c "$x"', 'su - user -c "$x"', 'runuser -c "$x"', // P16-unknown-wrapper (su/runuser)
+    'xargs bash -c "$x"', 'echo x | xargs -I{} bash -c "$x"', // P16-unknown-wrapper (xargs bare/option)
+    'setsid -f bash -c "$x"', // P16-unknown-wrapper (an untabled option -> unresolvable)
+  ]) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+    assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('P16 wave 11 counterfactual: doas/env benign no-value and clustered no-value flags stay silent through the real hook', () => {
+  for (const cmd of [
+    'doas -n node app.js -c "$c"', // P16-benign-doas-no-value
+    'doas -Lns node app.js -c "$c"',
+    'env -i0 node app.js -c "$c"', // P16-benign-env-flags-cluster
+    'env -vi node app.js -c "$c"',
+    'sudo -h bash -c "$x"', // keep-working: a bare, trailing sudo -h still resolves normally, never dynamic
+  ]) {
+    const r = spawnHook(bash(cmd));
+    const expected = cmd.startsWith('sudo -h bash') ? 2 : 0;
+    assert.strictEqual(r.status, expected, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('P16 wave 11: a 15-level-deep sudo chain resolves within the real hook\'s own timing budget (never a hang)', () => {
+  const cmd = 'sudo '.repeat(15) + 'bash -c "$x"';
+  const start = Date.now();
+  const r = spawnHook(bash(cmd));
+  const ms = Date.now() - start;
+  assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status);
+  assert.ok(ms < 1500, 'took ' + ms + 'ms, expected under 1500ms');
+});
+
 t('H2: a trailing-backslash quoted path before a later else/elseif/catch/finally branch still FIRES, for both Bash and PowerShell tool calls', () => {
   const prefix = 'Write-Output "C:\\Users\\foo\\" ; ';
   const bodies = [
@@ -1380,6 +1444,111 @@ t('N05: findHeredocDelim() tolerates a CRLF-terminated delimiter line (a trailin
   const hit = data.findHeredocDelim(text, bodyStart, '', 'EOF');
   assert.ok(hit, 'a CRLF-terminated delimiter line must still resolve');
   assert.strictEqual(text.slice(hit.delimStart, hit.delimEnd).replace(/\r$/, ''), 'EOF');
+});
+
+// ---------------------------------------------------------------------------
+// SB-M5 (wave 12, codex-recheck twelfth pass / wp-t1) — a command large or slow enough to inspect risks the
+// hook's own external 10s timeout (Claude Code contract); BLOCKED (exit 2, "too large to inspect") beats the
+// non-blocking, visible-but-ALLOWED exit 1 an ordinary inspection failure gets, because a command this shape
+// or size is exactly the case this hook exists to stop from running unchecked.
+// ---------------------------------------------------------------------------
+console.log('\n4f) SB-M5 — command-size ceiling and inspection-deadline safety net');
+
+t('SB-M5: a command past the size ceiling is BLOCKED with "too large to inspect", not warned-and-allowed', () => {
+  const oversized = 'echo ' + 'x'.repeat(300000); // > MAX_COMMAND_CHARS, well under MAX_STDIN_BYTES
+  const v = hook.decide(bash(oversized), {});
+  assert.strictEqual(v.block, true, 'an oversized command must be blocked');
+  assert.ok(v.gates.includes('command-too-large'), 'expected command-too-large in gates: ' + JSON.stringify(v.gates));
+  assert.ok(/too large to inspect/.test(v.reason), 'reason must say "too large to inspect": ' + v.reason);
+});
+
+t('SB-M5: the size ceiling is checked BEFORE the classifier runs at all — a benign oversized command is still blocked', () => {
+  // proves this is a real pre-check, not merely "the classifier happened to fire" on the padding
+  const oversized = 'echo ' + 'benign-padding-'.repeat(20000);
+  const v = hook.decide(bash(oversized), {});
+  assert.strictEqual(v.block, true);
+  assert.deepStrictEqual(v.gates, ['command-too-large']);
+});
+
+t('SB-M5: an ordinary, small command is completely unaffected by the size ceiling', () => {
+  const v = hook.decide(bash('npm run build'), {});
+  assert.strictEqual(v.block, false);
+});
+
+t('SB-M5: a real spawned hook call blocks an oversized command with exit 2 (end-to-end, not just the module API)', () => {
+  const oversized = 'echo ' + 'y'.repeat(300000);
+  const r = spawnHook(bash(oversized));
+  assert.strictEqual(r.status, 2, 'expected exit 2: stderr=' + r.stderr);
+  assert.ok(/too large to inspect/.test(r.stderr), 'stderr must say "too large to inspect": ' + r.stderr);
+});
+
+t('SB-M5: an inspection that exceeds the wall-clock deadline is BLOCKED (injected clock, no real sleep needed)', () => {
+  let calls = 0;
+  const fakeNow = () => { calls++; return calls === 1 ? 0 : 9999; }; // first call = start, second call = "9999ms later"
+  const v = hook.decide(bash('rm -rf ./src'), { now: fakeNow, deadlineMs: 4000 });
+  assert.strictEqual(v.block, true, 'an inspection judged too slow must be blocked');
+  assert.ok(v.gates.includes('command-too-large'), 'expected command-too-large in gates: ' + JSON.stringify(v.gates));
+  assert.ok(/too large to inspect/.test(v.reason));
+});
+
+t('SB-M5: an inspection well within the deadline is unaffected by the deadline check', () => {
+  let calls = 0;
+  const fakeNow = () => { calls++; return calls === 1 ? 0 : 5; }; // "5ms later" -- comfortably under any deadline
+  const v = hook.decide(bash('npm run build'), { now: fakeNow, deadlineMs: 4000 });
+  assert.strictEqual(v.block, false);
+});
+
+t('SB-M5: the 60 kB "-c"-padded adversarial shape (the SB-M5 root cause fixed in forge-gate-quotes.cjs) still decides well under a second through the real hook', () => {
+  const padded = 'bash ' + '-c x '.repeat(12000) + '-c "$x"'; // ~60 kB, well under MAX_COMMAND_CHARS
+  const t0 = Date.now();
+  const v = hook.decide(bash(padded), {});
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 1000, 'decide() took ' + elapsed + 'ms on the 60kB padded command, expected < 1000ms');
+  assert.strictEqual(v.block, true, 'the padded command must still resolve to a real block (opaque-exec), not a timeout artifact');
+  assert.ok(v.gates.includes('opaque-exec'), 'expected opaque-exec, got: ' + JSON.stringify(v.gates));
+});
+
+// ---------------------------------------------------------------------------
+// WAVE 12 FOLLOW-UP (2026-09-25, wp-u1) -- a live probe of the real hook on wave 12's own head (commit c6dff4e)
+// found two of 47 shapes not yet covered (cmd.exe's own /C-/K, and a live marker inside env -S's own operand
+// with no separate later -c token), plus a named prose gap (find's own -exec/-execdir). forge-actiongate.test.cjs
+// 2g has the module-level classify()/cArgLiveAfterFlag proof of the same fixtures; proven here a second time
+// through the REAL spawned PreToolUse process, exactly as the live hook receives them.
+// ---------------------------------------------------------------------------
+console.log('\n4g) wp-u1 -- cmd.exe /C-/K, env -S live operand, find -exec bash -c, through the real hook');
+
+t('wp-u1: cmd.exe\'s own /C and /K argument fires opaque-exec through the real hook', () => {
+  for (const cmd of ['cmd /c "$x"', 'cmd.exe /C "$x"', 'cmd /k "$x"', 'C:\\Windows\\System32\\cmd.exe /c "$x"',
+    'cmd /q /c "$x"', 'cmd /e:on /v:on /c "$x"', 'sudo cmd /c "$x"']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 2, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+    assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), cmd + ': ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('wp-u1 counterfactual: a fully literal cmd /c, an unrelated cmd-tool program, and an MSYS drive-letter path all stay silent through the real hook', () => {
+  for (const cmd of ['cmd /c "echo hi"', 'cmd /c dir', 'cmd-tool -c "$x"', 'cd /c/Users/YOU', 'ls /c/Users/YOU/project']) {
+    const r = spawnHook(bash(cmd));
+    assert.strictEqual(r.status, 0, cmd + ' -> exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  }
+});
+
+t('wp-u1 (SB-L3 residual): env -S\'s own operand fires on a live marker inside it, with no later -c needed, through the real hook', () => {
+  const r = spawnHook(bash("env -S 'sh -c ${X}'"));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), r.stderr.split('\n')[0]);
+  const silent = spawnHook(bash("env -S 'sh -c \"echo hi\"'"));
+  assert.strictEqual(silent.status, 0, 'a fully literal -S operand must stay silent: ' + silent.stderr.split('\n')[0]);
+  const sudo = spawnHook(bash('sudo -S bash "$SECRET_CMD"'));
+  assert.strictEqual(sudo.status, 0, 'sudo\'s own -S/--stdin must not be mistaken for env\'s -S: ' + sudo.stderr.split('\n')[0]);
+});
+
+t('wp-u1: GNU find\'s own -exec clause fires opaque-exec through the real hook, closing the named prose gap', () => {
+  const r = spawnHook(bash('find . -exec bash -c "$x" \\;'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ' stderr ' + r.stderr.split('\n')[0]);
+  assert.ok(r.stderr.startsWith('FORGE GATE (opaque-exec'), r.stderr.split('\n')[0]);
+  const silent = spawnHook(bash('find . -exec echo hi \\;'));
+  assert.strictEqual(silent.status, 0, 'a non-shell -exec target must stay silent: ' + silent.stderr.split('\n')[0]);
 });
 
 // ---------------------------------------------------------------------------

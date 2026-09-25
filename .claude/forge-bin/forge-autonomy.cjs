@@ -206,6 +206,21 @@ function usageLimitActive(opts) {
   }
   if (!st || st.mode !== 'paused') return sw.value === false ? guardOffResult() : { active: false, reason: 'usage guard is not paused', source: 'state', file };
   const now = typeof opts.now === 'number' ? opts.now : Date.now();
+  // SB-M6 (2026-09-24, Security Boss wave 11, sec-w11): since wave 10 a resume attempt that keeps failing
+  // (e.g. an agent that no longer exists — see usage-guard.cjs's own doResume()/runOverrideOn() SB-M6 fix)
+  // leaves mode:'paused' with a fresh lastCheckAt on every tick, so the STALE-pause escape hatch above never
+  // fires either. An owner who already PAID for a usage-override (extra credits) could therefore be blocked
+  // forever by a bookkeeping retry loop that has nothing to do with the plan-limit this pause originally
+  // protected against. `st.ownerOverride` is written FRESH every real tick straight from the authoritative
+  // grant record the moment it is actually honoured (usage-guard.cjs's tick() / usage-guard-override.cjs's
+  // resolveOwnerOverride()) — reading it here reads THAT already-honoured decision, not a stale flag being
+  // trusted to greenlight a NEW pause (usage-guard.cjs's own tick() keeps that rule entirely; this file never
+  // makes a pause/resume decision itself). An override with no `until`, or one that has already expired, is
+  // NOT honoured here — fail toward blocking, exactly like the real guard would once it next reconciles.
+  const ov = st.ownerOverride;
+  if (ov && ov.active === true && typeof ov.until === 'string' && Number.isFinite(Date.parse(ov.until)) && Date.parse(ov.until) > now) {
+    return { active: false, reason: 'usage guard shows "paused" but a paid usage-override is currently honoured for this account (a resume-bookkeeping retry may still be catching up) — not treated as a live usage-limit block', source: 'override-honoured', file };
+  }
   const resumeAt = Number(st.resumeAtEpoch);
   if (Number.isFinite(resumeAt) && now >= resumeAt) {
     return { active: false, reason: 'the pause has passed its reset time — the guard resumes on its next check', source: 'state', file };

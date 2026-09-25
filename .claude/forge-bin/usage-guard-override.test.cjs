@@ -312,5 +312,38 @@ t('cachedOverrideFrom: a long token-shaped reason is masked, never echoed into t
   assert.ok(!c.reason.includes(fakeToken), 'a pasted-by-mistake token-shaped reason must be masked: ' + c.reason);
 });
 
+// ---- SB-L5 (2026-09-24, Security Boss wave 11, sec-w11) — GENERATION COLLISION: usage-guard.cjs's own
+// readCredentialSnapshot() doc correction admits this project does not control HOW `.credentials.json` is
+// rewritten — an in-place rewrite whose new mtime+size happen to COLLIDE with the previous stamp (same
+// millisecond, same byte length) can slip past the plain metadata check entirely. If this process already
+// trusts a specific bearer-credential fingerprint for this account+issuance (an earlier confirmed tick), a
+// trivial generation match that now carries a DIFFERENT fingerprint must be REJECTED, not silently re-seeded
+// with the new one. ----
+t('SB-L5: a trivial generation match (same stamp) whose bearer-credential fingerprint DIFFERS from the already-trusted baseline is REJECTED (credential-generation-collision), and the baseline is NOT overwritten', () => {
+  const dir = scratchRoot();
+  O.__resetCredentialProofForTests();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-collision', credentialGeneration: 'G0', issuanceId: 'iss-collision' }, { projectRoot: dir });
+  // tick A: trivial match seeds the baseline with fp-A.
+  const rA = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-collision', credentialGeneration: 'G0', credentialFp: 'fp-A' });
+  assert.strictEqual(rA.active, true, JSON.stringify(rA));
+  // tick B: the FILE metadata (mtime+size) COLLIDES with the exact same stamp G0, but the bearer credential
+  // is now fp-B — an in-place rewrite this module cannot see via metadata alone.
+  const rB = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-collision', credentialGeneration: 'G0', credentialFp: 'fp-B' });
+  assert.strictEqual(rB.active, false, 'a generation collision must never be silently trusted: ' + JSON.stringify(rB));
+  assert.strictEqual(rB.rejected, 'credential-generation-collision', JSON.stringify(rB));
+  assert.ok(!JSON.stringify(rB).includes('fp-A') && !JSON.stringify(rB).includes('fp-B'), 'no bearer-derived fingerprint may ever be echoed back: ' + JSON.stringify(rB));
+  // tick C: fp-A returns under the SAME generation — the baseline must still be fp-A (never overwritten by
+  // the rejected fp-B attempt), so this trivially matches again.
+  const rC = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-collision', credentialGeneration: 'G0', credentialFp: 'fp-A' });
+  assert.strictEqual(rC.active, true, 'the baseline must not have been corrupted by the rejected collision attempt: ' + JSON.stringify(rC));
+});
+t('SB-L5: a trivial generation match with NO prior baseline yet (first-ever confirmation for this account) is honoured normally — the collision check never fires on the ordinary first-confirmation case', () => {
+  const dir = scratchRoot();
+  O.__resetCredentialProofForTests();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted', accountLabel: 'acct-collision-first', credentialGeneration: 'G0', issuanceId: 'iss-collision-first' }, { projectRoot: dir });
+  const r = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-collision-first', credentialGeneration: 'G0', credentialFp: 'fp-first' });
+  assert.strictEqual(r.active, true, JSON.stringify(r));
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

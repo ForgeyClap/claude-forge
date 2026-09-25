@@ -65,6 +65,22 @@ const FAILSAFE_MS = 3000;
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const MAX_NOTICE_CHARS = 300;
+// SB-M5 (wave 12, codex-recheck twelfth pass / wp-t1). MAX_STDIN_BYTES above bounds the whole JSON payload
+// (8 MiB); it says nothing about how expensive the CLASSIFIER's own regex/quote-scanning pipeline is on
+// whatever command text sits inside that payload — forge-gate-quotes.cjs's own shared work budgets scale
+// LINEARLY with the command's own length, so a command anywhere near the stdin ceiling could still cost real,
+// measurable time before this hook can decide anything, risking Claude Code's own external hook timeout (a
+// call that never gets an exit code in time is a call this hook never actually blocked). MAX_COMMAND_CHARS is
+// a much smaller, cheap-to-check ceiling on the COMMAND TEXT ALONE (comfortably above any real Bash/PowerShell
+// command a normal session ever constructs, comfortably below MAX_STDIN_BYTES) checked BEFORE the classifier
+// pipeline ever runs; DEADLINE_MS is a wall-clock safety net measured AROUND the classify() call itself — well
+// under the 10s hook timeout this project configures — so an unexpectedly slow classification (a future
+// regression this file's own tests did not foresee) is refused rather than silently trusted. Both refuse with
+// a plain "too large to inspect" BLOCK (exit 2), never the non-blocking "NOT checked" exit 1 an ordinary
+// inspection failure gets — an oversized or slow-to-judge command is exactly the shape this hook exists to
+// stop from running unchecked, not a shape to wave through with a warning.
+const MAX_COMMAND_CHARS = 200000;
+const DEADLINE_MS = 4000;
 const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b|\biex\b|\bInvoke-Expression\b/i;
 
 /** sha256(s) -> hex digest, used only to bind a once-consumption call to the exact command being evaluated
@@ -110,6 +126,12 @@ const WORDS = {
     en: 'the gate classifier could not load and this command looks destructive',
     safeNl: 'herstel .claude/config/orchestration/hard-gates.json of forge-actiongate.cjs (draai de doctor)',
     safeEn: 'restore .claude/config/orchestration/hard-gates.json or forge-actiongate.cjs (run the doctor)',
+  },
+  'command-too-large': {
+    nl: 'dit commando is te groot om veilig te controleren (of duurde te lang om te beoordelen)',
+    en: 'this command is too large to inspect safely (or took too long to judge)',
+    safeNl: 'splits het commando op in kleinere stappen, of schrijf het als een los, leesbaar script-bestand',
+    safeEn: 'split the command into smaller steps, or run it as a separate, readable script file instead',
   },
 };
 
@@ -296,8 +318,18 @@ function offNotice(en, gates) {
   return cap('FORGE GATE is OFF (set_at ' + (en.set_at || 'unknown') + ', set_by ' + (en.set_by || 'unknown') + ')' + tail);
 }
 
-/** evaluate(payload, command, opts) -> the ON-verdict { block, warn?, gates, reason, notice, why }. */
+/** evaluate(payload, command, opts) -> the ON-verdict { block, warn?, gates, reason, notice, why }. SB-M5 (wave
+ *  12): opts.maxCommandChars/opts.deadlineMs/opts.now are test seams (defaults MAX_COMMAND_CHARS/DEADLINE_MS/
+ *  Date.now) for the size ceiling and wall-clock deadline described at their own declaration above. */
 function evaluate(payload, command, opts) {
+  const maxChars = opts.maxCommandChars || MAX_COMMAND_CHARS;
+  if (command.length > maxChars) {
+    const ids = ['command-too-large'];
+    return { block: true, gates: ids, reason: blockReason(ids), why: 'command-too-large (' + command.length + ' chars > ' + maxChars + ')' };
+  }
+  const now = typeof opts.now === 'function' ? opts.now : Date.now;
+  const deadlineMs = opts.deadlineMs || DEADLINE_MS;
+  const startedAt = now();
   const data = DATA ? DATA.stripInertData(command, payload.tool_name) : { text: command, regions: 0 };
   const seen = data.text;
   const note = data.regions ? ' (after stripping ' + data.regions + ' inert data region(s))' : '';
@@ -312,6 +344,11 @@ function evaluate(payload, command, opts) {
     gateModule = opts.gate || require('./forge-actiongate.cjs');
     commandIds = commandGateIds(gateModule);
     result = gateModule.classify({ text: seen });
+    const elapsedMs = now() - startedAt;
+    if (elapsedMs > deadlineMs) {
+      const ids = ['command-too-large'];
+      return { block: true, gates: ids, reason: blockReason(ids), why: 'inspection-deadline-exceeded (' + elapsedMs + 'ms > ' + deadlineMs + 'ms)' };
+    }
   } catch (e) {
     const msg = String(e && e.message || e).split('\n')[0];
     if (FALLBACK_RE.test(command)) {

