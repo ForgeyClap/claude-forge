@@ -903,10 +903,16 @@ async function runOverrideOn() {
   // content) at grant time — see usage-guard-override.cjs's resolveOwnerOverride() for how a LATER mismatch
   // against this stamp (a rotated credential the profile hasn't caught up to yet) is handled.
   const grantCredentialGeneration = credentialGeneration();
+  // N10 residual, wave 9 (2026-09-24, Codex p14 out-p14 finding N10): a fresh, random, non-secret identifier
+  // for THIS SPECIFIC grant issuance — never derived from anything credential-related. See
+  // usage-guard-override.cjs's own header for why this exists: it binds the in-process memory-proof check to
+  // the exact grant it was confirmed under, so a REPLACED grant can never be authorized by a baseline a stale
+  // watcher confirmed under an earlier, now-superseded issuance.
+  const issuanceId = crypto.randomUUID();
   // V15 (FOURTH Codex recheck, 2026-09-24): write the AUTHORITATIVE grant record FIRST and
   // UNCONDITIONALLY — the override must take effect even when the state lock (below) is busy; every
   // subsequent tick reconciles the cache from THIS record, never the other way around.
-  if (!og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp, credentialGeneration: grantCredentialGeneration }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
+  if (!og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp, credentialGeneration: grantCredentialGeneration, issuanceId }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })) {
     console.error('usage-guard override-on FAILED — could not write the authoritative override-grant record to disk; no change made; try again');
     process.exit(1);
   }
@@ -922,17 +928,37 @@ async function runOverrideOn() {
       const st = readState();
       // GUARD-OFF-BYPASS: force:true here is safe ONLY because verifyOwnerGrant() just succeeded above (a
       // VERIFIED owner action, not a bare CLI flag) — see guardNetworkAllowed()'s own doc comment.
-      const wasPaused = (st.pausedAgents || []).length;
+      const priorPaused = st.pausedAgents || [];
+      const wasPaused = priorPaused.length;
+      // N17 residual, wave 9 (2026-09-24, Codex p14 out-p14 finding N17 — REPLACES the wave-8 "always claim
+      // success" loop): a resume attempt that genuinely FAILS must never be reported — on disk OR in the
+      // printed outcome line — as if it had succeeded. `stillPaused` collects exactly the agents this round
+      // could not resume; everything below is derived from THAT, never from `wasPaused` alone (which only
+      // ever meant "there was something to resume", never "it worked").
+      const stillPaused = [];
       let resumed = 0;
-      for (const a of (st.pausedAgents || [])) { const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true }); if (r.status >= 200 && r.status < 300) resumed++; }
-      st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.lastError;
+      for (const a of priorPaused) {
+        const r = await pc('POST', '/api/agents/' + a.id + '/resume', {}, { force: true });
+        if (r.status >= 200 && r.status < 300) resumed++; else stillPaused.push(a);
+      }
+      if (stillPaused.length) {
+        // Some agents did NOT resume — keep the guard's OWN 'paused' marker (never 'ok') so the tick's
+        // existing override-active reconciliation branch (see tick()'s own N17 comment, unchanged) retries
+        // them through the SAME doResume() path on every following tick, exactly like an ordinary
+        // partial-resume failure already does elsewhere in this file.
+        st.mode = 'paused'; st.pausedAgents = stillPaused; st.resumePending = true;
+        st.lastError = 'override-on: resume gedeeltelijk: ' + resumed + '/' + wasPaused + ' agents hervat — '
+          + stillPaused.length + ' faalden; volgende tick probeert opnieuw';
+      } else {
+        st.mode = 'ok'; st.pausedAgents = []; delete st.notice; delete st.pendingCheckup; delete st.resumePending; delete st.lastError;
+      }
       // N01: stamp the account this override is being granted FOR, exactly like a real tick would — see
       // detectAccountSwitch()'s own doc comment for why an unstamped state misreads a real switch as adoption.
       Object.assign(st, accountStamp(readAccountIdentity()));
       st.ownerOverride = guardOverride.cachedOverrideFrom({ active: true, at: new Date().toISOString(), reason, until });
       if (fence && !fence()) return { fenced: true };
       try { writeState(st, fence); } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
-      return { fenced: false, resumed, wasPaused };
+      return { fenced: false, resumed, wasPaused, pending: stillPaused.length };
     });
   } catch (e) {
     onLock = { ok: false, reason: (e && e.message) ? e.message : String(e), bookkeepingThrew: true };

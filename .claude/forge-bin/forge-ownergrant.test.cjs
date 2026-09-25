@@ -199,6 +199,38 @@ t('N10 residual: an ABSENT grant file also reports credentialGeneration: null (n
   const r = G.readOverrideGrant({ projectRoot: root(undefined) });
   assert.strictEqual(r.credentialGeneration, null);
 });
+// ---- N10 residual, WAVE 9 (2026-09-24, Codex p14 out-p14 finding N10): a random, non-secret `issuanceId`
+// binds the memory-proof check (usage-guard-override.cjs's resolveOwnerOverride) to THIS SPECIFIC grant
+// write — never merely to the account label — so a REPLACED grant can never be authorized by a baseline a
+// watcher established under an earlier, different issuance. This function persists whatever it is given
+// verbatim; it does not itself generate or validate an issuanceId (usage-guard.cjs's runOverrideOn does,
+// via crypto.randomUUID()). ----
+t('N10 wave 9: writeOverrideGrant persists issuanceId; readOverrideGrant returns it back unchanged', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'test', accountLabel: 'a', credentialGeneration: 'G0', issuanceId: 'iss-abc-123' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.issuanceId, 'iss-abc-123');
+});
+t('N10 wave 9: a grant written WITHOUT issuanceId (a pre-wave-9 legacy record) reads back issuanceId: null', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'legacy', accountLabel: 'a', credentialGeneration: 'G0' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.issuanceId, null);
+});
+t('N10 wave 9: an ABSENT grant file also reports issuanceId: null (never throws, never a stale leftover)', () => {
+  const r = G.readOverrideGrant({ projectRoot: root(undefined) });
+  assert.strictEqual(r.issuanceId, null);
+});
+t('N10 wave 9: a REPLACED grant (a fresh writeOverrideGrant call for the SAME account) gets a genuinely DIFFERENT issuanceId when the caller supplies one — this function never reuses the prior file\'s own value on its own', () => {
+  const dir = root(undefined);
+  const until = new Date(Date.now() + 3600000).toISOString();
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'grant 1', accountLabel: 'a', credentialGeneration: 'G1', issuanceId: 'iss-1' }, { projectRoot: dir });
+  G.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason: 'grant 2', accountLabel: 'a', credentialGeneration: 'G2', issuanceId: 'iss-2' }, { projectRoot: dir });
+  const r = G.readOverrideGrant({ projectRoot: dir });
+  assert.strictEqual(r.issuanceId, 'iss-2', 'the replacement write must fully take effect: ' + JSON.stringify(r));
+});
 
 t('overrideGrantFilePath: a DIFFERENT file from the plain owner-grant SECRET file — the two never collide', () => {
   const dir = root('SOME-SECRET');

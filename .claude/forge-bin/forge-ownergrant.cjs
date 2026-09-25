@@ -140,9 +140,25 @@ function overrideGrantFilePath(opts) {
  *  fresh `override-on`, which re-stamps this very field to the current generation outright. Neither the
  *  proof nor anything derived from the bearer credential is EVER written into this file, or any other file —
  *  this field alone is what persists, and it is non-secret metadata only. A watcher RESTART starts a brand
- *  new process with no memory of any prior proof, so a generation that has already drifted away from this
- *  stamp by the time the watcher comes back up requires a fresh `override-on`, exactly like a genuine account
- *  rotation would.
+ *  new process with no memory of any prior proof: a generation that STILL matches this stamp on restart is
+ *  honoured directly (the trivial exact-match path, no memory needed at all); only a generation that has
+ *  DRIFTED away from this stamp by the time the watcher comes back up requires a fresh `override-on`, because
+ *  the in-memory baseline that could have proven it is gone — exactly like a genuine account rotation would.
+ *
+ *  `issuanceId` (N10 residual, WAVE 9, 2026-09-24, Codex p14 out-p14 finding N10 — "PARTLY CLOSED": the wave-8
+ *  memory-proof baseline was keyed by account label ALONE, with no binding to the specific grant it was
+ *  established under — Codex's `N10_reissued_grant_stale_watcher` proved a REPLACED grant for a DIFFERENT
+ *  credential, still labelled with the SAME account, could be wrongly authorized by a baseline a stale
+ *  watcher had confirmed under the EARLIER, now-superseded grant). A random, non-secret identifier
+ *  (`crypto.randomUUID()`, generated fresh by `usage-guard.cjs`'s `override-on` on EVERY write — never
+ *  derived from anything credential-related) that names THIS SPECIFIC grant issuance. The memory-proof check
+ *  in `usage-guard-override.cjs`'s `resolveOwnerOverride()` now requires `baseline.issuanceId ===
+ *  record.issuanceId` in addition to the fp match: a REPLACED grant (a different issuanceId) can never be
+ *  authorized by a baseline confirmed under an earlier issuance, no matter how the credential file's bytes
+ *  happen to line up later. A grant with NO issuanceId at all (a pre-wave-9 legacy record, or a hand-written
+ *  test fixture) can likewise never receive memory proof — the trivial exact-generation-match path is the
+ *  only way such a grant is ever honoured after its stamp drifts. This function persists whatever it is
+ *  given verbatim; it does not itself generate or validate an issuanceId.
  *
  *  EXPIRY SEMANTICS (N12, 2026-09-24 — Security Boss addendum reconfirmed): a PRESENT-BUT-UNPARSEABLE
  *  `until` (a non-empty string `Date.parse` cannot make sense of — a corrupted file, a hand-edit typo) reads
@@ -156,32 +172,35 @@ function overrideGrantFilePath(opts) {
 function readOverrideGrant(opts) {
   const file = overrideGrantFilePath(opts);
   let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { active: false, at: null, until: null, reason: null, accountLabel: null, credentialGeneration: null }; }
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { active: false, at: null, until: null, reason: null, accountLabel: null, credentialGeneration: null, issuanceId: null }; }
   let parsed;
-  try { parsed = JSON.parse(raw); } catch { return { active: false, at: null, until: null, reason: null, accountLabel: null, credentialGeneration: null }; }
+  try { parsed = JSON.parse(raw); } catch { return { active: false, at: null, until: null, reason: null, accountLabel: null, credentialGeneration: null, issuanceId: null }; }
   const accountLabel = (parsed && typeof parsed.accountLabel === 'string' && parsed.accountLabel) ? parsed.accountLabel : null;
   const credentialGeneration = (parsed && typeof parsed.credentialGeneration === 'string' && parsed.credentialGeneration) ? parsed.credentialGeneration : null;
+  // N10 residual, wave 9 (2026-09-24, Codex p14 out-p14): see this function's own doc comment above for what
+  // this identifies and why — this function only ever reports whatever the file contains, verbatim.
+  const issuanceId = (parsed && typeof parsed.issuanceId === 'string' && parsed.issuanceId) ? parsed.issuanceId : null;
   if (!parsed || typeof parsed !== 'object' || parsed.active !== true) {
     return {
       active: false,
       at: (parsed && typeof parsed.at === 'string') ? parsed.at : null,
       until: (parsed && typeof parsed.until === 'string') ? parsed.until : null,
       reason: (parsed && typeof parsed.reason === 'string') ? parsed.reason : null,
-      accountLabel, credentialGeneration,
+      accountLabel, credentialGeneration, issuanceId,
     };
   }
   // N12: a genuinely absent `until` is INVALID, not unlimited (see the doc comment above).
   if (typeof parsed.until !== 'string' || !parsed.until) {
-    return { active: false, at: parsed.at || null, until: null, reason: parsed.reason || null, accountLabel, credentialGeneration, invalid: 'missing-expiry' };
+    return { active: false, at: parsed.at || null, until: null, reason: parsed.reason || null, accountLabel, credentialGeneration, issuanceId, invalid: 'missing-expiry' };
   }
   const untilMs = Date.parse(parsed.until);
   if (!Number.isFinite(untilMs)) {
-    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, credentialGeneration, invalid: 'unparseable-expiry' };
+    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, credentialGeneration, issuanceId, invalid: 'unparseable-expiry' };
   }
   if (Date.now() > untilMs) {
-    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, credentialGeneration, expired: true };
+    return { active: false, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, credentialGeneration, issuanceId, expired: true };
   }
-  return { active: true, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, credentialGeneration };
+  return { active: true, at: parsed.at || null, until: parsed.until, reason: parsed.reason || null, accountLabel, credentialGeneration, issuanceId };
 }
 
 /** writeOverrideGrant(record, opts) -> boolean (true = the authoritative state on disk now matches the
@@ -200,7 +219,10 @@ function readOverrideGrant(opts) {
  *  missing/unparseable expiry is a READ-time concern — see readOverrideGrant's own doc comment); it persists
  *  whatever string (or absence) it is given. `record.credentialGeneration` (N10 residual, 2026-09-24) is
  *  likewise persisted verbatim — see readOverrideGrant's own doc comment for what it is and why it exists;
- *  this function does not derive, validate or compare it. Never throws. */
+ *  this function does not derive, validate or compare it. `record.issuanceId` (N10 residual, wave 9,
+ *  2026-09-24) is likewise persisted verbatim — see readOverrideGrant's own doc comment for what it is and
+ *  why it exists; this function does not itself generate, validate or compare it (usage-guard.cjs's
+ *  override-on generates a fresh one via `crypto.randomUUID()` on every call). Never throws. */
 function writeOverrideGrant(record, opts) {
   const file = overrideGrantFilePath(opts);
   if (!record || record.active !== true) {
@@ -217,6 +239,7 @@ function writeOverrideGrant(record, opts) {
       reason: (typeof record.reason === 'string' && record.reason) || null,
       accountLabel: (typeof record.accountLabel === 'string' && record.accountLabel) || null,
       credentialGeneration: (typeof record.credentialGeneration === 'string' && record.credentialGeneration) || null,
+      issuanceId: (typeof record.issuanceId === 'string' && record.issuanceId) || null,
     };
     fs.writeFileSync(tmp, JSON.stringify(body, null, 2) + '\n');
     fs.renameSync(tmp, file);

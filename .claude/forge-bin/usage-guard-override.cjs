@@ -92,6 +92,26 @@
  * active; it is now also an explicit refusal (`rejected:'credential-generation-missing'`) — a plain,
  * one-time `override-on` re-stamps it and re-arms the grant with the current field.
  *
+ * N10 RESIDUAL, WAVE 9 (2026-09-24, Codex p14 out-p14 finding N10 — "PARTLY CLOSED": ISSUANCE BINDING): wave
+ * 8's memory-proof baseline (`credentialProofByAccount`) was keyed by account label ALONE — it had no idea
+ * WHICH grant it had actually confirmed. Codex's `N10_reissued_grant_stale_watcher` exploited exactly that: a
+ * watcher (W1) confirms account A's grant G1 under credential C1 (seeding the baseline with C1's fp); the
+ * grant is then REPLACED with G2, bound to a DIFFERENT credential C2, while the profile label stays A (the
+ * account-binding check alone cannot see this — it is still, correctly, "account A"); C1 later returns to
+ * the credential file with new file metadata; W1's stale baseline — still only "account A" + "fp(C1)" —
+ * matched and WRONGLY honoured G2, a grant W1 never actually confirmed. THE FIX: every grant now also carries
+ * a random, non-secret `issuanceId` (forge-ownergrant.cjs's own field; `override-on` generates a fresh
+ * `crypto.randomUUID()` on every write — never derived from anything credential-related). The in-memory
+ * baseline stores it alongside the fp, and the memory-proof branch below now ALSO requires
+ * `baseline.issuanceId === record.issuanceId`: a REPLACED grant (a different issuanceId) can never be
+ * authorized by a baseline confirmed under an earlier issuance, no matter how the credential file's bytes
+ * happen to line up later — the mismatch alone rejects it, with no need to proactively clear the stale Map
+ * entry (a later trivial match against the NEW issuance simply overwrites it). A grant with NO issuanceId at
+ * all (a pre-wave-9 legacy record, or a hand-written fixture) can likewise never receive memory proof —
+ * `record.issuanceId` must itself be truthy for the memory-proof branch to even be considered, so such a
+ * grant falls back to the trivial exact-generation-match path only, exactly like the credential-generation-
+ * missing case already did for a field that predates ITS OWN introduction.
+ *
  * HONEST LIMITATION (documented, not hidden): this is still a non-secret, best-effort signal, not a
  * cryptographic proof of account identity — a credential's own refresh-token fingerprint is a real bearer
  * secret's derivative and is trustworthy evidence that "the same login session is still in control", but it
@@ -101,23 +121,27 @@
  * conservatively, require the owner to run `override-on` again more often than strictly necessary. That is
  * the safe direction for this trade-off to fail in.
  */
-// credentialProofByAccount (2026-09-24, Codex p13 wave 8) — IN-PROCESS-ONLY memory of the last credential
-// fingerprint this watcher process itself observed at the tick it confirmed a given account's generation.
-// Keyed by the OPAQUE local account label (never a raw fingerprint/uuid), never persisted to disk, never
-// logged, never returned from resolveOwnerOverride() to any caller. Lost on every process restart BY
-// DESIGN — see the FINAL POLICY note above for why that is the correct, safe behaviour, not a bug.
+// credentialProofByAccount (2026-09-24, Codex p13 wave 8; ISSUANCE-BOUND wave 9) — IN-PROCESS-ONLY memory of
+// the last credential fingerprint this watcher process itself observed at the tick it confirmed a given
+// account's generation, and (wave 9, N10 residual) the specific grant `issuanceId` that confirmation was
+// established under. Keyed by the OPAQUE local account label (never a raw fingerprint/uuid), never persisted
+// to disk, never logged, never returned from resolveOwnerOverride() to any caller. Lost on every process
+// restart BY DESIGN — see the FINAL POLICY note above for why that is the correct, safe behaviour, not a bug.
 let credentialProofByAccount = new Map();
 /** __resetCredentialProofForTests() -> void. Test-only seam (mirrors this module's sibling
  *  __setOwnerGrantRootForTests convention in usage-guard.cjs): clears the in-memory Map above, simulating a
  *  watcher restart so a test can prove "no prior confirmation survives a restart" deterministically instead
  *  of needing a real second OS process for every such scenario. Production code never calls this. */
 function __resetCredentialProofForTests() { credentialProofByAccount = new Map(); }
-/** rememberCredentialProof(accountLabel, generation, fp) -> void. Only ever stores a REAL, non-empty
- *  fingerprint — a tick where the credential file could not be read at all (fp null/absent) leaves whatever
- *  baseline already existed untouched rather than overwriting known-good evidence with "nothing". Pure
- *  side effect on the module-level Map only; never throws. */
-function rememberCredentialProof(accountLabel, generation, fp) {
-  if (typeof fp === 'string' && fp) credentialProofByAccount.set(accountLabel, { generation, credentialFp: fp });
+/** rememberCredentialProof(accountLabel, issuanceId, generation, fp) -> void. Only ever stores a REAL,
+ *  non-empty fingerprint — a tick where the credential file could not be read at all (fp null/absent) leaves
+ *  whatever baseline already existed untouched rather than overwriting known-good evidence with "nothing".
+ *  `issuanceId` (wave 9, N10 residual) is stored VERBATIM alongside the fp — including `null`/`undefined`
+ *  when the confirmed record carried none — so a later comparison against a DIFFERENT (or likewise-absent)
+ *  issuance can never accidentally match; see resolveOwnerOverride's own doc comment for how this is used.
+ *  Pure side effect on the module-level Map only; never throws. */
+function rememberCredentialProof(accountLabel, issuanceId, generation, fp) {
+  if (typeof fp === 'string' && fp) credentialProofByAccount.set(accountLabel, { issuanceId: issuanceId || null, generation, credentialFp: fp });
 }
 const guardGrant = require('./forge-ownergrant.cjs');
 const guardRedact = require('./usage-guard-redact.cjs');
@@ -159,15 +183,22 @@ function resolveOwnerOverride(opts) {
     // trivial match — nothing has changed since the grant was issued/last re-stamped by override-on. This
     // is also the ONLY place a fresh owner authorization (b) ever takes effect: override-on always stamps
     // the CURRENT generation, so its very next tick lands here directly, never through the proof check below.
-    rememberCredentialProof(current, curGen, curFp);
+    // wave 9 (N10 residual): the baseline is bound to THIS record's own issuanceId (verbatim, including
+    // null/undefined for a pre-wave-9 legacy grant) — see rememberCredentialProof's own doc comment.
+    rememberCredentialProof(current, record.issuanceId, curGen, curFp);
     return { active: true, record };
   }
   // The generation changed since the grant was issued/last confirmed. Honoured again ONLY via memory proof
-  // (a) — see the file header. No proof, or no baseline at all (first-ever mismatch this process has seen
-  // for this account — including right after a restart), fails toward pausing.
+  // (a) — see the file header. No proof, no baseline at all (first-ever mismatch this process has seen for
+  // this account — including right after a restart), OR a baseline confirmed under a DIFFERENT grant
+  // issuance than the one currently on file (N10 residual, wave 9 — see the file header's own section for
+  // this: a REPLACED grant must never be authorized by a baseline a stale watcher confirmed under an
+  // earlier, now-superseded issuance) all fail toward pausing. `record.issuanceId` must itself be truthy for
+  // this branch to even be considered — a grant with no issuanceId at all (pre-wave-9) never gets memory
+  // proof, exact-match only.
   const baseline = credentialProofByAccount.get(current);
-  if (baseline && curFp && baseline.credentialFp === curFp) {
-    rememberCredentialProof(current, curGen, curFp);
+  if (baseline && curFp && record.issuanceId && baseline.issuanceId === record.issuanceId && baseline.credentialFp === curFp) {
+    rememberCredentialProof(current, record.issuanceId, curGen, curFp);
     return { active: true, record };
   }
   return { active: false, record, rejected: 'credential-generation-unconfirmed', currentGeneration: curGen };
@@ -235,10 +266,15 @@ function resolveGrantUntil(rawUntil) {
  *  the expected `EFENCED` reclaim signal; usage-guard.cjs's runOverrideOn()/runOverrideOff() catch that
  *  exception around their whole `withStateLock(...)` call and pass this shape in, rather than letting it
  *  escape uncaught (it used to reject past the point where the authoritative outcome gets reported at all).
- *  `ctx.until` ('on' only) is echoed in the full-success line. `partial:true` means the caller should print
- *  via `console.error` (a lagging-cache note, not a failure of the security-relevant action) and still exit
- *  0 — the grant action itself already succeeded either way, in EVERY `!onLock.ok` case including
- *  `bookkeepingThrew`. Pure, never throws. */
+ *  `ctx.until` ('on' only) is echoed in the full-success line. `onLock.value.pending` ('on' only, N17
+ *  residual, wave 9, 2026-09-24, Codex p14 out-p14) is the count of agents runOverrideOn's own resume loop
+ *  could NOT resume this round (still genuinely paused, never silently dropped) — when non-zero this prints
+ *  an explicit "could not be resumed yet ... retries every tick" note and the line counts as `partial:true`
+ *  (worth a caller's `console.error`), even though the grant itself is fully active either way. `partial:true`
+ *  means the caller should print via `console.error` (an operationally-incomplete note, never a failure of
+ *  the security-relevant action itself) and still exit 0 — the grant action itself already succeeded either
+ *  way, in EVERY `!onLock.ok` case including `bookkeepingThrew`, and in the pending-resume case too. Pure,
+ *  never throws. */
 function describeOverrideLockOutcome(kind, onLock, ctx) {
   const o = ctx || {};
   if (kind === 'on') {
@@ -250,8 +286,14 @@ function describeOverrideLockOutcome(kind, onLock, ctx) {
       return { line: 'usage-guard OVERRIDE ON — the authoritative grant is ACTIVE (plan-limit guard suppressed) but ' + detail + lag, partial: true };
     }
     if (onLock.value.fenced) return { line: 'usage-guard OVERRIDE ON — the authoritative grant is ACTIVE (plan-limit guard suppressed) but the state lock was reclaimed mid-transaction (fenced) before cache/resume bookkeeping completed' + lag, partial: true };
-    const { resumed, wasPaused } = onLock.value;
-    return { line: 'usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + '; auto re-arm when credits exhausted or after ' + o.until, partial: false };
+    const { resumed, wasPaused, pending } = onLock.value;
+    // N17 residual, wave 9: never claim a still-paused agent was resumed — name the exact count and say
+    // plainly that the watcher retries every tick, rather than only the generic 'resumed X/Y' count above.
+    const pendingNote = pending ? (' · ' + pending + ' agent(s) could not be resumed yet — the watcher retries every tick') : '';
+    return {
+      line: 'usage-guard OVERRIDE ON — plan-limit guard suppressed' + (wasPaused ? ' · resumed ' + resumed + '/' + wasPaused + ' paused agent(s)' : '') + pendingNote + '; auto re-arm when credits exhausted or after ' + o.until,
+      partial: !!pending,
+    };
   }
   const lag = ' — `status`\'s cached display may lag';
   if (!onLock.ok) {

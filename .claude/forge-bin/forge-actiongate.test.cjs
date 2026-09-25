@@ -899,6 +899,75 @@ t('N15-R (f) a backtick substitution inside double quotes gets the same nested s
 });
 
 // ---------------------------------------------------------------------------
+// N15-R residual (codex-recheck 2026-09-24, ninth pass / wave 9 / wp-p1) — attribution gaps Codex reproduced
+// through spawned hook.run decisions on wave 8's own head: a closed backtick span with an internal separator,
+// a wrapper installed with an OS executable suffix, a wrapper's own long space-separated-value option, and
+// timeout's real unit/decimal duration grammar. Every positive below was dynamically verified silent on wave 8's
+// head (`git show 7c0a82e:.claude/forge-bin/forge-gate-quotes.cjs`) and firing on this fix.
+// ---------------------------------------------------------------------------
+console.log('\n2c-wave9) N15-R residual — closed-backtick separators, wrapper .exe suffix, long value-options, timeout durations; N18 dash-fallback narrowed to wrapper residue');
+
+t('N15-R residual: a separator INSIDE an already-closed backtick span must not end the backward scan', () => {
+  const cmds = ['bash `echo a; echo b` -c "$x"', 'bash `true && false` -c "$x"', 'bash `a | b` -c "$x"'];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'the leading "bash" must resolve past the closed backtick span: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // robustness: an unpaired (odd-count) backtick still resolves through the existing open-candidate fallback
+  assert.strictEqual(quotes.cArgLiveAfterFlag('echo `bash -c "$x"'), true, 'an unmatched, still-open backtick candidate must still enclose pos');
+  // robustness: a literal backtick sitting inside single quotes stays masked (quoted data), never real syntax
+  assert.strictEqual(quotes.cArgLiveAfterFlag("bash 'it`s fine' -c \"$x\""), true, 'a quoted literal backtick must not confuse parity — "bash" still resolves');
+  // robustness: a nested $(...) inside the backtick span, no separator — must still resolve
+  assert.strictEqual(quotes.cArgLiveAfterFlag('bash `echo $(date)` -c "$x"'), true, 'a nested $(...) with no separator inside the backtick span must still resolve to "bash"');
+});
+
+t('N15-R residual: a wrapper installed with an OS executable suffix (.exe/.cmd/.bat) is still recognised', () => {
+  const cmds = ['sudo.exe -u root bash -c "$x"', 'C:\\tools\\timeout.exe 5 bash -c "$x"', 'env.exe -i bash -c "$x"'];
+  for (const cmd of cmds) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+  // counterfactual: N16's hyphenated look-alike must stay silent even with the new suffix grammar in place
+  assert.strictEqual(quotes.cArgLiveAfterFlag('sudo-wrapper $CONFIG -c "$x"'), false, 'a hyphenated look-alike program must stay silent even with suffix grammar added');
+});
+
+const N15R_LONG_VALUE_OPTS = [
+  'sudo --user root bash -c "$x"', 'sudo --group wheel bash -c "$x"', 'sudo --chdir /tmp bash -c "$x"',
+  'sudo --role r --type t bash -c "$x"', 'sudo -r role -t type bash -c "$x"',
+  'env --unset FOO bash -c "$x"', 'env --chdir /tmp bash -c "$x"',
+  'timeout --signal KILL 5 bash -c "$x"', 'timeout --kill-after 5 5 bash -c "$x"',
+  'nice --adjustment 5 bash -c "$x"', 'stdbuf --output L bash -c "$x"', 'time --format x bash -c "$x"',
+];
+for (const cmd of N15R_LONG_VALUE_OPTS) {
+  t('N15-R residual: a wrapper long option with a SPACE-separated value must not misread the value as the leading word: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  });
+}
+
+const N15R_TIMEOUT_DURATIONS = [
+  'timeout 5s bash -c "$x"', 'timeout 2m bash -c "$x"', 'timeout 1h bash -c "$x"',
+  'timeout 1.5 bash -c "$x"', 'timeout 0.5s bash -c "$x"', 'timeout -s KILL 1.5s bash -c "$x"',
+];
+for (const cmd of N15R_TIMEOUT_DURATIONS) {
+  t('N15-R residual: a GNU timeout duration with a unit or a decimal must not be misread as the leading word: "' + cmd + '"', () => {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'not associated: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  });
+}
+
+t('N18 (low, regression): the leftover-dash-option fallback fires only on genuine wrapper-parsing residue', () => {
+  // fixed: no wrapper involved at all -> an ordinary (if unusual) dash-named first word must stay silent
+  assert.strictEqual(quotes.cArgLiveAfterFlag('-foo -c "$x"'), false, 'no wrapper stripped -> a dash-leading first word must not be treated as an interpreter');
+  assert.deepStrictEqual(gate.classify('-foo -c "$x"').matched, [], 'classify() unexpectedly fired: -foo -c "$x"');
+  // counterfactual: every wrapper-residue positive keeps firing
+  for (const cmd of ['sudo --unknown-flag bash -c "$x"', 'sudo -Z bash -c "$x"', 'sudo -5 bash -c "$x"']) {
+    assert.strictEqual(quotes.cArgLiveAfterFlag(cmd), true, 'a genuine wrapper-residue positive must still associate: ' + cmd);
+    assert.ok(gate.classify(cmd).matched.includes('opaque-exec'), 'classify() did not fire: ' + cmd);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Heredoc-claim (codex-recheck 2026-09-24, wave 8 / wp-n1) — REAL and reproduced dynamically, narrowing the
 // wave-7 "checked, NOT reproducible" claim above to exactly the context it was tested in (a heredoc NOT nested
 // inside a command substitution). Nested inside one, boundedParenEnd's own paren count used to walk INTO the

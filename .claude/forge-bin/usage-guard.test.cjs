@@ -1099,7 +1099,10 @@ test('N10 wave-8 (end-to-end via tick()): an ORDINARY access-token refresh (cred
     'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
     'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n10-refresh-scratch-"));',
     'G.__setOwnerGrantRootForTests(grantRoot);',
-    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n10-refresh-account", credentialGeneration: "G0" }, { projectRoot: grantRoot });',
+    // wave 9 (N10 residual, out-p14): the memory-proof baseline is now bound to the grant's own issuanceId —
+    // this is the SAME grant record (one write, never replaced) across both ticks, so the issuance is
+    // unchanged; this test is about the ordinary-refresh case, not a replacement.
+    'Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: new Date(Date.now()+3600000).toISOString(), reason: "granted under G0", accountLabel: "n10-refresh-account", credentialGeneration: "G0", issuanceId: "iss-refresh-e2e" }, { projectRoot: grantRoot });',
     'const ident = { fp: "n10-refresh-account", source: "account-uuid" };',
     'const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
     '(async () => {',
@@ -1267,6 +1270,103 @@ test('N17: an override that becomes honoured again after a real guard-owned paus
   assert.strictEqual(out.resumeCalls, 1, 'a legitimately re-honoured override must actually resume the guard-owned pause through the real API — this is exactly what Codex\'s N17 finding measured as missing (zero resumes): ' + JSON.stringify(out));
   assert.ok(!Array.isArray(out.stAfterReconcile.pausedAgents) || out.stAfterReconcile.pausedAgents.length === 0, 'the state must no longer list the agent as paused once it has genuinely been resumed: ' + JSON.stringify(out.stAfterReconcile));
   assert.ok(!JSON.stringify(out).includes('fp-n17'), 'the bearer-derived fingerprint must never reach the state file: ' + JSON.stringify(out));
+});
+
+// ---- N17 RESIDUAL, WAVE 9 (2026-09-24, Codex p14 out-p14 finding N17 — "PARTLY CLOSED": the wave-8 fix
+// above only ever reconciled a stuck pause through tick()'s own override-active branch; runOverrideOn()'s
+// OWN resume loop — the one the `override-on` COMMAND itself runs, synchronously, before that branch ever
+// gets a chance to run — still claimed unconditional success. Codex's `N17_override_on_failed_resume_
+// then_two_ticks`, through the REAL exported runOverrideOn(): a resume response that fails still left
+// `mode:'ok'` and `pausedAgents:[]` on disk, and two SUBSEQUENT ticks made no retry at all (resume calls
+// stayed 1 -> 1) because the tick's own override-active branch only re-resumes when it sees `mode:'paused'`
+// — which runOverrideOn had already erased. THE FIX: runOverrideOn's resume loop now removes ONLY the
+// agents that genuinely resumed from `pausedAgents`; anything left keeps `mode:'paused'` (never 'ok') so
+// the tick's existing override-active reconciliation branch (see tick()'s own N17 comment, unchanged)
+// retries it — through the SAME doResume() path — on every following tick, exactly like an ordinary
+// partial-resume failure already does elsewhere in this file. This test goes through the REAL
+// runOverrideOn() (never a re-implemented copy, and never writing the replacement grant directly). ----
+test('N17 wave 9: runOverrideOn() with a resume that FAILS never claims success on disk — the agent stays paused, retries on every following tick (through the real doResume path), and only clears once a resume genuinely succeeds', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w9-'));
+  const script = path.join(dir, 'probe.cjs');
+  fs.writeFileSync(script, [
+    "'use strict';",
+    // the resume endpoint for a1 fails the first TWO times, succeeds the third — proving both the
+    // runOverrideOn-triggered attempt AND the first tick's retry genuinely happened before success.
+    'let resumeCalls = 0;',
+    'global.fetch = async (url, init) => {',
+    '  const u = String(url); const m = (init && init.method) || "GET";',
+    '  if (/\\/api\\/agents\\/a1\\/resume$/.test(u) && m === "POST") {',
+    '    resumeCalls++;',
+    '    if (resumeCalls < 3) return { ok: false, status: 500, json: async () => ({}) };',
+    '    return { ok: true, status: 200, json: async () => ({}) };',
+    '  }',
+    '  return { ok: true, status: 200, json: async () => ({}) };',
+    '};',
+    'const fs = require("fs"); const path = require("path");',
+    'process.argv = [process.execPath, "usage-guard.cjs", "override-on", "--owner-approval", "N17W9-TEST-TOKEN", "--reason", "n17 wave9 test"];',
+    'const G = require(' + JSON.stringify(path.join(__dirname, 'usage-guard.cjs')) + ');',
+    'const Grant = require(' + JSON.stringify(path.join(__dirname, 'forge-ownergrant.cjs')) + ');',
+    'const grantRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "guard-n17w9-scratch-"));',
+    'G.__setOwnerGrantRootForTests(grantRoot);',
+    'fs.mkdirSync(path.join(grantRoot, ".claude", "config"), { recursive: true });',
+    'fs.writeFileSync(path.join(grantRoot, ".claude", "config", "forge-owner-grant.txt"), "N17W9-TEST-TOKEN\\n");',
+    // a real (fake-content) credentials file so credentialGeneration() is a stable, non-null stamp — its
+    // BYTES are never read for the generation stamp (mtime+size only), so fake content is safe here.
+    'fs.writeFileSync(path.join(process.env.FORGE_USAGE_GUARD_HOME, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "x", refreshToken: "y" } }));',
+    'const identityFile = process.env.FORGE_USAGE_GUARD_IDENTITY;',
+    'fs.writeFileSync(identityFile, JSON.stringify({ oauthAccount: { accountUuid: "n17w9-account-uuid", organizationUuid: "n17w9-org" } }));',
+    'const ident = G.readAccountIdentity();',
+    // pre-seed a guard-owned pause: agent a1 already paused before the owner runs override-on.
+    'fs.writeFileSync(process.env.FORGE_USAGE_GUARD_STATE, JSON.stringify({ mode: "paused", account: { fp: ident.fp, source: ident.source }, pausedAgents: [{ id: "a1", name: "Agent1", company: "Co" }] }));',
+    'class ExitSignal { constructor(c) { this.code = c; } }',
+    'const realExit = process.exit.bind(process);',
+    'process.exit = (c) => { throw new ExitSignal(c); };',
+    'const logs = []; const realErr = console.error, realLog = console.log;',
+    'console.error = (m) => logs.push({ level: "error", m: String(m) });',
+    'console.log = (m) => logs.push({ level: "log", m: String(m) });',
+    '(async () => {',
+    '  let exitCode = null;',
+    '  try { await G.runOverrideOn(); } catch (e) { if (e instanceof ExitSignal) exitCode = e.code; else throw e; }',
+    '  const stAfterOn = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  const uHigh = { session: { pct: 100, resetsAt: null }, week: { pct: 10, resetsAt: null }, windows: G.normalizeWindows({ limits: [{ kind: "session", group: "session", percent: 100, resets_at: null }] }), credits: { present: false }, credentialFp: null };',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: G.credentialGeneration });',
+    '  const stAfterTick1 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  await G.tick({ fetchUsage: async () => uHigh, readIdentity: () => ident, readCredentialFp: () => null, readCredentialGeneration: G.credentialGeneration });',
+    '  const stAfterTick2 = JSON.parse(fs.readFileSync(process.env.FORGE_USAGE_GUARD_STATE, "utf8"));',
+    '  console.error = realErr; console.log = realLog;',
+    '  process.stdout.write(JSON.stringify({ exitCode, logs, stAfterOn, stAfterTick1, stAfterTick2, resumeCalls }));',
+    '  realExit(0);',
+    '})().catch((e) => { process.stdout.write(JSON.stringify({ uncaught: String((e && e.message) || e) })); realExit(1); });',
+  ].join('\n'), 'utf8');
+  const stateFile = path.join(dir, 'state.json');
+  const env = Object.assign({}, process.env, {
+    FORGE_USAGE_GUARD_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w9-home-')),
+    FORGE_CONFIG_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w9-cfghome-')),
+    FORGE_PROJECT_ROOT: fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w9-proj-')),
+    FORGE_USAGE_GUARD_STATE: stateFile,
+    FORGE_USAGE_GUARD_IDENTITY: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guard-n17w9-identity-')), '.claude.json'),
+    NVIDIA_SKIP_ENV_FILES: '1',
+  });
+  delete env.FORGE_USAGE_GUARD_STATE_LOCK_WAIT_MS;
+  const r = require('child_process').spawnSync(process.execPath, [script], { encoding: 'utf8', env, timeout: 30000 });
+  const lastLine = (r.stdout || '').trim().split('\n').pop();
+  let out; try { out = JSON.parse(lastLine); } catch { out = { parseError: (r.stdout || '') + (r.stderr || '') + '\n' + lastLine }; }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  assert.ok(!out.uncaught, JSON.stringify(out));
+  assert.strictEqual(out.exitCode, 0, 'the grant itself DID take effect — override-on must still exit 0 even though a resume failed: ' + JSON.stringify(out));
+  // the FIRST resume attempt (inside runOverrideOn itself) must have genuinely happened and failed.
+  assert.strictEqual(out.stAfterOn.mode, 'paused', 'a failed resume must NEVER be reported as mode:"ok": ' + JSON.stringify(out.stAfterOn));
+  assert.ok(Array.isArray(out.stAfterOn.pausedAgents) && out.stAfterOn.pausedAgents.some((a) => a.id === 'a1'), 'the agent that failed to resume must stay in pausedAgents, never silently dropped: ' + JSON.stringify(out.stAfterOn));
+  const onLine = out.logs.map((l) => l.m).join('\n');
+  assert.match(onLine, /could not be resumed yet|watcher retries every tick/i, 'the printed outcome must honestly say a resume is still pending, never claim full success: ' + onLine);
+  // tick 1: the override is still honoured (same account/generation) — must RETRY the resume (call #2), and
+  // it fails again — must still NOT report 'ok'.
+  assert.strictEqual(out.stAfterTick1.mode, 'paused', 'the first tick must retry, not silently give up or fabricate "ok": ' + JSON.stringify(out.stAfterTick1));
+  assert.ok(Array.isArray(out.stAfterTick1.pausedAgents) && out.stAfterTick1.pausedAgents.some((a) => a.id === 'a1'), JSON.stringify(out.stAfterTick1));
+  // tick 2: the resume mock now succeeds (call #3) — the agent must genuinely be reported resumed.
+  assert.strictEqual(out.stAfterTick2.mode, 'ok', 'once the resume genuinely succeeds, the state must say so: ' + JSON.stringify(out.stAfterTick2));
+  assert.ok(!Array.isArray(out.stAfterTick2.pausedAgents) || out.stAfterTick2.pausedAgents.length === 0, JSON.stringify(out.stAfterTick2));
+  assert.strictEqual(out.resumeCalls, 3, 'exactly three resume attempts must have been made — one from runOverrideOn, one from each retrying tick — never zero retries: ' + JSON.stringify(out));
 });
 
 test('#13 accountStamp maakt de expliciete stempel; zonder identiteit blijft de write ongewijzigd', () => {
@@ -2155,7 +2255,7 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
     const onMatch = src.match(/async function runOverrideOn\(\) \{[\s\S]*?\n\}/);
     assert.ok(onMatch, 'runOverrideOn must be present and structurally intact');
     const onBody = onMatch[0];
-    const writeGrantCall = "og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp, credentialGeneration: grantCredentialGeneration }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })";
+    const writeGrantCall = "og.writeOverrideGrant({ active: true, at: new Date().toISOString(), until, reason, accountLabel: grantIdent.fp, credentialGeneration: grantCredentialGeneration, issuanceId }, { projectRoot: TRUSTED_OWNERGRANT_ROOT })";
     assert.ok(onBody.includes(writeGrantCall), 'runOverrideOn must write the authoritative grant record: ' + onBody.slice(0, 800));
     const grantCheckIdx = onBody.indexOf('projectRoot: TRUSTED_OWNERGRANT_ROOT'); // the verifyOwnerGrant() call, first occurrence
     const writeGrantIdx = onBody.indexOf(writeGrantCall);

@@ -70,6 +70,21 @@
  * hasLiveSubstitution() below — what keeps a currency amount in an UNRELATED program's argument silent is
  * attribution (the leading-word check above), never the shape of its dollar.
  *
+ * WAVE 9 (2026-09-24, codex-recheck ninth pass / wp-p1 — the attribution gaps Codex reproduced through spawned
+ * `hook.run` decisions on wave 8's own head). A CLOSED backtick span with a separator INSIDE it
+ * (`` bash `echo a; echo b` -c "$x" ``) lost "bash" for the same root-cause reason as N15-R (e)'s parenthesised
+ * case — see statementStart's own comment. A wrapper installed with an OS executable suffix
+ * (`sudo.exe`/`env.exe`/`timeout.exe`) is now recognised (WRAPPER_RE). A wrapper's own LONG option that takes a
+ * space-separated value (`sudo --role r`, `env --unset FOO`, `timeout --signal KILL`) is now consumed as one
+ * unit instead of leaving its value looking like the leading word (WRAPPER_LONG_VALUE_OPTS, stripWrapperOptions).
+ * `timeout`'s own bare duration operand now accepts GNU coreutils' real grammar — an optional decimal point and
+ * an `s`/`m`/`h`/`d` unit (`5s`, `1.5`, `0.5s`) — instead of an integer-only guess (TIMEOUT_DURATION_RE). N18 (a
+ * REGRESSION wave 8's own N15-R (c) safety net introduced): that fallback fired on ANY statement whose first
+ * word merely started with `-`, even with no wrapper involved at all — narrowed to fire only on genuine
+ * wrapper-parsing residue (readInterpreterWord's `wrapperResidue` parameter, threaded in by
+ * statementCommandWord). A program genuinely named with a leading dash sits outside this file's own grammar
+ * either way — it is simply no longer treated as PROOF of an unresolvable interpreter merely for existing.
+ *
  * API: scanQuotes(text) -> {inside(pos), unterminated, spans} · stripHeredocs(text) [bash-only heredoc removal,
  *      moved here unchanged in external contract from forge-gate-data.cjs] · findHeredocDelim(text, bodyStart,
  *      dash, delim, limit?) -> {delimStart, delimEnd} | null · cArgLiveAfterFlag(text) -> boolean ·
@@ -507,8 +522,14 @@ const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s*/;
 // leave an ordinary POSITIONAL ARGUMENT (`env-runner $CONFIG -c "$x"` -> "$CONFIG" is left looking like the
 // leading word) misread as an unresolvable ("dynamic") interpreter and firing on a completely unrelated program.
 // The wrapper token must be COMPLETE: it only counts as a wrapper name when the very next character is
-// whitespace or the end of the string, never a bare word-boundary.
-const WRAPPER_RE = /^(?:\S*[\\/])?(sudo|time|nohup|exec|command|builtin|env|doas|nice|timeout|stdbuf)(?=\s|$)\s*/i;
+// whitespace or the end of the string, never a bare word-boundary. N15-R (codex-recheck 2026-09-24, wave 9 /
+// wp-p1): a wrapper installed as a Windows executable still carries its OS-supplied suffix on the invoked
+// word itself (`sudo.exe -u root bash -c "$x"`, `env.exe -i bash -c "$x"`, a path-qualified
+// `C:\tools\timeout.exe 5 bash -c "$x"`) — an optional, case-insensitive `.exe`/`.cmd`/`.bat` is now allowed
+// between the wrapper name and the same completeness lookahead, so the suffix itself can never smuggle in
+// extra trailing characters (`sudo.exestuff` still fails to match — the lookahead still requires whitespace
+// or end-of-string right after the optional suffix).
+const WRAPPER_RE = /^(?:\S*[\\/])?(sudo|time|nohup|exec|command|builtin|env|doas|nice|timeout|stdbuf)(?:\.(?:exe|cmd|bat))?(?=\s|$)\s*/i;
 const OPENER_RE = /^(?:[{(!]\s*|(?:then|do|else|elif|while|until|for|if|try|catch|finally)\b\s*)/i;
 
 // WRAPPER_END_OPTS_RE — N15-R (a) (codex-recheck 2026-09-24, wave 8 / wp-n1): POSIX "end of options" — once a
@@ -520,46 +541,82 @@ const WRAPPER_END_OPTS_RE = /^--(?:\s+|$)/;
 
 // WRAPPER_VALUE_OPTS — per-wrapper short options that consume the NEXT token as their own value (real getopt
 // semantics, checked against the GNU/BSD manuals: `sudo -u user`/`-g group`/`-p prompt`/`-C num`/`-D dir`/
-// `-R dir`/`-T timeout`/`-U user`; `env -u NAME`/`-C dir`/`-S string`; `exec -a name`; `nice -n adjustment`;
-// `timeout -s signal`/`-k duration`; `stdbuf -i mode`/`-o mode`/`-e mode`; `time -f format`; `doas -u user`/
-// `-C config`). `sudo -h` is deliberately EXCLUDED — real GNU sudo's `-h` is `--help`, a no-value flag; treating
-// it as value-taking would swallow the real interpreter word right after it (`sudo -h bash -c "$x"` already
-// resolves correctly through the generic no-value flag strip below, proven by a dedicated regression test).
+// `-R dir`/`-T timeout`/`-U user`/`-r role`/`-t type`; `env -u NAME`/`-C dir`/`-S string`; `exec -a name`;
+// `nice -n adjustment`; `timeout -s signal`/`-k duration`; `stdbuf -i mode`/`-o mode`/`-e mode`; `time -f
+// format`; `doas -u user`/`-C config`). `sudo -r role`/`-t type` (N15-R, codex-recheck 2026-09-24, wave 9 /
+// wp-p1 — the SHORT half of the same named residual as the long `--role`/`--type` table below, real GNU
+// sudo SELinux flags) join the table alongside the pre-existing letters. `sudo -h` is deliberately EXCLUDED —
+// real GNU sudo's `-h` is `--help`, a no-value flag; treating it as value-taking would swallow the real
+// interpreter word right after it (`sudo -h bash -c "$x"` already resolves correctly through the generic
+// no-value flag strip below, proven by a dedicated regression test).
 // Any other wrapper option (`env -i`, `command -p`, `time -p`, a glued `stdbuf -oL`) is a flag with no separate
 // value — deliberately NOT generalised across all wrappers: `command -p`/`time -p` take no value at all, so
 // treating EVERY wrapper's own `-p` as value-taking would wrongly swallow the real interpreter word right after
 // it. A long option's own glued `=value` form (`env --unset=FOO`, `env --chdir=/tmp`, `timeout --signal=KILL`,
 // `timeout --kill-after=5`, `nice --adjustment=5`) never needs a table entry at all — WRAPPER_OPT_RE's own
 // optional `(?:=\S+)?` already consumes the whole `--name=value` token as one piece.
-const WRAPPER_VALUE_OPTS = { sudo: 'ugpCDRTU', env: 'uCS', exec: 'a', nice: 'n', timeout: 'sk', stdbuf: 'ioe', time: 'f', doas: 'uC' };
+const WRAPPER_VALUE_OPTS = { sudo: 'ugpCDRTUrt', env: 'uCS', exec: 'a', nice: 'n', timeout: 'sk', stdbuf: 'ioe', time: 'f', doas: 'uC' };
+// WRAPPER_LONG_VALUE_OPTS (N15-R, codex-recheck 2026-09-24, wave 9 / wp-p1) — the LONG-option counterpart of
+// WRAPPER_VALUE_OPTS: a per-wrapper table of long option NAMES (no leading `--`, matched case-insensitively)
+// that consume the NEXT SEPARATE token as their own value, checked against the same GNU/BSD manuals: `sudo
+// --user=user`/`--group=group`/`--chdir=dir`/`--role=role`/`--type=type`; `env --unset=NAME`/`--chdir=dir`;
+// `timeout --signal=SIG`/`--kill-after=DUR`; `nice --adjustment=N`; `stdbuf --output=MODE`; `time
+// --format=FMT`. Only the SPACE-separated form (`sudo --role r`) needs this table at all — the glued `=value`
+// form is already handled for free by WRAPPER_OPT_RE's own `(?:=\S+)?` (see the comment above); without this
+// table, WRAPPER_OPT_RE's generic no-value strip would consume only the flag itself and leave the option's own
+// value sitting where the real interpreter word is expected, misreading it as an unresolvable leading word.
+const WRAPPER_LONG_VALUE_OPTS = {
+  sudo: ['user', 'group', 'chdir', 'role', 'type'],
+  env: ['unset', 'chdir'],
+  timeout: ['signal', 'kill-after'],
+  nice: ['adjustment'],
+  stdbuf: ['output'],
+  time: ['format'],
+};
 // NUMERIC_ARG_WRAPPERS — the two wrappers whose OWN bare positional argument is a number (`timeout 5`, and
 // `nice`'s fallback form without `-n`), consulted only after the value/generic option steps below have already
-// had a chance to consume a `-n`-style flag first.
+// had a chance to consume a `-n`-style flag first. N15-R (codex-recheck 2026-09-24, wave 9 / wp-p1): `timeout`'s
+// own DURATION grammar (GNU coreutils "timeout invocation") is a floating-point NUMBER with an OPTIONAL
+// `s`/`m`/`h`/`d` unit suffix (`5s`, `2m`, `1h`, `1.5`, `0.5s`) — a plain integer-only regex silently left the
+// unit/decimal tail attached to what looked like the leading word. `nice`'s own bare adjustment stays an
+// INTEGER only (real GNU nice takes no fractional/unit form), so the two wrappers now read their own numeric
+// operand with two DIFFERENT grammars rather than one shared one.
 const NUMERIC_ARG_WRAPPERS = new Set(['timeout', 'nice']);
 const WRAPPER_OPT_VALUE_RE = /^-([A-Za-z])\s+\S+\s*/;
+const WRAPPER_LONG_OPT_VALUE_RE = /^--([A-Za-z][\w-]*)\s+\S+\s*/;
 const WRAPPER_OPT_RE = /^--?[A-Za-z][\w-]*(?:=\S+)?\s*/;
 const WRAPPER_NUMERIC_RE = /^\d+\s*/;
+const TIMEOUT_DURATION_RE = /^(?:\d+(?:\.\d+)?|\.\d+)[smhd]?\s*/;
 
 /** stripWrapperOptions(s, wrapperName) -> `s` with the wrapper's OWN leading option tokens stripped (N15,
- *  codex-recheck 2026-09-24, wave 7 / wp-m1; extended wave 8 / wp-n1 for N15-R (a)). Tries, in order, each
- *  iteration (bounded to 8 — real invocations never carry more than a handful): the POSIX end-of-options `--`
- *  terminator, which stops the loop outright once seen (N15-R a — nothing after it is ever an option again, even
- *  if it looks like one); a value-taking short option FOR THIS WRAPPER plus its following token (`-u root `); any
- *  other single flag token, short or long, with or without a glued `=value` (`-i `, `-oL `, `--foo=bar `); and,
- *  only for timeout/nice, a bare leading number (`5 `) once no more flags match. Stops the instant none of these
- *  apply — the next token is the real command. */
+ *  codex-recheck 2026-09-24, wave 7 / wp-m1; extended wave 8 / wp-n1 for N15-R (a); extended wave 9 / wp-p1 for
+ *  N15-R (b) residual — long space-separated value options and timeout's own duration grammar). Tries, in
+ *  order, each iteration (bounded to 8 — real invocations never carry more than a handful): the POSIX
+ *  end-of-options `--` terminator, which stops the loop outright once seen (N15-R a — nothing after it is ever
+ *  an option again, even if it looks like one); a value-taking SHORT option for this wrapper plus its following
+ *  token (`-u root `); a value-taking LONG option for this wrapper plus its following token (`--role r ` —
+ *  wave 9, checked BEFORE the generic strip below so the option's own value is never left standing in for the
+ *  real command word); any other single flag token, short or long, with or without a glued `=value` (`-i `,
+ *  `-oL `, `--foo=bar `); and, only for timeout/nice, a bare leading numeric operand (`5 `, `5s `, `1.5 ` — each
+ *  wrapper's own grammar, see NUMERIC_ARG_WRAPPERS above) once no more flags match. Stops the instant none of
+ *  these apply — the next token is the real command. */
 function stripWrapperOptions(s, wrapperName) {
-  const valueOpts = WRAPPER_VALUE_OPTS[String(wrapperName || '').toLowerCase()] || '';
-  const numeric = NUMERIC_ARG_WRAPPERS.has(String(wrapperName || '').toLowerCase());
+  const wl = String(wrapperName || '').toLowerCase();
+  const valueOpts = WRAPPER_VALUE_OPTS[wl] || '';
+  const longValueOpts = WRAPPER_LONG_VALUE_OPTS[wl] || [];
+  const numeric = NUMERIC_ARG_WRAPPERS.has(wl);
+  const numericRe = wl === 'timeout' ? TIMEOUT_DURATION_RE : WRAPPER_NUMERIC_RE;
   let out = s;
   for (let i = 0; i < 8; i++) {
     const endOpts = WRAPPER_END_OPTS_RE.exec(out);
     if (endOpts) { out = out.slice(endOpts[0].length); break; } // N15-R (a): "--" ends option parsing for good
     let m = WRAPPER_OPT_VALUE_RE.exec(out);
     if (m && valueOpts.includes(m[1])) { out = out.slice(m[0].length); continue; }
+    m = WRAPPER_LONG_OPT_VALUE_RE.exec(out);
+    if (m && longValueOpts.includes(m[1].toLowerCase())) { out = out.slice(m[0].length); continue; }
     m = WRAPPER_OPT_RE.exec(out);
     if (m) { out = out.slice(m[0].length); continue; }
-    if (numeric && (m = WRAPPER_NUMERIC_RE.exec(out))) { out = out.slice(m[0].length); continue; }
+    if (numeric && (m = numericRe.exec(out))) { out = out.slice(m[0].length); continue; }
     break;
   }
   return out;
@@ -590,7 +647,17 @@ function stripWrapperOptions(s, wrapperName) {
  *  `btPending` tracks PARITY instead: an EVEN count of unquoted backticks seen so far means the next one starts a
  *  fresh, still-open (from `pos`'s view) candidate span; an ODD count means it PAIRS WITH that candidate, closing
  *  a span that sits entirely before `pos` and clearing the candidate. Correct for a single, non-nested
- *  `` `...` `` span, the only shape these gates need. */
+ *  `` `...` `` span, the only shape these gates need.
+ *
+ *  N15-R residual (codex-recheck 2026-09-24, wave 9 / wp-p1 — the backtick counterpart of (e) above, same root
+ *  cause). A `;`/`&`/`|`/newline seen while `btPending !== -1` (i.e. scanning backward THROUGH the still-
+ *  unresolved interior of a candidate span whose closing tick was already found, hunting for its opener) used
+ *  to end the scan immediately regardless of that pending state — `` bash `echo a; echo b` -c "$x" ``,
+ *  `` bash `true && false` -c "$x" `` and `` bash `a | b` -c "$x" `` all lost "bash" because the separator
+ *  INSIDE the backtick span's own un-marked text (statementStart's backtick handling, unlike scanQuotes, never
+ *  marks the span's interior as "inside" anything) looked like a real boundary before the matching (opening)
+ *  backtick was ever reached. The fix mirrors (e) exactly: a boundary character is only ever a real statement
+ *  boundary when BOTH `closeDepth === 0` AND `btPending === -1` (no still-unresolved candidate span). */
 function statementStart(s, mask, pos) {
   let i = pos - 1;
   let closeDepth = 0;
@@ -608,8 +675,9 @@ function statementStart(s, mask, pos) {
           btPending = btPending === -1 ? i : -1;
           i--; continue;
         }
-        if (STATEMENT_BOUNDARY_RE.test(ch)) {
-          if (btPending !== -1) return btPending + 1; // an unmatched, still-open backtick candidate encloses pos
+        // N15-R residual: a separator found while btPending is still set sits INSIDE a candidate backtick span
+        // whose fate (closed-before-pos vs. genuinely open) is not yet known — never a real boundary on its own.
+        if (btPending === -1 && STATEMENT_BOUNDARY_RE.test(ch)) {
           return i + 1;
         }
       }
@@ -633,14 +701,22 @@ function statementStart(s, mask, pos) {
  *  still only fires once the `-c` argument itself turns out live, so a static `"$SHELL" -c "echo hi"` stays
  *  silent exactly like a known `bash -c "echo hi"` does.
  *
- *  N15-R (c) SAFETY NET (codex-recheck 2026-09-24, wave 8 / wp-n1): the real fix for any wrapper option grammar
- *  this file did not foresee. If, after every env-assignment/wrapper-prefix/opener strip has already run, the
- *  resolved bare word STILL starts with `-` (a leftover, unconsumed option token — `--` included), that is itself
- *  proof the real command word was never reached, never a program genuinely named "-something" — it is treated
- *  exactly like any other unresolvable interpreter (this file's own "cannot bound it -> fire" principle), so a
- *  future missing entry in WRAPPER_VALUE_OPTS/WRAPPER_OPT_RE fails toward association rather than silently
- *  handing a stray option's own value to SHELL_WORD_RE as if it were the leading word. */
-function readInterpreterWord(s) {
+ *  N15-R (c) SAFETY NET (codex-recheck 2026-09-24, wave 8 / wp-n1; NARROWED wave 9 / wp-p1 for N18). The real fix
+ *  for any wrapper option grammar this file did not foresee: if, after every env-assignment/wrapper-prefix/
+ *  opener strip has already run, the resolved bare word STILL starts with `-` (a leftover, unconsumed option
+ *  token — `--` included), that is itself proof the real command word was never reached — but ONLY when a
+ *  wrapper prefix was actually stripped somewhere in that statement (`wrapperResidue`, threaded in by
+ *  statementCommandWord below). N18 (codex-recheck 2026-09-24, wave 9 / wp-p1 — a REGRESSION): applying this
+ *  fallback unconditionally treated ANY statement whose first word merely happens to start with `-` as an
+ *  unresolvable interpreter, even with no wrapper involved at all (`-foo -c "$x"`, an ordinary hypothetical
+ *  executable literally named with a leading dash) — a real, if unusual, program name is not proof of anything
+ *  by itself; only a dash-token left over AFTER wrapper-option parsing genuinely proves parsing ran out of
+ *  known shapes. With a wrapper present, every existing positive keeps firing (`sudo -Z bash -c "$x"`,
+ *  `sudo --unknown-flag bash -c "$x"`) — none of them actually depend on this fallback (both resolve to "bash"
+ *  through the ordinary generic-flag strip already), and a genuinely un-parseable wrapper option shape (a
+ *  dash immediately followed by a non-letter, which none of WRAPPER_OPT_VALUE_RE/WRAPPER_LONG_OPT_VALUE_RE/
+ *  WRAPPER_OPT_RE can match at all) still correctly falls through to this fallback and fires. */
+function readInterpreterWord(s, wrapperResidue) {
   const c = s[0];
   if (c === '"' || c === "'") {
     const close = s.indexOf(c, 1);
@@ -652,25 +728,29 @@ function readInterpreterWord(s) {
   }
   if (/^(?:\$\(|\$\{|\$[A-Za-z_]|`)/.test(s)) return { word: null, dynamic: true };
   const word = readBareWord(s, 0);
-  if (word !== '' && word[0] === '-') return { word: null, dynamic: true }; // N15-R (c)
+  if (wrapperResidue && word !== '' && word[0] === '-') return { word: null, dynamic: true }; // N15-R (c) / N18
   return { word, dynamic: false };
 }
 
 /** statementCommandWord(stmt) -> { word, dynamic } — the leading command word of a statement's own text (see
  *  readInterpreterWord), after repeatedly stripping env assignments, wrapper prefixes AND THEIR OWN OPTIONS
  *  (N15), and grouping/control-flow openers from its start (capped so a pathological input cannot loop
- *  unboundedly; ordinary statements resolve in one or two strips). */
+ *  unboundedly; ordinary statements resolve in one or two strips). Tracks whether a wrapper prefix was ever
+ *  actually stripped (`wrapperResidue`, N18, wave 9 / wp-p1) and forwards that to readInterpreterWord so its own
+ *  leftover-dash-option fallback applies only to genuine wrapper-parsing residue, never to an ordinary
+ *  statement that never involved a wrapper at all. */
 function statementCommandWord(stmt) {
   let s = String(stmt).replace(/^\s+/, '');
+  let wrapperResidue = false;
   for (let i = 0; i < 12; i++) {
     const before = s;
     s = s.replace(ENV_ASSIGN_RE, '');
     const wm = WRAPPER_RE.exec(s);
-    if (wm) s = stripWrapperOptions(s.slice(wm[0].length), wm[1]);
+    if (wm) { wrapperResidue = true; s = stripWrapperOptions(s.slice(wm[0].length), wm[1]); }
     s = s.replace(OPENER_RE, '');
     if (s === before) break;
   }
-  return readInterpreterWord(s);
+  return readInterpreterWord(s, wrapperResidue);
 }
 
 /** cArgLiveAfterFlag(text) -> boolean. The -c ARGUMENT POLICY (see this file's header) implemented for all

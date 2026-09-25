@@ -115,7 +115,10 @@ t('N10 wave-8: REPEATING the SAME mismatched generation on a second call — the
 });
 t('N10 wave-8: a credential-file generation change IS honoured again once a prior tick already confirmed this account at the OLD generation with the SAME credentialFp — an ordinary access-token refresh (file rewritten, refresh token unchanged)', () => {
   const dir = scratchRoot();
-  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen-refresh', credentialGeneration: 'G0' }, { projectRoot: dir });
+  // wave 9 (N10 residual, out-p14): the memory-proof baseline is now bound to the grant's own issuanceId —
+  // this is the SAME grant record (one write, never replaced) across both calls, so the issuance is
+  // unchanged; this test is about the ordinary-refresh case, not a replacement.
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen-refresh', credentialGeneration: 'G0', issuanceId: 'iss-refresh' }, { projectRoot: dir });
   // tick A: trivial match (grant's own stamp) seeds the in-memory baseline for this account.
   const rA = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen-refresh', credentialGeneration: 'G0', credentialFp: 'fp-stable' });
   assert.strictEqual(rA.active, true, JSON.stringify(rA));
@@ -125,7 +128,7 @@ t('N10 wave-8: a credential-file generation change IS honoured again once a prio
 });
 t('N10 wave-8: a credential-file generation change is REJECTED when the credentialFp DIFFERS from the last confirmed one — a genuine rotation requires fresh owner authorization, never silent promotion', () => {
   const dir = scratchRoot();
-  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen-rotate', credentialGeneration: 'G0' }, { projectRoot: dir });
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen-rotate', credentialGeneration: 'G0', issuanceId: 'iss-rotate' }, { projectRoot: dir });
   const rA = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen-rotate', credentialGeneration: 'G0', credentialFp: 'fp-old' });
   assert.strictEqual(rA.active, true, JSON.stringify(rA));
   const rB = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen-rotate', credentialGeneration: 'G1', credentialFp: 'fp-new' });
@@ -134,13 +137,79 @@ t('N10 wave-8: a credential-file generation change is REJECTED when the credenti
 });
 t('N10 wave-8: __resetCredentialProofForTests() clears the in-memory baseline — mirrors a watcher RESTART, which must require fresh owner authorization again even for an otherwise-provable same credentialFp', () => {
   const dir = scratchRoot();
-  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen-restart', credentialGeneration: 'G0' }, { projectRoot: dir });
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'granted under G0', accountLabel: 'acct-gen-restart', credentialGeneration: 'G0', issuanceId: 'iss-restart' }, { projectRoot: dir });
   const rA = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen-restart', credentialGeneration: 'G0', credentialFp: 'fp-restart' });
   assert.strictEqual(rA.active, true, JSON.stringify(rA));
   O.__resetCredentialProofForTests();
   const rB = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-gen-restart', credentialGeneration: 'G1', credentialFp: 'fp-restart' });
   assert.strictEqual(rB.active, false, 'a fresh process (no in-memory history) must never be able to prove anything about a PRIOR process\'s credential — override-on must be run again: ' + JSON.stringify(rB));
   assert.strictEqual(rB.rejected, 'credential-generation-unconfirmed');
+});
+
+// ---- N10 RESIDUAL, WAVE 9 (2026-09-24, Codex p14 out-p14 finding N10 — "PARTLY CLOSED": the wave-8 memory
+// proof was keyed by account label ALONE, with no binding to the specific grant ISSUANCE it was established
+// under. Codex's `N10_reissued_grant_stale_watcher`: a watcher (W1) confirms account A's grant G1 under
+// credential C1 (seeding the in-memory baseline); the grant is then REPLACED with G2 for the CURRENT
+// credential C2 while the profile label stays A; C1 later returns with new file metadata; W1's stale
+// baseline (still keyed only by "account A" + "fp(C1)") matched and WRONGLY honoured G2 — a grant it never
+// actually confirmed. THE FIX: every grant now carries a random, non-secret `issuanceId` (override-on writes
+// a fresh crypto.randomUUID() every time); the in-memory baseline stores it too, and the memory-proof branch
+// now requires `baseline.issuanceId === record.issuanceId` in addition to the fp match — a REPLACED grant
+// (different issuanceId) can never be authorized by a baseline established under an earlier issuance, no
+// matter how the credential file's bytes/fp happen to line up. A grant with NO issuanceId at all (a
+// pre-wave-9 legacy record) can likewise never receive memory proof — `record.issuanceId` must itself be
+// truthy — falling back to the trivial exact-generation-match path only. ----
+t('N10 residual wave 9: a memory-proof baseline confirmed under an EARLIER grant issuance must NOT authorize a REPLACEMENT grant it never confirmed — Codex N10_reissued_grant_stale_watcher', () => {
+  const dir = scratchRoot();
+  O.__resetCredentialProofForTests();
+  // Grant #1 (issuance I1), confirmed by this "watcher" under credential C1's generation Gen1.
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'grant 1', accountLabel: 'acct-reissue', credentialGeneration: 'Gen1', issuanceId: 'iss-1' }, { projectRoot: dir });
+  const r1 = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-reissue', credentialGeneration: 'Gen1', credentialFp: 'fp-c1' });
+  assert.strictEqual(r1.active, true, 'sanity: the trivial match must seed the baseline: ' + JSON.stringify(r1));
+  // The grant is REPLACED (a genuinely different issuance) for a DIFFERENT credential C2's generation Gen2 —
+  // the account label stays the SAME (that part of N10 already worked; this is the residual gap).
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'grant 2 (replacement, never confirmed by this watcher)', accountLabel: 'acct-reissue', credentialGeneration: 'Gen2', issuanceId: 'iss-2' }, { projectRoot: dir });
+  // Credential C1 returns to the credential file with NEW file metadata (Gen3) — the SAME bearer fp as
+  // before, exactly what an ordinary refresh looks like from this stale watcher's point of view.
+  const rStale = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-reissue', credentialGeneration: 'Gen3', credentialFp: 'fp-c1' });
+  assert.strictEqual(rStale.active, false, 'a baseline confirmed under the OLD issuance must never authorize a REPLACEMENT grant it never actually confirmed: ' + JSON.stringify(rStale));
+  assert.strictEqual(rStale.rejected, 'credential-generation-unconfirmed', JSON.stringify(rStale));
+  assert.ok(!JSON.stringify(rStale).includes('fp-c1'), 'the bearer-derived fingerprint must never be echoed back: ' + JSON.stringify(rStale));
+  // A FRESH watcher (no prior memory at all) independently agrees — the ordinary unconfirmed case.
+  O.__resetCredentialProofForTests();
+  const rFresh = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-reissue', credentialGeneration: 'Gen3', credentialFp: 'fp-c1' });
+  assert.strictEqual(rFresh.active, false, JSON.stringify(rFresh));
+});
+t('N10 residual wave 9: a REVOKED grant\'s memory-proof baseline must never carry over to a LATER, freshly re-authorized grant — override-off then a new override-on requires its OWN confirmation', () => {
+  const dir = scratchRoot();
+  O.__resetCredentialProofForTests();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'grant 1', accountLabel: 'acct-revoke', credentialGeneration: 'Gen1', issuanceId: 'iss-revoke-1' }, { projectRoot: dir });
+  const r1 = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-revoke', credentialGeneration: 'Gen1', credentialFp: 'fp-revoke' });
+  assert.strictEqual(r1.active, true, JSON.stringify(r1));
+  // the owner revokes (override-off) — writeOverrideGrant({active:false}) removes the file outright.
+  Grant.writeOverrideGrant({ active: false }, { projectRoot: dir });
+  const rOff = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-revoke', credentialGeneration: 'Gen1', credentialFp: 'fp-revoke' });
+  assert.strictEqual(rOff.active, false, 'no grant at all must never be active: ' + JSON.stringify(rOff));
+  // the owner re-grants later — a NEW issuance for the SAME account, matching the CURRENT generation Gen2.
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'grant 2 (re-authorized after revocation)', accountLabel: 'acct-revoke', credentialGeneration: 'Gen2', issuanceId: 'iss-revoke-2' }, { projectRoot: dir });
+  // the credential file drifts AGAIN to Gen3 with the SAME bearer fp used before the revocation — the OLD
+  // (pre-revocation) baseline must never silently re-apply to this brand-new issuance.
+  const rAfter = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-revoke', credentialGeneration: 'Gen3', credentialFp: 'fp-revoke' });
+  assert.strictEqual(rAfter.active, false, 'a grant issued AFTER a revocation must require its OWN fresh confirmation, never reuse a baseline confirmed under a revoked, earlier issuance: ' + JSON.stringify(rAfter));
+  assert.strictEqual(rAfter.rejected, 'credential-generation-unconfirmed', JSON.stringify(rAfter));
+  // positive counterweight: the trivial exact-match path still works normally for the NEW issuance.
+  const rTrivial = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-revoke', credentialGeneration: 'Gen2', credentialFp: 'fp-revoke' });
+  assert.strictEqual(rTrivial.active, true, 'the new issuance\'s own trivial exact-stamp match must still work: ' + JSON.stringify(rTrivial));
+});
+t('N10 residual wave 9: a grant with NO issuanceId at all (a pre-wave-9 legacy record) never receives memory proof — exact generation match only', () => {
+  const dir = scratchRoot();
+  O.__resetCredentialProofForTests();
+  Grant.writeOverrideGrant({ active: true, at: new Date().toISOString(), until: FUTURE, reason: 'legacy, no issuanceId', accountLabel: 'acct-no-issuance', credentialGeneration: 'Gen1' }, { projectRoot: dir });
+  const r1 = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-no-issuance', credentialGeneration: 'Gen1', credentialFp: 'fp-legacy' });
+  assert.strictEqual(r1.active, true, 'sanity: the trivial exact match still works with no issuanceId: ' + JSON.stringify(r1));
+  const r2 = O.resolveOwnerOverride({ projectRoot: dir, accountLabel: 'acct-no-issuance', credentialGeneration: 'Gen2', credentialFp: 'fp-legacy' });
+  assert.strictEqual(r2.active, false, 'a legacy grant with no issuanceId must never be authorized via memory proof, even with a perfectly matching fp: ' + JSON.stringify(r2));
+  assert.strictEqual(r2.rejected, 'credential-generation-unconfirmed', JSON.stringify(r2));
 });
 t('N10 wave-8: a LEGACY grant with no credentialGeneration stamp at all is NOT honoured (credential-generation-missing) — a one-time override-on re-arms it with a fresh stamp', () => {
   const dir = scratchRoot();

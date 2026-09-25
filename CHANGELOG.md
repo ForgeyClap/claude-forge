@@ -282,7 +282,8 @@ evidence or deferred with a reason before this release went out. The code fixes:
   when the bearer credential is PROVEN unchanged in memory (the fingerprint the usage fetch already computes is held in
   the watcher process since the last confirmation and compared, never written anywhere — an ordinary access-token
   refresh keeps the override with no owner action) or when the owner runs `override-on` again; a matching profile label
-  alone never promotes, a watcher restart requires fresh authorization, and a grant without a generation stamp or a
+  alone never promotes, a watcher restart honours a grant whose stamp still equals the current generation directly and
+  requires fresh authorization only once the generation has drifted (the in-memory baseline is gone), and a grant without a generation stamp or a
   credential file whose stamp cannot be read is not honoured. **Upgrade note:** an override granted before this
   release carries no generation stamp and is no longer honoured — run `override-on` once more. When the override is
   honoured again the guard first resumes the agents it paused itself and only then reports ok (the previous pass could
@@ -291,6 +292,30 @@ evidence or deferred with a reason before this release went out. The code fixes:
   this codebase — a rotation reads as a credential change and suspends the override until the owner re-approves (the
   safe direction); live multi-account rotation is exercised only with synthetic fixtures; the grant record remains a
   plain unsigned JSON file under the trusted-local-writer model.
+- **Ninth pass (Codex's ninth verification kept 2 highs open, now narrow and reproducible: four attribution shapes and the
+  binding of the in-memory credential proof; plus a failed-resume medium and a false-positive low).** Gate hook: a closed
+  backtick span is skipped as one unit while scanning back for the statement start, so a separator inside it can no
+  longer end the statement early (an unpaired backtick still fails toward stopping); a wrapper is recognised with an
+  `.exe`/`.cmd`/`.bat` suffix, also path-qualified; long options that take a separate value are consumed per wrapper
+  (`sudo --user root`, `env --unset FOO`, `timeout --signal KILL`, `nice --adjustment 5`, `stdbuf --output L`, and
+  `sudo -r role -t type`); a `timeout` duration may carry a unit or a decimal (`5s`, `2m`, `1.5`); and the leftover-option
+  safety net now applies only to wrapper-parsing residue, so a first word that literally begins with a dash is no longer
+  read as opaque execution (a conservative false positive the eighth pass had introduced). Every named shape was shown
+  silent on the pre-ninth-pass classifier and stopping on the fixed one; 21 tests and 26 welded claim probes were added
+  (85 probes on this gate). Usage guard: the in-memory credential proof is now bound to the specific grant issuance —
+  `override-on` writes a random, non-secret issuance id into the grant and the watcher's remembered proof only counts
+  for that same issuance, so a watcher that still remembers an earlier authorized credential can never honour a
+  REPLACEMENT grant issued for another credential (revoking and re-granting invalidates the old proof; a grant without
+  an issuance id gets no memory proof at all, only the exact-stamp match). `override-on` clears only the agents that
+  really resumed: any agent whose resume failed stays in the paused list and the watcher retries it every tick, the
+  command says so instead of claiming success, and the state never reads ok while an agent is still unresumed. The
+  restart sentence above is corrected: a grant whose stamp still equals the current generation is honoured directly
+  after a restart; fresh authorization is needed only once the generation has drifted. Test-harness note: the
+  distribution's gateway suite (nested `command-center`, unchanged in this release) is green when run alone or serially
+  (960 pass, 38 skipped); one timing-sensitive timeout test in it (a wedged child whose live activity must survive the
+  timeout) can fail under parallel whole-suite load on a busy machine — a harness limitation, not a gateway change.
+  Named, unfixed gaps unchanged: a clustered `-xc`, an option between `-c` and its argument, PowerShell's
+  `-C`/`-Command`.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every
