@@ -19,7 +19,7 @@ Plan before executing. Pick the *smallest relevant* team via **`forge-router`**;
 
 ## Project isolation (REQUIRED — always on)
 1. **Only this folder.** Forge works only in *this* project folder. Never edit other projects or unrelated directories.
-2. **Confirm the target.** If the folder/project is ambiguous, ask which exact project folder is meant **before** any edit, then stop and wait.
+2. **The target is the current working directory** — state it in your first line and don't ask. Only when two existing projects inside it are equally plausible targets and the goal doesn't say which, ask ONE question before any edit.
 3. **No outside changes.** No edits outside the target folder. No global project edits without the user's explicit permission.
 4. **No global Claude/ECC edits** unless the user explicitly says so.
 5. **Inspect before editing.** Read first; never guess layout. Never delete meaningful files without explicit approval.
@@ -30,6 +30,7 @@ Never claim a check/test/review ran if it didn't. Always report: what was instal
 ## Security posture — light, non-blocking
 - **No mandatory security gates.** No AgentShield, no `/security-scan` gate, no mandatory `security-reviewer`, no `secrets-guard` / `prod-deploy-guard` hooks. Normal builds are not slowed by security blocking.
 - Basic hygiene is still good practice (keep secrets in env, use `.env.example` placeholders, don't commit real secrets) — guidance, **not** an enforced hook.
+- **One deliberate exception:** four *command-kind* hard gates — recursive delete (with or without a force flag), killing processes by name, git commands that discard uncommitted work, and opaque execution (`eval`/`iex`/`sh -c` on a variable, a pipe into a shell, an encoded PowerShell command) — are enforced by a real `PreToolUse` hook (`.claude/forge-bin/forge-gate-hook.cjs`, matcher `Bash|PowerShell`, exit 2 with a plain reason) — a classifier, not a proof: what it does not recognise, it does not stop (`hard-gates.json` → `_not_caught`); when it genuinely cannot judge a call it exits 1, visible and non-blocking, never a silent pass. A provable cleanup inside a scratch area (or the OS temp folder, for targets outside the project) still passes, and quoted data (heredocs, echo/log-event literals, grep patterns) is never mistaken for a command. Setting `gate-hook`, on by default — only you (the owner) can turn it off: type the config command yourself, or prefix any command with `!` in Claude Code (that runs in your own shell, not through Claude's tool); an agent typing that same command is still blocked, and while the gate is off every would-be-blocked call still prints a visible notice. This protects your files from an accidental destructive command; it is not a full security scan and it never slows a normal build.
 - `security-reviewer` and `codex-reviewer` remain **available on request** for sensitive code — optional, never a blocker.
 
 ## Project memory (read before, update after — every task)

@@ -27,10 +27,12 @@ the mechanical and security-sensitive steps are done by a zero-dependency engine
 Because this command lives in `~/.claude`, the project may or may not have the full Forge payload
 yet. Check before anything else:
 - If `.claude/forge-bin/forge-setup.cjs` exists in the current project → use it (normal flow below).
-- If it is **missing**, the per-project payload isn't installed here. Say so plainly and offer the
-  fix: run the installer (`install.sh` on macOS/Linux, `install.ps1` on Windows) from the
-  `claude-forge` repo, or copy `.claude/` into this project manually. Once present, re-run
-  `/setup-forge`. Do **not** fabricate a key flow or dashboard that isn't installed.
+- If it is **missing**, install the per-project payload yourself right now — run the `forge-core`
+  skill's INSTALLER phases (it copies from `~/.claude/forge/template/`, which the global install
+  already put there), then continue with the flow below. Only if that template is also missing (a
+  very old or partial global install) say so plainly and continue with a light onboarding (Step 2
+  only, no key flow, no dashboard) — never ask the user to run an installer command themselves, and
+  do **not** fabricate a key flow or dashboard that isn't installed.
 
 ## Language first (internationalization)
 Determine the working language so the **entire** wizard and every confirmation run in it:
@@ -70,16 +72,14 @@ Auto-detect first so defaults are smart: `git config user.name`, `git remote -v`
 `next.config.*`, n8n / workflow `*.json`, `requirements.txt` (+ vector libs → RAG), an existing
 `CLAUDE.md`/`AGENTS.md`.
 
-Ask at most these four, each **leading with a recommended default in brackets** so Enter accepts:
+**Question cap (v2.7.0, `intake: silent`): fill every one of these from auto-detection + the name you already asked for a name; ask at most ONE actual question on the happy path** — the name (there is no reliable auto-detect for it), leading with a recommended default in brackets so Enter accepts:
 
-1. **What should I call you?**  `[<git config user.name>]`
-2. **What are you building here?**  (one line, e.g. "a landing page for my bakery")
-3. **Project type?**  `[<auto-detected>]`
-   `[1] Website  [2] Full-stack app  [3] Automation/n8n  [4] Chatbot/RAG  [5] Scraper  [6] Other/not sure`
-4. **Main language?**  `[1] English  [2] Nederlands`  — apply immediately.
+1. **What should I call you?**  `[<git config user.name>]` — ask this one.
+2. **What are you building here?**  — infer from the goal text if the user already said it; otherwise fold into the same turn as question 1 rather than a separate prompt.
+3. **Project type?**  `[<auto-detected>]` — use the auto-detected value silently; only surface the `[1] Website [2] Full-stack app [3] Automation/n8n [4] Chatbot/RAG [5] Scraper [6] Other/not sure` menu if detection genuinely found nothing.
+4. **Main language?**  — infer from the user's own message language; apply immediately, don't ask.
 
-Then one confirmation: **"Happy with sensible defaults for everything else? (Y/n)"** Expand only if
-they decline. Keep it to four questions on the happy path.
+No `(Y/n)` confirmation step — proceed with sensible defaults and say what they were in one line; the user can correct anything afterward. `/setup-forge keys`/`doctor`/`reset` remain available for changes.
 
 **Persist the answers** (via the engine's `mark` in Step 5, plus the human-readable profile): write
 /update `FORGE_PROJECT_PROFILE.md` and add or edit a single `## Forge` block in whichever of
@@ -93,8 +93,11 @@ through the engine.
 
 1. **Guard first:** `node .claude/forge-bin/forge-setup.cjs guard`
    - Exit `0` → continue.
-   - Exit `3` → a `.env` is **already git-tracked**. **STOP.** Relay the engine's loud warning
-     verbatim (`git rm --cached .env`, then rotate exposed keys) and don't proceed until resolved.
+   - Exit `3` → a `.env` is **already git-tracked**. Tell the user plainly, then run
+     `node .claude/forge-bin/forge-setup.cjs guard --fix` yourself — this untracks the file with
+     `git rm --cached -- .env` (the file and its content on disk are untouched). Report that you did
+     it, then tell the user to rotate any keys that were exposed while it was tracked. Never hand the
+     user the `git rm --cached` command to run themselves.
 2. **Create the fill-in file:** `node .claude/forge-bin/forge-setup.cjs init-keys --type <chosen-type>`
    The engine writes `.env.forge-setup` (already gitignored) with a short hint comment and a blank
    `KEY=` line for each key you might need — paste your key after the `=`, leave blank any you don't

@@ -269,9 +269,9 @@ Inside Forge, **creating or sending any prompt to a tool/agent is itself a promp
 
 **Role:** act as a prompt engineer — take the rough idea, identify the target tool, extract the real intent, output ONE production-ready, paste-able prompt optimized for that tool with zero wasted tokens. Don't show framework names in the output. Build one prompt at a time.
 
-**Hard rules:** confirm the target tool first (ask if ambiguous); prefer simple techniques (role assignment, few-shot, grounding, chain-of-thought) over fragile meta-frameworks (Tree/Graph-of-Thought, Mixture-of-Experts, self-consistency) — use those only on explicit request + supporting tool; do NOT add "think step by step"/CoT to reasoning-native models (o3, o4-mini, DeepSeek-R1, Qwen3-thinking) — it degrades them; ≤3 clarifying questions; no filler the user didn't ask for; never put real secrets/keys/tokens in a prompt (use `[ENV_VAR]` / "assumes [service] authenticated").
+**Hard rules:** confirm the target tool first (ask if ambiguous); prefer simple techniques (role assignment, few-shot, grounding, chain-of-thought) over fragile meta-frameworks (Tree/Graph-of-Thought, Mixture-of-Experts, self-consistency) — use those only on explicit request + supporting tool; do NOT add "think step by step"/CoT to reasoning-native models (o3, o4-mini, DeepSeek-R1, Qwen3-thinking) — it degrades them; no filler the user didn't ask for; never put real secrets/keys/tokens in a prompt (use `[ENV_VAR]` / "assumes [service] authenticated"). **Question cap superseded (v2.7.0):** the old "≤3 clarifying questions" is replaced by config `intake: silent` (default) — fill every gap yourself from the request + project context and ask **at most ONE** question, only when two readings would lead to materially different work or something would be sent/paid/deployed; `/forge interview` opts into the full questionnaire.
 
-### 1) Intent extraction — silently fill these 9 dimensions (missing a critical one → ask, max 3)
+### 1) Intent extraction — silently fill these 9 dimensions (missing a critical one → ask, at most ONE question total — see the question-cap note above)
 1. **Task** — convert vague verbs to a precise operation *(always)*
 2. **Target tool** — which AI/agent receives it *(always)*
 3. **Output format** — shape, length, structure, filetype *(always)*
@@ -420,7 +420,7 @@ When Paperclip is used, these guards are mandatory:
 
 3. Standalone Claude path
    Use durable standalone Claude path:
-   C:/Users/YOUR_USERNAME/.local/bin/claude.exe
+   C:/Users/YOU/.local/bin/claude.exe
 
 Do not use versioned VS Code extension paths such as:
 anthropic.claude-code-2.1.196
@@ -989,7 +989,7 @@ For cashflow project work, Paperclip must follow the official optional control p
 1. Loopback only by default.
 2. Scoped Claude config.
 3. Standalone Claude path:
-   C:/Users/YOUR_USERNAME/.local/bin/claude.exe
+   C:/Users/YOU/.local/bin/claude.exe
 4. Target project folder must be git-initialized before Paperclip Claude writes there.
 5. Paperclip workspace must bind directly to the exact project folder.
 6. Use assignment wakes for real project work.
@@ -1109,7 +1109,7 @@ Append-only add-on. Extends (never replaces) the Paperclip Official Optional Con
 1. **Auto-provision at every `gebruik Forge` / `use Forge`:** Paperclip is auto-provisioned via the project-local bridge `.claude/forge-bin/forge-paperclip.cjs` (`up` → `ensure` → `ticket` → `stop` after proof). Mapping: **1 Forge project = 1 Paperclip company** (own org chart/goals/agents — nothing mixes). Binding: `.claude/FORGE_PAPERCLIP_BINDING.json`.
 2. **Agents from the project role map**, each with instruction docs **in the project**: `docs/agents/<slug>/AGENTS.md` (role/mission/rules, agentcompanies/v1 frontmatter) + `SOUL.md` (personality/values) + `TOOLS.md` (allowed/forbidden tools). Role enum: ceo|cto|cmo|cfo|security|engineer|designer|pm|qa|devops|researcher|general (lead→ceo). Executing agents: `claude_local` with the durable standalone Claude path (forward slashes); thinking roles: `process`.
 3. **One world:** the bridge logs every Paperclip step (`paperclip_runtime_started/reused`, `paperclip_company_created`, `paperclip_goal_created`, `paperclip_project_created`, `paperclip_workspace_bound`, `paperclip_agent_created/reused/failed`, `paperclip_agent_docs_written`, `paperclip_ticket_created`, `paperclip_runtime_stopped/blocked`) into the Forge dashboard run — Paperclip activity must be visible in the Control Center; an empty dashboard while Paperclip works is a blocker.
-4. **Goal intake:** at `gebruik Forge`, if the goal is unclear, ask the user 2–4 targeted clarifying questions first; always write the plan (Mission Blueprint) + project CLAUDE.md even outside plan mode; the confirmed goal becomes the Paperclip company goal.
+4. **Goal intake (question cap superseded by v2.7.0 `intake: silent` — see the ENGINE section above):** at `gebruik Forge`, if the goal is unclear, fill the gaps yourself and ask **at most ONE** targeted clarifying question, only when it materially changes the work; always write the plan (Mission Blueprint) + project CLAUDE.md even outside plan mode; the confirmed goal becomes the Paperclip company goal.
 5. **All existing guards stay:** loopback only · isolated PAPERCLIP_HOME · git-init before claude_local writes (BLOCKER-14) · durable standalone claude path (BLOCKER-12/13: forward slashes in adapterConfig) · no comment/self-wakes configured by the bridge (BLOCKER-15) · runtime stop after proof · no credentials · no Codex write without recorded Lead permission. Honest failure: `paperclip_runtime_blocked` + report, never pretend.
 
 END OF PAPERCLIP AUTO-PROVISION ADD-ON.
@@ -1123,7 +1123,7 @@ Append-only add-on. Fixes a real observed failure: at "gebruik forge" a session 
 1. live dashboard run (`.claude/forge-runs/<run_id>/` + server up + real localhost URL reported),
 2. Paperclip auto-provision via the bridge (company = project · goal · workspace · agents + `docs/agents/<slug>/AGENTS/SOUL/TOOLS.md` + tickets),
 3. project CLAUDE.md (create or safe-merge),
-4. Mission Blueprint / plan (also outside plan mode) + goal-intake questions when the goal is vague,
+4. Mission Blueprint / plan (also outside plan mode) + goal-intake — silent by default (`intake: silent`): fill gaps yourself, at most ONE question when the goal is genuinely vague,
 5. real subagent work packages — the Lead Agent does NOT implement everything solo; implementation is delegated to subagents with live logging.
 If any earlier rule appears to justify skipping these, that reading is WRONG. Scale the TEAM down for small tasks, never the infrastructure. Skipping any item must be reported as a FAILURE in the final report, never framed as a sensible choice.
 
@@ -1131,16 +1131,16 @@ If any earlier rule appears to justify skipping these, that reading is WRONG. Sc
 If the active project has no Forge install (`.claude/forge-dashboard/` missing), the Lead must FIRST install the project-local Forge (minimum: forge-dashboard + forge-bin incl. forge-paperclip.cjs + memory scaffolds + FORGE_ECC_MODE/SESSION_STATE from `~/.claude/forge/template/`), then proceed. "The folder was empty" is never a reason to run without dashboard/Paperclip.
 
 ## 3. ARM → START GATE (default flow) — SUPERSEDED
-**2026-09-23: This gate is no longer the default.** The ARM flow remains available for testing/review flows, but `/forge <task>` now posts a plan and continues immediately instead of waiting.
+**2026-09-23: This gate is no longer the default; see "Build by default" below.** The ARM flow remains available for testing/review flows, but `/forge <task>` now posts a plan and continues immediately instead of waiting.
 
-Historical (2026-07-02): At `gebruik forge <mission>` the Lead ran the FULL SETUP but did NOT implement:
+Historical (2026-07-02): At `gebruik forge <mission>` the Lead runs the FULL SETUP but does NOT implement yet:
 1. goal intake (2–4 clarifying questions if needed) → confirmed goal
 2. install check (rule 2) → dashboard up → run_id created → `run.json` status **"armed"**
 3. project CLAUDE.md + Mission Blueprint/plan + work packages + task board
 4. Paperclip: runtime up → company/goal/project/workspace/agents(+docs)/tickets ready
 5. subagent roster + work packages logged (status previewing) — visible on the dashboard
 6. then STOP and report: "ARMED — dashboard: <url> · Paperclip: <url> · agents: <n> · work packages: <n>. Zeg **START** om te bouwen." and WAIT.
-Implementation began only after the user said **START** (or the original prompt already contained "start direct"/"begin meteen"/"START"). Follow-up scope changes re-armed; small clarifications didn't. This let the user watch everything live BEFORE work began, which prevented mistakes.
+Implementation begins only after the user says **START** (or the original prompt already contained "start direct"/"begin meteen"/"START"). Follow-up scope changes re-arm; small clarifications don't. This lets the user watch everything live BEFORE work begins, which prevents mistakes.
 
 ## 4. NO FAKE OUTPUT (re-affirmed, hard)
 Never claim dashboards/agents/Paperclip/reviews/tests ran when they didn't. If step 1–5 of the gate cannot be completed (e.g. runtime blocked), say exactly which step failed and why, log the blocker event, and wait — do not silently continue solo.
@@ -1240,7 +1240,7 @@ END OF PER-TASK VERIFY-AND-CORRECT + SCREENSHOT-LOOP PROOF ADD-ON.
 - On a subscription the constraint is **quota, not dollars**. Opus drains **several× faster** than Sonnet; Sonnet more than Haiku. Max plans have **two weekly caps: one across all models + one Sonnet-only**. Sonnet still counts against the shared all-models cap, but because Opus costs several× more per turn, **moving work off Opus onto Sonnet spares shared/Opus headroom** (and draws the separate Sonnet-only cap instead). Per the owner, this account is on **Max 20x** (lots of headroom): the bias is **"don't waste," not "cripple quality"** — keep full quality on the hard parts, stop paying Opus for trivial parts.
 - Quota hygiene that helps regardless of model: `/clear` between unrelated tasks · reference files by path (don't paste) · targeted reads/diffs, not whole-repo dumps · don't re-read a just-edited file · summarize logs to a path · **smallest team that fits** (over-spawning is the #1 waste) · compact internal output, full only for deliverables.
 
-**§6 Machine-readable map.** The template ships `.claude/FORGE_MODEL_ROUTING.json` (session + role→tier + escalation + effort + quota hygiene). The Lead reads it at team-build time, may override per task, and logs the model actually used. The map is **guidance only** and never overrides governance/security/QA. The Forge↔Paperclip bridge (`forge-bin/forge-paperclip.cjs`) applies the SAME tiers to every Paperclip agent’s `adapterConfig.model` (Lead/architect/security → `claude-opus-4-8`; default → alias `sonnet` → current Sonnet 5; trivial → `haiku`), so Paperclip never falls back to its adapter’s cheap `claude-sonnet-4-6` profile.
+**§6 Machine-readable map.** The template ships `.claude/FORGE_MODEL_ROUTING.json` (session + role→tier + escalation + effort + quota hygiene). The Lead reads it at team-build time, may override per task, and logs the model actually used. The map is **guidance only** and never overrides governance/security/QA. The Forge↔Paperclip bridge (`forge-bin/forge-paperclip.cjs`) applies the SAME tiers to every Paperclip agent’s `adapterConfig.model` (Lead/architect/security → `claude-opus-5`; default → alias `sonnet` → current Sonnet 5; trivial → `haiku`), so Paperclip never falls back to its adapter’s cheap `claude-sonnet-4-6` profile.
 
 **§7 Honesty.** Never claim a subagent ran on a model it didn't. Never fabricate quota "savings" numbers — the map is guidance; real savings require real measurement. When Forge recommends the owner change the session model, say so plainly; do not pretend it happened automatically.
 
@@ -1262,7 +1262,7 @@ END OF PAPERCLIP PAUSE-NOT-STOP ADD-ON.
 
 # FORGE GLOBAL ADD-ON — USAGE GUARD: PAUZEREN OP DE INGESTELDE DREMPEL (STANDAARD 98), 0% = HERVATTEN + CHECKUP (user decision 2026-07-03; threshold configurable since 2026-09-24)
 
-**v2.7.0 update (2026-09-24) — supersedes the threshold and the start rule in this add-on.** The pause threshold is the setting `usage-guard.pause-at` — configurable via `/forge config`, default **98**; `usage-guard.cjs` carries no other pause literal (it had drifted between 93, 95 and 98). The guard is **ON by default** (setting `usage-guard`): `/forge` starts it itself at the start of a build, and the tool prints its own disclosure on a real new start (OAuth token read locally from `~/.claude/.credentials.json`, sent only to `api.anthropic.com`) followed by the off command `/forge config set usage-guard uit`. The global session hook named below is an owner-machine install, not part of the distributed payload; without it Forge honours a pause at every phase through `forge-autonomy.cjs decide "<phase>" --phase --live`. Claude Code 2.1.234+ continues by itself after a limit reset, so the guard's job is the pause BEFORE the limit. (The LITE plugin alone has no `usage-guard.cjs`; the guard comes with the full install.)
+**v2.7.0 update (2026-09-24) — supersedes the threshold and the start rule in this add-on.** The pause threshold is the setting `usage-guard.pause-at` — configurable via `/forge config`, default **98**; `usage-guard.cjs` carries no other pause literal (it had drifted between 93, 95 and 98). The guard is **ON by default** (setting `usage-guard`): `/forge` starts it itself at the start of a build, and the tool prints its own disclosure on a real new start (OAuth token read locally from `~/.claude/.credentials.json`, sent only to `api.anthropic.com`) followed by the off command `/forge config set usage-guard uit`. The global session hook named below is an owner-machine install, not part of the distributed payload; without it Forge honours a pause at every phase through `forge-autonomy.cjs decide "<phase>" --phase --live`. Claude Code 2.1.234+ continues by itself after a limit reset, so the guard's job is the pause BEFORE the limit.
 
 **What it is.** A zero-dep watchdog (`forge-bin/usage-guard.cjs`, single global instance; since v2.7.0 started by `/forge` when the setting `usage-guard` is on — the Paperclip bridge `up` starts it only with `--with-usage-guard`) polls the OFFICIAL Anthropic OAuth usage endpoint (the exact same numbers as `/usage` — REAL data, never estimates or log-counting; the OAuth token is read in-memory and never logged). Global session hook: `~/.claude/hooks/forge-usage-guard-hook.cjs` (owner-approved).
 

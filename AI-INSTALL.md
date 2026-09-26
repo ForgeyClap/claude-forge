@@ -20,11 +20,23 @@ Forge is a multi-agent build/review system for Claude Code. It installs **three*
 | `~/.claude/forge/template/` | a canonical copy of the project payload | global: `forge-sync status` compares each project against it and `/forge` installs Forge into a bare folder from it |
 
 It has **no runtime dependencies** — plain Node.js `.cjs` files; the install itself downloads nothing beyond this
-repository and installs no package. Be exact about network use afterwards, because the user will ask: the **usage
-guard** (on by default) reads the Claude login token from `~/.claude/.credentials.json` and asks `api.anthropic.com`
-for the usage figures every couple of minutes — it says so the moment it really starts, and `/forge config set
-usage-guard off` stops it; the optional **Paperclip** runtime runs `npx paperclipai` (which downloads a package) only
-when the owner turns `paperclip` on; the vendored **setup-pre-commit** skill runs npm only when the user asks for it.
+repository and installs no package. Be exact about network use afterwards, because the user will ask — Forge's
+complete, honest network list (every one of these is off unless stated, and each one discloses itself before it
+ever calls out):
+
+- the **usage guard** (on by default) reads the Claude login token from `~/.claude/.credentials.json` and asks
+  `api.anthropic.com` for the usage figures every couple of minutes — it says so the moment it really starts, and
+  `/forge config set usage-guard off` stops it (off = no network call at all);
+- the optional **Paperclip** runtime runs `npx paperclipai` (which downloads a package) only when the owner turns
+  `paperclip` on (off by default);
+- the vendored **setup-pre-commit** skill runs npm only when the user asks for it;
+- **NVIDIA** (setting `nvidia`, on by default but inert) sends prompts to NVIDIA's API only when the user has put a
+  real `NVIDIA_API_KEY` in `.env` — with no key it never calls out;
+- **Codex review** (setting `codex-review`, `auto`) sends code to OpenAI only when the `codex` CLI is installed and
+  logged in on this machine — otherwise it never runs and never calls out;
+- the Command Center's optional **Discord service** reads the same local credentials file and sends the token only
+  to `api.anthropic.com`, and only if you start it.
+
 Nothing else phones home.
 
 ---
@@ -43,7 +55,8 @@ Then establish, and state back to the user, **one** thing:
 > **Which exact folder is the target project?**
 
 Never install into a folder the user did not name. If you are in a subfolder, a monorepo, or you
-are not sure, **ask once and wait**. Installing into the wrong directory writes ~390 files into it.
+are not sure, **ask once and wait**. Installing into the wrong directory writes 535 payload files
+into it (the full `.claude/` tree).
 
 ---
 
@@ -102,7 +115,7 @@ the documented, supported Windows path is `install.ps1`. Pick one and finish wit
 
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
-- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is never replaced: Forge's hooks and deny rules are **merged into it** (your own hooks, allow rules and other keys stay where they are; BOM, line endings and indentation are preserved; a uniquely named backup is written first with exclusive-create, never over an earlier backup; running again changes nothing). The merge refuses and leaves the file alone — writing Forge's version next to it as `settings.forge-recommended.json` and saying so in one line — when the file is not valid JSON, when it holds content that cannot be reserialized losslessly (duplicate keys, numbers beyond what JSON round-trips), when `settings.json` is a directory or a link, or when the file changed under the tool between read and write.
+- A file that already exists and *differs* is **backed up with a timestamp** before being replaced — except an existing **project** `.claude/settings.json`, which is never replaced: Forge's hooks and deny rules are **merged into it** (your own hooks, allow rules and other keys stay where they are; BOM, line endings and indentation are preserved; a uniquely named backup is written first with exclusive-create, never over an earlier backup; running again changes nothing). The merge refuses and leaves the file alone — writing Forge's version next to it as a uniquely-named `settings.forge-recommended-<stamp>-<rand>.json` and saying so in one line — when the file is not valid JSON, when it holds content that cannot be reserialized losslessly (duplicate keys, numbers beyond what JSON round-trips), when `settings.json` is a directory or a link, or when the file changed under the tool between read and write.
 - An identical file is left untouched.
 - Your `CLAUDE.md` is **never overwritten** — it is only created when absent.
 - Your `.gitignore` only ever gets lines it does not already have.
@@ -118,14 +131,15 @@ the documented, supported Windows path is `install.ps1`. Pick one and finish wit
 
 ## 2b. What the install switches on (tell the user — do not let them find out later)
 
-The project payload ships a `.claude/settings.json` with **hooks on four Claude Code events** (five entries,
-four small Node scripts), all local, none phoning home, plus **deny rules** that keep secret files out of
+The project payload ships a `.claude/settings.json` with **five hooks across four Claude Code events**
+(six `settings.json` entries total, because PostToolUse is wired twice — see item 4 — running four
+small Node scripts), all local, none phoning home, plus **deny rules** that keep secret files out of
 Claude's reach:
 
 1. **PreCompact (manual)** — snapshots the mission state before a manual context compaction
 2. **PreCompact (auto)** — snapshots the mission state before an automatic compaction
 3. **SessionStart** (after compaction) — re-injects the mission, so a long session does not lose what it was doing
-4. **PostToolUse** (matcher: `Write|Edit|MultiEdit|NotebookEdit|Bash`) — appends the tool name and target path of each *changing* tool call to `.claude/forge-runs/_toollog/<session>.jsonl` (gitignored)
+4. **PostToolUse** (matcher: `Write|Edit|MultiEdit|NotebookEdit|Bash`, plus a **separate** entry with matcher `PowerShell` so Windows shell calls are logged too — two `settings.json` entries, same script) — appends the tool name and target path of each *changing* tool call to `.claude/forge-runs/_toollog/<session>.jsonl` (gitignored)
 5. **PreToolUse — the gate hook** (matcher: `Bash|PowerShell`, `forge-gate-hook.cjs`, new in 2.7.0) — before every
    shell command it asks Forge's hard-gate classifier whether the command is a recursive delete (with or without
    the force flag), a kill of processes by name (also through `pgrep`/`pidof` substitutions and `xargs`
@@ -139,8 +153,10 @@ Claude's reach:
    still scanned line by line, so a line that itself starts with a dangerous command is stopped (a safe false block,
    never a silent pass). When the hook cannot judge a call (its own error, an oversized payload, an unknown hook
    event name) it exits 1: visible, not blocking, never a silent pass. It is the only hook that blocks instead of
-   advising; it is ON by default. It is built so the assistant cannot switch it off on its own
-   (`/forge config set gate-hook off` is for the user): the assistant's own attempt to switch it off is blocked in
+   advising; it is ON by default. It is built so the assistant cannot switch it off on its own. **The owner's own
+   route:** type `/forge config set gate-hook off` yourself, or prefix any command with `!` (bash mode runs in your
+   own shell, not through Claude's tool) — either way it is you, not the assistant, running it. The assistant's own
+   attempt to switch it off is blocked in
    every invocation form the hook's argv parser recognises (a quoted or concatenated verb, any path to
    `forge-config.cjs`/`forge-config-cli.cjs`, `node` with flags or by absolute path, `env`/`sudo`/`time`/`nohup`
    wrappers, flags in any order), and a `forge-config` mutation that names `gate-hook` but cannot be read
@@ -178,9 +194,10 @@ deny rules into it with `forge-settings-merge.cjs`: existing entries are kept in
 added (into an existing matcher entry when one already carries part of them, never as a duplicate), a Forge hook whose
 timeout was still written in milliseconds is corrected to seconds, BOM/line endings/indentation are preserved, and a
 uniquely named backup is written first. Running it again is a no-op. The file is left alone (Forge's version written
-next to it as `settings.forge-recommended.json`) when it is not valid JSON, cannot be reserialized losslessly, is a
-directory or a link, or changed under the tool. Tell the user which of the three happened
-(created · merged · left alone) and, after a merge, name the backup path.
+next to it as a uniquely-stamped `settings.forge-recommended-<stamp>-<rand>.json`) when it is not valid JSON, cannot
+be reserialized losslessly, is a directory or a link, or changed under the tool. Tell the user which of the three happened
+(created · merged · left alone) and, after a merge, name the backup path; on a refusal, name the
+exact stamped file it wrote.
 
 **Everything is on by default, and `/forge config` shows and changes it.** `/forge config list` (in a terminal:
 `node .claude/forge-bin/forge-config.cjs list --all`) lists all 36 settings with value, source and a plain
@@ -213,7 +230,7 @@ cd "/path/to/the/users/project"
 node .claude/forge-bin/forge-doctor.cjs
 ```
 
-This runs the full self-test (110+ suites, several thousand assertions). It takes a few minutes.
+This runs the full self-test (136 suites, several thousand assertions). It takes a few minutes.
 
 **Expected on a correct fresh install: `⇒ ALL GREEN`.**
 
@@ -301,6 +318,44 @@ gateway and then claim the dashboard is running without checking `GET /api/healt
 | Doctor reports failures right after a fresh install | Should not happen on v2.4.0+: this exact scenario (clean folder, **empty** `~/.claude`) is what the `fresh-install` CI job measures on every commit | Report the exact `✗` lines to the user, include the doctor's `tests` line, and open an issue with them; do not guess or re-run until it looks better |
 | `spawn powershell ENOENT` on macOS/Linux | `forge-killswitch` is Windows-only | Expected; it refuses honestly. Every other tool is cross-platform |
 | Codex review step fails with HTTP 400 | The pinned Codex model is not available on that account | Optional feature. Forge continues and reports the review did not run |
+
+---
+
+## 7a. Removing Forge
+
+If the user asks to remove or uninstall Forge, use the real uninstaller — do not delete `.claude/`
+by hand.
+
+```bash
+# macOS / Linux
+bash install.sh --uninstall --project "/absolute/path/to/the/users/project"
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -ProjectDir "C:\absolute\path\to\project"
+```
+
+Add `-DryRun` / `--dry-run` first to preview it, and `-Yes` / `--yes` to skip the confirmation
+prompt. `-GlobalOnly`/`-ProjectOnly` (`--global-only`/`--project-only`) scope it to just the global
+core or just the project, the same as install.
+
+**What it removes:** exactly the files a claude-forge installer wrote, and nothing else. Every write
+the installer makes is recorded in an install manifest (project-side
+`.claude/.forge-install-manifest.json`, global-side `~/.claude/forge/install-manifest.json` — path +
+sha256). The uninstaller deletes a listed file **only when its current hash still matches** the
+manifest; a file the user edited themselves is left in place and reported as kept. A pre-2.8.0
+install has no manifest, so the uninstaller falls back to a byte-identical comparison against this
+installer's own shipped payload.
+
+**What it always keeps, on purpose:** the user's own data — `CLAUDE.md` (if it predates Forge or was
+edited), `.env`, `FORGE_MEMORY*`, `.claude/forge-runs/`, `.claude/agent-memory/`, and any file the
+user changed — and `.claude/settings.json` itself: because the installer only ever **merges** Forge's
+hooks and `permissions.deny` secret-protection rules into it rather than writing it outright, the
+uninstaller never deletes it and never strips the deny rules back out. Running it twice is safe — the
+second run is a no-op.
+
+Report exactly what was removed and what was kept, quoting the tool's own summary — never guess.
 
 ---
 

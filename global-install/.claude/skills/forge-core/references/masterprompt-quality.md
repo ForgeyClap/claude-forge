@@ -269,9 +269,9 @@ Inside Forge, **creating or sending any prompt to a tool/agent is itself a promp
 
 **Role:** act as a prompt engineer — take the rough idea, identify the target tool, extract the real intent, output ONE production-ready, paste-able prompt optimized for that tool with zero wasted tokens. Don't show framework names in the output. Build one prompt at a time.
 
-**Hard rules:** confirm the target tool first (ask if ambiguous); prefer simple techniques (role assignment, few-shot, grounding, chain-of-thought) over fragile meta-frameworks (Tree/Graph-of-Thought, Mixture-of-Experts, self-consistency) — use those only on explicit request + supporting tool; do NOT add "think step by step"/CoT to reasoning-native models (o3, o4-mini, DeepSeek-R1, Qwen3-thinking) — it degrades them; ≤3 clarifying questions; no filler the user didn't ask for; never put real secrets/keys/tokens in a prompt (use `[ENV_VAR]` / "assumes [service] authenticated").
+**Hard rules:** confirm the target tool first (ask if ambiguous); prefer simple techniques (role assignment, few-shot, grounding, chain-of-thought) over fragile meta-frameworks (Tree/Graph-of-Thought, Mixture-of-Experts, self-consistency) — use those only on explicit request + supporting tool; do NOT add "think step by step"/CoT to reasoning-native models (o3, o4-mini, DeepSeek-R1, Qwen3-thinking) — it degrades them; no filler the user didn't ask for; never put real secrets/keys/tokens in a prompt (use `[ENV_VAR]` / "assumes [service] authenticated"). **Question cap superseded (v2.7.0):** the old "≤3 clarifying questions" is replaced by config `intake: silent` (default) — fill every gap yourself from the request + project context and ask **at most ONE** question, only when two readings would lead to materially different work or something would be sent/paid/deployed; `/forge interview` opts into the full questionnaire.
 
-### 1) Intent extraction — silently fill these 9 dimensions (missing a critical one → ask, max 3)
+### 1) Intent extraction — silently fill these 9 dimensions (missing a critical one → ask, at most ONE question total — see the question-cap note above)
 1. **Task** — convert vague verbs to a precise operation *(always)*
 2. **Target tool** — which AI/agent receives it *(always)*
 3. **Output format** — shape, length, structure, filetype *(always)*
@@ -1109,7 +1109,7 @@ Append-only add-on. Extends (never replaces) the Paperclip Official Optional Con
 1. **Auto-provision at every `gebruik Forge` / `use Forge`:** Paperclip is auto-provisioned via the project-local bridge `.claude/forge-bin/forge-paperclip.cjs` (`up` → `ensure` → `ticket` → `stop` after proof). Mapping: **1 Forge project = 1 Paperclip company** (own org chart/goals/agents — nothing mixes). Binding: `.claude/FORGE_PAPERCLIP_BINDING.json`.
 2. **Agents from the project role map**, each with instruction docs **in the project**: `docs/agents/<slug>/AGENTS.md` (role/mission/rules, agentcompanies/v1 frontmatter) + `SOUL.md` (personality/values) + `TOOLS.md` (allowed/forbidden tools). Role enum: ceo|cto|cmo|cfo|security|engineer|designer|pm|qa|devops|researcher|general (lead→ceo). Executing agents: `claude_local` with the durable standalone Claude path (forward slashes); thinking roles: `process`.
 3. **One world:** the bridge logs every Paperclip step (`paperclip_runtime_started/reused`, `paperclip_company_created`, `paperclip_goal_created`, `paperclip_project_created`, `paperclip_workspace_bound`, `paperclip_agent_created/reused/failed`, `paperclip_agent_docs_written`, `paperclip_ticket_created`, `paperclip_runtime_stopped/blocked`) into the Forge dashboard run — Paperclip activity must be visible in the Control Center; an empty dashboard while Paperclip works is a blocker.
-4. **Goal intake:** at `gebruik Forge`, if the goal is unclear, ask the user 2–4 targeted clarifying questions first; always write the plan (Mission Blueprint) + project CLAUDE.md even outside plan mode; the confirmed goal becomes the Paperclip company goal.
+4. **Goal intake (question cap superseded by v2.7.0 `intake: silent` — see the ENGINE section above):** at `gebruik Forge`, if the goal is unclear, fill the gaps yourself and ask **at most ONE** targeted clarifying question, only when it materially changes the work; always write the plan (Mission Blueprint) + project CLAUDE.md even outside plan mode; the confirmed goal becomes the Paperclip company goal.
 5. **All existing guards stay:** loopback only · isolated PAPERCLIP_HOME · git-init before claude_local writes (BLOCKER-14) · durable standalone claude path (BLOCKER-12/13: forward slashes in adapterConfig) · no comment/self-wakes configured by the bridge (BLOCKER-15) · runtime stop after proof · no credentials · no Codex write without recorded Lead permission. Honest failure: `paperclip_runtime_blocked` + report, never pretend.
 
 END OF PAPERCLIP AUTO-PROVISION ADD-ON.
@@ -1123,7 +1123,7 @@ Append-only add-on. Fixes a real observed failure: at "gebruik forge" a session 
 1. live dashboard run (`.claude/forge-runs/<run_id>/` + server up + real localhost URL reported),
 2. Paperclip auto-provision via the bridge (company = project · goal · workspace · agents + `docs/agents/<slug>/AGENTS/SOUL/TOOLS.md` + tickets),
 3. project CLAUDE.md (create or safe-merge),
-4. Mission Blueprint / plan (also outside plan mode) + goal-intake questions when the goal is vague,
+4. Mission Blueprint / plan (also outside plan mode) + goal-intake — silent by default (`intake: silent`): fill gaps yourself, at most ONE question when the goal is genuinely vague,
 5. real subagent work packages — the Lead Agent does NOT implement everything solo; implementation is delegated to subagents with live logging.
 If any earlier rule appears to justify skipping these, that reading is WRONG. Scale the TEAM down for small tasks, never the infrastructure. Skipping any item must be reported as a FAILURE in the final report, never framed as a sensible choice.
 

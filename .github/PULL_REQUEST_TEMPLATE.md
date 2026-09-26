@@ -1,7 +1,9 @@
 <!--
 Thanks for contributing to Forge V2!
-Keep the zero-dependency rule: plain Node .cjs, POSIX sh, PowerShell, Markdown/JSON/YAML only.
-No npm packages, no native modules, no runtime dependencies.
+Keep the zero-dependency rule for the core: plain Node .cjs, POSIX sh, PowerShell, Markdown/JSON/YAML only.
+No npm packages, no native modules, no runtime dependencies in `.claude/forge-bin` or the global core.
+The one scoped exception is the optional Command Center dashboard (command-center/dashboard/), which has
+its own package.json and a one-time npm build — that stays confined to its own folder.
 -->
 
 ## What does this PR do?

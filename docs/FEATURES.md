@@ -3,7 +3,7 @@
 The complete catalog behind the one-line pitch. **claude-forge** turns Claude Code into a coordinated team that **builds, automates, reviews and ships** — with a live per-project dashboard, honest reporting, and zero runtime dependencies.
 
 > [!NOTE]
-> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists), **72 skills** (51 Forge skills + 21 vendored public skills) and **102 zero-dependency tool files**; the LITE plugin carries **18 agents** and **22 skills** and none of the vendored skills. That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present, but Forge itself ships only these numbers — nothing else is ever claimed as "shipped".
+> **Honest counts.** The full install ships **19 built-in agents** (12 permanent Bosses + 7 specialists), **72 skills** (51 Forge skills + 21 vendored public skills) and **120 zero-dependency tool files**; the LITE plugin carries **18 agents** and **22 skills** and none of the vendored skills. That is what lives in this repo. Forge can also *route to* your wider Claude Code / ECC agent ecosystem when it is present, but Forge itself ships only these numbers — nothing else is ever claimed as "shipped".
 
 > [!TIP]
 > You do **not** need to read this whole page to use Forge. Run `/setup-forge` once, then say `/forge <what you want>`. This reference is for when you want to know *exactly* what is under the hood.
@@ -23,7 +23,7 @@ The complete catalog behind the one-line pitch. **claude-forge** turns Claude Co
 - [Verification, honesty & reporting](#verification-honesty--reporting-skills)
 - [Priming, visualization & cross-project](#priming-visualization--cross-project-skills)
 - [Vendored public skills](#vendored-public-skills)
-- [The dashboard (Control Center)](#the-dashboard-control-center)
+- [The dashboard (Forge Command Center)](#the-dashboard-forge-command-center)
 - [Project memory](#project-memory-the-forge_-files)
 - [Onboarding & safe key setup](#onboarding--safe-key-setup)
 - [Honesty & isolation guarantees](#honesty--isolation-guarantees)
@@ -101,15 +101,16 @@ Settings: `intake` (`silent` / `interview`), `prompt-doctor`, `explain-mode`. Be
 
 ## The safety stop (gate hook) & secret deny rules
 
-*New in 2.7.0.* Written rules are advice; a model can still ignore them. So three of Forge's hard gates are now **enforced** by a Claude Code `PreToolUse` hook (`forge-gate-hook.cjs`, matcher `Bash|PowerShell`), using the same classifier as everything else (`forge-actiongate.cjs` + `hard-gates.json`):
+*New in 2.7.0, a fourth gate added in 2.7.2.* Written rules are advice; a model can still ignore them. So four of Forge's hard gates are now **enforced** by a Claude Code `PreToolUse` hook (`forge-gate-hook.cjs`, matcher `Bash|PowerShell`), using the same classifier as everything else (`forge-actiongate.cjs` + `hard-gates.json`) — a classifier, not a proof: what it does not recognise, it does not stop:
 
 | Gate | Blocked, for example | What passes |
 |---|---|---|
 | `destructive-delete` | `rm -rf ./build`, `Remove-Item -Recurse -Force ./src`, `rd /s /q dist`, `rimraf ./lib` | a delete whose every target is provably inside a scratch area: `_scratch/`, any `node_modules/` or `dist/`, `.claude/forge-backups/*`, the system temp folder, … |
 | `kill-by-name` | `taskkill /IM node.exe`, `Stop-Process -Name node`, `pkill node` | killing the exact PID you started |
 | `git-destructive` | `git reset --hard`, `git clean -f`, `git checkout -f`, `git checkout .`, `git checkout -- <path>`, `git restore <path>`, `git switch -f`, `git stash drop` / `clear` | commit or `git stash push` first |
+| `opaque-exec` | `eval`/`Invoke-Expression`/`iex` on a variable, `sh -c`/`bash -c`/`pwsh -c` on a variable or substitution, a pipe straight into a shell (`curl … \| bash`), an encoded PowerShell command (`-EncodedCommand`) | writing the command out in full, or running it as a readable script file |
 
-A blocked call gets a plain Dutch/English reason and Claude has to ask you. The `git checkout .` / `git checkout -- <path>` / `git restore <path>` / `git switch -f` forms were not caught at all before 2.7.0. **Honest limits:** the hook sees shell command text only — a delete hidden in a script (`npm run clean`), in a variable or in `node -e` is not seen, and the text gates (deploy, push, spend, …) stay classifier + prose gates because blocking on text would hit legitimate flows. On by default; `/forge config set gate-hook off` switches it off. If the hook itself breaks, it lets the call through (fail-open) so a broken hook never breaks a session.
+A blocked call gets a plain Dutch/English reason and Claude has to ask you. The `git checkout .` / `git checkout -- <path>` / `git restore <path>` / `git switch -f` forms were not caught at all before 2.7.0; `opaque-exec` was not caught before 2.7.2. **Honest limits:** the hook sees shell command text only — a delete hidden in a script (`npm run clean`), in a variable or in `node -e` is not seen, and the text gates (deploy, push, spend, …) stay classifier + prose gates because blocking on text would hit legitimate flows. On by default; you (the owner) switch it off with `/forge config set gate-hook off` typed yourself, or any command prefixed with `!` (bash-mode runs in your own shell, not through Claude's tool) — an agent's own attempt to run that same command is blocked. When the hook cannot judge a call at all (an internal error, an oversized payload) it exits 1: visible to you, not blocking, never a silent pass.
 
 The shipped `.claude/settings.json` also carries **`permissions.deny`** rules so Claude's Read tool never opens `.env`, `.env.local`, `.env.*.local`, `.env.development`, `.env.production`, `.env.staging`, `.env.test` or `secrets/**`. `.env.example` stays readable on purpose.
 
@@ -230,22 +231,23 @@ node .claude/forge-bin/forge-verify.cjs <run_id> --json     # machine-readable
 
 ---
 
-## The dashboard (Control Center)
+## The dashboard (Forge Command Center)
 
-Each project gets its **own** local-only **Agent Swarm command center** that shows what Forge is *actually* doing in *this* project as a live node graph — never a global or shared dashboard.
+**One local Command Center serves every Forge project** at `127.0.0.1:4100` — it auto-discovers your projects and shows what Forge is *actually* doing in each one as a live node graph, strictly per-project data, so two projects never clash and you only ever run one dashboard.
 
 ```bash
-node .claude/forge-dashboard/server.cjs
-# prints the real http://localhost:<port>, exposes GET /api/health
+node command-center/gateway/supervisor.mjs
+# then http://127.0.0.1:4100 — GET /api/health must answer before anyone calls it "running"
 ```
 
-- **One Command Center on 127.0.0.1:4100.** It auto-discovers your Forge projects and shows strictly per-project data, so two projects never clash and you only run one dashboard. *(Legacy: the retired per-project Control Center still derives a deterministic port in 3737–3999 from the project path, stored in `.claude/forge-dashboard/PORT` — used only by an explicit `legacy dashboard` request.)*
 - **Real activity only.** It reads each run's `.claude/forge-runs/<run_id>/{run.json, events.jsonl, final-report.md}` **read-only** and renders real events. It never reads another project's `.claude/`.
-- **Zero dependencies.** No database, no cloud, no login — a plain Node `.cjs` server + a static SPA.
-- **Forge settings, read-only** *(Command Center, new in 2.7.0).* The Settings view has a "Forge settings" section with every setting of the active project — value, source and explanation — read from `GET /api/config?project=<name>` (read-only: a POST is refused, an unknown project is a 404). You change settings in chat or with `/forge config`, never in the dashboard.
+- **Zero dependencies.** No database, no cloud, no login — a plain Node gateway + a static SPA.
+- **Forge settings, read-only** *(new in 2.7.0).* The Settings view has a "Forge settings" section with every setting of the active project — value, source and explanation — read from `GET /api/config?project=<name>` (read-only: a POST is refused, an unknown project is a 404). You change settings in chat or with `/forge config`, never in the dashboard.
+- **The one-line installer (Path B) does not ship `command-center/`.** It comes with a full clone of the repository; without it, `/forge dashboard` says so once and Forge keeps working without a dashboard.
+- *(Legacy: the retired per-project Control Center, `.claude/forge-dashboard/server.cjs`, still exists and derives a deterministic port in 3737–3999 from the project path — it never starts automatically any more, only on an explicit `legacy dashboard` request.)*
 
 <details>
-<summary><b>What the Control Center shows</b></summary>
+<summary><b>What the Command Center shows</b></summary>
 
 - **3-column workbench:** left AGENT GROUPS sidebar (Control · Context · Planning · Domain · Execution · Review · Memory·Report, each with a status dot) · center node-graph canvas (pan, wheel-zoom, minimap) · right SELECTED-AGENT work-package inspector + LIVE ACTIVITY feed.
 - **11 lenses** over the same live run (default TASK GRAPH): FLOW / TASK GRAPH / NOTE / WORKFLOW / EXEC / DAG / AGENTS / PIPELINE / TEST / REVIEW / ARTIFACTS. Deep-link via `?lens=<id>`.
@@ -312,7 +314,7 @@ New to the internals? Read them in order: `FORGE_PROJECT_PROFILE.md` → `FORGE_
 **Key handling invariants:**
 
 - **Keys are optional** — Forge runs fine without any.
-- **Gitignore invariant:** `.env`, `.env.*` (except `.env.example`) and the temp `.env.forge-setup` are ignored. If a `.env` is already tracked, Forge stops and warns you to `git rm --cached .env` and rotate.
+- **Gitignore invariant:** `.env`, `.env.*` (except `.env.example`) and the temp `.env.forge-setup` are ignored. If a `.env` is already tracked, Forge stops, then untracks it itself (`forge-setup.cjs guard --fix`, i.e. `git rm --cached -- .env` — the file on disk is untouched) and tells you to rotate any keys that were exposed.
 - **Storage tier:** the honest default is a gitignored `.env` with `0600` perms. An OS keychain (macOS Keychain / Windows Credential Manager / libsecret) is an **optional advanced** upgrade — never required, never faked.
 - **`.env.example`** ships key *names* and comments only — never values.
 

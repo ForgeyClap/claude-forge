@@ -105,34 +105,34 @@ curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/instal
 
 ## 4. Dashboard port already in use
 
-> **Since 2026-07-31 the dashboard is the Command Center on `http://127.0.0.1:4100`** — one app for every project. The per-project Control Center described here is **retired**: it never starts automatically and only runs on an explicit `legacy dashboard` request. Its `log-event.cjs` is *not* retired and remains the run-event writer.
-
 **Problem** — Starting the dashboard fails, or you're unsure which URL to open.
 
-**Cause** — Each project's dashboard binds to a **deterministic port derived from the project path**, in the range **3737–3999**. If that exact port is already taken (another app, or a second Forge project that happened to hash nearby), the bind would collide.
-
-**Fix** — Forge handles this for you: on `EADDRINUSE` it **automatically walks forward to the next free port** in the 3737–3999 band (wrapping around if needed) and prints the real URL it actually bound to. Just start it and read the line it prints:
-
-```bash
-node .claude/forge-dashboard/server.cjs
-# → prints the real http://localhost:<port>
-```
-
-Useful follow-ups:
+**Cause / fix** — **The dashboard is the Forge Command Center, one fixed app for every project at
+`http://127.0.0.1:4100`** — there's no per-project port to collide with. If it's already running
+(from another project, or you started it earlier), you don't need to start a second one:
 
 ```bash
-# See the assigned port without starting the server:
-node .claude/forge-dashboard/server.cjs --assign-only
-
-# Health check the running dashboard:
-node .claude/forge-dashboard/server.cjs --health   # or: GET /api/health
+node command-center/gateway/supervisor.mjs
+# then http://127.0.0.1:4100 — GET /api/health must answer before it's "running"
 ```
 
-- The chosen port is remembered in `.claude/forge-dashboard/PORT`. Delete that file to let Forge re-pick, or set `FORGE_DASHBOARD_PORT` (must be within 3737–3999) to pin one.
-- The dashboard is **localhost-only and per-project** — it never binds to a public interface and never reads another project's `.claude/`.
+The one-line installer (Path B in the README) doesn't ship `command-center/` at all — it comes with
+a full clone of the repo. If that folder is missing, there is no dashboard to start; Forge says so
+once and keeps working without it.
 
 > [!TIP]
 > **Never trust a "dashboard is running" claim without a health check.** If `/api/health` doesn't answer, it isn't up — restart it and read the printed URL.
+
+<details>
+<summary>Legacy: the retired per-project Control Center</summary>
+
+Before 2026-07-31, each project ran its own dashboard on a deterministic port derived from the
+project path (range 3737–3999), with `node .claude/forge-dashboard/server.cjs` walking forward to
+the next free port on `EADDRINUSE`. That per-project server is **retired**: it never starts
+automatically any more, only on an explicit `legacy dashboard` request. Its `log-event.cjs` is *not*
+retired and remains the per-project run-event writer that the Command Center reads.
+
+</details>
 
 ---
 
@@ -205,14 +205,20 @@ If git **is** present and you still see this, a `!`-negation elsewhere in `.giti
 
 **Cause** — A `.env` was committed **before** it was gitignored. Git keeps tracking a file even after you add it to `.gitignore`, so any secret written there could be committed and pushed. Forge treats this as a **hard stop** — it will not write keys into an exposed file.
 
-**Fix** — Untrack it (keeps the local file), then rotate anything that may have leaked:
+**Fix** — If you're working with Forge in Claude Code, just say so — it runs the fix itself:
+
+```bash
+node .claude/forge-bin/forge-setup.cjs guard --fix
+```
+
+That's exactly `git rm --cached -- .env` (untracks the file only; the file and its content on disk are untouched), done for you so you never have to type a git command. Working entirely by hand, without an assistant? You can run the same untrack yourself:
 
 ```bash
 git rm --cached .env
 git commit -m "stop tracking .env"
 ```
 
-Then **rotate any keys** that were ever committed (assume they're compromised — they may be in your git history), and re-run:
+Either way, then **rotate any keys** that were ever committed (assume they're compromised — they may be in your git history), and re-run:
 
 ```
 /setup-forge keys

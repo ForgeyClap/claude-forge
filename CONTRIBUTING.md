@@ -13,9 +13,13 @@ By contributing you agree that your work is licensed under the project's
 
 ## Ground rules
 
-- **Zero runtime dependencies.** Everything ships as plain Node `.cjs`, POSIX
-  `sh`, PowerShell, Markdown, JSON, or YAML. No npm packages, no native modules,
-  no build step. A PR that adds a dependency will not be merged.
+- **Zero runtime dependencies in the core.** Forge's own tools ship as plain Node
+  `.cjs`, POSIX `sh`, PowerShell, Markdown, JSON, or YAML. No npm packages, no
+  native modules, no build step. A PR that adds a dependency to `.claude/forge-bin`
+  or the global core will not be merged. The one scoped exception: the optional
+  Command Center dashboard (`command-center/dashboard/`) is a Vite/web app with its
+  own `package.json` and a one-time `npm install && npm run build` — that step stays
+  confined to the dashboard folder and is never required for `/forge` itself.
 - **Honesty first.** Never claim a check, test, or review ran if it did not.
   Never commit real secrets or print secret values. Report what actually
   happened.
@@ -97,9 +101,12 @@ Run these locally before opening a PR.
 claude plugin validate .
 ```
 
-Use `claude plugin validate . --strict` (the same command CI runs) to fail on a
-malformed manifest, a duplicate plugin name, path traversal, or bad skill/agent
-frontmatter.
+Use `claude plugin validate . --strict` to fail on a malformed manifest, a
+duplicate plugin name, path traversal, or bad skill/agent frontmatter. **Note:**
+the `claude` CLI is not available on CI, so CI does not run this exact command —
+it asserts the same required fields on the raw JSON manifests instead (see
+`.github/workflows/validate.yml`). Run the real `claude plugin validate` locally;
+CI is the parseable-JSON-plus-required-fields fallback, not a substitute for it.
 
 **2. Run forge-doctor (self-test + secret/leak scan):**
 
@@ -116,14 +123,15 @@ scan:
 node .claude/forge-bin/forge-doctor.cjs   # runs the full self-test including the leak scan (there is no separate leakScan mode)
 ```
 
-**3. If you touched the onboarding / key flow**, also run the setup tests:
+**3. If you touched the onboarding / key flow**, also run the setup tests directly
+(`forge-setup.cjs` has no `--self-test` flag — that flag does not exist):
 
 ```bash
-node .claude/forge-bin/forge-setup.cjs --self-test
+node .claude/forge-bin/forge-setup.test.cjs
 ```
 
-(or the test file next to it). Confirm keys never leak, the temp fill-file is
-deleted, `.gitignore` stays correct, and the flow is idempotent.
+Confirm keys never leak, the temp fill-file is deleted, `.gitignore` stays
+correct, and the flow is idempotent.
 
 ---
 
@@ -141,7 +149,13 @@ deleted, `.gitignore` stays correct, and the flow is idempotent.
    - what changed and why,
    - which checks you actually ran and their real result,
    - whether it touches the plugin/installer split or the key flow.
-6. CI runs `claude plugin validate . --strict`. A green run plus a maintainer
-   review is required to merge.
+6. CI (`.github/workflows/validate.yml`) checks the tracked-file/gitignore
+   invariant, the executable bit on every `.sh`, `node --check`s every `.cjs` in
+   `.claude/forge-bin`, runs the Forge test suites, runs `forge-doctor.cjs`, and
+   validates the plugin/marketplace manifests as parseable JSON with the required
+   fields (the `claude` CLI itself isn't installed on the runner, so it cannot run
+   `claude plugin validate` there). `.github/workflows/fresh-install.yml` installs
+   into an empty directory with an empty `HOME` on Windows and Linux and checks the
+   doctor is green. A green run on both plus a maintainer review is required to merge.
 
 Small, honest, well-tested PRs get merged fastest. Thank you for contributing!

@@ -9,8 +9,8 @@ release and `main`.
 
 | Version | Supported |
 | --- | --- |
-| 2.4.x | Yes |
-| 2.3.x and older | No — upgrade |
+| 2.8.x | Yes |
+| 2.7.x and older | No — upgrade |
 | < 2.0 | No |
 
 ## Reporting a vulnerability
@@ -63,15 +63,21 @@ The honest, zero-dependency key handling works like this:
   (for example, "saved `ANTHROPIC_API_KEY`") and never prints a secret value
   back to you or to any log.
 - **A tracked `.env` is a hard stop.** If a `.env` is already tracked by git,
-  setup refuses to proceed and tells you to run `git rm --cached .env` and
-  rotate any exposed keys.
+  setup refuses to proceed. Forge then untracks it itself
+  (`node .claude/forge-bin/forge-setup.cjs guard --fix`, which is exactly
+  `git rm --cached -- .env` — the file and its content on disk are untouched)
+  and tells you to rotate any keys that were exposed while it was tracked.
+  You are never handed the git command to run yourself.
 - **No secret storage dependency.** Forge uses a gitignored `.env` (with
   best-effort `0600` permissions on Unix) as its honest primary tier and does
   not bundle a native keychain module. Using your OS keychain is documented as
   an optional advanced upgrade, never a claim Forge makes falsely.
-- **Zero runtime dependencies.** There are no third-party npm packages or native
-  modules, which removes the usual supply-chain attack surface. Everything is
-  plain Node `.cjs`, POSIX `sh`, PowerShell, and Markdown / JSON / YAML.
+- **Zero runtime dependencies in the core.** Forge's own tools have no third-party
+  npm packages or native modules, which removes the usual supply-chain attack
+  surface. Everything is plain Node `.cjs`, POSIX `sh`, PowerShell, and Markdown /
+  JSON / YAML. The one scoped exception is the optional Command Center dashboard,
+  a separate web app with its own `package.json` and a one-time build step — it
+  never runs unless you (or an assistant on your behalf) choose to build it.
 
 If you ever find a secret committed to this repository, treat it as a
 vulnerability and report it privately using the process above — then the key

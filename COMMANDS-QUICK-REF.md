@@ -4,14 +4,20 @@
 
 Every slash command, sub-flow, dashboard control, natural-language trigger, and zero-dependency terminal tool — in one scannable page.
 
-**4 slash commands · 19 agents · 72 skills · 102 zero-dep `.cjs` tools (full install; the LITE plugin has 2 slash commands, 18 agents and 22 skills).**
+**4 slash commands · 19 agents · 72 skills · 120 zero-dep `.cjs` tools (full install; the LITE plugin has 2 slash commands, 18 agents and 22 skills).**
 
 </div>
 
 ---
 
-> [!TIP]
-> **You almost never need this page to get started.** Run `/setup-forge` once, then say `/forge <what you want>`. This reference is for when you want to reach past the two commands into the terminal tools, dashboard controls, and sub-flows underneath.
+## You never have to type these
+
+**Just tell Forge what you want, in normal words.** Say `/forge build me a landing page for my bakery` (or whatever you're after) and Forge figures out the rest — which tools to run, which settings apply, how to check its own work. You do not need to memorize a single line on this page to use Forge.
+
+Everything below this point is an **optional, advanced reference** — the individual terminal tools, dashboard controls, and sub-flows that Forge itself uses under the hood. Reach for it only when you want to run something yourself outside of chat (e.g. from a CI script or a terminal), or when you're curious what a command actually does. Two commands are enough for almost everyone:
+
+- **`/setup-forge`** — run once, when you start.
+- **`/forge <what you want>`** — run any time, for anything.
 
 ---
 
@@ -244,7 +250,7 @@ Cross-platform wrappers with **no global install** — everything runs from the 
 | `forge-runcontract.cjs` | **Run-contract gate** — checks a run against `FORGE_HARD_RULES.json` before it may be called done. Exit 3 = NOT DONE (the listed rules are unfinished work). `--log-event` writes the `gate_evaluated` proof in the same act. | `node .claude/forge-bin/forge-runcontract.cjs check --run <run_id> --log-event` |
 | `usage-guard.cjs` | Subscription usage watchdog — reads the official Anthropic OAuth usage endpoint and pauses Forge at **98 %** by default (settings `usage-guard`, `usage-guard.pause-at`, `.resume-at`, `.interval`, `.nvidia-shift-at`). **On by default** since 2.7.0; `/forge` starts it. A real start prints what it reads (your token, locally) and where it sends it (only `api.anthropic.com`), plus the off command. `start` exits 3 without starting anything when you switched it off. `status` prints every value with its source. | `node .claude/forge-bin/usage-guard.cjs status` |
 | `forge-config.cjs` | **The one settings tool** behind `/forge config` — resolves, validates and writes every setting in `FORGE_CONFIG_SCHEMA.json` (36 settings, 7 locked rules). Sub-commands `list [--all] · get · set [--global] · unset · reset --yes · explain · diff [--run <id> --mark-seen] · parse "<sentence>"`; `--lang nl\|en`, `--ascii`, `--json`. Exit 0 ok · 1 unknown setting · 2 invalid input or damaged file (nothing written) · 3 act on this (change found, confirmation needed, locked, sentence ambiguous). | `node .claude/forge-bin/forge-config.cjs list --all --lang en` |
-| `forge-gate-hook.cjs` | **The PreToolUse gate hook** (matcher `Bash\|PowerShell`). Blocks (exit 2) recursive force-deletes, kill-by-name and git commands that discard uncommitted work, with a plain NL/EN reason; deletes provably inside a scratch area pass. Runs automatically — you never call it. Off: `/forge config set gate-hook off`. | *(runs as a hook)* |
+| `forge-gate-hook.cjs` | **The PreToolUse gate hook** (matcher `Bash\|PowerShell`). Blocks (exit 2) recursive force-deletes, kill-by-name, git commands that discard uncommitted work, and opaque execution (`eval`/`iex`, a pipe into a shell, an encoded PowerShell command), with a plain NL/EN reason — a classifier, not a proof; deletes provably inside a scratch area pass. Runs automatically — you never call it. Off: `/forge config set gate-hook off`, or the same command prefixed with `!`; an agent's own attempt is blocked. | *(runs as a hook)* |
 | `forge-promptcheck.cjs ask` | **The prompt-doctor** on your raw request (deterministic, offline, Dutch + English). Returns the ranked gaps (F1–F13), at most ONE `nextQuestion` with 2–3 options, and the safe `assumptions` it filled in. Exit 0 clear/OK · 3 vague. Used by the silent intake (setting `prompt-doctor`). | `node .claude/forge-bin/forge-promptcheck.cjs ask "maak mijn site beter"` |
 
 ### `forge-setup.cjs` sub-actions (used by the wizard)

@@ -120,6 +120,29 @@ Then run `/setup-forge` once. With Path A or B you are ready; with Path C, expec
 
 ---
 
+## 🗑️ Removing Forge
+
+Installed with Path B (or a manual copy that included the installer)? Run the real uninstaller —
+don't delete `.claude/` by hand.
+
+```bash
+bash install.sh --uninstall --project "/path/to/your/project"   # add --dry-run to preview first
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -ProjectDir "C:\path\to\project"   # add -DryRun to preview first
+```
+
+It removes exactly the files a claude-forge installer wrote (tracked in an install manifest with a
+sha256 per file — a file *you* edited is left alone and reported as kept), and it always keeps your
+own data: `CLAUDE.md` (if it predates Forge or you edited it), `.env`, `FORGE_MEMORY*`,
+`.claude/forge-runs/`, `.claude/agent-memory/`, and `.claude/settings.json` itself (Forge only ever
+merged into it, so an uninstall never deletes it or strips out the `.env`-protecting deny rules).
+Running it twice is safe. Add `-GlobalOnly`/`--global-only` or `-ProjectOnly`/`--project-only` to
+scope it, same as install. Full detail: [AI-INSTALL.md §7a](AI-INSTALL.md).
+
+---
+
 > [!TIP]
 > **New to Forge?** You do **not** need to learn 72 skills or 19 agents. Run `/setup-forge` once, then just say `/forge <what you want>` — Forge picks the smallest right-sized team and does it. Not sure how to phrase it? See [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md).
 
@@ -131,7 +154,7 @@ The plugin is **LITE**; the installer is **FULL**. This split is architectural, 
 
 | | 🔌 **Plugin (LITE)** | 🛠️ **Installer (FULL)** |
 |---|---|---|
-| **What you get** | Commands + 18 agents + 22 curated skills (incl. the prompt coach) | Full system: 19 agents, 72 skills (incl. 21 vendored public skills), 102 tools |
+| **What you get** | Commands + 18 agents + 22 curated skills (incl. the prompt coach) | Full system: 19 agents, 72 skills (incl. 21 vendored public skills), 120 tools |
 | **Files written by the install** | None (read-only plugin cache); its agents edit your project only when you ask them to build | `./.claude` + `~/.claude` core |
 | **Live dashboard** | No | ✅ Yes, localhost:4100 |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
@@ -177,22 +200,32 @@ Honest and non-adversarial — only rows that actually ship.
 
 ---
 
-## 🆕 What's new — v2.7.0 (see [CHANGELOG.md](CHANGELOG.md) for every release, including 2.4.0)
+## 🆕 What's new in v2.8.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
 
 <details>
-<summary><b>Beginner release — everything on, one settings command, a real safety stop</b> — click to expand</summary>
+<summary><b>A fresh-laptop audit release — works with nothing pre-installed, a fairer usage guard, a real uninstaller</b> — click to expand</summary>
 
-This release is built for people who are new to AI coding. It is based on three read-only research tracks (35, 75 and 89 sources) into how beginners steer an AI, which mistakes they make and which public skills help them.
+This release comes from an independent audit that removed Forge completely and reinstalled it on a
+clean Windows laptop with no plugins, no global skills and no Codex — then fixed what broke.
 
-- **`/forge config`** — one command lists all 36 settings with their value, where the value comes from and what it does, and changes any of them. Or just say it in chat ("pause at 95 percent"). Forge notices a change at the start of the next run and tells you. See [docs/SETTINGS.md](docs/SETTINGS.md).
-- **Everything on by default** — including the usage guard, which now pauses at **98 %** (it was opt-in in 2.4.0; see below why that changed). Three things stay off or report-only on purpose: `paperclip`, `cleanup` and `ecc-full-test`.
-- **The beginner promise** — Forge runs every command itself, never asks you to run code, and never asks "shall I continue?" between phases (see [the promise above](#-the-beginner-promise)).
-- **A real safety stop** — a hook now *blocks* mass deletes, killing programs by name and git commands that throw away uncommitted work, including `git checkout .` and `git restore <path>`, which were not caught before. Claude can no longer read your `.env` secret files.
-- **21 public skills ship with Forge** — 13 from obra/superpowers, frontend-design and claude-md-improver from Anthropic, and 6 from mattpocock/skills, each pinned and with its licence. Plus two commands: `/commit` and `/revise-claude-md`.
-- **Prompt coach** — Forge checks your request for the classic gaps, fills small ones itself and asks at most one easy multiple-choice question. Guide: [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md).
-- **Doctor beginner checks** — the health check now warns about a CLAUDE.md over 200 lines, `claude`/`git`/`node` missing from PATH, bypass mode as a default and a WSL project under `/mnt/c`, and shows a read-only summary of `claude doctor`.
-- **Command Center** — a read-only "Forge settings" section in Settings, served by a new `GET /api/config`.
-- **New page for beginners:** [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md) (English and Dutch).
+- **Works on a genuinely fresh machine.** A machine with Claude Code but zero plugins or global
+  skills is a valid starting point now — the doctor no longer treats that as a failure.
+- **A fairer usage guard.** A single model's weekly window filling up used to pause *all* of Forge
+  for days, even while you were working in a different model with room to spare. The guard now
+  pauses only the window that's actually full and resumes as soon as it drops back below the
+  threshold, and tells you plainly which window paused you.
+- **A real uninstaller.** `install.ps1 -Uninstall` / `install.sh --uninstall` removes exactly what a
+  claude-forge installer wrote, and nothing else — see [below](#-removing-forge).
+- **A safer gate hook.** The four command gates now block the `forge`/`forge.cmd`/`forge.ps1`/`forge.sh`
+  wrapper's own attempt to switch itself off, not just a direct call to `forge-config.cjs`, and fewer
+  harmless searches get caught by mistake.
+- **Private rules and the Codex pin never ship.** Anything you add with `/forge remember` now lives in
+  your own gitignored file, never in the product's shipped rules; the same split applies to the Codex
+  model pin.
+- **Command Center write routes all need the token.** Every non-GET route on the local gateway checks
+  the execution token once, consistently, before doing anything.
+- **CI and the doctor are green on both Windows and Linux**, and the release notes' numbers come from
+  that same green run.
 
 </details>
 
@@ -254,7 +287,7 @@ The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %*
 
 ## 🛡️ A real safety stop
 
-Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks four dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`), and commands whose real content is hidden from the check (`eval`, `Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`). Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your project) still pass, but only when the check can prove the path really is such a folder, and quoted text handed to a plain writer or search tool (a `cat` heredoc, an `echo`, a `grep` pattern) is treated as data, not as a command; other heredocs, such as a commit message, are still read line by line, so a line that itself starts with a dangerous command is stopped. If the check cannot judge a command (unreadable input, a damaged config) it says so out loud instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files (also the `.env.development`, `.env.staging`, `.env.test` and setup variants, at any depth), `secrets/` folders, private keys, your own credential files and the secret file behind the usage guard's owner approval (29 rules); `.env.example` stays readable. The stop is built so the assistant cannot switch it off on its own: an agent that types `set gate-hook off` is blocked, only `/forge config set gate-hook off` typed by you switches it off, and the one-off form (`--once "<your words>"`) must quote your approval, covers exactly one command, is used up the moment that command runs and expires after at most 10 minutes. What the check cannot do is verify who typed that quote, so when Claude reports "the owner approved this command", read that line before it runs. While the stop is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay in place, formatting is preserved, a backup is written first, and running it again changes nothing; a file it cannot preserve losslessly is left alone and reported. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
+Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks four dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`), and commands whose real content is hidden from the check (`eval`, `Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`). Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your project) still pass, but only when the check can prove the path really is such a folder, and quoted text handed to a plain writer or search tool (a `cat` heredoc, an `echo`, a `grep` pattern) is treated as data, not as a command; other heredocs, such as a commit message, are still read line by line, so a line that itself starts with a dangerous command is stopped. If the check cannot judge a command (unreadable input, a damaged config) it says so out loud instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files (also the `.env.development`, `.env.staging`, `.env.test` and setup variants, at any depth), `secrets/` folders, private keys, your own credential files and the secret file behind the usage guard's owner approval (29 rules); `.env.example` stays readable. The stop is built so the assistant cannot switch it off on its own: an agent that types `set gate-hook off` is blocked. You switch it off either by typing `/forge config set gate-hook off` yourself, or by prefixing any command with `!` (that runs in your own shell, not through Claude's tool) — an agent's own attempt at either is still blocked. The one-off form (`--once "<your words>"`) must quote your approval, covers exactly one command, is used up the moment that command runs and expires after at most 10 minutes. What the check cannot do is verify who typed that quote, so when Claude reports "the owner approved this command", read that line before it runs. While the stop is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay in place, formatting is preserved, a backup is written first, and running it again changes nothing; a file it cannot preserve losslessly is left alone and reported. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
 
 ---
 
@@ -371,7 +404,7 @@ The gateway is zero-dependency Node and is the **only** layer allowed to spawn t
 ## 🔐 Configuration & safe key setup
 
 - **`.env.example`** ships with key *names* and comments only — never values. Prefer `/setup-forge` over hand-editing.
-- **Gitignore invariant:** `.env`, `.env.*` (except `.env.example`) and the temp `.env.forge-setup` are ignored. If a `.env` is already tracked, Forge stops and warns you to `git rm --cached .env` and rotate.
+- **Gitignore invariant:** `.env`, `.env.*` (except `.env.example`) and the temp `.env.forge-setup` are ignored. If a `.env` is already tracked, Forge stops, then untracks it itself (`forge-setup.cjs guard --fix`, i.e. `git rm --cached -- .env` — the file on disk is untouched) and tells you to rotate any keys that were exposed.
 - **Storage tier:** the honest default is a gitignored `.env` with `0600` perms. An OS keychain (macOS Keychain / Windows Credential Manager / libsecret) is an **optional advanced** upgrade — never required, never faked.
 - **Model tiers** are configurable in `.claude/config/` — route routine work to cheaper models and escalate high-risk work.
 - **Every Forge switch** (usage guard, safety stop, intake, dashboard, Codex review, …) lives in one place: `/forge config` — see [docs/SETTINGS.md](docs/SETTINGS.md). Settings files never hold secrets.

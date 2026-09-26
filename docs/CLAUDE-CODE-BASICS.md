@@ -83,7 +83,7 @@ health check (the doctor) tells you when Node is missing.
 |---|---|---|
 | Snapshot (PreCompact, manual and auto) | Before Claude summarises a long conversation | Saves the mission so Forge does not forget what it was doing. |
 | Re-inject (SessionStart after a summary) | Right after that summary | Puts the saved mission back into the conversation. |
-| Tool log (PostToolUse) | After Claude writes, edits or runs a command | Notes which file or command was touched, in `.claude/forge-runs/_toollog/` (not in git). |
+| Tool log (PostToolUse, wired twice: once for Bash/Write/Edit, once separately for PowerShell) | After Claude writes, edits or runs a command | Notes which file or command was touched, in `.claude/forge-runs/_toollog/` (not in git). |
 | Gate hook (PreToolUse, Bash and PowerShell) | Before every shell command | Blocks four dangerous kinds of command until you say yes — see below. |
 
 The **gate hook** stops recursive deletes (such as `rm -rf`), killing programs by name (such as
@@ -92,9 +92,11 @@ The **gate hook** stops recursive deletes (such as `rm -rf`), killing programs b
 `Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`).
 Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your
 project) still pass when the hook can prove the path is such a folder. If the hook cannot judge a command
-it says so instead of silently letting it through. You turn it off with `/forge config set gate-hook off`;
-an agent typing that itself is blocked, and a one-off approval (`--once "<your words>"`) covers exactly one
-command and expires within 10 minutes. The hook cannot check who typed the quoted words, so read the
+it says so instead of silently letting it through. You (not the assistant) turn it off, either by typing
+`/forge config set gate-hook off` yourself or by prefixing the same command with `!` (runs straight in your
+own shell, never through Claude's tool); an agent typing that command itself is blocked. A one-off approval
+(`--once "<your words>"`) covers exactly one command and expires within 10 minutes. The hook cannot check who
+typed the quoted words, so read the
 approval line Claude shows before the command runs.
 
 The same file also has **deny rules** (29): Claude cannot read `.env`, `.env.local`, the other common `.env.*`

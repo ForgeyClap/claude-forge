@@ -361,7 +361,14 @@ It is a **classifier over the command text**, not a proof: what it does not reco
   `git switch -f`, forced `git clean`, forced worktree removal);
 - commands that hide what they run: `eval`, `iex` / `Invoke-Expression` as the command of a statement, `sh -c` /
   `bash -c` / `pwsh -c` on a variable or substitution, a pipe straight into a shell, an encoded PowerShell command;
-- the assistant's own attempt to switch this setting off, in the spellings the hook recognises.
+- the assistant's own attempt to switch this setting off, in the spellings the hook recognises — including
+  through the `forge`/`forge.cmd`/`forge.ps1`/`forge.sh` wrapper's own `config` subcommand.
+
+**Turning it off is an owner-only action.** You (the owner) can always do it yourself: type
+`/forge config set gate-hook off` in Claude Code, or prefix the same command with `!` (that runs directly in
+your own shell, not through Claude's tool, so the gate never sees it). The assistant typing that exact command
+on your behalf is still blocked — that is the point. For a one-time exception without turning the setting off,
+see the `--once "<your words>"` form below.
 
 **It cannot see (named, tested gaps — the full list lives in `.claude/config/orchestration/hard-gates.json`
 under `_not_caught`, and each one is executed by the test suite so the list cannot go stale):**

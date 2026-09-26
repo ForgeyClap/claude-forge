@@ -38,7 +38,11 @@ This project has [claude-forge](https://github.com/ForgeyClap/claude-forge) inst
 - **`/setup-forge`** — first-time onboarding and a health check of this installation.
 - **`/forge config`** — see and change every Forge setting (everything is on by default), or just say it in
   chat. Forge runs every command itself and never asks you to run code; it only stops for the hard gates
-  (deploying, pushing, spending money, …) and a real usage-limit pause.
+  (deploying, pushing, spending money, …) and a real usage-limit pause. One deliberate exception: four
+  command-kind hard gates (recursive delete, killing a process by name, a git command that discards
+  uncommitted work, and a command that hides what it runs) are enforced by a real hook, not just a rule —
+  a classifier, not a proof. Setting `gate-hook`, on by default; only you turn it off (`/forge config set
+  gate-hook off`, or the same command prefixed with `!`) — an agent's own attempt is blocked.
 - **`node .claude/forge-bin/forge-doctor.cjs`** — run the full self-test of the Forge install.
 
 Forge keeps its memory of this project in `.claude/FORGE_*.md` and logs every run to
