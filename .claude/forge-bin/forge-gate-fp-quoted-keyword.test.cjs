@@ -360,8 +360,15 @@ const COMPOSED_BLOCK = [
   'git grep -nO "pkill node #" x',
   // final review Q1: a PowerShell script block runs a quoted verb from inside a Select-String segment
   "Get-Item f | Select-String -Pattern y -Path { . 'Stop-Process' -Name node }",
+  // v2.8.1 verification R1: git's -NUM context shortcut inside a short group, and quotes/backslashes the shell
+  // strips from the middle of the flag word
+  'git grep -3O"pkill node #" x',
+  'git grep --"open-files-in-pager=pkill node #" x',
+  'git grep -\\O"pkill node #" x',
+  "git grep -'O'\"pkill node #\" x",
+  'git grep --\'op\'="pkill node #" x',
 ];
-for (const cmd of ['git grep -n "pkill node" -- docs', 'git grep --only-matching "pkill node" docs', 'rg -n "pkill node" docs | head -5', 'Select-String -Pattern "Stop-Process -Name" -Path docs\\notes.md']) {
+for (const cmd of ['git grep -n3 "pkill node" -- docs', 'rg -n3 "pkill node" docs', 'grep -c "pkill node" notes.txt', 'git grep -n "pkill node" -- docs', 'git grep --only-matching "pkill node" docs', 'rg -n "pkill node" docs | head -5', 'Select-String -Pattern "Stop-Process -Name" -Path docs\\notes.md']) {
   t('decide() still allows the plain search: ' + cmd, () => {
     const v = hook.decide({ hook_event_name: 'PreToolUse', tool_name: cmd.startsWith('Select-String') ? 'PowerShell' : 'Bash', tool_input: { command: cmd } }, { watchdogTimeoutMs: 6000 });
     assert.strictEqual(v.block, false, JSON.stringify(v));

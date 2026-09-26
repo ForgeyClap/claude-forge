@@ -282,6 +282,94 @@ t('resolveCodexBin() on Windows finds the npm shim\'s own codex.js next to codex
   for (const d of [npmDir, emptyDir, shimOnly, exeDir]) fs.rmSync(d, { recursive: true, force: true });
 });
 
+// --- Windows native Codex (2026-09-26 independent review): codex.js is only a wrapper that spawns the
+// real codex.exe with stdio:'inherit' — a spawnSync timeout against codex.js kills the wrapper, not the
+// real process, so F7's timeout would never actually stop a hung native review. resolveCodexBin() must
+// prefer the real codex.exe next to an npm-shimmed codex.cmd, falling back to codex.js only when neither
+// native candidate exists. ---
+console.log('\nWindows native Codex: resolveCodexBin() prefers the real codex.exe over the npm wrapper script');
+
+function fakeNpmShimDir(prefix) {
+  const npmDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix + '-'));
+  fs.writeFileSync(path.join(npmDir, 'codex.cmd'), '@echo off');
+  const binDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'bin');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, 'codex.js'), '');
+  return npmDir;
+}
+
+t('Windows native Codex: an x64 platform-package codex.exe is preferred over codex.js', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-x64');
+  const nativeDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(nativeDir, { recursive: true });
+  fs.writeFileSync(path.join(nativeDir, 'codex.exe'), '');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'x64'), path.join(nativeDir, 'codex.exe'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: an arm64 platform-package codex.exe is preferred over codex.js, with its own triple', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-arm64');
+  const nativeDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-arm64', 'vendor', 'aarch64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(nativeDir, { recursive: true });
+  fs.writeFileSync(path.join(nativeDir, 'codex.exe'), '');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'arm64'), path.join(nativeDir, 'codex.exe'));
+  // the x64 arch never picks up the arm64 native binary
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'x64'), path.join(npmDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: the wrapper\'s own vendor fallback (no platform package) is used when present', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-vendorfallback');
+  const vendorDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'vendor', 'x86_64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(vendorDir, { recursive: true });
+  fs.writeFileSync(path.join(vendorDir, 'codex.exe'), '');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'x64'), path.join(vendorDir, 'codex.exe'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: the platform package wins over the wrapper\'s own vendor fallback when BOTH exist', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-bothnative');
+  const pkgDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin');
+  const vendorDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'vendor', 'x86_64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.mkdirSync(vendorDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, 'codex.exe'), '');
+  fs.writeFileSync(path.join(vendorDir, 'codex.exe'), '');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'x64'), path.join(pkgDir, 'codex.exe'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: neither native candidate present falls back to codex.js (no regression)', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-nonative');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'x64'), path.join(npmDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: an unsupported arch (e.g. ia32) skips native candidates entirely, falls back to codex.js', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-ia32');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: npmDir }, 'win32', 'ia32'), path.join(npmDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: a real codex.exe earlier on PATH still wins over any native candidate further down PATH', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-pathorder');
+  const nativeDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(nativeDir, { recursive: true });
+  fs.writeFileSync(path.join(nativeDir, 'codex.exe'), '');
+  const exeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-exe-pathorder-'));
+  fs.writeFileSync(path.join(exeDir, 'codex.exe'), '');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: exeDir + ';' + npmDir }, 'win32', 'x64'), path.join(exeDir, 'codex.exe'));
+  fs.rmSync(npmDir, { recursive: true, force: true });
+  fs.rmSync(exeDir, { recursive: true, force: true });
+});
+
+t('Windows native Codex: resolveCodexBin() defaults arch to process.arch when not supplied (no crash, still resolves)', () => {
+  const npmDir = fakeNpmShimDir('fake-npm-defaultarch');
+  const result = CR.resolveCodexBin({ PATH: npmDir }, 'win32');
+  assert.ok(typeof result === 'string' && result.length > 0);
+  fs.rmSync(npmDir, { recursive: true, force: true });
+});
+
 t('runCodex(): a prompt starting with "-" is refused before anything is spawned (it would reach codex as an option)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-'));
   const marker = path.join(dir, 'spawned.txt');
@@ -411,6 +499,37 @@ t('CLI "run" with an unresolvable FORGE_CODEX_BIN exits 2 and reports spawn_erro
   assert.ok(parsed.spawn_error);
 });
 
+// --- R2 (2026-09-26 independent review, LOW): the CLI's TEXT-mode "run" report used to fall into the
+// generic "ran: ..." line + "could not spawn ... set FORGE_CODEX_BIN" on a timeout — both wrong: the
+// process spawned fine, it just did not finish in time, and FORGE_CODEX_BIN was never the problem. ---
+t('R2: CLI "run" TEXT output on a timeout says plainly it timed out and was stopped, labels output as partial, points at FORGE_CODEX_TIMEOUT_MS — never the old "could not spawn" message', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-r2-'));
+  // fs.writeSync(1, ...) is a SYNCHRONOUS syscall — it blocks until the OS pipe has the bytes, so the
+  // parent is guaranteed to see "partial answer" long before the timeout below fires (no buffering race,
+  // unlike process.stdout.write()'s async path under load). The timeout is generous (2s, sleeping 5s) to
+  // stay robust on a loaded CI box while still finishing well inside this test's own runtime.
+  const script = fakeCodexScript(dir, "require('fs').writeSync(1, 'partial answer before the cutoff'); setTimeout(() => {}, 5000);");
+  const env = Object.assign({}, process.env, { FORGE_CODEX_BIN: script, FORGE_CODEX_TIMEOUT_MS: '2000' });
+  const r = spawnSync(process.execPath, [CLI, 'run', '--prompt', 'review the staged diff'], { encoding: 'utf8', env });
+  assert.notStrictEqual(r.status, 0, 'a timeout must never exit 0');
+  assert.ok(/timed out/i.test(r.stderr), 'stderr: ' + r.stderr);
+  assert.ok(/FORGE_CODEX_TIMEOUT_MS/.test(r.stderr), 'stderr must point at the real knob: ' + r.stderr);
+  assert.ok(/2000ms/.test(r.stderr), 'stderr must name the actual timeout used: ' + r.stderr);
+  assert.ok(!/could not spawn/i.test(r.stderr), 'must never claim a spawn failure on a timeout: ' + r.stderr);
+  assert.ok(!/set FORGE_CODEX_BIN/i.test(r.stderr), 'must never give the wrong advice (FORGE_CODEX_BIN) on a timeout: ' + r.stderr);
+  assert.ok(/partial/i.test(r.stdout), 'the leftover stdout must be labeled as partial: ' + r.stdout);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+t('R2: CLI "run" TEXT output on a NORMAL (non-timeout) spawn failure still uses the original "could not spawn" message (no regression)', () => {
+  const env = Object.assign({}, process.env, { FORGE_CODEX_BIN: 'this-binary-does-not-exist-anywhere-12345' });
+  const r = spawnSync(process.execPath, [CLI, 'run', '--prompt', 'review the staged diff'], { encoding: 'utf8', env });
+  assert.strictEqual(r.status, 2);
+  assert.ok(/could not spawn/i.test(r.stderr), 'stderr: ' + r.stderr);
+  assert.ok(/set FORGE_CODEX_BIN/i.test(r.stderr), 'stderr: ' + r.stderr);
+  assert.ok(!/timed out/i.test(r.stderr), 'a plain spawn failure must never be mislabeled as a timeout: ' + r.stderr);
+});
+
 t('a CORRUPT user file degrades to "no override" rather than crashing effectiveConfig()', () => {
   const root = freshRoot(MINIMAL_SHIPPED, '{ still not json');
   const eff = CR.effectiveConfig(root);
@@ -523,6 +642,62 @@ t('modelLabel/effortLabel/isPinned handle a completely empty/null effective obje
   assert.strictEqual(CR.modelLabel(null), 'Codex default model');
   assert.strictEqual(CR.effortLabel(undefined), 'Codex default effort');
   assert.strictEqual(CR.isPinned({}), false);
+});
+
+// --- R5 (2026-09-26 independent review, NOTE): modelLabel()/effortLabel()/isPinned() used to read the RAW
+// value with only nonEmptyString() — an invalid model/effort (the exact one buildCommand() drops from
+// argv) still reported as "pinned"/named. They must now agree with buildCommand() in every case, and
+// effectiveConfig() must warn once when a shipped or user value is invalid and ignored. ---
+console.log('\nR5: modelLabel/effortLabel/isPinned use the SAME validated values as buildCommand()');
+
+t('R5: an invalid model (buildCommand drops -m) never reports as "pinned" or shows the raw dangerous string', () => {
+  const eff = { review: { model: '--dangerously-bypass-approvals-and-sandbox', reasoning_effort: 'ultra' } };
+  assert.strictEqual(CR.modelLabel(eff), 'Codex default model');
+  assert.strictEqual(CR.effortLabel(eff), 'Codex default effort');
+  assert.strictEqual(CR.isPinned(eff), false);
+  // and buildCommand() agrees: no -m/-c in the real argv either
+  const argv = CR.buildCommand(eff, {});
+  assert.ok(argv.indexOf('-m') === -1 && argv.indexOf('-c') === -1, JSON.stringify(argv));
+});
+
+t('R5: a whitespace-only model/effort is treated as unset by the labels too (matches buildCommand)', () => {
+  const eff = { review: { model: '   ', reasoning_effort: '\t' } };
+  assert.strictEqual(CR.modelLabel(eff), 'Codex default model');
+  assert.strictEqual(CR.effortLabel(eff), 'Codex default effort');
+  assert.strictEqual(CR.isPinned(eff), false);
+});
+
+t('R5: a VALID model/effort still reports as pinned and named (no regression)', () => {
+  const eff = { review: { model: 'gpt-6-astra', reasoning_effort: 'xhigh' } };
+  assert.strictEqual(CR.modelLabel(eff), 'gpt-6-astra');
+  assert.strictEqual(CR.effortLabel(eff), 'xhigh');
+  assert.strictEqual(CR.isPinned(eff), true);
+});
+
+t('R5: effectiveConfig() warns once when the SHIPPED review.model itself is invalid (not just a rejected user override)', () => {
+  const shipped = { review: { engine: 'codex', model: '--dangerously-bypass-approvals-and-sandbox', reasoning_effort: null, sandbox: 'read-only' }, naming: {}, fallback: {}, honesty: {} };
+  const root = freshRoot(shipped);
+  const eff = CR.effectiveConfig(root);
+  assert.ok(eff._warnings.some((w) => /review\.model/.test(w) && /invalid/.test(w)), JSON.stringify(eff._warnings));
+  assert.strictEqual(CR.isPinned(eff), false, 'the invalid shipped model must never report as pinned');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+t('R5: effectiveConfig() warns once when the SHIPPED review.reasoning_effort itself is invalid', () => {
+  const shipped = { review: { engine: 'codex', model: null, reasoning_effort: 'ultra', sandbox: 'read-only' }, naming: {}, fallback: {}, honesty: {} };
+  const root = freshRoot(shipped);
+  const eff = CR.effectiveConfig(root);
+  assert.ok(eff._warnings.some((w) => /review\.reasoning_effort/.test(w) && /invalid/.test(w)), JSON.stringify(eff._warnings));
+  assert.strictEqual(CR.effortLabel(eff), 'Codex default effort');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+t('R5: effectiveConfig() with a fully valid shipped model/effort carries NO invalid-value warning', () => {
+  const shipped = { review: { engine: 'codex', model: 'gpt-6-astra', reasoning_effort: 'xhigh', sandbox: 'read-only' }, naming: {}, fallback: {}, honesty: {} };
+  const root = freshRoot(shipped);
+  const eff = CR.effectiveConfig(root);
+  assert.ok(!eff._warnings.some((w) => /invalid/.test(w)), JSON.stringify(eff._warnings));
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

@@ -165,7 +165,10 @@ test('LIVE: a currently-running execution shows its REAL live todos/file_edits, 
   // Bounds the hang: real headroom for the mock to write its tool-activity lines (system/assistant-
   // with-tools/tool_result — same shape exec-bridge.test.mjs's own TIMEOUT+LIVE-ACTIVITY test relies
   // on), then the gateway's own wall-clock timeout frees the busy slot on its own — no leaked process.
-  _setExecTimeoutMsForTests(400);
+  // 3 s, not 400 ms: the mock must start, write its tool lines and be read back as "running" BEFORE the
+  // gateway's own timeout fires. 400 ms passed on an idle PC but read 'timed_out' on a busy one (a real
+  // failure under load, 2026-09-26) — the same headroom the other wedged-child tests got (2.5 s).
+  _setExecTimeoutMsForTests(3000);
   const conv = createConversation({ project: 'demo-project-live' });
   const { turnId } = appendUserTurn(conv.id, 'Building with real tool activity, still running');
   const start = startExecution({
@@ -213,8 +216,14 @@ test('LIVE: a currently-running execution shows its REAL live todos/file_edits, 
 
   // Let the gateway's own wall-clock timeout naturally free the busy slot so this test never leaks
   // a hung mock child into a later test file.
-  const freed = await waitUntil(() => !isConversationBusy(conv.id), { timeoutMs: 3000 });
+  const freed = await waitUntil(() => !isConversationBusy(conv.id), { timeoutMs: 10000 });
   assert.ok(freed, 'the timeout must eventually free the busy slot on its own');
+  // v2.8.1 (verification note): the mock also exits on its own after ~5 s, so a freed slot alone no longer proves
+  // the GATEWAY timeout did it — the closed turn must carry the timeout's own stop_reason.
+  const closed = await waitUntil(() => readConversation(conv.id).turns.some((t) => t.role === 'assistant'), { timeoutMs: 10000 });
+  assert.ok(closed, 'the timed-out execution must close its turn');
+  const assistantTurn = readConversation(conv.id).turns.find((t) => t.role === 'assistant');
+  assert.equal(assistantTurn.stop_reason, 'timed_out');
 });
 
 test('a timed-out execution is a real, readable chat-run with status "timed_out" (mirrors exec-bridge.mjs\'s real timeout write)', () => {

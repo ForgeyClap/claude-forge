@@ -420,13 +420,17 @@ function segmentTriggerClears(trig, entry, mask) {
 // flag the tool itself runs through a shell (`git grep -O<cmd>`, `--open-files-in-pager`, `--pager`, `rg --pre`).
 const INERT_SEARCH_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'findstr', 'select-string', 'sls']);
 // case-SENSITIVE: `-O` (git grep's pager) is not grep's everyday `-o`
-// v2.8.0 final review F1: git accepts any unique prefix of a long option (`--op` ... `--open-files-in-pager`) and
-// grouped short options (`-iO<pager>`), so the pager is matched as `--op`-prefix and as an O inside a short group.
-const EXEC_CAPABLE_FLAG_RE = /(?:^|\s)["']?(?:-[A-Za-z]*O|--op|--pager|--pre)/;
+// v2.8.0 final review F1 + v2.8.1 verification R1: git accepts any unique prefix of a long option (`--op` ...
+// `--open-files-in-pager`), grouped short options including its `-NUM` context shortcut (`-iO<pager>`,
+// `-3O<pager>`), and the shell removes quotes and backslashes anywhere inside a word (`--"open-files-in-pager=…"`,
+// `-\O…`, `-'O'…`). Each word is therefore matched AFTER stripping quotes and backslashes, the way the shell will
+// hand it to git.
+const EXEC_CAPABLE_FLAG_WORD_RE = /^(?:-[A-Za-z0-9]*O|--op|--pager|--pre)/;
+const hasExecCapableFlag = (s) => String(s).split(/\s+/).some((w) => EXEC_CAPABLE_FLAG_WORD_RE.test(w.replace(/["'\\]/g, '')));
 function segmentCanExecuteEmbeddedText(segment, mask, baseOffset) {
   const s = String(segment || '');
   if (/<\(|>\(|\$\(|`/.test(s)) return true;
-  if (EXEC_CAPABLE_FLAG_RE.test(s)) return true;
+  if (hasExecCapableFlag(s)) return true;
   // an unquoted `(` (PowerShell sub-expression) or `{` (PowerShell script block, e.g. a delay-bind
   // `-Path { . 'verb' }` — final review Q1) can run a quoted verb from inside the "search" segment
   for (let i = 0; i < s.length; i++) {

@@ -3352,6 +3352,157 @@ console.log('\n79l) F4 fix — a pending (unmigratable) owner rule is never drop
   }
 }
 
+// 79m) R6 fix (2026-09-26 independent review, LOW/NOTE) — three related fixes to the owner-standing-rules
+// migration preview/labeling/advice:
+//  (a) a dry-run now computes migrateOwnerStandingRules()'s .pending the SAME way a real run would, so
+//      the preview never shows FORGE_STANDING_RULES.json as replaced when a real run would skip it, AND
+//      dry-run stays a true zero-write operation (no mkdir, no write).
+//  (b) a pending-migration skip gets its own honest "kept (...)" label in printPlanSummary(), never
+//      lumped under "skipped (symlink/unsafe)" (which reads like a security refusal).
+//  (c) the advice never says "remove"/"delete" that file — fixing the JSON (with a copy-first safety
+//      net) is the only advice given, since the file may hold the owner's own rules.
+console.log('\n79m) R6 fix — dry-run pending preview matches the real run; honest label; safe advice');
+{
+  function tplWithCleanRule79m(prefix, ruleId) {
+    const tpl = freshDir(prefix);
+    fs.mkdirSync(path.join(tpl, 'config', 'orchestration'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'config', 'orchestration', 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: ruleId })] }, null, 2) + '\n');
+    return tpl;
+  }
+  function projectWithOwnerRuleAndMalformedUser79m(prefix, ownerId) {
+    const p = makeProject(freshDir(prefix), 'proj', null);
+    const standingDir = path.join(p, '.claude', 'config', 'orchestration');
+    fs.mkdirSync(standingDir, { recursive: true });
+    fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: ownerId, source: 'owner /forge remember' })] }, null, 2) + '\n');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    fs.writeFileSync(userPath, '{ not valid json at all');
+    return { p, standingDir, userPath };
+  }
+
+  // 79m1 (R6a, unit-level): migrateOwnerStandingRules(dir, {dryRun:true}) reports the SAME .pending a real
+  // call would, and writes NOTHING at all (not even mkdirSync) — the malformed user file stays untouched.
+  {
+    const { p, userPath } = projectWithOwnerRuleAndMalformedUser79m('t79m1-unit', 'owner-79m1');
+    const beforeTree = snapshotTree(p);
+    const origErr = console.error; console.error = () => {};
+    let dryIds; try { dryIds = sync.migrateOwnerStandingRules(p, { dryRun: true }); } finally { console.error = origErr; }
+    t('79m1 dry-run .pending is true (same read-only guards as a real call)', dryIds.pending === true);
+    t('79m1 dry-run writes NOTHING at all (tree byte-identical, malformed file untouched)', JSON.stringify(snapshotTree(p)) === JSON.stringify(beforeTree));
+    t('79m1 the malformed user file is still present and byte-identical after the dry-run', fs.existsSync(userPath) && fs.readFileSync(userPath, 'utf8') === '{ not valid json at all');
+  }
+
+  // 79m2 (R6a, end-to-end via safeSyncProject dry-run): the DRY-RUN plan already shows the pending skip
+  // and excludes FORGE_STANDING_RULES.json from toChange — matching what a REAL run on the identical
+  // starting state does (proven against a separate, identical fixture copy).
+  {
+    const tpl = tplWithCleanRule79m('t79m2-tpl', 'product-79m2');
+    const dryFixture = projectWithOwnerRuleAndMalformedUser79m('t79m2-dry-root', 'owner-79m2');
+    const realFixture = projectWithOwnerRuleAndMalformedUser79m('t79m2-real-root', 'owner-79m2');
+    const beforeDryTree = snapshotTree(dryFixture.p);
+
+    // forceOverwrite:true is what would otherwise force-replace FORGE_STANDING_RULES.json (no receipt yet
+    // -> plain unknownDrift is already blocked WITHOUT force; the pending-migration hold only becomes
+    // visible once force-overwrite would otherwise fold it into toChange) — this is the exact scenario the
+    // dry-run preview used to get wrong.
+    const origErr = console.error; console.error = () => {};
+    let dryResult, realResult;
+    try {
+      dryResult = sync.safeSyncProject(tpl, dryFixture.p, { dryRun: true, batchId: 'b79m2-dry', forceOverwrite: true });
+      realResult = sync.safeSyncProject(tpl, realFixture.p, { batchId: 'b79m2-real', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true });
+    } finally { console.error = origErr; }
+
+    t('79m2 dry-run plan EXCLUDES FORGE_STANDING_RULES.json from toChange (the exact regression this fix closes)',
+      !dryResult.plan.toChange.some((e) => e.rel === sync.STANDING_RULES_REL));
+    t('79m2 dry-run plan lists the pending skip', dryResult.plan.skipped.some((s) => s.rel === sync.STANDING_RULES_REL && s.reason === 'owner-rule-pending-migration'));
+    t('79m2 dry-run wrote ZERO bytes (true dry-run, no mkdir/write even for the migration itself)', JSON.stringify(snapshotTree(dryFixture.p)) === JSON.stringify(beforeDryTree));
+
+    // the REAL run, starting from the identical fixture state, also skips replacing the file — proving the
+    // dry-run preview actually matched what really happens.
+    const realStandingAfter = JSON.parse(fs.readFileSync(path.join(realFixture.standingDir, 'FORGE_STANDING_RULES.json'), 'utf8'));
+    t('79m2 the REAL run (same starting state) ALSO kept the owner rule in place (preview matched reality)',
+      realStandingAfter.rules.some((r2) => r2.id === 'owner-79m2'));
+  }
+
+  // 79m3 (R6b): printPlanSummary() gives the pending-migration skip its OWN honest label, separate from
+  // "skipped (symlink/unsafe)" — a genuine symlink/unsafe skip keeps the original label unchanged.
+  {
+    const plan = {
+      toChange: [], expectedOverrides: [], unknownDrift: [], conflicts: [], unreadable: [], same: 3,
+      skipped: [
+        { rel: sync.STANDING_RULES_REL, reason: 'owner-rule-pending-migration' },
+        { rel: 'some/other/file.json', reason: 'symlink' },
+      ],
+    };
+    const lines = [];
+    const origLog = console.log;
+    console.log = (msg) => lines.push(String(msg));
+    try { sync.printPlanSummary(plan); } finally { console.log = origLog; }
+    const out = lines.join('\n');
+    t('79m3 the pending-migration skip gets its own "kept (...)" line naming the file',
+      /kept \(owner rules still waiting to move/i.test(out) && out.includes(sync.STANDING_RULES_REL));
+    t('79m3 the pending-migration skip is NEVER listed under "skipped (symlink/unsafe)"',
+      !lines.some((l) => /skipped \(symlink\/unsafe\)/.test(l) && l.includes(sync.STANDING_RULES_REL)));
+    t('79m3 a genuine symlink/unsafe skip KEEPS the original label, unaffected',
+      lines.some((l) => /skipped \(symlink\/unsafe\)/.test(l) && l.includes('some/other/file.json:symlink')));
+  }
+
+  // 79m4 (R6c): the warning text at every call site advises fixing the JSON (with a copy-first safety
+  // net), and NEVER suggests removing/deleting the file — it may hold the owner's own rules.
+  {
+    function assertSafeAdvice(label, warnings) {
+      const joined = warnings.join(' ');
+      t(label + ' advice never says "remove that file"', !/remove that file/i.test(joined));
+      t(label + ' advice never says "or remove"', !/\bor remove\b/i.test(joined));
+      t(label + ' advice says to fix the JSON', /fix that file.?s? json|fix that file/i.test(joined));
+      t(label + ' advice explicitly says never to delete it', /never delete it/i.test(joined));
+    }
+
+    // safeSyncProject's own "refusing to replace" warning
+    {
+      const tpl = tplWithCleanRule79m('t79m4-safe-tpl', 'product-79m4a');
+      const { p } = projectWithOwnerRuleAndMalformedUser79m('t79m4-safe-root', 'owner-79m4a');
+      const warnings = [];
+      const origErr = console.error; console.error = (m) => warnings.push(m);
+      try { sync.safeSyncProject(tpl, p, { batchId: 'b79m4a', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true }); }
+      finally { console.error = origErr; }
+      assertSafeAdvice('79m4 safeSyncProject', warnings.filter((w) => /refusing to replace/i.test(w)));
+    }
+
+    // rawInstall's own "refusing to replace" warning (--unsafe path)
+    {
+      const tpl = tplWithCleanRule79m('t79m4-unsafe-tpl', 'product-79m4b');
+      const { p } = projectWithOwnerRuleAndMalformedUser79m('t79m4-unsafe-root', 'owner-79m4b');
+      const warnings = [];
+      const origErr = console.error; console.error = (m) => warnings.push(m);
+      try { sync.rawInstall(tpl, p, { batchId: 'b79m4b', nowIso: '2026-01-01T00:00:00.000Z' }); }
+      finally { console.error = origErr; }
+      assertSafeAdvice('79m4 rawInstall', warnings.filter((w) => /refusing to replace/i.test(w)));
+    }
+
+    // migrateOwnerStandingRules()'s own "could not read" warning (an unreadable — not malformed — user
+    // file), injected the same way section 58 injects a non-ENOENT fs error.
+    {
+      const dir = freshDir('t79m4-unreadable');
+      const standingDir = path.join(dir, '.claude', 'config', 'orchestration');
+      fs.mkdirSync(standingDir, { recursive: true });
+      fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({
+        version: 1, rules: [standingRule({ id: 'owner-79m4c', source: 'owner /forge remember' })],
+      }, null, 2) + '\n');
+      const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+      fs.writeFileSync(userPath, '{}');
+      const origRead = fs.readFileSync;
+      fs.readFileSync = function (fp, opts) {
+        if (path.resolve(String(fp)) === path.resolve(userPath)) { const e = new Error('EACCES: permission denied (injected)'); e.code = 'EACCES'; throw e; }
+        return origRead.call(fs, fp, opts);
+      };
+      const warnings = [];
+      const origErr = console.error; console.error = (m) => warnings.push(m);
+      try { sync.migrateOwnerStandingRules(dir); } finally { console.error = origErr; fs.readFileSync = origRead; }
+      assertSafeAdvice('79m4 migrateOwnerStandingRules (unreadable user file)', warnings.filter((w) => /could not read/i.test(w)));
+    }
+  }
+}
+
 // 79j) N8 — a null/non-object rule in either rules array must never crash the migration (skipped when
 // computing ids, left untouched — never silently dropped — in whatever gets written).
 console.log('\n79j) N8 fix — a null rule entry never crashes the migration');

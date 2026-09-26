@@ -193,6 +193,21 @@ function effectiveConfig(root) {
   const honesty = lockedSection(shipped.honesty, user && user.honesty, 'honesty', warnings);
   const operational_notes = lockedSection(shipped.operational_notes, user && user.operational_notes, 'operational_notes', warnings);
 
+  // R5 fix (2026-09-26 independent review, NOTE): mergeReviewSection() only validates a USER-supplied
+  // override; a shipped review.model/reasoning_effort that is itself invalid (or a --root-selected
+  // "shipped" file's — see F3 above) reached here unexamined, so modelLabel()/isPinned() (which used to
+  // read the raw value) could report "pinned" for a model buildCommand() silently drops. Warn ONCE, here,
+  // on the FINAL effective value regardless of which file it came from — this is the one place both
+  // buildCommand() and the labels below now agree with.
+  if (review.model !== null && review.model !== undefined && validatedModel(review.model) === null) {
+    warnings.push('effective review.model ' + JSON.stringify(review.model) + ' is invalid (does not match ' +
+      MODEL_PATTERN + ') — ignored; buildCommand() omits -m entirely and modelLabel()/isPinned() report it as unpinned');
+  }
+  if (review.reasoning_effort !== null && review.reasoning_effort !== undefined && validatedEffort(review.reasoning_effort) === null) {
+    warnings.push('effective review.reasoning_effort ' + JSON.stringify(review.reasoning_effort) + ' is invalid (not one of: ' +
+      ALLOWED_EFFORTS.join(', ') + ') — ignored; buildCommand() omits -c entirely');
+  }
+
   return {
     review, naming, fallback, honesty, operational_notes,
     _source: { shipped: shippedPathOf(root), user: user ? userPathOf(root) : null, user_present: !!user },
@@ -253,31 +268,72 @@ function commandToDisplayString(argv) {
 
 /** modelLabel/effortLabel(effective) -> a human-honest label for reports/prose. Never a fabricated model
  *  name: an unset pin reports the literal, explicit "Codex default model"/"Codex default effort" string
- *  so a reader can never mistake "unpinned" for "pinned to something unnamed". */
-function modelLabel(effective) { return nonEmptyString(effective && effective.review && effective.review.model) || 'Codex default model'; }
-function effortLabel(effective) { return nonEmptyString(effective && effective.review && effective.review.reasoning_effort) || 'Codex default effort'; }
+ *  so a reader can never mistake "unpinned" for "pinned to something unnamed".
+ *
+ *  R5 fix (2026-09-26 independent review, NOTE): these used to read the RAW value with only
+ *  nonEmptyString() — an invalid model/effort (rejected by buildCommand()'s validatedModel()/
+ *  validatedEffort()) still showed up as "pinned"/named here, so a report could say "pinned to
+ *  --dangerously-bypass-approvals-and-sandbox" for a value the real command never actually passed. Now
+ *  reads the SAME validated value buildCommand() uses, so a label and the real argv can never disagree. */
+function modelLabel(effective) { return validatedModel(effective && effective.review && effective.review.model) || 'Codex default model'; }
+function effortLabel(effective) { return validatedEffort(effective && effective.review && effective.review.reasoning_effort) || 'Codex default effort'; }
 
-/** isPinned(effective) -> true only when a real, non-empty model is set (by shipped default or by the
- *  user override) — the single place "is there an active pin at all?" is decided. */
-function isPinned(effective) { return !!nonEmptyString(effective && effective.review && effective.review.model); }
+/** isPinned(effective) -> true only when a real, VALIDATED, non-empty model is set (by shipped default or
+ *  by the user override) — the single place "is there an active pin at all?" is decided. R5 fix: same
+ *  validatedModel() as modelLabel()/buildCommand(), never the raw value. */
+function isPinned(effective) { return !!validatedModel(effective && effective.review && effective.review.model); }
 
-/** resolveCodexBin(env, platform) -> the executable to spawn for a real run. FORGE_CODEX_BIN wins (a real
- *  per-machine binary path or a hermetic test's fake binary). Otherwise 'codex' (PATH lookup, no shell) —
- *  except on Windows, where `npm install -g @openai/codex` (the documented install) only puts a `codex.cmd`
- *  shim on PATH, which a shell:false spawn cannot start (see runCodex()). There the PATH is searched for a
- *  real `codex.exe` first, then for the npm shim's own script (`<dir>/node_modules/@openai/codex/bin/codex.js`
- *  next to `<dir>/codex.cmd`), which runCodex() runs as `node <script>` — still no shell, and a fresh laptop
- *  needs no hand-set variable. Never read from either config file, so a gitignored/unreviewed file can never
- *  redirect what actually gets executed. `env`/`platform` default to this process (injectable for tests).
+// Windows-native-Codex fix (2026-09-26 independent review): the npm shim's OWN `codex.js` is a thin
+// wrapper that `spawn`s the real `codex.exe` with `stdio: 'inherit'` — a spawnSync TIMEOUT against
+// `codex.js` only kills that wrapper; the real `codex.exe` it started keeps running and holds our
+// stdout/stderr pipes open, so `runCodex()`'s F7 timeout never actually stops the review. Verified
+// layout (maintainer's PC, `npm install -g @openai/codex`):
+//   %APPDATA%\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe
+// arm64 uses package `@openai/codex-win32-arm64`, triple `aarch64-pc-windows-msvc`. The wrapper's own
+// fallback (when the platform package is missing) is `<pkg>\vendor\<triple>\bin\codex.exe` — i.e. inside
+// `@openai/codex` itself, not a separate platform package. Preferring the real .exe over codex.js means
+// runCodex()'s timeout actually kills the process that is really running.
+const WINDOWS_CODEX_ARCH = {
+  x64: { pkg: 'codex-win32-x64', triple: 'x86_64-pc-windows-msvc' },
+  arm64: { pkg: 'codex-win32-arm64', triple: 'aarch64-pc-windows-msvc' },
+};
+/** windowsNativeCodexExeCandidates(npmDir, arch) -> the real codex.exe paths to try, in preference order,
+ *  next to an npm-shimmed `<npmDir>/codex.cmd`: the platform package first, then the wrapper's own vendor
+ *  fallback inside `@openai/codex` itself. Returns [] for an arch with no known native package (e.g.
+ *  ia32) — resolveCodexBin() then falls through to codex.js unchanged. */
+function windowsNativeCodexExeCandidates(npmDir, arch) {
+  const info = WINDOWS_CODEX_ARCH[arch];
+  if (!info) return [];
+  const codexPkgDir = path.join(npmDir, 'node_modules', '@openai', 'codex');
+  return [
+    path.join(codexPkgDir, 'node_modules', '@openai', info.pkg, 'vendor', info.triple, 'bin', 'codex.exe'),
+    path.join(codexPkgDir, 'vendor', info.triple, 'bin', 'codex.exe'),
+  ];
+}
+
+/** resolveCodexBin(env, platform, arch) -> the executable to spawn for a real run. FORGE_CODEX_BIN wins (a
+ *  real per-machine binary path or a hermetic test's fake binary). Otherwise 'codex' (PATH lookup, no
+ *  shell) — except on Windows, where `npm install -g @openai/codex` (the documented install) only puts a
+ *  `codex.cmd` shim on PATH, which a shell:false spawn cannot start (see runCodex()). There the PATH is
+ *  searched for a real `codex.exe` first (an entry earlier on PATH always wins); when a directory instead
+ *  has the npm shim's `codex.cmd`, the REAL native `codex.exe` next to it is preferred (see
+ *  windowsNativeCodexExeCandidates() above — this is the fix for F7's timeout not actually stopping
+ *  codex.js's own child process); only when neither native candidate exists does resolution fall back to
+ *  the npm shim's own script (`<dir>/node_modules/@openai/codex/bin/codex.js`), which runCodex() runs as
+ *  `node <script>` — still no shell, and a fresh laptop needs no hand-set variable. Never read from either
+ *  config file, so a gitignored/unreviewed file can never redirect what actually gets executed.
+ *  `env`/`platform`/`arch` default to this process (injectable for tests; arch picks the native-package
+ *  triple — 'x64' or 'arm64' — independent of the `platform` used for the win32/non-win32 branch).
  *
  *  F7 fix (2026-09-26 independent review, LOW): a relative PATH entry (e.g. `.` or a bare `bin`) resolves
  *  against whatever the CURRENT WORKING DIRECTORY happens to be at spawn time — not a fixed, known
  *  location — so "the first codex.exe/codex.cmd found on PATH" could silently pick up a same-named file
  *  from an unrelated, cwd-dependent directory. Non-absolute PATH entries are now skipped entirely; only an
  *  absolute directory is ever searched. */
-function resolveCodexBin(env, platform) {
+function resolveCodexBin(env, platform, arch) {
   const e = env || process.env;
   const plat = platform || process.platform;
+  const arc = arch || process.arch;
   if (e.FORGE_CODEX_BIN) return e.FORGE_CODEX_BIN;
   if (plat === 'win32') {
     const pathKey = Object.keys(e).find((k) => k.toUpperCase() === 'PATH');
@@ -286,6 +342,9 @@ function resolveCodexBin(env, platform) {
       const exe = path.join(d, 'codex.exe');
       if (fs.existsSync(exe)) return exe;
       if (fs.existsSync(path.join(d, 'codex.cmd'))) {
+        for (const nativeExe of windowsNativeCodexExeCandidates(d, arc)) {
+          if (fs.existsSync(nativeExe)) return nativeExe;
+        }
         const script = path.join(d, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
         if (fs.existsSync(script)) return script;
       }
@@ -326,11 +385,16 @@ function runCodex(effective, opts) {
   const codexBin = o.codexBin || resolveCodexBin();
   const argv = buildCommand(effective, { adversarial: !!o.adversarial });
   const finalArgv = argv.slice();
+  // R2 fix (2026-09-26 independent review, LOW): the CLI's own text-mode "run" report needs the EXACT
+  // timeout that will really be used (not a value it recomputes itself, which could drift from
+  // opts.timeoutMs) to say plainly how long codex ran before being stopped — resolved once, up front, and
+  // returned on every branch below (dry-run included, since that is what a real run WOULD use).
+  const timeoutMs = o.timeoutMs || resolveCodexTimeoutMs();
   // A prompt that starts with `-` would reach codex as an OPTION, not as the prompt (the same smuggling
   // route the MODEL_PATTERN leading-dash rule closes: `--prompt "--dangerously-bypass-approvals-and-sandbox"`).
   // Refused before anything is spawned; a real review prompt never needs to start with a dash.
   if (typeof o.prompt === 'string' && /^-/.test(o.prompt)) {
-    return { dry_run: !!o.dryRun, codex_bin: codexBin, argv: finalArgv, exec_target: null, exec_args: [], status: -1, stdout: '', stderr: '', spawn_error: null, timed_out: false,
+    return { dry_run: !!o.dryRun, codex_bin: codexBin, argv: finalArgv, exec_target: null, exec_args: [], status: -1, stdout: '', stderr: '', spawn_error: null, timed_out: false, timeout_ms: timeoutMs,
       refused: 'the prompt starts with "-", so codex would read it as an option instead of the prompt — start it with a word' };
   }
   if (typeof o.prompt === 'string' && o.prompt.trim()) finalArgv[finalArgv.length - 1] = o.prompt;
@@ -340,13 +404,12 @@ function runCodex(effective, opts) {
   const execArgs = isScript ? [codexBin].concat(args) : args;
 
   if (o.dryRun) {
-    return { dry_run: true, codex_bin: codexBin, argv: finalArgv, exec_target: execTarget, exec_args: execArgs, status: null, stdout: '', stderr: '', spawn_error: null, timed_out: false };
+    return { dry_run: true, codex_bin: codexBin, argv: finalArgv, exec_target: execTarget, exec_args: execArgs, status: null, stdout: '', stderr: '', spawn_error: null, timed_out: false, timeout_ms: timeoutMs };
   }
   // F7 fix — see DEFAULT_CODEX_TIMEOUT_MS/resolveCodexTimeoutMs() above: never let a hung codex process
   // block the caller forever. On timeout, Node reports r.error.code === 'ETIMEDOUT' and r.status stays
   // null (never 0) — surfaced below as BOTH an honest spawn_error string AND an explicit timed_out:true,
   // so a caller checking either one sees the truth; it is never reported as a successful run.
-  const timeoutMs = o.timeoutMs || resolveCodexTimeoutMs();
   const r = spawnSync(execTarget, execArgs, { shell: false, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs });
   const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   return {
@@ -354,7 +417,7 @@ function runCodex(effective, opts) {
     status: (r.status === null || r.status === undefined) ? -1 : r.status,
     stdout: r.stdout || '', stderr: r.stderr || '',
     spawn_error: r.error ? (String(r.error.code || '') + ': ' + String(r.error.message || r.error)) : null,
-    timed_out: timedOut,
+    timed_out: timedOut, timeout_ms: timeoutMs,
   };
 }
 
@@ -419,6 +482,19 @@ function runRunCommand(rest) {
   const display = commandToDisplayString(result.argv);
   if (opts.json) {
     console.log(JSON.stringify(Object.assign({ command_display: display }, result)));
+  } else if (result.timed_out) {
+    // R2 fix (2026-09-26 independent review, LOW): this branch used to fall into the generic "ran: ..."
+    // line followed by "could not spawn ... set FORGE_CODEX_BIN" — both wrong for a timeout: the process
+    // DID spawn fine, it simply did not finish in time, and FORGE_CODEX_BIN was never the problem. Branch
+    // on result.timed_out FIRST, say plainly it timed out and was stopped, label any stdout/stderr as
+    // partial (codex was cut off mid-run — never a completed answer), and point at the real knob.
+    console.log('TIMED OUT — codex did not finish: ' + display);
+    console.error('forge-codexreview-config: the review timed out after ' + formatTimeoutForHumans(result.timeout_ms) +
+      ' and was stopped — this is not a pass and never was a completed review.');
+    if (result.stdout) { console.log('--- partial stdout (the review was stopped before it finished) ---'); console.log(result.stdout); }
+    if (result.stderr) { console.error('--- partial stderr (the review was stopped before it finished) ---'); console.error(result.stderr); }
+    console.error('forge-codexreview-config: raise FORGE_CODEX_TIMEOUT_MS (currently ' + result.timeout_ms +
+      'ms) to allow more time, or investigate why codex did not finish — codex started fine; it simply ran out of time.');
   } else {
     console.log((result.dry_run ? 'DRY RUN — would run: ' : 'ran: ') + display);
     if (result.stdout) console.log(result.stdout);
@@ -429,6 +505,16 @@ function runRunCommand(rest) {
     }
   }
   process.exitCode = result.dry_run ? 0 : (result.spawn_error ? 2 : result.status);
+}
+
+/** formatTimeoutForHumans(ms) -> "N minute(s) (Xms)" — always framed in minutes (the timeout's own unit of
+ *  measure — the default is 30 minutes, FORGE_CODEX_TIMEOUT_MS is set in milliseconds) with the exact
+ *  millisecond value alongside it, so a tiny test timeout (a few hundred ms) still reads as an honest
+ *  fraction of a minute instead of rounding away to "0 minutes". */
+function formatTimeoutForHumans(ms) {
+  const n = Number(ms) || 0;
+  const minutes = Math.round((n / 60000) * 100) / 100;
+  return minutes + ' minute' + (minutes === 1 ? '' : 's') + ' (' + n + 'ms)';
 }
 
 if (require.main === module) {

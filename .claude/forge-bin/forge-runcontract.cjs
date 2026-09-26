@@ -787,10 +787,19 @@ const ONSCHULDIGE_VERWIJZING_RE = /^(?:wp[-_]?\d+|#\d+|[a-f0-9]{7,40}|[\w./-]+\.
  *  dispatch carrying `task:"implement X"` alongside `mission:"review Y"` still counts as work, the safe
  *  reading, never review just because one of the two fields looks like review. */
 const TAAK_VELDEN = ['task', 'mission'];
+// Alleen gestructureerde rolvelden tellen — `note`/`goal` zijn narratief en beslissen hier niets meer.
+const ROL_VELDEN = ['role', 'dispatch_role', 'purpose'];
 function isReviewDispatch(e) {
   if (!e || typeof e !== 'object') return false;
-  // Alleen gestructureerde rolvelden tellen — `note`/`goal` zijn narratief en beslissen hier niets meer.
-  const rolVelden = ['role', 'dispatch_role', 'purpose'].filter((f) => typeof e[f] === 'string' && e[f].trim() !== '');
+  // R7 fix (2026-09-26 independent review, NOTE): zelfde "één tegenspraak vervalt de claim"-regel als F5
+  // al toepaste op task/mission — een AANWEZIG maar non-string rolveld (bv. `role: 123`) werd hier eerst
+  // net als een AFWEZIG veld weggefilterd, dus `role:123, purpose:'review'` telde als review omdat
+  // `purpose` alleen overbleef en aan REVIEW_ROLE_RE voldeed. Nu vergiftigt een aanwezig rolveld van het
+  // verkeerde type de hele claim — dezelfde veilige lezing als bij task/mission.
+  for (const f of ROL_VELDEN) {
+    if (e[f] !== undefined && e[f] !== null && typeof e[f] !== 'string') return false;
+  }
+  const rolVelden = ROL_VELDEN.filter((f) => typeof e[f] === 'string' && e[f].trim() !== '');
   if (!rolVelden.length) return false;
   // Eén tegenstrijdig rolveld is genoeg om de reviewclaim te laten vervallen.
   if (!rolVelden.every((f) => REVIEW_ROLE_RE.test(e[f].trim()))) return false;

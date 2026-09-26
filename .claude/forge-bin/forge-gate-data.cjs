@@ -58,10 +58,11 @@ const LAYOUT = new Set(['mv', 'move', 'move-item', 'mi', 'ln', 'mklink', 'cp', '
 // `git grep -O<pager>` / `--open-files-in-pager`, `--pager`, `rg --pre <cmd>`. Case-sensitive on purpose:
 // grep's everyday `-o` must keep working.
 const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'select-string', 'sls', 'findstr']);
-// v2.8.0 final review F1: `--op` covers every unique prefix git accepts for --open-files-in-pager, and
-// `-[A-Za-z]*O` a grouped short-option word such as `-iO<pager>`.
-const EXEC_FLAG_WORD_RE = /^(?:-[A-Za-z]*O.*|--op.*|--pager(?:=.*)?|--pre.*)$/;
-const segHasExecFlag = (ws) => ws.some((x) => EXEC_FLAG_WORD_RE.test(String(x.raw).replace(/["']/g, '')));
+// v2.8.0 final review F1 + v2.8.1 verification R1: `--op` covers every unique prefix git accepts for
+// --open-files-in-pager, `-[A-Za-z0-9]*O` a grouped short-option word such as `-iO<pager>` or `-3O<pager>`, and the
+// word is matched after removing quotes AND backslashes (the shell strips both anywhere inside a word).
+const EXEC_FLAG_WORD_RE = /^(?:-[A-Za-z0-9]*O|--op|--pager|--pre)/;
+const segHasExecFlag = (ws) => ws.some((x) => EXEC_FLAG_WORD_RE.test(String(x.raw).replace(/["'\\]/g, '')));
 // v2.8.0 final review Q1: an unquoted `{`/`(` (PowerShell script block or sub-expression) or a live `$(`/backtick
 // anywhere in the segment means the "search" can run one of its quoted arguments — nothing is stripped then.
 const segCanRunText = (ws) => ws.some((x) => {

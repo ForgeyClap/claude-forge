@@ -849,7 +849,18 @@ const STANDING_OWNER_REMEMBER_SOURCE = 'owner /forge remember';
  *  holds an owner rule that this call did NOT confirm is now safely represented in the user file, `false`
  *  otherwise (including "nothing to migrate" and "already migrated"). Callers (safeSyncProject, rawInstall)
  *  check `.pending` and skip replacing FORGE_STANDING_RULES.json for this pass when it is true. */
-function migrateOwnerStandingRules(projectDir) {
+/** R6(a) fix (2026-09-26 independent review, LOW) — `opts.dryRun` (default false): every READ-only guard
+ *  check below (parse the template, parse/shape-check the user file, safeJoin/isSymlinkPath/
+ *  containmentSafe) runs identically in dry-run mode, so `.pending` is computed the SAME way a real run
+ *  would — before this fix, callers passed `opts.dryRun ? [] : migrateOwnerStandingRules(projectDir)`,
+ *  which skipped this function entirely in dry-run (a bare `[]` has no `.pending` at all), so a dry-run
+ *  preview showed FORGE_STANDING_RULES.json as replaced even when a real run would have skipped it (an
+ *  unmigratable owner rule). Only the final WRITE (mkdirSync + writeAtomic) is skipped in dry-run — never
+ *  even the directory creation — so dry-run stays a true zero-write operation; the happy-path result
+ *  (`.pending: false`) is reported as if the write had succeeded, exactly matching what a real run does
+ *  once every guard above it already passed. */
+function migrateOwnerStandingRules(projectDir, opts) {
+  const dryRun = !!(opts && opts.dryRun);
   const dst = claudeDirOf(projectDir);
   const templatePath = path.join(dst, STANDING_RULES_REL);
   const userPath = path.join(dst, STANDING_RULES_USER_REL);
@@ -871,9 +882,13 @@ function migrateOwnerStandingRules(projectDir) {
     if (e && e.code === 'ENOENT') {
       userDoc = { version: 1, rules: [] }; // genuinely fresh — no owner file yet, safe to start empty
     } else {
+      // R6(c) fix (2026-09-26 independent review, NOTE): "fix or remove that file" is risky advice — the
+      // file may hold the owner's OWN rules, and "remove" reads as "delete it" (which throws those rules
+      // away). Say to fix the JSON (offering a copy as a safety net first), never to delete it.
       console.error('forge-sync: WARNING — could not read ' + userPath + ' while migrating owner rule(s) out of ' +
-        templatePath + ' (' + e.message + '); skipping this migration pass, nothing written — fix or remove ' +
-        'that file to let it complete on a later sync');
+        templatePath + ' (' + e.message + '); skipping this migration pass, nothing written — fix that file\'s ' +
+        'JSON (make a copy first if you want a safety net) to let it complete on a later sync; never delete it, ' +
+        'it may hold your own rules');
       return done([], true);
     }
   }
@@ -912,6 +927,10 @@ function migrateOwnerStandingRules(projectDir) {
     console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' escapes .claude/ via a symlinked/junctioned ancestor directory');
     return done([], true);
   }
+
+  // R6(a): every guard above this point is a read-only check — dry-run stops HERE, before the directory
+  // is even created, and reports the same non-pending outcome a real run's happy path would reach.
+  if (dryRun) return done(migratedIds, false);
 
   try {
     fs.mkdirSync(path.dirname(userPath), { recursive: true });
@@ -2009,9 +2028,12 @@ function safeSyncProject(templateDir, projectDir, opts) {
   }
 
   // 3.4 fix: move any v2.7-era owner standing rule into the project's own user file BEFORE the SYSTEM
-  // FORGE_STANDING_RULES.json is ever compared/replaced below — including under --force-overwrite. Never
-  // during --dry-run, which must write nothing at all (see this file's own SAFE FLOW doc comment).
-  const standingMigration = opts.dryRun ? [] : migrateOwnerStandingRules(projectDir);
+  // FORGE_STANDING_RULES.json is ever compared/replaced below — including under --force-overwrite.
+  // R6(a) fix (2026-09-26 independent review, LOW): dry-run used to skip this call entirely (a bare `[]`
+  // has no `.pending`), so a dry-run preview showed FORGE_STANDING_RULES.json as replaced even when a real
+  // run would skip it. migrateOwnerStandingRules() itself now stays a true zero-write operation in
+  // dry-run (see its own doc comment) — calling it here unconditionally makes the preview match reality.
+  const standingMigration = migrateOwnerStandingRules(projectDir, { dryRun: !!opts.dryRun });
 
   const templateVer = templateVersion(templateDir);
   const plan = buildPlan(templateDir, projectDir, { forceOverwrite: !!opts.forceOverwrite });
@@ -2028,8 +2050,10 @@ function safeSyncProject(templateDir, projectDir, opts) {
     plan.toChange = plan.toChange.filter((e) => e.rel !== STANDING_RULES_REL);
     if (plan.toChange.length !== before) {
       plan.skipped = (plan.skipped || []).concat([{ rel: STANDING_RULES_REL, reason: 'owner-rule-pending-migration' }]);
+      // R6(c): never suggest deleting the private rules file — it may hold the owner's own rules.
       console.error('forge-sync: WARNING — refusing to replace ' + STANDING_RULES_REL + ' this pass: an owner rule from a pre-v2.8.0 install is still sitting in it and could not be migrated into ' +
-        STANDING_RULES_USER_REL + ' (see the warning above). Fix or remove that file, then re-run sync so the owner rule can be moved to safety before this file is replaced.');
+        STANDING_RULES_USER_REL + ' (see the warning above). Fix that file\'s JSON (make a copy first if you want a safety net — never delete it, it may hold your own rules), ' +
+        'then re-run sync so the owner rule can be moved to safety before this file is replaced.');
     }
   }
 
@@ -2309,8 +2333,10 @@ function rawInstall(templateDir, projectDir, opts) {
   if (!fs.existsSync(dst)) { console.error('not a project (.claude missing): ' + projectDir); return { ok: false, exitCode: 1, projectDir }; }
   // 3.4 fix: same preflight owner-rule migration as safeSyncProject — --unsafe still replaces
   // FORGE_STANDING_RULES.json below with no drift/conflict analysis at all, so this is the ONLY chance to
-  // save a v2.7-era owner rule on this path. Never during --dry-run (writes nothing at all).
-  const standingMigration = opts.dryRun ? [] : migrateOwnerStandingRules(projectDir);
+  // save a v2.7-era owner rule on this path. R6(a) fix: call unconditionally, same as safeSyncProject —
+  // migrateOwnerStandingRules() itself stays a true zero-write operation in dry-run (see its own doc
+  // comment), so the --unsafe --dry-run preview now also matches what a real --unsafe install would do.
+  const standingMigration = migrateOwnerStandingRules(projectDir, { dryRun: !!opts.dryRun });
   const allowlist = readOverrideAllowlist(projectDir); // S2: --unsafe must ALSO never touch a declared override
   const toChange = [];
   const skippedOverrides = [];
@@ -2326,8 +2352,10 @@ function rawInstall(templateDir, projectDir, opts) {
     // still-PENDING owner rule must never be replaced on this --unsafe path either, which has no
     // drift/conflict analysis at all to catch it otherwise.
     if (standingMigration.pending && rel === STANDING_RULES_REL) {
+      // R6(c): never suggest deleting the private rules file — it may hold the owner's own rules.
       console.error('forge-sync: WARNING — refusing to replace ' + STANDING_RULES_REL + ' this --unsafe install: an owner rule from a pre-v2.8.0 install is still sitting in it and could not be migrated into ' +
-        STANDING_RULES_USER_REL + ' (see the warning above). Fix or remove that file, then re-run install so the owner rule can be moved to safety before this file is replaced.');
+        STANDING_RULES_USER_REL + ' (see the warning above). Fix that file\'s JSON (make a copy first if you want a safety net — never delete it, it may hold your own rules), ' +
+        'then re-run install so the owner rule can be moved to safety before this file is replaced.');
       continue;
     }
     if (allowlist.has(rel)) { skippedOverrides.push(rel); continue; } // S2: never touch a declared override
@@ -2573,7 +2601,14 @@ function printPlanSummary(plan) {
   if (plan.expectedOverrides && plan.expectedOverrides.length) console.log('  expected overrides (never touched): ' + plan.expectedOverrides.join(', '));
   if (plan.unknownDrift && plan.unknownDrift.length) console.log('  UNKNOWN DRIFT (blocked, use --force-overwrite): ' + plan.unknownDrift.join(', '));
   if (plan.conflicts && plan.conflicts.length) console.log('  CONFLICT — both changed (blocked, use --force-overwrite): ' + plan.conflicts.join(', '));
-  if (plan.skipped && plan.skipped.length) console.log('  skipped (symlink/unsafe): ' + plan.skipped.map((s) => s.rel + ':' + s.reason).join(', '));
+  // R6(b) fix (2026-09-26 independent review, LOW): an owner-rule-pending-migration skip is not a
+  // symlink/unsafe trip at all — it is a deliberate, temporary hold while a pre-v2.8.0 owner rule waits
+  // to be moved to safety. Labeling it under "symlink/unsafe" reads like a security refusal instead of
+  // what it actually is; it now gets its own honest line.
+  const pendingSkips = (plan.skipped || []).filter((s) => s.reason === 'owner-rule-pending-migration');
+  const otherSkips = (plan.skipped || []).filter((s) => s.reason !== 'owner-rule-pending-migration');
+  if (pendingSkips.length) console.log('  kept (owner rules still waiting to move — fix your private rules file first): ' + pendingSkips.map((s) => s.rel).join(', '));
+  if (otherSkips.length) console.log('  skipped (symlink/unsafe): ' + otherSkips.map((s) => s.rel + ':' + s.reason).join(', '));
   if (plan.unreadable && plan.unreadable.length) console.log('  UNREADABLE (refuses the whole sync): ' + plan.unreadable.map((u) => u.rel).join(', '));
   console.log('  unchanged: ' + plan.same);
 }
@@ -2710,6 +2745,9 @@ module.exports = {
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,
   dedicatedCanaryDir, canaryInit, runSyncAll, parseArgs, CANARY_DIR_NAME,
   syncProjectSettings, printSettingsMergeResult, defaultCentralBackupRoot,
+  // R6(b) — exported so a test can exercise the plan-summary labeling directly, same pattern as the other
+  // print* helpers above.
+  printPlanSummary, STANDING_RULES_REL, STANDING_RULES_USER_REL,
 };
 
 // ---- CLI ----

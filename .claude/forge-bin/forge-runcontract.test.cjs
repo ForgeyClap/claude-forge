@@ -1254,6 +1254,24 @@ console.log('\nPART 10 — N6: isReviewDispatch() accepts mission (documented fi
     d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: null, mission: 'review WP1' }) === true);
   t('F5 10m an undefined mission alongside a pure-review task is UNCHANGED (no regression)',
     d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1', mission: undefined }) === true);
+
+  // R7 (2026-09-26 independent review, NOTE): same "one contradiction poisons the claim" rule F5 applied
+  // to task/mission, now applied to the role fields (role/dispatch_role/purpose) too — a PRESENT but
+  // NON-string role field used to be silently filtered out exactly like an ABSENT one, so
+  // `role:123, purpose:"review"` counted as review because `purpose` alone survived the filter and
+  // satisfied REVIEW_ROLE_RE. Confirmed live against the pre-fix module before this fix landed.
+  t('R7 10n a numeric role alongside a pure-review purpose+task counts as WORK, not review (the exact regression this fix closes)',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 123, purpose: 'review', task: 'review WP1' }) === false);
+  t('R7 10o a numeric dispatch_role alongside a pure-review role+task counts as WORK, not review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', dispatch_role: 42, task: 'review WP1' }) === false);
+  t('R7 10p an object-shaped purpose counts as WORK, not review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', purpose: { text: 'review' }, task: 'review WP1' }) === false);
+  t('R7 10q a boolean role counts as WORK, not review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: true, task: 'review WP1' }) === false);
+  t('R7 10r a null dispatch_role alongside a pure-review role+task is UNCHANGED — null still means "not present"',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', dispatch_role: null, task: 'review WP1' }) === true);
+  t('R7 10s an undefined purpose alongside a pure-review role+task is UNCHANGED (no regression)',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', purpose: undefined, task: 'review WP1' }) === true);
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');
