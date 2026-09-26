@@ -1237,6 +1237,23 @@ console.log('\nPART 10 — N6: isReviewDispatch() accepts mission (documented fi
     d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer' }) === false);
   t('10g the review C exact repro (role:"implementer", mission:"implement X") is still work, mission alone does not fabricate a review role',
     d({ event_type: 'custom_subagent_created', agent: 'Review Boss', role: 'implementer', mission: 'implement X' }) === false);
+
+  // F5 (2026-09-26 independent review, NOTE): a PRESENT but NON-string task/mission must poison the claim
+  // (count as work) instead of being silently treated as absent — before this fix, a non-string field
+  // was filtered out exactly like an absent one, so a pure-review OTHER field alone made the whole
+  // dispatch count as review with the non-string value unexamined.
+  t('F5 10h a numeric mission alongside a pure-review task counts as WORK, not review (the exact regression this fix closes)',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1', mission: 123 }) === false);
+  t('F5 10i a numeric task alongside a pure-review mission counts as WORK, not review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 42, mission: 'review WP1' }) === false);
+  t('F5 10j an object-shaped task counts as WORK, not review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: { text: 'review WP1' } }) === false);
+  t('F5 10k a boolean mission counts as WORK, not review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', mission: true }) === false);
+  t('F5 10l a null task alongside a pure-review mission is UNCHANGED — null still means "not present", mission alone still proves review',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: null, mission: 'review WP1' }) === true);
+  t('F5 10m an undefined mission alongside a pure-review task is UNCHANGED (no regression)',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1', mission: undefined }) === true);
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

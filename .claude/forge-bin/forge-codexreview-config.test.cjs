@@ -300,6 +300,70 @@ t('runCodex(): a prompt starting with "-" is refused before anything is spawned 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// --- F7 (2026-09-26 independent review, LOW): spawnSync had no timeout at all; resolveCodexBin() also
+// searched non-absolute PATH entries (cwd-dependent, unpredictable). ---
+
+t('F7: runCodex() with a tiny opts.timeoutMs against a fake codex that sleeps longer reports timed_out honestly, never as success', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-sleep-'));
+  const script = fakeCodexScript(dir, "setTimeout(() => {}, 5000);"); // sleeps far longer than the timeout below
+  const eff = { review: { model: null, reasoning_effort: null, sandbox: 'read-only' } };
+  const start = Date.now();
+  const result = CR.runCodex(eff, { codexBin: script, timeoutMs: 300 });
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 4000, 'must not wait for the full 5s sleep — elapsed ' + elapsed + 'ms');
+  assert.strictEqual(result.timed_out, true);
+  assert.ok(result.spawn_error && /ETIMEDOUT/.test(result.spawn_error), 'spawn_error: ' + result.spawn_error);
+  assert.notStrictEqual(result.status, 0, 'a timeout must never be reported as a successful (status 0) run');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+t('F7: runCodex() without opts.timeoutMs still completes normally for a fast fake codex (the default 30-minute timeout never fires here)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-fast-'));
+  const script = fakeCodexScript(dir, ECHO_ARGV_SCRIPT);
+  const eff = { review: { model: null, reasoning_effort: null, sandbox: 'read-only' } };
+  const result = CR.runCodex(eff, { codexBin: script });
+  assert.strictEqual(result.timed_out, false);
+  assert.strictEqual(result.spawn_error, null);
+  assert.strictEqual(result.status, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+t('F7: resolveCodexTimeoutMs() honors a positive-integer FORGE_CODEX_TIMEOUT_MS and ignores invalid values', () => {
+  assert.strictEqual(CR.resolveCodexTimeoutMs({}), CR.DEFAULT_CODEX_TIMEOUT_MS, 'missing env falls back to the default');
+  assert.strictEqual(CR.resolveCodexTimeoutMs({ FORGE_CODEX_TIMEOUT_MS: '5000' }), 5000);
+  for (const bad of ['', '0', '-100', 'abc', '3.5', '  ', 'NaN']) {
+    assert.strictEqual(CR.resolveCodexTimeoutMs({ FORGE_CODEX_TIMEOUT_MS: bad }), CR.DEFAULT_CODEX_TIMEOUT_MS, 'bad value ' + JSON.stringify(bad) + ' must fall back to the default');
+  }
+});
+
+t('F7: runCodex() picks up FORGE_CODEX_TIMEOUT_MS from process.env when opts.timeoutMs is not given', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-envtimeout-'));
+  const script = fakeCodexScript(dir, "setTimeout(() => {}, 5000);");
+  const eff = { review: { model: null, reasoning_effort: null, sandbox: 'read-only' } };
+  const saved = process.env.FORGE_CODEX_TIMEOUT_MS;
+  try {
+    process.env.FORGE_CODEX_TIMEOUT_MS = '300';
+    const start = Date.now();
+    const result = CR.runCodex(eff, { codexBin: script });
+    assert.ok(Date.now() - start < 4000);
+    assert.strictEqual(result.timed_out, true);
+  } finally {
+    if (saved === undefined) delete process.env.FORGE_CODEX_TIMEOUT_MS; else process.env.FORGE_CODEX_TIMEOUT_MS = saved;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+t('F7: resolveCodexBin() on Windows skips a non-absolute (relative) PATH entry instead of resolving it against the cwd', () => {
+  // a relative PATH entry named "." (or any bare relative name) must never be treated as a real directory
+  // to search — only an absolute directory is ever searched.
+  assert.strictEqual(CR.resolveCodexBin({ PATH: '.;relative\\dir;another' }, 'win32'), 'codex');
+  // an absolute entry among relative ones still works
+  const absDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-abs-'));
+  fs.writeFileSync(path.join(absDir, 'codex.exe'), '');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: '.;' + absDir + ';relative\\dir' }, 'win32'), path.join(absDir, 'codex.exe'));
+  fs.rmSync(absDir, { recursive: true, force: true });
+});
+
 t('CLI "run" without --prompt (and without --dry-run) exits 2 and never starts codex with the placeholder', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-'));
   const marker = path.join(dir, 'spawned.txt');
@@ -401,6 +465,42 @@ t('buildCommand(): whitespace-only model/effort strings are treated as unset', (
   const eff = { review: { model: '   ', reasoning_effort: '\t', sandbox: 'read-only' } };
   const argv = CR.buildCommand(eff, {});
   assert.deepStrictEqual(argv, ['codex', 'exec', '-s', 'read-only', '<review prompt>']);
+});
+
+// --- F3 (2026-09-26 independent review, LOW): buildCommand() must re-validate the FINAL model/effort
+// against MODEL_PATTERN/ALLOWED_EFFORTS regardless of which file they came from — the shipped file's own
+// review.model/reasoning_effort (or one selected via `run --root <dir>`) used to reach buildCommand()
+// unvalidated, so a "shipped" file could smuggle a value MODEL_PATTERN/ALLOWED_EFFORTS were built to
+// reject (e.g. a leading-dash flag string, or an undocumented effort tier). ---
+
+t('F3: buildCommand() omits -m when effective.review.model is an invalid/dangerous string, even though it did not come from the user override', () => {
+  const eff = { review: { model: '--dangerously-bypass-approvals-and-sandbox', reasoning_effort: null, sandbox: 'read-only' } };
+  const argv = CR.buildCommand(eff, {});
+  assert.deepStrictEqual(argv, ['codex', 'exec', '-s', 'read-only', '<review prompt>'], JSON.stringify(argv));
+  assert.ok(argv.indexOf('-m') === -1, 'must never include -m for an invalid model');
+});
+
+t('F3: buildCommand() omits -c when effective.review.reasoning_effort is not one of ALLOWED_EFFORTS, even though it did not come from the user override', () => {
+  const eff = { review: { model: null, reasoning_effort: 'ultra', sandbox: 'read-only' } };
+  const argv = CR.buildCommand(eff, {});
+  assert.deepStrictEqual(argv, ['codex', 'exec', '-s', 'read-only', '<review prompt>'], JSON.stringify(argv));
+  assert.ok(argv.indexOf('-c') === -1, 'must never include -c for an invalid effort');
+});
+
+t('F3: buildCommand() still passes through a VALID model/effort regardless of source (no regression)', () => {
+  const eff = { review: { model: 'gpt-6-astra', reasoning_effort: 'xhigh', sandbox: 'read-only' } };
+  const argv = CR.buildCommand(eff, {});
+  assert.deepStrictEqual(argv, ['codex', 'exec', '-m', 'gpt-6-astra', '-c', 'model_reasoning_effort=xhigh', '-s', 'read-only', '<review prompt>']);
+});
+
+t('F3: end-to-end — a shipped codex-review.json with a dangerous model/invalid effort yields argv with no -m/-c, via effectiveConfig()+buildCommand()', () => {
+  const shipped = { review: { engine: 'codex', model: '--dangerously-bypass-approvals-and-sandbox', reasoning_effort: 'ultra', sandbox: 'read-only' }, naming: {}, fallback: {}, honesty: {} };
+  const root = freshRoot(shipped);
+  const eff = CR.effectiveConfig(root);
+  const argv = CR.buildCommand(eff, {});
+  assert.ok(argv.indexOf('-m') === -1, 'must never include -m for an invalid shipped model: ' + JSON.stringify(argv));
+  assert.ok(argv.indexOf('-c') === -1, 'must never include -c for an invalid shipped effort: ' + JSON.stringify(argv));
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 t('commandToDisplayString(): renders the argv array as a human-readable, quoted string — never re-executed', () => {

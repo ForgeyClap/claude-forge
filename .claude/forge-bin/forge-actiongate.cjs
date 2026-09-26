@@ -420,13 +420,18 @@ function segmentTriggerClears(trig, entry, mask) {
 // flag the tool itself runs through a shell (`git grep -O<cmd>`, `--open-files-in-pager`, `--pager`, `rg --pre`).
 const INERT_SEARCH_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'findstr', 'select-string', 'sls']);
 // case-SENSITIVE: `-O` (git grep's pager) is not grep's everyday `-o`
-const EXEC_CAPABLE_FLAG_RE = /(?:^|\s)["']?(?:-O|--open-files-in-pager|--pager|--pre)/;
+// v2.8.0 final review F1: git accepts any unique prefix of a long option (`--op` ... `--open-files-in-pager`) and
+// grouped short options (`-iO<pager>`), so the pager is matched as `--op`-prefix and as an O inside a short group.
+const EXEC_CAPABLE_FLAG_RE = /(?:^|\s)["']?(?:-[A-Za-z]*O|--op|--pager|--pre)/;
 function segmentCanExecuteEmbeddedText(segment, mask, baseOffset) {
   const s = String(segment || '');
   if (/<\(|>\(|\$\(|`/.test(s)) return true;
   if (EXEC_CAPABLE_FLAG_RE.test(s)) return true;
-  for (let i = s.indexOf('('); i !== -1; i = s.indexOf('(', i + 1)) {
-    // no mask (a direct unit call) or an unresolved mask => treat every paren as live (fail toward blocking)
+  // an unquoted `(` (PowerShell sub-expression) or `{` (PowerShell script block, e.g. a delay-bind
+  // `-Path { . 'verb' }` — final review Q1) can run a quoted verb from inside the "search" segment
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '(' && s[i] !== '{') continue;
+    // no mask (a direct unit call) or an unresolved mask => treat every bracket as live (fail toward blocking)
     if (!mask || mask.unterminated || typeof mask.inside !== 'function' || !mask.inside((baseOffset || 0) + i)) return true;
   }
   return false;

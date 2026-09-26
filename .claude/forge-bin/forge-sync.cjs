@@ -836,19 +836,32 @@ const STANDING_OWNER_REMEMBER_SOURCE = 'owner /forge remember';
  *  normal preflight/apply pipeline (it runs BEFORE that pipeline, see the doc comment above), so it never
  *  inherited those guards for free. A `null`/non-object entry in either rules array is skipped when
  *  computing ids instead of throwing (`r.id` on `null` used to crash the whole sync); it is left in place,
- *  untouched, in whatever gets written — never silently dropped. */
+ *  untouched, in whatever gets written — never silently dropped.
+ *
+ *  F4 fix (2026-09-26 independent review, LOW): every early-return below used to be a bare `[]`, so a
+ *  caller could not tell "nothing to migrate" apart from "there IS an owner rule, but this pass could not
+ *  move it (unreadable/malformed/refused user file, or a write failure)" — under --force-overwrite (or the
+ *  rawInstall/--unsafe path, which has no drift/conflict analysis at all), the caller went ahead and
+ *  replaced the template file anyway, permanently dropping the never-migrated owner rule. The returned
+ *  array's CONTENTS are unchanged (still `[]` on every failure path, for exact backward compatibility with
+ *  every existing caller/test that only reads `.length`/`.includes(...)`); a non-enumerable-looking but
+ *  perfectly normal own property, `.pending`, is attached to that same array — `true` whenever the template
+ *  holds an owner rule that this call did NOT confirm is now safely represented in the user file, `false`
+ *  otherwise (including "nothing to migrate" and "already migrated"). Callers (safeSyncProject, rawInstall)
+ *  check `.pending` and skip replacing FORGE_STANDING_RULES.json for this pass when it is true. */
 function migrateOwnerStandingRules(projectDir) {
   const dst = claudeDirOf(projectDir);
   const templatePath = path.join(dst, STANDING_RULES_REL);
   const userPath = path.join(dst, STANDING_RULES_USER_REL);
+  const done = (ids, pending) => { ids.pending = !!pending; return ids; };
 
   let templateDoc;
   try { templateDoc = JSON.parse(fs.readFileSync(templatePath, 'utf8')); }
-  catch { return []; } // no file yet, or unreadable/corrupt — nothing this safety net can act on
-  if (!templateDoc || !Array.isArray(templateDoc.rules)) return [];
+  catch { return done([], false); } // no file yet, or unreadable/corrupt — nothing this safety net can act on
+  if (!templateDoc || !Array.isArray(templateDoc.rules)) return done([], false);
 
   const toMigrate = templateDoc.rules.filter((r) => r && typeof r === 'object' && r.source === STANDING_OWNER_REMEMBER_SOURCE);
-  if (toMigrate.length === 0) return [];
+  if (toMigrate.length === 0) return done([], false);
 
   let userDoc;
   let userRaw;
@@ -861,7 +874,7 @@ function migrateOwnerStandingRules(projectDir) {
       console.error('forge-sync: WARNING — could not read ' + userPath + ' while migrating owner rule(s) out of ' +
         templatePath + ' (' + e.message + '); skipping this migration pass, nothing written — fix or remove ' +
         'that file to let it complete on a later sync');
-      return [];
+      return done([], true);
     }
   }
   if (userRaw !== undefined) {
@@ -870,34 +883,34 @@ function migrateOwnerStandingRules(projectDir) {
     } catch (e) {
       console.error('forge-sync: WARNING — ' + userPath + ' is not valid JSON; skipping this migration pass, ' +
         'nothing written (' + e.message + ')');
-      return [];
+      return done([], true);
     }
     if (!userDoc || typeof userDoc !== 'object' || !Array.isArray(userDoc.rules)) {
       console.error('forge-sync: WARNING — ' + userPath + ' is present but missing a "rules" array; skipping ' +
         'this migration pass, nothing written — the existing (malformed) file is left exactly as-is');
-      return [];
+      return done([], true);
     }
   }
 
   const existingIds = new Set(userDoc.rules.filter((r) => r && typeof r === 'object').map((r) => r.id));
   const toAppend = toMigrate.filter((r) => !existingIds.has(r.id));
   const migratedIds = toMigrate.map((r) => r.id);
-  if (toAppend.length === 0) return migratedIds; // already migrated on an earlier pass — nothing new to write
+  if (toAppend.length === 0) return done(migratedIds, false); // already migrated on an earlier pass — nothing new to write
 
   const nextUserDoc = Object.assign({}, userDoc, { rules: userDoc.rules.concat(toAppend) });
 
   const safeUserPath = safeJoin(dst, STANDING_RULES_USER_REL);
   if (safeUserPath == null || path.resolve(safeUserPath) !== path.resolve(userPath)) {
     console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' does not resolve to a safe path under .claude/');
-    return [];
+    return done([], true);
   }
   if (isSymlinkPath(userPath)) {
     console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' is a symlink');
-    return [];
+    return done([], true);
   }
   if (!containmentSafe(dst, userPath)) {
     console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' escapes .claude/ via a symlinked/junctioned ancestor directory');
-    return [];
+    return done([], true);
   }
 
   try {
@@ -908,9 +921,9 @@ function migrateOwnerStandingRules(projectDir) {
     // the sync — the owner rule simply stays visible in the (about to be replaced) template copy for this
     // pass, and gets another migration chance on a later sync or the next forge-standing.cjs load().
     console.error('forge-sync: could not write ' + userPath + ' while migrating owner rule(s) out of ' + templatePath + ' (' + e.message + ') — continuing sync');
-    return [];
+    return done([], true);
   }
-  return migratedIds;
+  return done(migratedIds, false);
 }
 
 /**
@@ -1998,10 +2011,27 @@ function safeSyncProject(templateDir, projectDir, opts) {
   // 3.4 fix: move any v2.7-era owner standing rule into the project's own user file BEFORE the SYSTEM
   // FORGE_STANDING_RULES.json is ever compared/replaced below — including under --force-overwrite. Never
   // during --dry-run, which must write nothing at all (see this file's own SAFE FLOW doc comment).
-  if (!opts.dryRun) migrateOwnerStandingRules(projectDir);
+  const standingMigration = opts.dryRun ? [] : migrateOwnerStandingRules(projectDir);
 
   const templateVer = templateVersion(templateDir);
   const plan = buildPlan(templateDir, projectDir, { forceOverwrite: !!opts.forceOverwrite });
+
+  // F4 fix (2026-09-26 independent review, LOW): migrateOwnerStandingRules()'s return value used to be
+  // ignored entirely. When it reports `.pending` (an owner rule exists in the template but this pass could
+  // NOT confirm it is safely represented in FORGE_STANDING_RULES.user.json — e.g. that user file is
+  // unreadable/malformed), FORGE_STANDING_RULES.json must never be replaced THIS pass, on any path —
+  // whether preflight already classified it as a plain toChange, or --force-overwrite is about to force it
+  // out of unknownDrift/conflicts (buildPlan() already folded both into plan.toChange above). Filtering it
+  // back out here, with a plain warning, is the ONE place both routes are closed at once.
+  if (standingMigration.pending) {
+    const before = plan.toChange.length;
+    plan.toChange = plan.toChange.filter((e) => e.rel !== STANDING_RULES_REL);
+    if (plan.toChange.length !== before) {
+      plan.skipped = (plan.skipped || []).concat([{ rel: STANDING_RULES_REL, reason: 'owner-rule-pending-migration' }]);
+      console.error('forge-sync: WARNING — refusing to replace ' + STANDING_RULES_REL + ' this pass: an owner rule from a pre-v2.8.0 install is still sitting in it and could not be migrated into ' +
+        STANDING_RULES_USER_REL + ' (see the warning above). Fix or remove that file, then re-run sync so the owner rule can be moved to safety before this file is replaced.');
+    }
+  }
 
   if (plan.unreadable && plan.unreadable.length) { // B3: never silently treat an unreadable file as "new"
     return {
@@ -2280,7 +2310,7 @@ function rawInstall(templateDir, projectDir, opts) {
   // 3.4 fix: same preflight owner-rule migration as safeSyncProject — --unsafe still replaces
   // FORGE_STANDING_RULES.json below with no drift/conflict analysis at all, so this is the ONLY chance to
   // save a v2.7-era owner rule on this path. Never during --dry-run (writes nothing at all).
-  if (!opts.dryRun) migrateOwnerStandingRules(projectDir);
+  const standingMigration = opts.dryRun ? [] : migrateOwnerStandingRules(projectDir);
   const allowlist = readOverrideAllowlist(projectDir); // S2: --unsafe must ALSO never touch a declared override
   const toChange = [];
   const skippedOverrides = [];
@@ -2292,6 +2322,14 @@ function rawInstall(templateDir, projectDir, opts) {
     const out = safeJoin(dst, rel); // S2: containment guard — never resolve outside .claude/
     if (out == null) continue;
     if (isSymlinkPath(out) || !containmentSafe(dst, out)) continue; // S2: symlink/junction guard
+    // F4 fix (2026-09-26 independent review, LOW) — see migrateOwnerStandingRules()'s doc comment: a
+    // still-PENDING owner rule must never be replaced on this --unsafe path either, which has no
+    // drift/conflict analysis at all to catch it otherwise.
+    if (standingMigration.pending && rel === STANDING_RULES_REL) {
+      console.error('forge-sync: WARNING — refusing to replace ' + STANDING_RULES_REL + ' this --unsafe install: an owner rule from a pre-v2.8.0 install is still sitting in it and could not be migrated into ' +
+        STANDING_RULES_USER_REL + ' (see the warning above). Fix or remove that file, then re-run install so the owner rule can be moved to safety before this file is replaced.');
+      continue;
+    }
     if (allowlist.has(rel)) { skippedOverrides.push(rel); continue; } // S2: never touch a declared override
     const outStatus = fileStatus(out);
     if (outStatus.kind === 'unreadable') { unreadable.push({ rel, error: outStatus.error }); continue; }

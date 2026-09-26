@@ -353,7 +353,20 @@ const COMPOSED_BLOCK = [
   'grep x "$(pkill node)"',
   'grep x "`pkill node`"',
   'rg --pre "pkill node" x',
+  // final review F1: git's unique-prefix long options and grouped short options reach the same pager
+  'git grep --open-files-i "pkill node #" x',
+  'git grep --op="pkill node #" x',
+  'git grep -iO"pkill node #" x',
+  'git grep -nO "pkill node #" x',
+  // final review Q1: a PowerShell script block runs a quoted verb from inside a Select-String segment
+  "Get-Item f | Select-String -Pattern y -Path { . 'Stop-Process' -Name node }",
 ];
+for (const cmd of ['git grep -n "pkill node" -- docs', 'git grep --only-matching "pkill node" docs', 'rg -n "pkill node" docs | head -5', 'Select-String -Pattern "Stop-Process -Name" -Path docs\\notes.md']) {
+  t('decide() still allows the plain search: ' + cmd, () => {
+    const v = hook.decide({ hook_event_name: 'PreToolUse', tool_name: cmd.startsWith('Select-String') ? 'PowerShell' : 'Bash', tool_input: { command: cmd } }, { watchdogTimeoutMs: 6000 });
+    assert.strictEqual(v.block, false, JSON.stringify(v));
+  });
+}
 t('decide() still allows grep\'s everyday -o flag with a quoted kill verb (case-sensitive -O check)', () => {
   const v = hook.decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'grep -o "pkill" notes.txt' } }, { watchdogTimeoutMs: 6000 });
   assert.strictEqual(v.block, false, JSON.stringify(v));

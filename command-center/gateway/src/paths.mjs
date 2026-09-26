@@ -83,6 +83,34 @@ function realpathOrNull(p) {
   }
 }
 
+// F2/Q2 fixes (WP-C4, 2026-09-26 independent security re-review): a UNC/network path check and a
+// "is this its own filesystem root" check are both needed TWICE — once on the raw typed text
+// (below) and once on the RESOLVED real target (a junction/symlink can look like an ordinary local
+// folder while typed, yet resolve to a drive root or a network share) — shared here so both call
+// sites use the exact same rule.
+const UNC_RE = /^[\\/]{2}/;
+function isDriveRoot(p) {
+  return path.parse(p).root === p;
+}
+
+// F2 fix: ancestry test via path.relative() instead of a raw `startsWith(sep)` string check. The
+// old check compared `normHome.startsWith(normReal + path.sep)`, which silently NEVER matched when
+// normReal was itself a drive root — `c:\\` plus an extra separator doubles up to `c:\\\\`, which
+// normHome (a normal, single-separator path) can never start with, so a link resolving straight to
+// a drive root slipped through this check even though the drive root trivially contains home.
+// path.relative(container, target) already normalizes trailing separators on both sides: target is
+// inside (or equal to) container exactly when the relative path is '' (equal) or does not start
+// with '..' and is not itself absolute (relative() falls back to returning `target` unchanged —
+// which is absolute — when the two paths share no common root at all, e.g. different drive letters
+// on win32). Comparison is case-insensitive on win32 via normalizeForCompare, same as before.
+function realAncestryRelation(containerReal, targetReal) {
+  const rel = path.relative(normalizeForCompare(containerReal), normalizeForCompare(targetReal));
+  if (rel === '') return 'equal';
+  // '..' alone or '..' + separator means outside; a child folder merely NAMED '..x' is still inside
+  if (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)) return 'contains';
+  return 'none';
+}
+
 // Returns a validated, resolved absolute path, or null (logging exactly why) when the raw env
 // value fails any check. Never throws — an operator's typo in an env var must never crash the
 // gateway at import time.
@@ -92,7 +120,7 @@ export function validateExtraScanRoot(raw) {
   // A UNC/network path (`\\host\share\...` or `//host/share/...`) is a fundamentally different
   // trust boundary than "another local folder on this machine" — rejected before path.resolve()
   // even normalizes it, so it can never sneak through as if it were a plain absolute path.
-  if (/^[\\/]{2}/.test(trimmed)) {
+  if (UNC_RE.test(trimmed)) {
     logRejectedExtraRoot('"' + trimmed + '" looks like a network/UNC path, not a local directory.');
     return null;
   }
@@ -112,7 +140,7 @@ export function validateExtraScanRoot(raw) {
     logRejectedExtraRoot('"' + resolved + '" is not a directory.');
     return null;
   }
-  if (path.parse(resolved).root === resolved) {
+  if (isDriveRoot(resolved)) {
     logRejectedExtraRoot('"' + resolved + '" is a drive root — too wide to scan.');
     return null;
   }
@@ -124,22 +152,38 @@ export function validateExtraScanRoot(raw) {
     logRejectedExtraRoot('"' + resolved + '" could not be resolved to its real, on-disk location.');
     return null;
   }
+  // Q2 fix: the TYPED-text UNC check above only ever sees what the operator wrote — a local-
+  // looking folder path that is actually a symlink/junction pointing at a network share resolves,
+  // via realpathSync.native, to a `\\host\share\...` target that never went through that check at
+  // all. Reject the RESOLVED target too.
+  if (UNC_RE.test(real)) {
+    logRejectedExtraRoot('"' + resolved + '" resolves to a network/UNC path ("' + real + '") — too wide a trust boundary.');
+    return null;
+  }
+  // F2 fix: same reasoning as the typed-path drive-root check above, but for the REAL target — a
+  // junction/symlink whose typed path looks like an ordinary folder can still resolve to a drive
+  // root ("C:\\"), which is exactly as wide as typing the drive root directly.
+  if (isDriveRoot(real)) {
+    logRejectedExtraRoot('"' + resolved + '" resolves to a drive root ("' + real + '") — too wide to scan.');
+    return null;
+  }
   const realHome = realpathOrNull(path.resolve(os.homedir())) ?? path.resolve(os.homedir());
-  const normReal = normalizeForCompare(real);
-  const normHome = normalizeForCompare(realHome);
-  if (normReal === normHome) {
+  const homeRelation = realAncestryRelation(real, realHome);
+  if (homeRelation === 'equal') {
     logRejectedExtraRoot('"' + resolved + '" is the home folder itself — too wide to scan.');
     return null;
   }
-  // normHome starting with normReal + a path separator means `real` is an ANCESTOR of home (e.g.
-  // `C:\Users` above `C:\Users\YOU`, or a drive-level folder above that) — home is CONTAINED IN
-  // the candidate, so scanning the candidate scans home too. Rejected for the same reason as home
-  // itself: too wide to scan.
-  if (normHome.startsWith(normReal + path.sep)) {
+  // `real` being an ANCESTOR of home (e.g. `C:\Users` above `C:\Users\YOU`, or a drive-level
+  // folder above that, including a drive root that slipped past the check above for some other
+  // reason) means home is CONTAINED IN the candidate, so scanning the candidate scans home too.
+  // Rejected for the same reason as home itself: too wide to scan.
+  if (homeRelation === 'contains') {
     logRejectedExtraRoot('"' + resolved + '" contains the home folder — too wide to scan.');
     return null;
   }
-  return resolved;
+  // F2 fix: return the RESOLVED real target, not the typed/link path — a link re-pointed after
+  // this validation ran must have no effect on what SYNC_SCAN_ROOTS actually scans.
+  return real;
 }
 
 const EXTRA_SCAN_ROOT = validateExtraScanRoot(process.env[EXTRA_SCAN_ROOT_ENV_NAME]);

@@ -3248,6 +3248,107 @@ console.log('\n79i) N8 fix — a malformed (present) user file is never overwrit
     const r = sync.safeSyncProject(tpl, p, { batchId: 'b79i-e2e', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true });
     t('79i5 the sync still completes (does not crash / abort) despite the malformed user file', typeof r.ok === 'boolean');
     t('79i5 the malformed user file is left BYTE-IDENTICAL after a real sync run', fs.readFileSync(userPath, 'utf8') === before);
+    // F4 fix (2026-09-26 independent review, LOW): before the fix, the malformed user file above meant the
+    // migration was SKIPPED, and --force-overwrite then replaced FORGE_STANDING_RULES.json with the clean
+    // template anyway, permanently dropping "owner-rule-79i-e2e" — this is the exact scenario F4 closes.
+    const templateAfter = JSON.parse(fs.readFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), 'utf8'));
+    t('F4 79i5 the owner rule SURVIVES in the project file (never dropped) when the user file is malformed under --force-overwrite', templateAfter.rules.some((r2) => r2.id === 'owner-rule-79i-e2e'));
+  }
+}
+
+// 79l) F4 fix (2026-09-26 independent review, LOW) — migrateOwnerStandingRules()'s return value was
+// ignored; a malformed/unreadable FORGE_STANDING_RULES.user.json under --force-overwrite (or on the
+// --unsafe/rawInstall path, which has no drift/conflict analysis at all) let the sync replace
+// FORGE_STANDING_RULES.json with the clean template anyway, permanently losing the never-migrated owner
+// rule. Fixed: migrateOwnerStandingRules() now attaches a `.pending` flag to its returned array (contents
+// unchanged, for backward compatibility — see 79h/79i/79j/79k above, all still passing unmodified); both
+// call sites skip replacing FORGE_STANDING_RULES.json this pass when `.pending` is true, with a plain
+// warning naming the fix (fix/remove the user file, then re-run).
+console.log('\n79l) F4 fix — a pending (unmigratable) owner rule is never dropped by a template replace');
+{
+  function tplWithCleanRule(prefix, ruleId) {
+    const tpl = freshDir(prefix);
+    fs.mkdirSync(path.join(tpl, 'config', 'orchestration'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'config', 'orchestration', 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: ruleId })] }, null, 2) + '\n');
+    return tpl;
+  }
+  function projectWithOwnerRuleAndMalformedUser(prefix, ownerId) {
+    const p = makeProject(freshDir(prefix), 'proj', null);
+    const standingDir = path.join(p, '.claude', 'config', 'orchestration');
+    fs.mkdirSync(standingDir, { recursive: true });
+    fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: ownerId, source: 'owner /forge remember' })] }, null, 2) + '\n');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    fs.writeFileSync(userPath, '{ not valid json at all');
+    return { p, standingDir, userPath };
+  }
+
+  // 79l1: migrateOwnerStandingRules() itself reports .pending on a malformed user file WITH an owner
+  // rule waiting, and .pending===false once nothing is pending (nothing to migrate at all).
+  {
+    const { p } = projectWithOwnerRuleAndMalformedUser('t79l-unit-pending', 'owner-79l1');
+    const origErr = console.error; console.error = () => {};
+    let ids; try { ids = sync.migrateOwnerStandingRules(p); } finally { console.error = origErr; }
+    t('79l1 .pending is true when an owner rule exists but the user file is malformed', ids.pending === true);
+    t('79l1 the returned ids array contents stay [] (backward compatible with existing callers)', Array.isArray(ids) && ids.length === 0);
+
+    const noneDir = freshDir('t79l-unit-nopending');
+    const noneStandingDir = path.join(noneDir, '.claude', 'config', 'orchestration');
+    fs.mkdirSync(noneStandingDir, { recursive: true });
+    fs.writeFileSync(path.join(noneStandingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: 'shipped-only-79l' })] }, null, 2) + '\n');
+    const ids2 = sync.migrateOwnerStandingRules(noneDir);
+    t('79l1 .pending is false when there is nothing to migrate at all', ids2.pending === false);
+  }
+
+  // 79l2: safeSyncProject (--force-overwrite) — the owner rule survives, a clear warning is printed, and
+  // the rest of the sync (other files) still proceeds normally.
+  {
+    const tpl = tplWithCleanRule('t79l-safe-tpl', 'product-79l2');
+    const { p, standingDir, userPath } = projectWithOwnerRuleAndMalformedUser('t79l-safe-root', 'owner-79l2');
+    const before = fs.readFileSync(userPath, 'utf8');
+    const warnings = [];
+    const origErr = console.error;
+    console.error = (msg) => { warnings.push(msg); };
+    let r;
+    try { r = sync.safeSyncProject(tpl, p, { batchId: 'b79l2', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true }); }
+    finally { console.error = origErr; }
+    t('79l2 the sync still completes (does not crash / abort)', typeof r.ok === 'boolean');
+    const after = JSON.parse(fs.readFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), 'utf8'));
+    t('79l2 the owner rule SURVIVES the force-overwrite (the exact regression this fix closes)', after.rules.some((r2) => r2.id === 'owner-79l2'));
+    t('79l2 the malformed user file is left BYTE-IDENTICAL (never destructively rewritten)', fs.readFileSync(userPath, 'utf8') === before);
+    t('79l2 a plain warning names the refusal to replace the file', warnings.some((w) => /refusing to replace/.test(w) && /FORGE_STANDING_RULES\.json/.test(w)));
+  }
+
+  // 79l3: rawInstall (--unsafe) — same protection on the path with no drift/conflict analysis at all.
+  {
+    const tpl = tplWithCleanRule('t79l-unsafe-tpl', 'product-79l3');
+    const { p, standingDir, userPath } = projectWithOwnerRuleAndMalformedUser('t79l-unsafe-root', 'owner-79l3');
+    const before = fs.readFileSync(userPath, 'utf8');
+    const warnings = [];
+    const origErr = console.error;
+    console.error = (msg) => { warnings.push(msg); };
+    let r;
+    try { r = sync.rawInstall(tpl, p, { batchId: 'b79l3', nowIso: '2026-01-01T00:00:00.000Z' }); }
+    finally { console.error = origErr; }
+    t('79l3 --unsafe install still completes', r && r.ok === true);
+    const after = JSON.parse(fs.readFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), 'utf8'));
+    t('79l3 the owner rule SURVIVES --unsafe install (the exact regression this fix closes on the rawInstall path)', after.rules.some((r2) => r2.id === 'owner-79l3'));
+    t('79l3 the malformed user file is left BYTE-IDENTICAL', fs.readFileSync(userPath, 'utf8') === before);
+    t('79l3 a plain warning names the refusal to replace the file', warnings.some((w) => /refusing to replace/.test(w) && /FORGE_STANDING_RULES\.json/.test(w)));
+  }
+
+  // 79l4: once the owner fixes the user file (removes the malformation), a LATER sync completes the
+  // migration normally and the template file DOES get replaced/cleaned — the fix must not permanently
+  // freeze the file, only pause the replace while genuinely pending.
+  {
+    const tpl = tplWithCleanRule('t79l-fixed-tpl', 'product-79l4');
+    const { p, standingDir, userPath } = projectWithOwnerRuleAndMalformedUser('t79l-fixed-root', 'owner-79l4');
+    fs.unlinkSync(userPath); // "the owner fixes it" == removes the malformed file (ENOENT path, safe to start empty)
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b79l4', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true });
+    t('79l4 the sync completes once the malformed file is gone', typeof r.ok === 'boolean');
+    const after = JSON.parse(fs.readFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), 'utf8'));
+    t('79l4 the template file is now CLEAN (migration completed, no longer pending)', !after.rules.some((r2) => r2.source === 'owner /forge remember'));
+    const userDocAfter = JSON.parse(fs.readFileSync(userPath, 'utf8'));
+    t('79l4 the owner rule landed safely in the user file instead', userDocAfter.rules.some((r2) => r2.id === 'owner-79l4'));
   }
 }
 

@@ -794,6 +794,16 @@ function isReviewDispatch(e) {
   if (!rolVelden.length) return false;
   // Eén tegenstrijdig rolveld is genoeg om de reviewclaim te laten vervallen.
   if (!rolVelden.every((f) => REVIEW_ROLE_RE.test(e[f].trim()))) return false;
+  // F5 fix (2026-09-26 independent review, NOTE): a PRESENT but NON-string task/mission (e.g. a number or
+  // object) used to be silently filtered out below exactly like a genuinely ABSENT field — if the OTHER
+  // field happened to be pure review text, the dispatch was wrongly classified as review-only with an
+  // unexamined non-string value hiding behind it. Same "one contradiction is enough" discipline as the role
+  // fields above: a present-but-wrong-shape task/mission poisons the whole claim -> counts as work (false),
+  // the safe reading. `null`/`undefined` still mean "not present at all" and fall through to the normal
+  // string filter below.
+  for (const f of TAAK_VELDEN) {
+    if (e[f] !== undefined && e[f] !== null && typeof e[f] !== 'string') return false;
+  }
   // Zonder taak/mission is onbekend waarvoor de agent is ingezet — dat is geen bewijs van review.
   const taakVelden = TAAK_VELDEN.filter((f) => typeof e[f] === 'string' && e[f].trim() !== '');
   if (!taakVelden.length) return false;

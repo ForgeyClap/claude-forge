@@ -86,6 +86,25 @@ const ALLOWED_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 // explicitly pointed at a .js/.cjs/.mjs file.
 const SCRIPT_EXT_RE = /\.(c?js|mjs)$/i;
 
+// F7 fix (2026-09-26 independent review, LOW): runCodex()'s spawnSync had NO timeout at all — a hung/stuck
+// codex process would block the caller indefinitely with no honest way out. Default 30 minutes; overridable
+// via FORGE_CODEX_TIMEOUT_MS (a positive integer number of milliseconds). An invalid value (missing, empty,
+// non-numeric, zero, negative, non-integer) is ignored and the default is used — never treated as "no
+// timeout".
+const DEFAULT_CODEX_TIMEOUT_MS = 30 * 60 * 1000;
+const POSITIVE_INT_RE = /^[0-9]+$/;
+
+/** resolveCodexTimeoutMs(env) -> the spawnSync timeout in milliseconds: FORGE_CODEX_TIMEOUT_MS when it is a
+ *  positive integer string, otherwise DEFAULT_CODEX_TIMEOUT_MS. `env` defaults to process.env (injectable
+ *  for tests). */
+function resolveCodexTimeoutMs(env) {
+  const e = env || process.env;
+  const raw = e.FORGE_CODEX_TIMEOUT_MS;
+  if (typeof raw !== 'string' || !POSITIVE_INT_RE.test(raw.trim())) return DEFAULT_CODEX_TIMEOUT_MS;
+  const n = parseInt(raw.trim(), 10);
+  return (Number.isFinite(n) && n > 0) ? n : DEFAULT_CODEX_TIMEOUT_MS;
+}
+
 /** sanitizeModel(raw, warnings) -> a validated model string, or null to explicitly clear a pin, or
  *  undefined when the value must be REJECTED (a warning is pushed and the shipped value is kept). */
 function sanitizeModel(raw, warnings) {
@@ -181,10 +200,32 @@ function effectiveConfig(root) {
   };
 }
 
+/** validatedModel(raw) -> raw trimmed, if non-empty AND it matches MODEL_PATTERN; otherwise null. This is
+ *  the SAME MODEL_PATTERN check the user-override path already applies in sanitizeModel() — F3 fix
+ *  (2026-09-26 independent review, LOW): MODEL_PATTERN/ALLOWED_EFFORTS used to be applied ONLY to a
+ *  codex-review.user.json override. The shipped file's own review.model/reasoning_effort (and, via
+ *  `run --root <dir>`, ANY caller-chosen "shipped" file) flowed into buildCommand() with no shape check at
+ *  all. Re-validating the FINAL value here — whichever file it came from — closes that: an invalid value is
+ *  simply omitted from argv (codex then falls back to its own default) rather than passed through. */
+function validatedModel(raw) {
+  const v = nonEmptyString(raw);
+  return (v && MODEL_PATTERN.test(v)) ? v : null;
+}
+
+/** validatedEffort(raw) -> raw trimmed+lower-cased, if it is one of ALLOWED_EFFORTS; otherwise null. Same
+ *  rationale as validatedModel() — see F3 doc comment above. */
+function validatedEffort(raw) {
+  const v = nonEmptyString(raw);
+  const low = v ? v.toLowerCase() : null;
+  return (low && ALLOWED_EFFORTS.indexOf(low) !== -1) ? low : null;
+}
+
 /** buildCommand(effective, opts) -> the real CLI invocation as an ARGV ARRAY, DERIVED from the effective
  *  model / reasoning_effort. `opts.adversarial: true` swaps in the adversarial prompt prefix. Omits `-m`
- *  when model is unset, and `-c model_reasoning_effort=...` when reasoning_effort is unset — never
- *  fabricates a value for either flag.
+ *  when model is unset OR invalid, and `-c model_reasoning_effort=...` when reasoning_effort is unset OR
+ *  invalid — never fabricates a value for either flag, and never passes an unvalidated value through
+ *  regardless of whether it came from the shipped file, a user override, or a `run --root <dir>`-selected
+ *  file (F3 fix — see validatedModel()/validatedEffort() above).
  *
  *  WP-S14 3.1: the sandbox is HARD-CODED to `read-only` — it is never read from `effective.review.sandbox`
  *  (shipped or user) at all, so no config value, valid or not, can ever loosen it. Returns an array so the
@@ -193,8 +234,8 @@ function effectiveConfig(root) {
 function buildCommand(effective, opts) {
   const o = opts || {};
   const r = (effective && effective.review) || {};
-  const model = nonEmptyString(r.model);
-  const effort = nonEmptyString(r.reasoning_effort);
+  const model = validatedModel(r.model);
+  const effort = validatedEffort(r.reasoning_effort);
   const argv = ['codex', 'exec'];
   if (model) argv.push('-m', model);
   if (effort) argv.push('-c', 'model_reasoning_effort=' + effort);
@@ -227,14 +268,20 @@ function isPinned(effective) { return !!nonEmptyString(effective && effective.re
  *  real `codex.exe` first, then for the npm shim's own script (`<dir>/node_modules/@openai/codex/bin/codex.js`
  *  next to `<dir>/codex.cmd`), which runCodex() runs as `node <script>` — still no shell, and a fresh laptop
  *  needs no hand-set variable. Never read from either config file, so a gitignored/unreviewed file can never
- *  redirect what actually gets executed. `env`/`platform` default to this process (injectable for tests). */
+ *  redirect what actually gets executed. `env`/`platform` default to this process (injectable for tests).
+ *
+ *  F7 fix (2026-09-26 independent review, LOW): a relative PATH entry (e.g. `.` or a bare `bin`) resolves
+ *  against whatever the CURRENT WORKING DIRECTORY happens to be at spawn time — not a fixed, known
+ *  location — so "the first codex.exe/codex.cmd found on PATH" could silently pick up a same-named file
+ *  from an unrelated, cwd-dependent directory. Non-absolute PATH entries are now skipped entirely; only an
+ *  absolute directory is ever searched. */
 function resolveCodexBin(env, platform) {
   const e = env || process.env;
   const plat = platform || process.platform;
   if (e.FORGE_CODEX_BIN) return e.FORGE_CODEX_BIN;
   if (plat === 'win32') {
     const pathKey = Object.keys(e).find((k) => k.toUpperCase() === 'PATH');
-    const dirs = String(pathKey ? e[pathKey] : '').split(';').map((d) => d.trim().replace(/^"|"$/g, '')).filter(Boolean);
+    const dirs = String(pathKey ? e[pathKey] : '').split(';').map((d) => d.trim().replace(/^"|"$/g, '')).filter(Boolean).filter((d) => path.isAbsolute(d));
     for (const d of dirs) {
       const exe = path.join(d, 'codex.exe');
       if (fs.existsSync(exe)) return exe;
@@ -269,7 +316,11 @@ function resolveCodexBin(env, platform) {
  *  footgun (reproduced live: a crafted "prompt" containing ` & echo ... ` executed as a second command)
  *  — so this function never falls back to it. That spawn failure is reported honestly in `spawn_error`,
  *  never silently swallowed and never retried with a shell; the caller is told to point FORGE_CODEX_BIN at
- *  a real executable (or the shim's underlying script, run via node) instead. */
+ *  a real executable (or the shim's underlying script, run via node) instead.
+ *
+ *  F7: the real spawnSync always carries a timeout (`opts.timeoutMs` / FORGE_CODEX_TIMEOUT_MS / a 30-minute
+ *  default — see resolveCodexTimeoutMs()). A timeout is reported as `timed_out: true` plus an honest
+ *  `spawn_error` (Node's own ETIMEDOUT) — status is never 0 and it is never mistaken for a successful run. */
 function runCodex(effective, opts) {
   const o = opts || {};
   const codexBin = o.codexBin || resolveCodexBin();
@@ -279,7 +330,7 @@ function runCodex(effective, opts) {
   // route the MODEL_PATTERN leading-dash rule closes: `--prompt "--dangerously-bypass-approvals-and-sandbox"`).
   // Refused before anything is spawned; a real review prompt never needs to start with a dash.
   if (typeof o.prompt === 'string' && /^-/.test(o.prompt)) {
-    return { dry_run: !!o.dryRun, codex_bin: codexBin, argv: finalArgv, exec_target: null, exec_args: [], status: -1, stdout: '', stderr: '', spawn_error: null,
+    return { dry_run: !!o.dryRun, codex_bin: codexBin, argv: finalArgv, exec_target: null, exec_args: [], status: -1, stdout: '', stderr: '', spawn_error: null, timed_out: false,
       refused: 'the prompt starts with "-", so codex would read it as an option instead of the prompt — start it with a word' };
   }
   if (typeof o.prompt === 'string' && o.prompt.trim()) finalArgv[finalArgv.length - 1] = o.prompt;
@@ -289,23 +340,38 @@ function runCodex(effective, opts) {
   const execArgs = isScript ? [codexBin].concat(args) : args;
 
   if (o.dryRun) {
-    return { dry_run: true, codex_bin: codexBin, argv: finalArgv, exec_target: execTarget, exec_args: execArgs, status: null, stdout: '', stderr: '', spawn_error: null };
+    return { dry_run: true, codex_bin: codexBin, argv: finalArgv, exec_target: execTarget, exec_args: execArgs, status: null, stdout: '', stderr: '', spawn_error: null, timed_out: false };
   }
-  const r = spawnSync(execTarget, execArgs, { shell: false, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  // F7 fix — see DEFAULT_CODEX_TIMEOUT_MS/resolveCodexTimeoutMs() above: never let a hung codex process
+  // block the caller forever. On timeout, Node reports r.error.code === 'ETIMEDOUT' and r.status stays
+  // null (never 0) — surfaced below as BOTH an honest spawn_error string AND an explicit timed_out:true,
+  // so a caller checking either one sees the truth; it is never reported as a successful run.
+  const timeoutMs = o.timeoutMs || resolveCodexTimeoutMs();
+  const r = spawnSync(execTarget, execArgs, { shell: false, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs });
+  const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
   return {
     dry_run: false, codex_bin: codexBin, argv: finalArgv, exec_target: execTarget, exec_args: execArgs,
     status: (r.status === null || r.status === undefined) ? -1 : r.status,
     stdout: r.stdout || '', stderr: r.stderr || '',
     spawn_error: r.error ? (String(r.error.code || '') + ': ' + String(r.error.message || r.error)) : null,
+    timed_out: timedOut,
   };
 }
 
 module.exports = {
   shippedPathOf, userPathOf, effectiveConfig, buildCommand, commandToDisplayString, modelLabel, effortLabel, isPinned,
-  resolveCodexBin, runCodex,
-  MODEL_PATTERN, ALLOWED_EFFORTS,
+  resolveCodexBin, runCodex, resolveCodexTimeoutMs,
+  MODEL_PATTERN, ALLOWED_EFFORTS, DEFAULT_CODEX_TIMEOUT_MS,
 };
 
+/** parseRunArgs(rest) -> CLI options for the `run` subcommand.
+ *  `--root <dir>` points effectiveConfig()/shippedPathOf() at a different directory's
+ *  `.claude/config/orchestration/codex-review.json` instead of this repo's own — useful for a test/dry-run
+ *  against a synthetic fixture tree. F3 (2026-09-26 independent review, LOW): this used to let a caller
+ *  pick which "shipped" file's review.model/reasoning_effort reached buildCommand() UNVALIDATED. Now that
+ *  buildCommand() itself re-validates the final model/effort against MODEL_PATTERN/ALLOWED_EFFORTS
+ *  regardless of which file (or which --root) they came from, --root can safely remain a test aid: nothing
+ *  it can influence reaches argv without that same validation. */
 function parseRunArgs(rest) {
   const o = { adversarial: false, prompt: null, root: null, dryRun: false, json: false };
   for (let i = 0; i < rest.length; i++) {

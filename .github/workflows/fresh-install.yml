@@ -176,25 +176,37 @@ jobs:
       # fetches install.sh straight from raw.githubusercontent.com exactly like the documented one-liner
       # — no local checkout of the script is used, so BASH_SOURCE is genuinely empty here, unlike every
       # other step in this job which runs `bash install.sh` from the checked-out repo.
-      # NOTE: raw.githubusercontent.com/.../main/install.sh is the commit under test only once this fix
-      # has actually been merged to main (a `push` trigger runs after that merge lands; a `pull_request`
-      # run fetches whatever is on main right now, which may still be the pre-fix installer). That gap is
-      # accepted — a pre-merge version mismatch here is a known limitation of testing a true "no script on
-      # disk" pipe install from a still-unmerged branch, not a regression in this branch's install.sh.
+      # The commit under test is piped, not whatever main holds: install.sh comes from raw.githubusercontent.com
+      # at this run's own commit, and FORGE_REF makes it download this run's own branch archive. On a push to
+      # main that is main itself (the documented one-liner); on a pull request from a branch of THIS repository
+      # it is the PR head (before v2.8.0 a release PR always piped main's old installer and failed on the
+      # version bump). A pull request from a fork cannot be fetched this way, so it pipes main and skips only the
+      # version comparison, saying so. The ref/sha reach the script through env, never interpolated into it.
       - name: Piped install smoke (curl | bash) into a fresh project (POSIX)
         if: runner.os != 'Windows'
         env:
           HOME: ${{ env.FORGE_TEST_HOME }}
+          PIPE_SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          PIPE_REF: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+          PIPE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -e
           mkdir -p "$RUNNER_TEMP/piped-project"
           cd "$RUNNER_TEMP/piped-project"
-          curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.sh | FORGE_YES=1 bash
+          if [ "$PIPE_SAME_REPO" = "true" ]; then
+            echo "piping install.sh at $PIPE_SHA, downloading branch $PIPE_REF"
+            curl -fsSL "https://raw.githubusercontent.com/ForgeyClap/claude-forge/$PIPE_SHA/install.sh" | FORGE_YES=1 FORGE_REF="$PIPE_REF" bash
+          else
+            echo "::notice::pull request from a fork: piping main's installer; the version comparison is skipped"
+            curl -fsSL https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.sh | FORGE_YES=1 bash
+          fi
           [ -f ".claude/forge-bin/forge-doctor.cjs" ] || { echo "::error::piped install did not deliver .claude/forge-bin/forge-doctor.cjs"; exit 1; }
           [ -f ".claude/FORGE_VERSION.json" ] || { echo "::error::piped install did not write .claude/FORGE_VERSION.json"; exit 1; }
           want="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/VERSION")"
           got="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".claude/FORGE_VERSION.json","utf8")).forge_version)')"
-          [ "$got" = "$want" ] || { echo "::error::piped install reported version $got, expected $want (see the NOTE above on raw-main lag before merge)"; exit 1; }
+          if [ "$PIPE_SAME_REPO" = "true" ]; then
+            [ "$got" = "$want" ] || { echo "::error::piped install reported version $got, expected $want"; exit 1; }
+          fi
           echo "ok   piped install delivered forge-doctor.cjs + FORGE_VERSION.json ($got)"
 
       # HOME-guard check (review HIGH #3): the installer must refuse to write the PROJECT payload into
@@ -456,13 +468,13 @@ jobs:
           Write-Host 'ok   a second -Uninstall is a no-op'
           exit 0
 
-      # v2.8.0 upgrade path (laptop re-audit N8/D1): a project installed by an OLD (2.7.2-shaped) release
-      # has cwd-relative hook commands with no $CLAUDE_PROJECT_DIR and no separate PowerShell matcher. The
-      # merge must recognise those as the SAME hook (just an older form) and normalise them, never leave the
-      # old form in place AND add a second, duplicate entry for the same script under the same matcher.
-      # NOTE: this assertion will only pass once the settings-merge tool's own upgrade-recognition change
-      # (owned by a different work package) has been synced into this dist copy -- written correctly now so
-      # it starts passing the moment that lands, instead of being invented later.
+      # v2.8.0 upgrade path (laptop re-audit N8/D1): a project installed by 2.7.2 has four cwd-relative hook
+      # commands (snapshot marker x2, snapshot reinject, tool hook) with no $CLAUDE_PROJECT_DIR and no separate
+      # PowerShell matcher. The merge must recognise those as the SAME hooks in an older form and rewrite them,
+      # never leave the old form in place AND add a duplicate. The fixture below is byte-for-byte the hook shape
+      # 2.7.0-2.7.2 actually shipped: the gate hook was already in the $CLAUDE_PROJECT_DIR form with the
+      # Bash|PowerShell matcher. (An earlier fixture invented a cwd-relative gate hook no release ever had; the
+      # merge rightly treats an unknown command as the user's own and leaves it alone.)
       - name: Upgrading a 2.7.2-shaped settings.json de-duplicates hooks into the $CLAUDE_PROJECT_DIR form (POSIX)
         if: runner.os != 'Windows'
         env:
@@ -485,16 +497,13 @@ jobs:
                 { "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-toolhook.cjs", "timeout": 10 } ] }
               ],
               "PreToolUse": [
-                { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-gate-hook.cjs", "timeout": 10 } ] }
+                { "matcher": "Bash|PowerShell", "hooks": [ { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs\"", "timeout": 10 } ] }
               ]
             }
           }
           OLDSETTINGS
           bash install.sh --project "$proj" --yes >/dev/null
-          node tests/installer/assert-hook-dedup.js "$proj/.claude/settings.json" || {
-            echo "::warning::hook de-duplication on upgrade is not green yet -- expected until the settings-merge tool's upgrade-recognition change is synced into this dist copy (see the step comment)";
-            exit 1;
-          }
+          node tests/installer/assert-hook-dedup.js "$proj/.claude/settings.json"
 
       - name: Upgrading a 2.7.2-shaped settings.json de-duplicates hooks into the $CLAUDE_PROJECT_DIR form (Windows)
         if: runner.os == 'Windows'
@@ -519,7 +528,7 @@ jobs:
                 { "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-toolhook.cjs", "timeout": 10 } ] }
               ],
               "PreToolUse": [
-                { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-gate-hook.cjs", "timeout": 10 } ] }
+                { "matcher": "Bash|PowerShell", "hooks": [ { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs\"", "timeout": 10 } ] }
               ]
             }
           }
@@ -528,9 +537,5 @@ jobs:
           [System.IO.File]::WriteAllText($settingsPath, $old, (New-Object System.Text.UTF8Encoding $false))
           powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
           node tests/installer/assert-hook-dedup.js $settingsPath
-          $status = $LASTEXITCODE
-          if ($status -ne 0) {
-            Write-Host '::warning::hook de-duplication on upgrade is not green yet -- expected until the settings-merge tool''s upgrade-recognition change is synced into this dist copy (see the step comment)'
-            exit 1
-          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           exit 0

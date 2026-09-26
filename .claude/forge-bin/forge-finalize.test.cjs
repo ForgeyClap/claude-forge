@@ -883,6 +883,38 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
   try { fs.rmSync(GITROOT7, { recursive: true, force: true }); } catch { }
 }
 
+// 22) F6 (2026-09-26 independent review, NOTE): check()'s acceptance -> verdict mapping used to only NAME
+// the statuses to REJECT (fail/historical/undetermined) and let anything else — including a status this
+// code has never seen — fall through to the strongest verdict, FINALIZED. verdictForAcceptance() is now the
+// one, exported, directly-testable mapping: FINALIZED only for the exact known-good 'current' status; a
+// genuinely unrecognized status is mapped to UNDETERMINED, exactly like 'undetermined' itself, never trusted
+// as green. evaluateAcceptance() itself only ever returns the four known statuses today, so this exercises
+// the mapping directly (a synthetic/future status can never reach evaluateAcceptance() through real input).
+console.log('\n22) F6 fix — an unrecognized acceptance status is never trusted as FINALIZED');
+{
+  const receipt = { evidence_digest: 'e'.repeat(64), code_commit: 'c'.repeat(40), independent_verification: { available: true } };
+  const unknown = F.verdictForAcceptance({ status: 'some-status-this-code-has-never-seen' }, receipt);
+  t('22a an unrecognized acceptance.status never returns FINALIZED', unknown.verdict !== 'FINALIZED', JSON.stringify(unknown));
+  t('22b an unrecognized acceptance.status maps to UNDETERMINED (the same honest, non-committal verdict as a real undetermined git state)', unknown.verdict === 'UNDETERMINED', JSON.stringify(unknown));
+  t('22c the reason names the exact unrecognized status, so it is diagnosable', unknown.reason && unknown.reason.includes('some-status-this-code-has-never-seen'), unknown.reason);
+  t('22d the receipt is still carried through on the unrecognized-status verdict (never dropped)', unknown.receipt === receipt);
+
+  // every KNOWN status must still map exactly as before (no regression from the refactor into
+  // verdictForAcceptance()):
+  const cur = F.verdictForAcceptance({ status: 'current' }, receipt);
+  t('22e status "current" still returns FINALIZED', cur.verdict === 'FINALIZED', JSON.stringify(cur));
+  t('22e FINALIZED still carries evidence_pinned/independent_verification/label_only', cur.evidence_pinned === true && cur.label_only === true && cur.independent_verification === receipt.independent_verification);
+
+  const und = F.verdictForAcceptance({ status: 'undetermined', reason: 'kon niet worden vastgesteld' }, receipt);
+  t('22f status "undetermined" still returns UNDETERMINED with its own reason (unchanged)', und.verdict === 'UNDETERMINED' && und.reason === 'kon niet worden vastgesteld');
+
+  const failed = F.verdictForAcceptance({ status: 'fail', reason: 'bewijs gewijzigd' }, receipt);
+  t('22g status "fail" still returns STALE (unchanged)', failed.verdict === 'STALE' && failed.reason === 'bewijs gewijzigd');
+
+  const hist = F.verdictForAcceptance({ status: 'historical', reason: 'commit gedreven', code_commit_then: 'a'.repeat(40), code_commit_now: 'b'.repeat(40) }, receipt);
+  t('22h status "historical" still returns HISTORICAL with its commit fields (unchanged)', hist.verdict === 'HISTORICAL' && hist.code_commit_then === 'a'.repeat(40) && hist.code_commit_now === 'b'.repeat(40));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }

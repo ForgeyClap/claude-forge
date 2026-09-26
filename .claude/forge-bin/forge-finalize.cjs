@@ -665,38 +665,53 @@ function check(root, runId) {
    *  re-runs the contract BEFORE ever reporting `historical` — a receipt whose commit/domain has drifted
    *  AND whose contract is currently red is reported as the real failure (STALE), never masked behind a
    *  softer-sounding HISTORICAL. */
-  {
-    const acceptance = evaluateAcceptance(root, runId, receipt);
-    if (acceptance.status === 'fail') {
-      return { verdict: 'STALE', receipt, reason: acceptance.reason };
-    }
-    if (acceptance.status === 'historical') {
-      return {
-        verdict: 'HISTORICAL', receipt, reason: acceptance.reason,
-        code_commit_then: acceptance.code_commit_then, code_commit_now: acceptance.code_commit_now,
-        domain_then: acceptance.domain_then, domain_now: acceptance.domain_now,
-      };
-    }
-    /** Also-noted fix (2026-09-26 independent review): without this branch, an 'undetermined' acceptance
-     *  fell through to the FINALIZED return below — exactly the bug being fixed, one call site later.
-     *  Neither STALE (we have no evidence it is actually wrong) nor HISTORICAL (we have no evidence the
-     *  commit drifted) is honest here — a dedicated verdict says plainly that the current git state could
-     *  not be reconfirmed right now. */
-    if (acceptance.status === 'undetermined') {
-      return { verdict: 'UNDETERMINED', receipt, reason: acceptance.reason };
-    }
+  return verdictForAcceptance(evaluateAcceptance(root, runId, receipt), receipt);
+}
+
+/** verdictForAcceptance(acceptance, receipt) -> the final {verdict, ...} object check() returns for a given
+ *  evaluateAcceptance() result. F6 fix (2026-09-26 independent review, NOTE): this used to be an inline
+ *  if/if/if chain that only NAMED the statuses to REJECT (fail/historical/undetermined) and let everything
+ *  else — including any status this code has never seen, past or future — fall through to the strongest
+ *  verdict, FINALIZED. Extracted as its own function and inverted: FINALIZED is returned ONLY for the exact
+ *  known-good status `'current'`; every other value, known or not, is mapped explicitly, with an unknown
+ *  status treated the same as `'undetermined'` (honest, non-committal) rather than trusted as green. Exported
+ *  so this mapping can be tested directly against a synthetic/future status, independent of a real
+ *  evaluateAcceptance() run (evaluateAcceptance() itself only ever returns the four known values today). */
+function verdictForAcceptance(acceptance, receipt) {
+  if (acceptance.status === 'fail') {
+    return { verdict: 'STALE', receipt, reason: acceptance.reason };
   }
-  /** R4-07/R5-08: ook de UITSLAG draagt de caveat, niet alleen de receipt — een consument die alleen
-   *  `verdict` leest, mag de owner-gated beperking niet mislopen. */
+  if (acceptance.status === 'historical') {
+    return {
+      verdict: 'HISTORICAL', receipt, reason: acceptance.reason,
+      code_commit_then: acceptance.code_commit_then, code_commit_now: acceptance.code_commit_now,
+      domain_then: acceptance.domain_then, domain_now: acceptance.domain_now,
+    };
+  }
+  if (acceptance.status === 'current') {
+    /** R4-07/R5-08: ook de UITSLAG draagt de caveat, niet alleen de receipt — een consument die alleen
+     *  `verdict` leest, mag de owner-gated beperking niet mislopen. */
+    return {
+      verdict: 'FINALIZED', receipt,
+      evidence_pinned: typeof receipt.evidence_digest === 'string' && !!receipt.evidence_digest,
+      independent_verification: receipt.independent_verification || { available: false, reason: 'receipt van vóór deze pinning', label_only: true },
+      label_only: true,
+    };
+  }
+  /** Also-noted fix (2026-09-26 independent review) + F6: `'undetermined'`, AND any status this function
+   *  does not recognize at all, both land here. Neither STALE (we have no evidence it is actually wrong) nor
+   *  HISTORICAL (we have no evidence the commit drifted) nor FINALIZED (we have no confirmed-current
+   *  acceptance) is honest for either case — a dedicated, non-committal verdict says plainly that this
+   *  outcome was not positively confirmed. */
+  const known = acceptance.status === 'undetermined';
   return {
-    verdict: 'FINALIZED', receipt,
-    evidence_pinned: typeof receipt.evidence_digest === 'string' && !!receipt.evidence_digest,
-    independent_verification: receipt.independent_verification || { available: false, reason: 'receipt van vóór deze pinning', label_only: true },
-    label_only: true,
+    verdict: 'UNDETERMINED', receipt,
+    reason: known ? acceptance.reason
+      : 'onbekende acceptance-status ' + JSON.stringify(acceptance.status) + ' (verwacht: fail/historical/undetermined/current) — dit eindverdict wordt niet vertrouwd als FINALIZED zonder een herkende positieve bevestiging',
   };
 }
 
-module.exports = { finalize, check, readReceipt, receiptFileOf, classify };
+module.exports = { finalize, check, readReceipt, receiptFileOf, classify, verdictForAcceptance };
 
 if (require.main === module) {
   const args = process.argv.slice(2);

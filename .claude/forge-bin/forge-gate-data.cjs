@@ -58,8 +58,25 @@ const LAYOUT = new Set(['mv', 'move', 'move-item', 'mi', 'ln', 'mklink', 'cp', '
 // `git grep -O<pager>` / `--open-files-in-pager`, `--pager`, `rg --pre <cmd>`. Case-sensitive on purpose:
 // grep's everyday `-o` must keep working.
 const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'select-string', 'sls', 'findstr']);
-const EXEC_FLAG_WORD_RE = /^(?:-O.*|--open-files-in-pager(?:=.*)?|--pager(?:=.*)?|--pre(?:=.*)?)$/;
+// v2.8.0 final review F1: `--op` covers every unique prefix git accepts for --open-files-in-pager, and
+// `-[A-Za-z]*O` a grouped short-option word such as `-iO<pager>`.
+const EXEC_FLAG_WORD_RE = /^(?:-[A-Za-z]*O.*|--op.*|--pager(?:=.*)?|--pre.*)$/;
 const segHasExecFlag = (ws) => ws.some((x) => EXEC_FLAG_WORD_RE.test(String(x.raw).replace(/["']/g, '')));
+// v2.8.0 final review Q1: an unquoted `{`/`(` (PowerShell script block or sub-expression) or a live `$(`/backtick
+// anywhere in the segment means the "search" can run one of its quoted arguments — nothing is stripped then.
+const segCanRunText = (ws) => ws.some((x) => {
+  const raw = String(x.raw);
+  const spans = Array.isArray(x.spans) ? x.spans : [];
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    const sub = c === '`' || (c === '$' && raw[i + 1] === '(');
+    if (c !== '{' && c !== '(' && !sub) continue;
+    const pos = x.start + i;
+    const inSpan = spans.some((sp) => pos >= sp.start && pos < sp.end && (!sub || sp.inert));
+    if (!inSpan) return true;
+  }
+  return false;
+});
 const SCRIPT_EXT_RE = /\.(sh|bash|zsh|ps1|psm1|cmd|bat|js|cjs|mjs|ts|py|rb|pl|php)$/i;
 // MARKER_RE/MARKER_AT_RE (the heredoc-marker regexes) now live in forge-gate-quotes.cjs — this file no longer
 // scans for a marker itself, it only supplies the writer/commit-head detection stripHeredocs() there consumes.
@@ -227,14 +244,14 @@ function literalDataSpans(segs) {
       if (dests.some((d) => SCRIPT_EXT_RE.test(d))) return;
       picked = ws.slice(1).filter(wholeInert);
     } else if (SEARCH.has(h)) {
-      if (segHasExecFlag(ws)) return; // v2.8.0 N1: the tool can execute one of its arguments
+      if (segHasExecFlag(ws) || segCanRunText(ws)) return; // v2.8.0 N1/Q1: the tool can execute one of its arguments
       picked = ws.slice(1).filter(wholeInert);
     } else if (h === 'git') {
       const sub = gitSubcommand(ws);
       const subWord = sub && !sub.word.spans.length ? sub.word.raw.toLowerCase() : '';
       const subAt = sub ? sub.index : 1;
       if (subWord === 'commit') ws.forEach((x, n) => { if (/^(-m|-am|--message)$/.test(x.raw) && wholeInert(ws[n + 1])) picked.push(ws[n + 1]); });
-      if (subWord === 'grep' && !segHasExecFlag(ws)) picked.push(...ws.slice(subAt + 1).filter(wholeInert));
+      if (subWord === 'grep' && !segHasExecFlag(ws) && !segCanRunText(ws)) picked.push(...ws.slice(subAt + 1).filter(wholeInert));
       if (subWord === 'log') {
         ws.forEach((x, n) => {
           if (x.raw === '--grep' && wholeInert(ws[n + 1])) picked.push(ws[n + 1]);

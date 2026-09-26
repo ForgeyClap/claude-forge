@@ -54,8 +54,8 @@ found in the fixes. It was verified on a simulated laptop of exactly that shape 
   longer trip the opaque-exec, destructive-delete or kill-by-name gates. A kill or delete verb inside a live
   interpreter argument (`sh -c "pkill x"`, `powershell -Command "Stop-Process -Name x"`, `cmd /c "taskkill …"`)
   is still blocked; only pure search tools and bare assignments are exempt, and a search command loses that
-  exemption as soon as it could run text itself (process or command substitution, a PowerShell sub-expression,
-  git grep's `-O` pager, `rg --pre`; `ag` and `ack` are not treated as pure search tools).
+  exemption as soon as it could run text itself (process or command substitution, a PowerShell sub-expression or script block,
+  git grep's pager in any spelling git accepts, `rg --pre`; `ag` and `ack` are not treated as pure search tools).
 
 ### Your private settings never ship (audit N4)
 - Every fresh install used to receive the maintainer's own `/forge remember` rule about the maintainer's private
@@ -64,14 +64,17 @@ found in the fixes. It was verified on a simulated laptop of exactly that shape 
   rule can add or reinforce but can never switch off a shipped protection such as never-auto-push (a hand-edited
   `cannot_override_core` flag in the private file is ignored), and a broken private file falls back to the
   shipped rules instead of dropping them all. The upgrade migration never overwrites a private file it cannot
-  read: it warns and leaves the file alone.
+  read: it warns, leaves the file alone, and does not replace the shipped rules file in that pass, so no owner
+  rule is lost.
 - The same split for scout verdicts, the bench baseline and the Codex reviewer pin: the shipped Codex config
   now pins no model (the Codex CLI's own default works on any account), and a private `codex-review.user.json`
-  may set only the model and effort — the review sandbox stays read-only no matter what. A model name or review
-  prompt that starts with a dash is refused (it would reach Codex as an option).
+  may set only the model and effort — the review sandbox stays read-only no matter what. The model and effort are checked
+  where the Codex command is built, whichever file they come from, and a model name or review prompt that
+  starts with a dash is refused (it would reach Codex as an option).
 - The Codex reviewer has one real command to run a review without a shell
   (`node .claude/forge-bin/forge-codexreview-config.cjs run --prompt "..."`). On Windows it finds the npm install
-  behind `codex.cmd` by itself, so nothing has to be set by hand.
+  behind `codex.cmd` by itself, so nothing has to be set by hand. A review run stops after 30 minutes by
+  default (`FORGE_CODEX_TIMEOUT_MS` changes that) and is reported as timed out, never as a result.
 - `forge-sync` keeps its backups inside the project.
 
 ### Honest completion (audit N2, D2, D3, D6)
@@ -91,8 +94,10 @@ found in the fixes. It was verified on a simulated laptop of exactly that shape 
   answers "ambiguous project name" with both paths instead of silently acting on the first one, and says how to
   resolve it (rename one folder, or open the project from its own folder). The optional
   extra projects root rejects network shares, drive roots, relative paths, your home folder in any spelling, a
-  folder that contains your home folder, and a link that points to it, and error messages no longer
-  reveal your home path.
+  folder that contains your home folder, and a link that points to any of those, to a drive root or to a
+  network share; it scans the resolved folder, so re-pointing the link later has no effect. Error messages no
+  longer reveal your home path (the "ambiguous project name" answer deliberately lists the two project paths so
+  you can tell them apart).
 
 ### Installer
 - **New:** `install.ps1 -Uninstall` / `install.sh --uninstall` removes exactly what the installer wrote, using
@@ -116,13 +121,18 @@ found in the fixes. It was verified on a simulated laptop of exactly that shape 
 ### CI
 - Green on Linux and Windows, Node 18 and 22 (2.7.2's tag was red on 3 of 5 jobs: a stopwatch assertion and a
   Windows step that leaked the installer's intended exit code). The release was tagged only after CI passed.
+- The release branch went through a pull request first, and that run caught two CI problems of its own: the
+  piped-install check always fetched `main`'s installer (so a release PR could never pass it; it now pipes the
+  commit under test), and an upgrade test used a gate-hook shape no release ever shipped (it now uses the
+  exact 2.7.2 shape).
 
 ### How this release was verified
 - Full source doctor all green; the laptop simulation (fresh install, empty `~/.claude`, no bash, no `claude`
   on PATH) green with all gate probes behaving; the Command Center gateway suite green in its real location (1037 tests).
 - Three independent read-only security reviews (gate hook; gateway + settings merge; usage guard + run contract
   + state split) and one verification review after the fixes; every item that review raised (one medium, six
-  low) is fixed with a test. Codex was not used for this release (its usage
+  low) is fixed with a test. A final independent review of those fixes found four more low items and two
+  questions; all six are fixed with tests too. Codex was not used for this release (its usage
   limit was exhausted); the reviews above are the project's own independent reviewers and are recorded as such.
 
 ### Known limitations
@@ -131,6 +141,9 @@ found in the fixes. It was verified on a simulated laptop of exactly that shape 
 - The Command Center's execution token protects against web pages, not against other programs running as the
   same user on the same machine (a single-user-computer assumption, now stated in the code).
 - The gate hook remains a text classifier, not a sandbox; its documented blind spots are unchanged.
+- A heredoc (`cat > file <<'EOF'`) is only treated as plain data when nothing later in the same command could
+  run the written file; a heredoc followed by, say, `node ...` is still checked as if its text were commands,
+  so the gate may ask first. Writing files with Claude's Write tool avoids this.
 
 ### Corrections to the 2.7.2 notes
 - "Task scripts ship with the executable bit" was false at the 2.7.2 tag (no file had mode 100755); true from 2.8.0.

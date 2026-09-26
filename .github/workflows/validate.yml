@@ -76,7 +76,6 @@ jobs:
             exit 1
           fi
 
-      # 1) Syntax-check every .cjs source in the terminal command pack.
       # 0c) Copy parity (v2.8.0, laptop re-audit Part V-E: "three hand-synced copies, no CI parity"). The plugin
       # ships its own copies of some skills and agents, and of the global forge-core; in 2.7.2 the plugin's
       # forge-core had silently drifted 13 lines from the global one. Any drift now fails CI.
@@ -97,6 +96,7 @@ jobs:
           if [ "$bad" -eq 0 ]; then echo "ok   plugin skill/agent copies and forge-core are in sync"; fi
           exit $bad
 
+      # 1) Syntax-check every .cjs source in the terminal command pack.
       - name: node --check all .cjs in .claude/forge-bin
         run: |
           set -e

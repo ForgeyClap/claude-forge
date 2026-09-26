@@ -120,6 +120,67 @@ test('rejects a junction that points at the home folder', () => {
   assert.ok(lines.some((l) => l.includes('home folder itself')));
 });
 
+// F2 fix (WP-C4, 2026-09-26 independent security re-review): a junction/symlink whose literal
+// path looks like an ordinary folder but actually resolves to a DRIVE ROOT must be rejected too —
+// the old code only ever ran the drive-root check on the typed path, and the separate "contains
+// home" check could never catch a drive-root target either (see the next test's own header note).
+test('rejects a junction that points at a drive root', () => {
+  const driveRoot = path.parse(os.tmpdir()).root; // e.g. "C:\\" on Windows, "/" elsewhere
+  const linkPath = path.join(tempDir, 'junction-to-drive-root');
+  try {
+    fs.symlinkSync(driveRoot, linkPath, 'junction');
+  } catch (err) {
+    console.log('SKIP: could not create a junction to test with (' + err.message + ')');
+    return;
+  }
+  const { result, lines } = withCapturedConsoleError(() => validateExtraScanRoot(linkPath));
+  assert.equal(result, null);
+  assert.ok(lines.some((l) => l.includes('drive root')));
+});
+
+// F2 fix: the RESOLVED target must be returned, never the typed/link path — so re-pointing the
+// link after startup has no effect on what SYNC_SCAN_ROOTS actually scans.
+test('returns the RESOLVED real target, not the symlink/junction path itself', () => {
+  const realDir = path.join(tempDir, 'resolved-target-real');
+  fs.mkdirSync(realDir, { recursive: true });
+  const linkPath = path.join(tempDir, 'resolved-target-link');
+  try {
+    fs.symlinkSync(realDir, linkPath, 'junction');
+  } catch (err) {
+    console.log('SKIP: could not create a junction to test with (' + err.message + ')');
+    return;
+  }
+  const { result, lines } = withCapturedConsoleError(() => validateExtraScanRoot(linkPath));
+  assert.equal(lines.length, 0, 'an accepted value must never log a rejection line');
+  assert.notEqual(result, path.resolve(linkPath));
+  assert.equal(result, fs.realpathSync.native(realDir));
+});
+
+// Q2 fix (WP-C4): reject when the RESOLVED target is a UNC/network path, not just the typed text.
+// A real symlink/junction pointing at an actual reachable network share (or a real mapped drive)
+// would need live network/admin-share access this test environment cannot assume, so — per this
+// finding's own guidance — the check is proven at the pure-function level with a stubbed
+// `fs.realpathSync.native`, restored immediately after. This test does NOT exercise a real Windows
+// network path end-to-end; it proves the validator's own UNC-on-resolved-target branch fires for
+// the exact shape realpathSync.native would return if it ever did resolve to one.
+test('rejects when the RESOLVED target is a UNC path (stubbed realpath — see comment)', () => {
+  const validDir = path.join(tempDir, 'unc-resolved-stub-root');
+  fs.mkdirSync(validDir, { recursive: true });
+  const fakeUncTarget = '\\\\stub-host\\share\\resolved-target';
+  const originalNative = fs.realpathSync.native;
+  fs.realpathSync.native = (p) => {
+    if (path.resolve(p) === path.resolve(validDir)) return fakeUncTarget;
+    return originalNative(p);
+  };
+  try {
+    const { result, lines } = withCapturedConsoleError(() => validateExtraScanRoot(validDir));
+    assert.equal(result, null);
+    assert.ok(lines.some((l) => l.includes('network/UNC')));
+  } finally {
+    fs.realpathSync.native = originalNative;
+  }
+});
+
 test('rejects empty / non-string input silently (no console noise for "unset")', () => {
   assert.equal(validateExtraScanRoot(''), null);
   assert.equal(validateExtraScanRoot('   '), null);

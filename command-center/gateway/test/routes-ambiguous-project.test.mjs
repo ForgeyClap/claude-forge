@@ -104,6 +104,19 @@ test('GET /api/runs?project=<ambiguous name> answers 409, never picks either pro
   assert.equal(res.json.matches.length, 2);
 });
 
+// N7 wording test (WP-C4, 2026-09-26 independent security re-review): the 409 body must tell the
+// user how to actually resolve the ambiguity (rename one of the two folders, or open the wanted
+// one directly from its own folder) and must NOT mention the old, non-existent "path-qualified
+// selection" feature the dashboard never had.
+test('GET /api/runs?project=<ambiguous name> 409 text carries real resolution advice, not the old made-up feature', { skip: SKIP_REASON }, async () => {
+  setUpAmbiguousFixture();
+  const res = await request(port, '/api/runs?project=' + encodeURIComponent('my-site'));
+  assert.equal(res.statusCode, 409);
+  assert.match(res.json.error, /rename one of the two folders/);
+  assert.match(res.json.error, /open the one you mean directly from its own folder/);
+  assert.doesNotMatch(res.json.error, /path-qualified selection/);
+});
+
 test('GET /api/agents?project=<ambiguous name> answers 409, never picks either project', { skip: SKIP_REASON }, async () => {
   setUpAmbiguousFixture();
   const res = await request(port, '/api/agents?project=' + encodeURIComponent('my-site'));
