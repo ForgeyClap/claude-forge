@@ -439,7 +439,7 @@ function Test-ForgeStandingRulesMigration {
   if ($out) { Write-ForgeLog "  $out" }
 
   if ($code -ne 0) {
-    Write-ForgeLog "  owner rule migration for $ForgeStandingRulesRel is pending -- leaving your existing file in place this run (fix or remove config/orchestration/FORGE_STANDING_RULES.user.json, then re-run install)"
+    Write-ForgeLog "  owner rule migration for $ForgeStandingRulesRel is pending -- leaving your existing file in place this run (fix the JSON in config/orchestration/FORGE_STANDING_RULES.user.json -- make a copy first; never delete it, it holds your own rules -- then re-run install)"
     $script:ForgeStandingMigrationSkip = $ForgeStandingRulesRel
   }
 }
@@ -1277,7 +1277,7 @@ function Main {
 
     if ($script:ForgeStandingMigrationSkip) {
       Write-ForgeLog ''
-      Write-ForgeLog "NOTE: $projectDir\.claude\$($ForgeStandingRulesRel -replace '/', '\') was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) -- fix or remove $projectDir\.claude\config\orchestration\FORGE_STANDING_RULES.user.json, then re-run install so it can be moved to safety."
+      Write-ForgeLog "NOTE: $projectDir\.claude\$($ForgeStandingRulesRel -replace '/', '\') was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) -- fix the JSON in $projectDir\.claude\config\orchestration\FORGE_STANDING_RULES.user.json (make a copy first; never delete it, it holds your own rules), then re-run install so it can be moved to safety."
     }
 
     Write-ForgeLog ''

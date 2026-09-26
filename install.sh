@@ -545,7 +545,7 @@ forge_check_standing_rules_migration() {
   [ -n "$out" ] && forge_log "  $out"
 
   if [ "$code" -ne 0 ]; then
-    forge_log "  owner rule migration for $FORGE_STANDING_RULES_REL is pending — leaving your existing file in place this run (fix or remove config/orchestration/FORGE_STANDING_RULES.user.json, then re-run install)"
+    forge_log "  owner rule migration for $FORGE_STANDING_RULES_REL is pending — leaving your existing file in place this run (fix the JSON in config/orchestration/FORGE_STANDING_RULES.user.json — make a copy first; never delete it, it holds your own rules — then re-run install)"
     FORGE_STANDING_MIGRATION_SKIP="$FORGE_STANDING_RULES_REL"
   fi
 }
@@ -1397,7 +1397,7 @@ main() {
 
   if [ -n "${FORGE_STANDING_MIGRATION_SKIP:-}" ]; then
     forge_log ""
-    forge_log "NOTE: $PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) — fix or remove $PROJECT_DIR/.claude/config/orchestration/FORGE_STANDING_RULES.user.json, then re-run install so it can be moved to safety."
+    forge_log "NOTE: $PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) — fix the JSON in $PROJECT_DIR/.claude/config/orchestration/FORGE_STANDING_RULES.user.json (make a copy first; never delete it, it holds your own rules), then re-run install so it can be moved to safety."
   fi
 
   forge_log ""
