@@ -74,6 +74,40 @@ try {
 $RepoOwner = 'ForgeyClap'
 $RepoName  = 'claude-forge'
 
+# v2.8.1 (WP-P3, R3 independent review): relative path of the SYSTEM-synced owner-rules file — kept as
+# one constant so Test-ForgeStandingRulesMigration/Copy-ForgeTree never drift out of step with each
+# other. Mirrors STANDING_RULES_REL in .claude\forge-bin\forge-sync.cjs.
+$ForgeStandingRulesRel = 'config/orchestration/FORGE_STANDING_RULES.json'
+
+# The node one-liner Test-ForgeStandingRulesMigration runs against the NEW payload's own
+# forge-sync.cjs — every path is passed as argv, never interpolated into this text, so a path
+# containing quotes/spaces/backslashes can never break out of the script. Read via
+# process.argv.slice(-2) rather than a fixed index: this text runs from a real temp .js FILE here
+# (`node -e` is unsafe on PowerShell -- see Test-ForgeStandingRulesMigration's own comment), where argv
+# is [node, file, a, b], but install.sh runs this identical text via `node -e THIS_TEXT a b`, where argv
+# is [node, a, b] (no slot reserved for the eval text itself) -- a fixed argv[1]/argv[2] would silently
+# read the wrong thing on one of the two installers (found by a real local run, WP-P3:
+# "sync.migrateOwnerStandingRules is not a function"). slice(-2) reads the same two trailing paths
+# regardless of which shape argv has. Exit 0 = safe to replace FORGE_STANDING_RULES.json this run (no
+# owner rule was present, or it was moved to FORGE_STANDING_RULES.user.json already); exit 2 = NOT safe
+# (an owner rule could not be confirmed migrated) — Test-ForgeStandingRulesMigration treats ANY
+# non-zero exit the same way (skip).
+$ForgeStandingMigrateJs = @'
+try {
+  var args = process.argv.slice(-2);
+  var sync = require(args[0]);
+  var ids = sync.migrateOwnerStandingRules(args[1]);
+  if (ids.pending) { process.exit(2); }
+  if (ids.length > 0) {
+    process.stdout.write("moved " + ids.length + " owner rule(s) from a pre-v2.8.0 install into config/orchestration/FORGE_STANDING_RULES.user.json\n");
+  }
+  process.exit(0);
+} catch (e) {
+  process.stderr.write("forge-sync: could not check for a pre-v2.8.0 owner rule (" + e.message + ")\n");
+  process.exit(2);
+}
+'@
+
 function Write-ForgeLog {
   param([string]$Message)
   Write-Host $Message
@@ -356,6 +390,60 @@ function Copy-ForgeSettingsFile {
   return $false
 }
 
+# Test-ForgeStandingRulesMigration -- MUST run before Copy-ForgeTree ever compares/replaces the
+# project's FORGE_STANDING_RULES.json (3.4 fix, WP-P3: the installer previously backed up and
+# replaced this file on every upgrade with no migration at all -- see migrateOwnerStandingRules()'s
+# own doc comment in forge-sync.cjs for the full v2.7.x-owner-rule-loss contract this closes). Sets
+# $script:ForgeStandingMigrationSkip to $ForgeStandingRulesRel when the file must be left untouched
+# THIS run (no confirmed-safe migration -- including "node is not available to check"), or $null when
+# it is safe to proceed with the normal copy. A brand-new project (no such file yet) is always safe
+# and never even shells out.
+function Test-ForgeStandingRulesMigration {
+  param(
+    [Parameter(Mandatory = $true)][string]$ProjectDir,
+    [Parameter(Mandatory = $true)][string]$SourceClaudeDir
+  )
+  $script:ForgeStandingMigrationSkip = $null
+  $target = Join-Path $ProjectDir (".claude\" + ($ForgeStandingRulesRel -replace '/', '\'))
+  $syncTool = Join-Path $SourceClaudeDir 'forge-bin\forge-sync.cjs'
+
+  if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { return }
+
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $nodeCmd -or -not (Test-Path -LiteralPath $syncTool -PathType Leaf)) {
+    Write-ForgeLog "  node not found on PATH (or forge-sync.cjs is missing) -- cannot check $ForgeStandingRulesRel for a pre-v2.8.0 owner rule; leaving your existing file in place this run"
+    $script:ForgeStandingMigrationSkip = $ForgeStandingRulesRel
+    return
+  }
+
+  # WP-P3 (found by a real local run): `node -e $ForgeStandingMigrateJs` is UNSAFE on PowerShell 5.1 --
+  # native-argument marshalling can silently strip the embedded double quotes from a JS string literal
+  # that contains a space (e.g. "moved 2 owner rule(s)..." arrives at node as the bare, unquoted tokens
+  # moved 2 owner, a syntax error) -- confirmed with `node -e 'console.log("hello world");'` reproducing
+  # the exact same corruption. Writing the script to a real temp .js file and invoking THAT sidesteps the
+  # whole native-argv quoting problem entirely; every real path still goes in purely as argv
+  # (process.argv[1]/[2]), never interpolated into the file's text.
+  $tmpJs = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-standing-migrate-" + [guid]::NewGuid().ToString('N') + '.js')
+  try {
+    [System.IO.File]::WriteAllText($tmpJs, $ForgeStandingMigrateJs, (New-Object System.Text.UTF8Encoding($false)))
+    # $ErrorActionPreference is 'Stop' script-wide; a native tool's stderr line captured via 2>&1 can be
+    # wrapped as a terminating ErrorRecord under that setting, so it is relaxed for this one call only —
+    # same pattern Copy-ForgeSettingsFile's own merge-tool calls already use.
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $out = & node $tmpJs $syncTool $ProjectDir 2>&1 }
+    finally { $ErrorActionPreference = $prevEap }
+  } finally {
+    Remove-Item -LiteralPath $tmpJs -Force -ErrorAction SilentlyContinue
+  }
+  $code = $LASTEXITCODE
+  if ($out) { Write-ForgeLog "  $out" }
+
+  if ($code -ne 0) {
+    Write-ForgeLog "  owner rule migration for $ForgeStandingRulesRel is pending -- leaving your existing file in place this run (fix or remove config/orchestration/FORGE_STANDING_RULES.user.json, then re-run install)"
+    $script:ForgeStandingMigrationSkip = $ForgeStandingRulesRel
+  }
+}
+
 # Recursively merge-copy every file under $SourceDir into $DestDir.
 # -ProtectSettings routes <dir>\settings.json through Copy-ForgeSettingsFile instead of the generic
 # backup-then-overwrite path (used for the project payload only — see Copy-ForgeSettingsFile).
@@ -378,7 +466,11 @@ function Copy-ForgeTree {
     # that file is MERGED, never owned/deleted by an uninstall) is recorded into $script:ForgeManifest
     # under this scope ('global' or 'project'), relative to $ManifestRoot, with its sha256 at write time.
     [string]$ManifestScope = $null,
-    [string]$ManifestRoot = $null
+    [string]$ManifestRoot = $null,
+    # v2.8.1 (WP-P3): a single relative path (e.g. $ForgeStandingRulesRel, forward-slash form) to leave
+    # COMPLETELY untouched this call -- set by Test-ForgeStandingRulesMigration above when an owner rule
+    # from a pre-v2.8.0 install could not be confirmed safely migrated. Never backed up, never manifested.
+    [string]$SkipRel = $null
   )
 
   if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
@@ -391,7 +483,13 @@ function Copy-ForgeTree {
   foreach ($file in $files) {
     $rel = $file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')
     $dest = Join-Path -Path $DestDir -ChildPath $rel
-    if ($ProtectSettings -and $rel -eq 'settings.json') {
+    if ($SkipRel -and ($rel -replace '\\', '/') -eq $SkipRel) {
+      if ($IsDryRun) {
+        Write-ForgeLog "  [dry-run] would check $rel for a pre-v2.8.0 owner rule before touching it"
+      } else {
+        Write-ForgeLog "  kept: $dest (owner rule migration pending -- see warning above)"
+      }
+    } elseif ($ProtectSettings -and $rel -eq 'settings.json') {
       $fileOk = Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun -MergeToolPath $MergeToolPath
       if (-not $fileOk) { $allOk = $false }
       # never manifested: settings.json is merged, not owned — an uninstall must never delete it
@@ -1063,6 +1161,8 @@ function Main {
     # below so the final summary names the gate specifically, never just a generic "install failed". `$script:`
     # scope is required: Copy-ForgeSettingsFile runs several call frames below this one.
     $script:ForgeSettingsGateFailed = $false
+    # v2.8.1 (WP-P3): set by Test-ForgeStandingRulesMigration below (same `$script:` reason as above).
+    $script:ForgeStandingMigrationSkip = $null
 
     if ($doGlobal) {
       Write-ForgeLog ''
@@ -1116,7 +1216,19 @@ function Main {
           New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
         }
       }
-      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs') -ManifestScope 'project' -ManifestRoot $projectDir
+      # 3.4 fix (WP-P3): move any v2.7-era owner standing rule into the project's own user file BEFORE
+      # FORGE_STANDING_RULES.json is ever compared/replaced below -- the same preflight forge-sync.cjs
+      # itself runs before its own writes. Never during -DryRun, which must write nothing at all.
+      if ($isDryRun) {
+        $script:ForgeStandingMigrationSkip = $null
+        $preExisting = Join-Path $projectDir (".claude\" + ($ForgeStandingRulesRel -replace '/', '\'))
+        if (Test-Path -LiteralPath $preExisting -PathType Leaf) {
+          Write-ForgeLog "  [dry-run] would check $ForgeStandingRulesRel for a pre-v2.8.0 owner rule before replacing it"
+        }
+      } else {
+        Test-ForgeStandingRulesMigration -ProjectDir $projectDir -SourceClaudeDir (Join-Path $sourceDir '.claude')
+      }
+      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs') -ManifestScope 'project' -ManifestRoot $projectDir -SkipRel $script:ForgeStandingMigrationSkip
       # Seed the two project-root files Forge documents but the payload copy never delivered.
       # Added 2026-08-13 after a real fresh-install measurement: without them three suites
       # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and the
@@ -1161,6 +1273,11 @@ function Main {
         Write-ForgeError 'project install failed -- see errors above'
       }
       exit 1
+    }
+
+    if ($script:ForgeStandingMigrationSkip) {
+      Write-ForgeLog ''
+      Write-ForgeLog "NOTE: $projectDir\.claude\$($ForgeStandingRulesRel -replace '/', '\') was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) -- fix or remove $projectDir\.claude\config\orchestration\FORGE_STANDING_RULES.user.json, then re-run install so it can be moved to safety."
     }
 
     Write-ForgeLog ''
