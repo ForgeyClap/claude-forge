@@ -122,17 +122,40 @@ function tokenize(line) {
   return out;
 }
 
-/** gitState(root) -> {commit, parent, worktree_clean, dirty_files} of {available:false, reason}.
+/** gitState(root) -> {available:true, commit, parent, worktree_clean, dirty_files, ...} of
+ *  {available:false, confirmed_no_repo, reason}.
+ *
  *  Bewust GEEN throw: bewijs verzamelen mag niet stuklopen omdat git ontbreekt. Maar het verschil tussen
  *  "schone boom op commit X" en "onbekend" moet in het manifest staan, niet worden weggelaten — dat
- *  weglaten was precies de klacht (R3-08/R4-08/R5-10). */
+ *  weglaten was precies de klacht (R3-08/R4-08/R5-10).
+ *
+ *  WP-S13 (2.1, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — this used to run its OWN
+ *  `git rev-parse HEAD` and treat ANY non-zero exit (dubious ownership, no commits yet, a poisoned
+ *  GIT_DIR, git missing) as `available:false`, which record() below then read as a POSITIVELY confirmed
+ *  no-git project — silently relaxing the commit binding on a root that merely refused to answer, not
+ *  one that genuinely has no git. Rebuilt on forge-runcontract.cjs's shared, three-way `gitProbe()` so
+ *  this can never independently disagree with check()'s own `noGitAtRoot` about the same root.
+ *  `confirmed_no_repo:true` is set ONLY on gitProbe's positively-confirmed 'no-repo' state; every other
+ *  failure (gitProbe's 'undetermined') reports `confirmed_no_repo:false` — record() below requires the
+ *  former on BOTH readings before it will ever tag a gate `no_git:true`. */
 function gitState(root) {
-  const git = (...a) => spawnSync('git', ['-C', root, ...a], { encoding: 'utf8', timeout: 15000 });
-  let head;
-  try { head = git('rev-parse', 'HEAD'); }
-  catch (e) { return { available: false, reason: 'git niet uitvoerbaar: ' + (e && e.message ? e.message : String(e)) }; }
-  if (!head || head.status !== 0) return { available: false, reason: 'geen git-repository onder ' + root };
-  const commit = String(head.stdout || '').trim();
+  let RC;
+  try { RC = require('./forge-runcontract.cjs'); }
+  catch (e) { return { available: false, confirmed_no_repo: false, reason: 'forge-runcontract.cjs (de gedeelde git-probe) niet laadbaar: ' + (e && e.message ? e.message : String(e)) }; }
+  if (typeof RC.gitProbe !== 'function') return { available: false, confirmed_no_repo: false, reason: 'gitProbe niet beschikbaar in forge-runcontract.cjs' };
+  let probe;
+  try { probe = RC.gitProbe(root); }
+  catch (e) { return { available: false, confirmed_no_repo: false, reason: 'git-probe faalde: ' + (e && e.message ? e.message : String(e)) }; }
+  if (probe.state === 'undetermined') return { available: false, confirmed_no_repo: false, reason: probe.reason };
+  if (probe.state === 'no-repo') {
+    return {
+      available: false, confirmed_no_repo: true,
+      reason: 'bevestigd: geen git-repository onder ' + root + ' (git meldt zelf "not a git repository" EN er is geen .git-item in de boomstructuur) — bewijs wordt gebonden aan de eigen output_sha256 van elke poort, nooit aan een broncode-digest',
+    };
+  }
+  const cleanEnv = typeof RC.cleanGitEnv === 'function' ? RC.cleanGitEnv() : process.env;
+  const git = (...a) => spawnSync('git', ['-C', root, ...a], { encoding: 'utf8', timeout: 15000, env: cleanEnv });
+  const commit = probe.commit;
   const parentR = git('rev-parse', 'HEAD^');
   const statusR = git('status', '--porcelain');
   const vuil = statusR && statusR.status === 0
@@ -163,6 +186,7 @@ function gitState(root) {
   const vingerafdruk = crypto.createHash('sha256').update([commit, ...inhoudsdelen].join('\n')).digest('hex');
   return {
     available: true,
+    confirmed_no_repo: false,
     commit,
     source_fingerprint: vingerafdruk,
     parent: parentR && parentR.status === 0 ? String(parentR.stdout || '').trim() : null,
@@ -216,14 +240,22 @@ function record(runId, gates, opts) {
      *  (a required code.stable===true never held). There is nothing to destabilize without a versioning
      *  concept: a gate whose BEFORE and AFTER measurement both honestly agree "no git repository here" is
      *  bound instead to its own real output_sha256 (a genuine file digest, computed above and re-verified on
-     *  read-back below) — never a fabricated commit, and never a false "unstable" claim either. */
-    const noGitStabiel = !!codeVoor && !!codeNa && codeVoor.available === false && codeNa.available === false;
+     *  read-back below) — never a fabricated commit, and never a false "unstable" claim either.
+     *  2.1 fix (WP-S13, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — `available === false` used to
+     *  cover BOTH a positively confirmed no-git root AND an UNDETERMINED one (git refused for some other
+     *  reason: dubious ownership, no commits yet, a poisoned env, git missing). This let an undetermined
+     *  root be recorded `no_git:true` — exactly the false relaxation the fix closes. Now requires
+     *  `confirmed_no_repo === true` on BOTH readings; an undetermined reading falls through to the
+     *  `stable:false` branch below instead, fail-closed exactly as it was before the D2 no-git path ever
+     *  existed. */
+    const noGitStabiel = !!codeVoor && !!codeNa && codeVoor.available === false && codeNa.available === false
+      && codeVoor.confirmed_no_repo === true && codeNa.confirmed_no_repo === true;
     if (gitStabiel) {
       res._code = { commit: codeNa.commit, worktree_clean: codeNa.worktree_clean, stable: true, no_git: false, source_fingerprint: codeNa.source_fingerprint };
     } else if (noGitStabiel) {
       res._code = { commit: null, worktree_clean: null, stable: true, no_git: true, reason: (codeNa && codeNa.reason) || (codeVoor && codeVoor.reason) || 'geen git-repository — bewijs gebonden aan de eigen output_sha256 van deze poort, niet aan een commit' };
     } else {
-      res._code = { stable: false, no_git: false, reason: 'de codestaat veranderde TIJDENS deze poort — de uitslag hoort bij geen enkele vaste commit', before: codeVoor && codeVoor.commit, after: codeNa && codeNa.commit };
+      res._code = { stable: false, no_git: false, reason: 'de codestaat veranderde TIJDENS deze poort, of kon niet betrouwbaar twee keer worden vastgesteld (bv. git weigerde tijdelijk) — de uitslag hoort bij geen enkele vaste commit', before: codeVoor && (codeVoor.commit || codeVoor.reason), after: codeNa && (codeNa.commit || codeNa.reason) };
     }
     // ruwe output op schijf (lokaal bewijs; de sha in het manifest maakt hem verifieerbaar)
     // r6b #8: twee poortnamen mogen NOOIT op hetzelfde outputpad landen — na sanitizing kunnen

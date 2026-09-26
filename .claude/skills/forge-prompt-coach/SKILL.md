@@ -229,4 +229,4 @@ bad-to-good examples are in `references/before-after.md`.
 - `references/before-after.md` — the 10 bad-to-good pairs
 - `references/HOW-TO-ASK.md` — the beginner guide for the owner (NL, then EN)
 - `references/unsafe-advice.md` — tutorial tips that are actually unsafe, and Forge's safer equivalent (NL, then EN)
-- `.claude/forge-research/prompt-coaching-2026-09-24.md` — the internal evidence base and full source list (dev-only; not part of a fresh install)
+- The research these ingredients were distilled from (evidence base and full source list) stays in the maintainers' development notes; it is not part of the install, and everything this skill needs is in the four files above.

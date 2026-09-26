@@ -2,6 +2,7 @@
 // Entry point: starts the Forge Compatibility Gateway bound to 127.0.0.1 ONLY on port 4100.
 import { createServer } from './src/server.mjs';
 import { runAskBootScan } from './src/ask-boot-scan.mjs';
+import { SYNC_SCAN_ROOTS } from './src/paths.mjs';
 
 const PORT = Number(process.env.CC_PORT) > 0 ? Number(process.env.CC_PORT) : 4100; // env-override puur voor hermetische tests (G8-drain-test); productie blijft 4100
 const HOST = '127.0.0.1';
@@ -84,6 +85,12 @@ server.on('error', (err) => {
 });
 server.listen(PORT, HOST, () => {
   console.log('Forge Command Center gateway listening on http://' + HOST + ':' + PORT);
+  // A3 fix (WP-C2, 2026-09-26 laptop re-audit): project discovery now scans several roots
+  // (paths.mjs's SYNC_SCAN_ROOTS) — print the real, active list exactly once per real boot so an
+  // operator can see (and a support log can show) what was actually scanned, including whether a
+  // CC_PROJECTS_EXTRA_ROOT value was accepted or silently ignored (that rejection, if any, was
+  // already logged by paths.mjs itself at import time, above this line).
+  console.log('Forge Command Center gateway: project scan roots: ' + SYNC_SCAN_ROOTS.join(', '));
   // fix-ghost-asks item 2: runs AFTER the "listening" line above is already printed and the port is
   // already bound — this scan is deliberately NOT on the critical path to "the gateway is up" (see
   // ask-boot-scan.mjs's own header for the real file/byte bound this relies on to stay fast).

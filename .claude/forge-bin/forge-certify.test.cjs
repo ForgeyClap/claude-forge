@@ -93,38 +93,49 @@ t('realDispatchEvidence returns empty for orchestrator-only activity', () => {
 });
 
 // ==== 2. proof_integrity / verifyChain (unit) ====
+// WP-S13 (2.2, 2026-09-26 laptop re-audit) — verifyChain() is now a thin wrapper over log-event.cjs's
+// own readEventsClassified({verifyChain:true}), which reads from a REAL FILE (never an in-memory array),
+// so every test below writes its fixture to a real events.jsonl under a tmp root first. Reason strings
+// also changed (they are log-event.cjs's own wording now, not certify's old local reimplementation's) —
+// regexes updated to match.
+function eventsPathFor(root, runId) { return path.join(runsDirOf(root, runId), 'events.jsonl'); }
+function writeChainFixture(runId, evs) {
+  const tmp = mkRoot();
+  writeEventsRaw(tmp, runId, toJsonl(evs));
+  return eventsPathFor(tmp, runId);
+}
 t('verifyChain accepts a genuinely valid chain', () => {
   const evs = buildChain('r1', goodRawEvents());
-  const r = certify.verifyChain(evs, 'r1');
+  const r = certify.verifyChain(writeChainFixture('r1', evs), 'r1');
   assert.ok(r.ok, JSON.stringify(r));
 });
 t('verifyChain rejects a run with NO hash fields at all (legacy/unchained)', () => {
-  const r = certify.verifyChain(goodRawEvents(), 'r1');
+  const r = certify.verifyChain(writeChainFixture('r1', goodRawEvents()), 'r1');
   assert.strictEqual(r.ok, false);
   assert.ok(/no hash-chain present/.test(r.reason));
 });
-t('verifyChain detects an edited event (self-hash mismatch)', () => {
+t('verifyChain detects an edited event (entry_hash no longer matches the recomputed content)', () => {
   const evs = buildChain('r2', goodRawEvents());
   evs[2].note = 'TAMPERED AFTER HASHING';
-  const r = certify.verifyChain(evs, 'r2');
+  const r = certify.verifyChain(writeChainFixture('r2', evs), 'r2');
   assert.strictEqual(r.ok, false);
-  assert.ok(/self-hash mismatch/.test(r.reason));
+  assert.ok(/recomputed content hash/.test(r.reason), r.reason);
 });
-t('verifyChain detects a prev_hash link to nowhere (truncation)', () => {
+t('verifyChain detects a forked/broken prev_hash (chain fork or edit)', () => {
   const evs = buildChain('r3', goodRawEvents());
   evs[3].prev_hash = 'deadbeef'.repeat(8);
-  // must recompute entry_hash to isolate the "links nowhere" failure from a self-hash mismatch
+  // must recompute entry_hash to isolate the "prev_hash broken" failure from a self-hash mismatch
   evs[3].entry_hash = crypto.createHash('sha256').update(certify.chainCanon(evs[3]) + evs[3].prev_hash).digest('hex');
-  const r = certify.verifyChain(evs, 'r3');
+  const r = certify.verifyChain(writeChainFixture('r3', evs), 'r3');
   assert.strictEqual(r.ok, false);
-  assert.ok(/links nowhere/.test(r.reason));
+  assert.ok(/prev_hash broken/.test(r.reason), r.reason);
 });
-t('verifyChain detects a missing hash field', () => {
+t('verifyChain detects a missing hash field on an otherwise-chained log (an unchained/injected entry)', () => {
   const evs = buildChain('r4', goodRawEvents());
   delete evs[1].entry_hash;
-  const r = certify.verifyChain(evs, 'r4');
+  const r = certify.verifyChain(writeChainFixture('r4', evs), 'r4');
   assert.strictEqual(r.ok, false);
-  assert.ok(/missing hash fields/.test(r.reason));
+  assert.ok(/unchained entry/.test(r.reason), r.reason);
 });
 
 // ==== 3. claim_equals_proof (unit) ====
@@ -320,7 +331,9 @@ t('certifyRun: NOT CERTIFIED on a BROKEN hash chain (a link edited after being w
   assert.strictEqual(cert.certified, false);
   const c2 = cert.criteria.find((c) => c.id === 2);
   assert.strictEqual(c2.ok, false);
-  assert.ok(/self-hash mismatch/.test(c2.reason));
+  // WP-S13 (2.2): the reason text is now log-event.cjs's own strict-reader wording, not certify's old
+  // local reimplementation's "self-hash mismatch".
+  assert.ok(/recomputed content hash/.test(c2.reason), c2.reason);
 });
 t('certifyRun: NOT CERTIFIED on a check_passed carrying exit_code:1 (a fake pass)', () => {
   const tmp = mkRoot();
@@ -401,7 +414,9 @@ t('certifyRun: checks_verified reflects genuinely evidenced standardized checks 
   const cert = certify.certifyRun('runChecksVerified', tmp);
   assert.strictEqual(cert.checks_verified, 2); // check_passed + quality_gate_passed, both evidenced + exit 0
   assert.strictEqual(cert.unverified_completion, false);
-  assert.strictEqual(cert.label, 'CERTIFIED');
+  // 2.2 fix (WP-S13): this hermetic root never writes a FORGE_HARD_RULES.json, so the contract is
+  // genuinely unevaluated — the label says so rather than reading as a silent, unremarked CERTIFIED.
+  assert.strictEqual(cert.label, 'CERTIFIED (contract not evaluated)');
 });
 t('certifyRun: CERTIFIED (UNVERIFIED) when zero standardized checks exist but real dispatch + a completion claim do — the exact forge-2026-07-14-hardening shape, this is BLOCKER 1', () => {
   const tmp = mkRoot();
@@ -528,7 +543,8 @@ t('CLI: --json exposes checks_verified, unverified_completion, label, free_text_
   const parsed = JSON.parse(r.stdout);
   assert.strictEqual(parsed.checks_verified, 2);
   assert.strictEqual(parsed.unverified_completion, false);
-  assert.strictEqual(parsed.label, 'CERTIFIED');
+  // 2.2 fix (WP-S13): no FORGE_HARD_RULES.json at this hermetic root — contract genuinely not evaluated.
+  assert.strictEqual(parsed.label, 'CERTIFIED (contract not evaluated)');
   assert.ok(Array.isArray(parsed.free_text_pass_claims));
 });
 t('CLI: exit 0 (still accepted) with the loud UNVERIFIED label for a hardening-shaped run (real dispatch, zero standardized checks, a completion claim)', () => {
@@ -545,11 +561,21 @@ t('CLI: exit 0 (still accepted) with the loud UNVERIFIED label for a hardening-s
 });
 
 // =====================================================================================================
-// 2026-07-15 KRITIEKE FIX-RONDE — BUG 2 [HIGH] mirror tests (see forge-doctor.test.cjs for the doctor-side
-// mirror + the BUG1/BUG3 tests). verifyChain() used to validate the WHOLE events array from index 0 the
-// moment ANY event carried an entry_hash, so a legacy prefix (events predating the hash chain) read as
-// "event 0 missing hash fields" — indistinguishable from a genuine tamper. Fixed to validate only from the
-// FIRST index that carries an entry_hash onward.
+// 2026-07-15 KRITIEKE FIX-RONDE — BUG 2 [HIGH] mirror tests, ORIGINALLY. certify's OWN local
+// verifyChain() used to validate the WHOLE events array from index 0 the moment ANY event carried an
+// entry_hash, so a legacy prefix (events predating the hash chain) read as "event 0 missing hash
+// fields" — indistinguishable from a genuine tamper. The 2026-07-15 fix taught certify to tolerate a
+// legacy-unchained PREFIX followed by a valid chained tail.
+//
+// WP-S13 (2.2, 2026-09-26 laptop re-audit) SUPERSEDES that leniency, deliberately. verifyChain() now
+// delegates to log-event.cjs's own strict reader — the EXACT one forge-runcontract.cjs's check() already
+// used — and that reader's OWN 2026-08-07 hardening (Codex r5 #4, read log-event.cjs's own doc before
+// touching this) rejects ANY unchained entry once a log contains even one chained entry, regardless of
+// position, to stop an attacker inserting hashless "evidence" before a real chain. So a legacy-prefix
+// run that later adopts hash-chaining can no longer pass EITHER tool's strict completion gate — this was
+// already forge-runcontract.cjs's shipped behaviour; certify's own criterion 2 simply no longer disagrees
+// with it. The tests below were updated to assert the new, single, shared truth instead of the old
+// certify-only leniency.
 // =====================================================================================================
 function buildChainFrom(runId, rawEvents, startPrevHash) {
   let prevHash = startPrevHash;
@@ -565,7 +591,7 @@ function buildChainFrom(runId, rawEvents, startPrevHash) {
   return out;
 }
 
-t('verifyChain BUG2 FIX: a legacy prefix (no entry_hash) followed by a valid chained tail is ACCEPTED, not read as "missing hash fields"', () => {
+t('verifyChain 2.2: a legacy prefix (no entry_hash) followed by a valid chained tail is now REJECTED (matches forge-runcontract.cjs check(), no longer a certify-only leniency)', () => {
   const legacy = [
     { run_id: 'r5', event_type: 'run_started', agent: 'orchestrator', timestamp: ts(0) },
     { run_id: 'r5', event_type: 'agent_note', agent: 'orchestrator', note: 'legacy note', timestamp: ts(1) },
@@ -576,11 +602,11 @@ t('verifyChain BUG2 FIX: a legacy prefix (no entry_hash) followed by a valid cha
     { event_type: 'agent_progress', agent: 'orchestrator', note: 'continuation', timestamp: ts(2) },
   ], 'genesis:r5');
   const evs = legacy.concat(chainedTail);
-  const r = certify.verifyChain(evs, 'r5');
-  assert.strictEqual(r.ok, true, JSON.stringify(r));
-  assert.strictEqual(r.chained, true);
+  const r = certify.verifyChain(writeChainFixture('r5', evs), 'r5');
+  assert.strictEqual(r.ok, false, JSON.stringify(r));
+  assert.ok(/unchained entry/.test(r.reason), r.reason);
 });
-t('verifyChain BUG2 requirement (b) CRITICAL: a real tamper in the chained TAIL of a legacy+continuation run is STILL caught', () => {
+t('verifyChain 2.2: a real tamper in the chained TAIL of a legacy+continuation run is STILL rejected (for the mixed-log reason now, not masked)', () => {
   const legacy = [
     { run_id: 'r6', event_type: 'run_started', agent: 'orchestrator', timestamp: ts(0) },
     { run_id: 'r6', event_type: 'agent_note', agent: 'orchestrator', note: 'legacy note', timestamp: ts(1) },
@@ -591,20 +617,19 @@ t('verifyChain BUG2 requirement (b) CRITICAL: a real tamper in the chained TAIL 
   ], 'genesis:r6');
   chainedTail[1].note = 'TAMPERED AFTER HASHING'; // self-hash now stale for this event
   const evs = legacy.concat(chainedTail);
-  const r = certify.verifyChain(evs, 'r6');
-  assert.strictEqual(r.ok, false, 'tamper-detection must NOT be weakened by the legacy-prefix fix');
-  assert.ok(/self-hash mismatch/.test(r.reason));
+  const r = certify.verifyChain(writeChainFixture('r6', evs), 'r6');
+  assert.strictEqual(r.ok, false, 'a mixed legacy+chained run with an ADDITIONAL tail tamper must still never read as ok:true');
 });
 t('verifyChain BUG2: still rejects a run with NO hash fields at all (unchanged legacy/unchained behavior)', () => {
   const legacyOnly = [
     { run_id: 'r7', event_type: 'run_started', agent: 'orchestrator', timestamp: ts(0) },
     { run_id: 'r7', event_type: 'agent_note', agent: 'orchestrator', note: 'legacy note', timestamp: ts(1) },
   ];
-  const r = certify.verifyChain(legacyOnly, 'r7');
+  const r = certify.verifyChain(writeChainFixture('r7', legacyOnly), 'r7');
   assert.strictEqual(r.ok, false);
   assert.ok(/no hash-chain present/.test(r.reason));
 });
-t('certifyRun BUG2 FIX (real writer): a legacy run continued via the REAL log-event.cjs is honestly reported (proof_integrity ok=true, NOT a tamper-shaped reason)', () => {
+t('certifyRun 2.2: a legacy run continued via the REAL log-event.cjs is now honestly NOT CERTIFIED by proof_integrity (matches forge-runcontract.cjs\'s own already-shipped strict policy, not a false tamper claim)', () => {
   const tmp = mkRoot();
   const runId = 'legacy-continued-real';
   const runDir = runsDirOf(tmp, runId);
@@ -622,8 +647,8 @@ t('certifyRun BUG2 FIX (real writer): a legacy run continued via the REAL log-ev
   assert.strictEqual(r.status, 0, r.stderr);
   const cert = certify.certifyRun(runId, tmp);
   const c2 = cert.criteria.find((c) => c.id === 2);
-  assert.strictEqual(c2.ok, true, JSON.stringify(c2));
-  assert.strictEqual(c2.reason, '', 'must NOT read as a tamper (e.g. "missing hash fields")');
+  assert.strictEqual(c2.ok, false, JSON.stringify(c2));
+  assert.ok(/unchained entry/.test(c2.reason), c2.reason);
 });
 
 // =====================================================================================================
@@ -666,7 +691,9 @@ t('certifyRun D6 baseline: with NO FORGE_HARD_RULES.json at this root, the contr
   assert.strictEqual(cert.contract.evaluated, false, JSON.stringify(cert.contract));
   assert.strictEqual(cert.contract.ok, null);
   assert.strictEqual(cert.certified, true, 'an uncomputable contract must not fabricate a fail');
-  assert.strictEqual(cert.label, 'CERTIFIED');
+  // 2.2 fix (WP-S13): the label itself now names an unevaluated contract, never a silent, unremarked
+  // CERTIFIED — see the dedicated "(contract not evaluated)" test further down.
+  assert.strictEqual(cert.label, 'CERTIFIED (contract not evaluated)');
 });
 
 t('certifyRun D6: a contract that genuinely evaluates ok:true leaves an otherwise-CERTIFIED run unaffected', () => {
@@ -723,6 +750,61 @@ t('CLI D6 --json: exposes the contract field so a caller can see WHY certificati
   assert.strictEqual(parsed.certified, false);
   assert.strictEqual(parsed.contract.evaluated, true);
   assert.strictEqual(parsed.contract.ok, false);
+});
+
+// =====================================================================================================
+// WP-S13 (2.2, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — THE FIX. REPRODUCED bug: a run with a
+// red contract prepends one unchained, timestamped agent_note line (or forks a prev_hash) — c2 (the old,
+// weaker local reimplementation) passed, check() threw on the damaged log, and contractState() swallowed
+// that exception as "not evaluated — not held against this certificate", so the label went right back to
+// CERTIFIED. Fixed on two independent legs: (1) check()'s readEventsJsonl now tags a damaged-log exception
+// (`forgeLogDamaged`) so contractState() reports it as evaluated:true, ok:false, never "not evaluated";
+// (2) c2 itself now uses the exact same strict reader check() uses, so it can no longer disagree in the
+// first place. Both tests below combine a genuinely RED rules file (BLOCK_RULE_NEVER_SATISFIED) with a
+// damaged log, and assert the certificate is NOT CERTIFIED via BOTH signals (contract AND c2).
+// =====================================================================================================
+t('certifyRun 2.2 (THE FIX): a red run with ONE PREPENDED UNCHAINED agent_note line is NOT CERTIFIED (was: silently re-CERTIFIED via a swallowed "not evaluated")', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_NEVER_SATISFIED]);
+  const runId = 'runS13PrependedUnchained';
+  const chained = buildChain(runId, goodRawEvents());
+  const prepended = { run_id: runId, event_type: 'agent_note', agent: 'orchestrator', note: 'unchained injected line', timestamp: '2026-07-13T23:59:59.000Z' };
+  writeEventsRaw(tmp, runId, toJsonl([prepended, ...chained]));
+  const cert = certify.certifyRun(runId, tmp);
+  const c2 = cert.criteria.find((c) => c.id === 2);
+  assert.strictEqual(cert.certified, false, JSON.stringify({ label: cert.label, contract: cert.contract, c2 }));
+  assert.strictEqual(cert.contract.evaluated, true, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.contract.ok, false, JSON.stringify(cert.contract));
+  assert.strictEqual(c2.ok, false, JSON.stringify(c2));
+  assert.ok(/NOT CERTIFIED/.test(cert.label), cert.label);
+});
+t('certifyRun 2.2 (THE FIX): a red run with a FORKED prev_hash (self-consistent per-event, but positionally broken) is NOT CERTIFIED', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_NEVER_SATISFIED]);
+  const runId = 'runS13ForkedPrevHash';
+  const evs = buildChain(runId, goodRawEvents());
+  // Fork: point evs[3] at evs[1]'s hash instead of its real predecessor evs[2] — then recompute so evs[3]
+  // is internally self-consistent (its OWN entry_hash matches its OWN prev_hash+content). This is exactly
+  // the "forked-but-self-consistent event" shape review C names — no single event looks tampered in
+  // isolation, only the POSITIONAL link is broken.
+  evs[3].prev_hash = evs[1].entry_hash;
+  evs[3].entry_hash = crypto.createHash('sha256').update(certify.chainCanon(evs[3]) + evs[3].prev_hash).digest('hex');
+  writeEventsRaw(tmp, runId, toJsonl(evs));
+  const cert = certify.certifyRun(runId, tmp);
+  const c2 = cert.criteria.find((c) => c.id === 2);
+  assert.strictEqual(cert.certified, false, JSON.stringify({ label: cert.label, contract: cert.contract, c2 }));
+  assert.strictEqual(cert.contract.evaluated, true, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.contract.ok, false, JSON.stringify(cert.contract));
+  assert.strictEqual(c2.ok, false, JSON.stringify(c2));
+  assert.ok(/NOT CERTIFIED/.test(cert.label), cert.label);
+});
+t('contractState 2.2: label carries "(contract not evaluated)" when the contract genuinely cannot be computed (no FORGE_HARD_RULES.json here), never a silent unremarked CERTIFIED', () => {
+  const tmp = mkRoot();
+  writeEventsRaw(tmp, 'runS13NoRulesLabel', toJsonl(buildChain('runS13NoRulesLabel', goodRawEvents())));
+  const cert = certify.certifyRun('runS13NoRulesLabel', tmp);
+  assert.strictEqual(cert.contract.evaluated, false, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.certified, true, 'an uncomputable contract must not fabricate a fail');
+  assert.ok(/\(contract not evaluated\)/.test(cert.label), cert.label);
 });
 
 console.log(passed + ' passed, ' + failed + ' failed');

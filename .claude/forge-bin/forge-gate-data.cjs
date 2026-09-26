@@ -53,7 +53,13 @@ const QUOTES = require('./forge-gate-quotes.cjs');
 const INTERPRETER_RE = /^(bash|sh|zsh|dash|ksh|fish|node|nodejs|deno|bun|python\d*(\.\d+)?|py|perl|ruby|php|pwsh|powershell|cmd|eval|source|iex|invoke-expression|xargs|chmod|env|exec|command|builtin)$/;
 const LAYOUT = new Set(['mv', 'move', 'move-item', 'mi', 'ln', 'mklink', 'cp', 'copy', 'copy-item', 'cpi', 'rename', 'ren',
   'rename-item', 'rni', 'robocopy', 'xcopy', 'new-item', 'ni']);
-const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'ag', 'select-string', 'sls', 'findstr']);
+// v2.8.0 verification review (N1): `ag` left this list (it accepts --pager <cmd>), and a search tool's quoted
+// words are NOT inert data when the same segment carries a flag that makes the tool itself run a command:
+// `git grep -O<pager>` / `--open-files-in-pager`, `--pager`, `rg --pre <cmd>`. Case-sensitive on purpose:
+// grep's everyday `-o` must keep working.
+const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'select-string', 'sls', 'findstr']);
+const EXEC_FLAG_WORD_RE = /^(?:-O.*|--open-files-in-pager(?:=.*)?|--pager(?:=.*)?|--pre(?:=.*)?)$/;
+const segHasExecFlag = (ws) => ws.some((x) => EXEC_FLAG_WORD_RE.test(String(x.raw).replace(/["']/g, '')));
 const SCRIPT_EXT_RE = /\.(sh|bash|zsh|ps1|psm1|cmd|bat|js|cjs|mjs|ts|py|rb|pl|php)$/i;
 // MARKER_RE/MARKER_AT_RE (the heredoc-marker regexes) now live in forge-gate-quotes.cjs — this file no longer
 // scans for a marker itself, it only supplies the writer/commit-head detection stripHeredocs() there consumes.
@@ -221,13 +227,14 @@ function literalDataSpans(segs) {
       if (dests.some((d) => SCRIPT_EXT_RE.test(d))) return;
       picked = ws.slice(1).filter(wholeInert);
     } else if (SEARCH.has(h)) {
+      if (segHasExecFlag(ws)) return; // v2.8.0 N1: the tool can execute one of its arguments
       picked = ws.slice(1).filter(wholeInert);
     } else if (h === 'git') {
       const sub = gitSubcommand(ws);
       const subWord = sub && !sub.word.spans.length ? sub.word.raw.toLowerCase() : '';
       const subAt = sub ? sub.index : 1;
       if (subWord === 'commit') ws.forEach((x, n) => { if (/^(-m|-am|--message)$/.test(x.raw) && wholeInert(ws[n + 1])) picked.push(ws[n + 1]); });
-      if (subWord === 'grep') picked.push(...ws.slice(subAt + 1).filter(wholeInert));
+      if (subWord === 'grep' && !segHasExecFlag(ws)) picked.push(...ws.slice(subAt + 1).filter(wholeInert));
       if (subWord === 'log') {
         ws.forEach((x, n) => {
           if (x.raw === '--grep' && wholeInert(ws[n + 1])) picked.push(ws[n + 1]);

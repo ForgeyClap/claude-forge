@@ -87,10 +87,29 @@ export function safeConvIdOk(id) {
 // file" coincide here with no extra reset hook needed. The token is injected into the SPA's own
 // served HTML (see static.mjs's `injectExecToken`) as a `<meta name="cc-exec-token">` tag, read by
 // the dashboard at load time and sent back as the `x-cc-exec-token` header on every real write
-// (gateway-client.ts/gateway-chat.ts) — a genuinely different local process never had that page
-// load, so it never has the token. This is NOT a multi-user auth system — it is a same-origin-plus-
-// token gate against a SEPARATE local process, exactly the same "loopback, single-user gateway
-// tool" framing exec-bridge.mjs's own SECURITY FRAME comment already uses for 'bypass' mode.
+// (gateway-client.ts/gateway-chat.ts).
+//
+// A1 CORRECTION (WP-C2, 2026-09-26 laptop re-audit): an earlier version of this comment claimed a
+// "genuinely different local process never had that page load, so it never has the token" — that
+// is FALSE and is corrected here. static.mjs's injectExecToken() puts the token into `index.html`
+// for ANY plain GET request that passes the Host/Origin checks above, and a real, same-origin
+// browser navigation is not the only shape that passes them: crossSiteOk() explicitly allows a
+// request with no Origin/Sec-Fetch-Site header at all (see its own comment), which is exactly what
+// a same-user local script (`curl http://127.0.0.1:4100/`, a scheduled task, another CLI tool the
+// owner runs) sends too — that other program can read the token straight out of the served HTML
+// and then pass execTokenOk(), same as the real dashboard. This is NOT, and was never meant to be,
+// a boundary between two different local programs run by the SAME user on the SAME machine — on a
+// single-user machine any other program already running as that user can reach equivalent
+// capabilities directly (the filesystem, the `claude` CLI, this project's own files), so a token
+// cannot meaningfully raise that bar. What the token DOES stop is the one shape a Host/Origin check
+// alone cannot: a malicious WEB PAGE open in the owner's browser (a different tab, a compromised
+// site) whose script tries a cross-site fetch/XHR against this loopback gateway — a real browser
+// attaches Sec-Fetch-Site: cross-site (or a foreign Origin) to that request, which crossSiteOk()
+// rejects, and even in the rare case that check is bypassed the page never had a same-origin load
+// of this gateway's own HTML, so it never obtained the token either. In short: this is a CSRF-style
+// gate against a hostile page in the browser, not a multi-user or multi-process auth system, and it
+// assumes — exactly like exec-bridge.mjs's own SECURITY FRAME comment for 'bypass' mode — a
+// single-user machine where every other LOCAL process already implicitly trusted.
 export const EXEC_TOKEN_HEADER = 'x-cc-exec-token';
 const EXEC_TOKEN = crypto.randomBytes(24).toString('hex');
 

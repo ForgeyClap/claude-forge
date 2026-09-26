@@ -472,10 +472,59 @@ test('a genuine percent 0 survives (0 is data; only null/absent is no-data)', ()
   assert.strictEqual(w[0].pct, 0);
 });
 
-test('an API-inactive window still counts toward the pause decision (fail-safe, documented on purpose)', () => {
+// WP-S14 finding 1.2 (2026-09-26 independent review): this test used to claim the OPPOSITE of the real
+// N1 decision (see windowAppliesNow, ~line 890) — an API-inactive PER-MODEL window with no matching model
+// hint is advisory only; it does NOT pause every model for days while a different model is in use.
+// crossedWindows() itself is threshold-only (it has no concept of "model in use"), so it still correctly
+// reports the window crossed; the REAL pause decision additionally requires windowAppliesNow().
+test('an API-inactive per-model window crosses the raw threshold but is ADVISORY ONLY — it does not pause (N1)', () => {
   const w = G.normalizeWindows({ limits: [{ kind: 'weekly_scoped', percent: 96, is_active: false, resets_at: null, scope: { model: { display_name: 'Fable' } } }] });
   assert.strictEqual(w[0].isActive, false);
-  assert.strictEqual(G.crossedWindows(w, 93).length, 1, 'a 96% window must pause even when the API calls it inactive — pausing early is the safe error');
+  assert.strictEqual(G.crossedWindows(w, 93).length, 1, 'crossedWindows() is threshold-only and unaware of model scope');
+  assert.strictEqual(G.windowAppliesNow(w[0], null), false, 'no matching model hint and the endpoint says inactive -> advisory, not a real pause trigger');
+  const wouldActuallyPause = G.crossedWindows(w, 93).filter((x) => G.windowAppliesNow(x, null));
+  assert.strictEqual(wouldActuallyPause.length, 0, 'the real pause decision (crossedWindows + windowAppliesNow) must not include this window');
+});
+// WP-S14 1.2 hardening (reviewer note): session/weekly_all are all-models BY KIND, not merely "no
+// scope.model was present" — a malformed/unexpected scope.model on one of them must never turn it into a
+// per-model window that could be silently filtered out of the pause decision.
+test('WP-S14 1.2 hardening: session/weekly_all stay all-models even with a malformed scope.model', () => {
+  const w = G.normalizeWindows({ limits: [
+    { kind: 'session', group: 'session', percent: 99, is_active: false, scope: { model: { display_name: 'Fable' } } },
+    { kind: 'weekly_all', group: 'weekly', percent: 99, is_active: false, scope: { model: { display_name: 'Fable' } } },
+  ] });
+  const session = w.find((x) => x.kind === 'session');
+  const weeklyAll = w.find((x) => x.kind === 'weekly_all');
+  assert.strictEqual(session.model, null, 'a scope.model on a session window must be ignored — session is all-models by kind');
+  assert.strictEqual(weeklyAll.model, null, 'a scope.model on a weekly_all window must be ignored — weekly_all is all-models by kind');
+  assert.strictEqual(G.windowAppliesNow(session, null), true);
+  assert.strictEqual(G.windowAppliesNow(weeklyAll, null), true);
+  // defense in depth: even a hand-built window object that (wrongly) carries a .model on one of these
+  // kinds must still always apply — windowAppliesNow checks the KIND too, not only whether .model is set.
+  assert.strictEqual(G.windowAppliesNow({ kind: 'session', model: 'Fable', isActive: false }, null), true);
+  assert.strictEqual(G.windowAppliesNow({ kind: 'weekly_all', model: 'Fable', isActive: false }, null), true);
+});
+// WP-S14 1.2 hardening (reviewer note): a raw model id (as set via FORGE_USAGE_GUARD_MODEL) never matched
+// the usage endpoint's human display name for the same model — sameModel/normalizeModelToken now strip
+// the "claude-" prefix and every separator before comparing.
+test('WP-S14 1.2 hardening: sameModel normalises a raw model id and a display name to the same token', () => {
+  assert.strictEqual(G.sameModel('claude-opus-4-8', 'Opus 4.8'), true);
+  assert.strictEqual(G.sameModel('claude-opus-5-5', 'Opus 5.5'), true);
+  assert.strictEqual(G.sameModel('Opus 4.8', 'claude-opus-4-8'), true, 'must be symmetric');
+  assert.strictEqual(G.sameModel('claude-opus-4-8', 'Opus 5.5'), false, 'different models must still not match');
+  assert.strictEqual(G.normalizeModelToken('claude-opus-4-8'), G.normalizeModelToken('Opus 4.8'));
+});
+test('WP-S14 1.2 hardening: a raw model id in FORGE_USAGE_GUARD_MODEL now matches a per-model window\'s display name', () => {
+  const saved = process.env.FORGE_USAGE_GUARD_MODEL;
+  try {
+    process.env.FORGE_USAGE_GUARD_MODEL = 'claude-opus-4-8';
+    const hint = G.resolveActiveModelHint({});
+    assert.strictEqual(hint, 'claude-opus-4-8');
+    assert.strictEqual(G.windowAppliesNow({ kind: 'weekly_scoped', model: 'Opus 4.8', isActive: null }, hint), true,
+      'a raw model id env hint must match the window\'s human display name');
+  } finally {
+    if (saved === undefined) delete process.env.FORGE_USAGE_GUARD_MODEL; else process.env.FORGE_USAGE_GUARD_MODEL = saved;
+  }
 });
 
 // ---- ATOMIC STATE WRITE (Codex adversarial review #6, 2026-08-03) ----
@@ -3940,6 +3989,38 @@ test('Part II pure: cleanupStalePidFile leaves a genuinely alive process\'s pid 
 test('Part II pure: cleanupStalePidFile never touches an empty/absent pid file', () => {
   const r = G.cleanupStalePidFile('/does/not/exist/watcher.pid', { pid: 0 });
   assert.strictEqual(r.removed, false);
+});
+// WP-S14 finding 1.1 (2026-09-26 independent review): status read the pid record, judged it dead, then
+// deleted it with no re-check — a `start` claiming the slot in the meantime (ownsPid's Windows CIM query /
+// POSIX /proc read is slow enough for that) got its brand-new record deleted, leaving the account
+// unguarded. Simulate that race DETERMINISTICALLY: the injected `verify` seam rewrites the pid file (as a
+// concurrent `start` would) as a side effect of its own (slow, real) verification call.
+test('WP-S14 1.1: cleanupStalePidFile refuses to delete a pid file that changed to a new live claim between the dead-check and the delete', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pid-race-'));
+  const pidFile = path.join(dir, 'watcher.pid');
+  try {
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: 999999, startedAt: 't1', nonce: 'old', script: __filename }) + '\n');
+    const raceVerify = () => {
+      // simulate a concurrent `start` claiming the slot WHILE our (slow) verify call is still running
+      fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, startedAt: 't2', nonce: 'new', script: __filename }) + '\n');
+      return { ok: false, code: 'dead', reason: 'process not running' };
+    };
+    const r = G.cleanupStalePidFile(pidFile, { pid: 999999 }, { verify: raceVerify });
+    assert.strictEqual(r.removed, false, 'must refuse once the file changed under it: ' + JSON.stringify(r));
+    assert.ok(fs.existsSync(pidFile), 'the new live claim must survive the cleanup');
+    const survived = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+    assert.strictEqual(survived.pid, process.pid, 'the NEW claim must still be the one on disk, untouched');
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+});
+test('WP-S14 1.1: cleanupStalePidFile still removes the file when nothing changed between the dead-check and the delete', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pid-race-nochange-'));
+  const pidFile = path.join(dir, 'watcher.pid');
+  try {
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: 999999, startedAt: 't1', nonce: 'old', script: __filename }) + '\n');
+    const r = G.cleanupStalePidFile(pidFile, { pid: 999999 });
+    assert.strictEqual(r.removed, true, 'the ordinary no-race case must still clean up: ' + JSON.stringify(r));
+    assert.ok(!fs.existsSync(pidFile));
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
 });
 
 // ============================================================================================

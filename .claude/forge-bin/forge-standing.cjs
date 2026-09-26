@@ -32,6 +32,34 @@
  *     copy included) without a human editing JSON by hand. The move is computed in memory first and the
  *     disk write is best-effort (wrapped in try/catch) — a transient write failure never makes the rule
  *     vanish from match()/listActive() for this read; it is simply retried on the next load().
+ *     GUARD (2026-09-26 fix for external-audit 3.3, LOW): this write-capable migration step only ever runs
+ *     when `templatePath` resolves to THIS install's own CONFIG_PATH, or when the caller explicitly passes
+ *     `opts.migrate:true`. A caller reading a DIFFERENT rules file (forge-audit-loop.cjs's `--root <other
+ *     project>` integrity check, a test fixture, any future tool) gets a read-only load(): no rewrite of
+ *     that template, no sibling user file created next to it. An owner-sourced rule already sitting in a
+ *     foreign template is still visible (unmigrated) in the merged read — nothing vanishes — it is just
+ *     never written to that other project's disk by a read that was never supposed to write anywhere.
+ *
+ * SHADOW-PROTECTION FOR TEMPLATE RULES (2026-09-26 fix for external-audit 3.2, MEDIUM): a user (owner-added)
+ * rule may ADD a new active rule or REINFORCE an existing topic, but it must never SHADOW (push out of
+ * `active`) a shipped template rule sharing that rule's topic — regardless of nominal trigger precedence.
+ * Mechanism: every rule load() returns is tagged in-memory with `_origin: 'template'|'user'` (never
+ * persisted to disk); `rank()` adds a fixed +100 floor for template-origin rules before applying the normal
+ * trigger-precedence table, so ANY template rule outranks ANY user rule in the same topic group, even a
+ * user glob rule (nominally rank 3) against a template always rule (nominally rank 1). A user rule that
+ * loses this way is reported in `shadowed` exactly like any other losing rule — it is never silently
+ * dropped, just never allowed to win against a shipped protection like never-auto-push,
+ * isolation-only-this-folder, or draft-only-outreach-global. cannot_override_core still outranks everything
+ * (Infinity), template or user.
+ *
+ * USER-FILE FAILURE ISOLATION (2026-09-26 fix for external-audit 3.2, MEDIUM): a broken user file (missing
+ * "rules" array, invalid JSON, a rule that fails validateRulesArray, or a rule id that reuses a shipped
+ * template id) must never take the shipped template rules down with it. load() validates each user rule
+ * INDIVIDUALLY: a rule that fails validation, or whose id collides with a template id (template wins,
+ * always) or with another user rule (first one wins), is dropped from the active set and named in ONE
+ * visible console.error warning; every other valid user rule still loads normally. Only the TEMPLATE file
+ * keeps the original fail-closed "throw on any problem" posture — a broken template is a real install
+ * problem, not something load() should paper over.
  *
  * MODEL:
  *   load(opts) -> { version, rules:[...] }  — parses + validates + merges the template and user rules files
@@ -198,15 +226,34 @@ function readRulesDoc(p, opts) {
 /** migrateOwnerRules — moves (never copies-and-keeps) every template rule whose source is exactly
  *  OWNER_REMEMBER_SOURCE into the user doc. Computed in memory unconditionally; the disk write is
  *  best-effort so a transient I/O failure never makes an owner rule vanish from THIS read (it is simply
- *  retried on the next load()). Returns { templateRules, userDoc } — both reflecting the post-migration
- *  state regardless of whether the write actually landed on disk. */
+ *  retried on the next load()). Returns { templateRules, userDoc, warning }. `userDoc` is null when nothing
+ *  needed migrating (caller must read the user file itself) OR when migration could not safely read the
+ *  user file (caller falls back the same way, `warning` explains why); it is otherwise the FULL merged doc
+ *  (prior user rules + newly migrated ones), matching what actually landed on disk (or would have, had the
+ *  best-effort write succeeded). Never throws — a broken user file must not crash load() (audit 3.2); the
+ *  owner rule simply stays put in the template for this read and migration retries next time. */
 function migrateOwnerRules(templateData, templatePath, userPath) {
   const toMigrate = templateData.rules.filter((r) => r.source === OWNER_REMEMBER_SOURCE);
   if (toMigrate.length === 0) {
-    return { templateRules: templateData.rules, userDoc: readRulesDoc(userPath) || defaultUserDoc() };
+    return { templateRules: templateData.rules, userDoc: null, warning: null };
   }
 
-  let userDoc = readRulesDoc(userPath) || defaultUserDoc();
+  let userDoc;
+  try {
+    userDoc = readRulesDoc(userPath) || defaultUserDoc();
+    if (!userDoc || !Array.isArray(userDoc.rules)) {
+      throw new Error(userPath + ' is missing a "rules" array');
+    }
+  } catch (e) {
+    return {
+      templateRules: templateData.rules,
+      userDoc: null,
+      warning: 'forge-standing: WARNING — could not migrate owner rule(s) out of the shipped template because ' +
+        userPath + ' could not be read (' + e.message + '). The owner rule(s) stay in the template for now; ' +
+        'fix or remove that file to complete the migration on a later run.',
+    };
+  }
+
   const existingIds = new Set(userDoc.rules.map((r) => r.id));
   const toAppend = toMigrate.filter((r) => !existingIds.has(r.id));
   userDoc = Object.assign({}, userDoc, { rules: userDoc.rules.concat(toAppend) });
@@ -224,7 +271,60 @@ function migrateOwnerRules(templateData, templatePath, userPath) {
     console.error('forge-standing: could not persist the owner-rule migration (' + e.message + ') — retrying on next load()');
   }
 
-  return { templateRules, userDoc };
+  return { templateRules, userDoc, warning: null };
+}
+
+/** loadUserRulesSafe — reads and validates the user rules file WITHOUT ever throwing (audit 3.2): a rule
+ *  that fails validateRulesArray, or whose id collides with a template id (template wins) or with another
+ *  user rule already accepted in this same read (first one wins), is skipped and named in the returned
+ *  `warning`; every other valid rule still loads. `preloadedDoc`, when given, is the already-migrated doc
+ *  from migrateOwnerRules (used instead of re-reading the file) so a successful migration's in-memory
+ *  result is what gets validated here, not a second disk read. Returns { rules, warning } — `rules` is
+ *  always an array (empty on total failure), `warning` is a single string or null. */
+function loadUserRulesSafe(userPath, templateIds, preloadedDoc) {
+  let doc = preloadedDoc;
+  if (!doc) {
+    try {
+      doc = readRulesDoc(userPath) || defaultUserDoc();
+    } catch (e) {
+      return { rules: [], warning: 'forge-standing: WARNING — ignoring ' + userPath + ' (' + e.message + '); using the shipped rules only until the owner file is fixed.' };
+    }
+  }
+  if (!doc || !Array.isArray(doc.rules)) {
+    return { rules: [], warning: 'forge-standing: WARNING — ' + userPath + ' has no valid "rules" array; using the shipped rules only until the owner file is fixed.' };
+  }
+
+  const validRules = [];
+  const seenUserIds = new Set();
+  const skipped = [];
+  for (const r of doc.rules) {
+    try {
+      validateRulesArray([r], userPath, new Set());
+    } catch (e) {
+      skipped.push((r && r.id ? r.id : '<unnamed rule>') + ' (' + e.message + ')');
+      continue;
+    }
+    if (templateIds.has(r.id)) {
+      skipped.push(r.id + ' (id collides with a shipped template rule — the shipped rule wins)');
+      continue;
+    }
+    if (seenUserIds.has(r.id)) {
+      skipped.push(r.id + ' (duplicate id within the user file — the first one wins)');
+      continue;
+    }
+    seenUserIds.add(r.id);
+    // N2 fix (external-audit 2026-09-26, LOW): a hand-edited user file is the same unreviewed threat model
+    // as 3.1/3.2 — it must never be able to mint an untouchable rule. cannot_override_core is unconditionally
+    // forced false on every user-file rule here, regardless of what is written on disk, so a rule like
+    // {topic:"push", cannot_override_core:true} can never get rank()'s Infinity and shadow a shipped
+    // never-auto-push template rule. remember() already writes false; this also covers a hand-edited file.
+    validRules.push(r.cannot_override_core ? Object.assign({}, r, { cannot_override_core: false }) : r);
+  }
+
+  const warning = skipped.length
+    ? 'forge-standing: WARNING — ignoring ' + skipped.length + ' rule(s) in ' + userPath + ': ' + skipped.join('; ')
+    : null;
+  return { rules: validRules, warning };
 }
 
 let _cache = null; // { key, data } — cached per resolved (templatePath, userPath) pair within THIS process
@@ -238,14 +338,28 @@ function load(opts) {
   const templateData = readRulesDoc(templatePath, { required: true });
   validateRulesArray(templateData.rules, templatePath);
 
-  const migrated = migrateOwnerRules(templateData, templatePath, userPath);
-  validateRulesArray(migrated.userDoc.rules, userPath);
+  // 3.3 fix: only ever migrate (write-capable) when this IS the install's own shipped rules file, or the
+  // caller explicitly opts in. A caller reading a different project's rules file stays strictly read-only.
+  const shouldMigrate = opts.migrate === true || templatePath === CONFIG_PATH;
+  let templateRules = templateData.rules;
+  let preloadedUserDoc = null;
+  if (shouldMigrate) {
+    const migrated = migrateOwnerRules(templateData, templatePath, userPath);
+    templateRules = migrated.templateRules;
+    preloadedUserDoc = migrated.userDoc;
+    if (migrated.warning) console.error(migrated.warning);
+  }
 
-  const seenIds = new Set();
-  validateRulesArray(migrated.templateRules, templatePath, seenIds);
-  validateRulesArray(migrated.userDoc.rules, userPath, seenIds); // throws on a cross-file id collision
+  validateRulesArray(templateRules, templatePath); // template stays fail-closed: any problem throws
 
-  const data = { version: templateData.version, rules: migrated.templateRules.concat(migrated.userDoc.rules) };
+  const templateIds = new Set(templateRules.map((r) => r.id));
+  const userResult = loadUserRulesSafe(userPath, templateIds, preloadedUserDoc);
+  if (userResult.warning) console.error(userResult.warning);
+
+  const taggedTemplate = templateRules.map((r) => Object.assign({}, r, { _origin: 'template' }));
+  const taggedUser = userResult.rules.map((r) => Object.assign({}, r, { _origin: 'user' }));
+
+  const data = { version: templateData.version, rules: taggedTemplate.concat(taggedUser) };
   _cache = { key: cacheKey, data };
   return data;
 }
@@ -301,7 +415,10 @@ function ruleFires(rule, ctx) {
 
 function rank(rule) {
   if (rule.cannot_override_core) return Infinity;
-  return PRECEDENCE[rule.trigger] || 0;
+  const base = PRECEDENCE[rule.trigger] || 0;
+  // 3.2 fix: a template-origin rule always outranks a user-origin rule sharing the same topic, regardless
+  // of nominal trigger precedence — a user rule may add or reinforce, never shadow a shipped protection.
+  return rule._origin === 'template' ? base + 100 : base;
 }
 
 function match(params, opts) {
@@ -331,6 +448,15 @@ function match(params, opts) {
     for (const r of group) {
       if (winnerIds.includes(r.id)) {
         active.push(r);
+      } else if (r._origin === 'user' && winners[0]._origin === 'template') {
+        // 3.2 fix: a user rule never shadows a template rule, even when its OWN trigger would nominally
+        // outrank the template rule's trigger — say so plainly instead of the misleading generic reason.
+        shadowed.push({
+          id: r.id,
+          topic,
+          beaten_by: winnerIds[0],
+          reason: 'a user-added rule can never shadow the shipped template rule "' + winners[0].id + '" for topic "' + topic + '" (add or reinforce, never override)',
+        });
       } else {
         shadowed.push({
           id: r.id,

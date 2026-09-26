@@ -1059,5 +1059,185 @@ t('5q: CLI on a stale rules file with an unevaluated BLOCKING rule exits 3 and P
   try { fs.rmSync(NOMOD_DIR, { recursive: true, force: true }); } catch { }
 }
 
+// ================================================================================================
+// PART 8 — WP-S13 (2.1, 2026-09-26 laptop re-audit, review C VERDICT FAIL). gitProbe() is the ONE shared,
+// honest, THREE-WAY git probe (repo / no-repo / undetermined) — this is its primary unit-test home.
+// Every scenario below is skipped gracefully (never a fabricated pass) when the environment cannot
+// support it (no working `git` on PATH at all).
+// ================================================================================================
+{
+  const gitAvailable = (() => {
+    try { const r = spawnSync('git', ['--version'], { encoding: 'utf8' }); return !!r && r.status === 0; } catch { return false; }
+  })();
+  if (!gitAvailable) {
+    console.log('  SKIP PART 8 (gitProbe): no working `git` on PATH in this environment');
+  } else {
+    // ---- 8a: hasGitEntryInAncestry — direct unit coverage of the filesystem safety-net, independent of
+    // git's own exit code/stderr (git-version-independent, deterministic). ----
+    {
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rc-ancestry-'));
+      const child = path.join(base, 'child');
+      fs.mkdirSync(child, { recursive: true });
+      t('8a hasGitEntryInAncestry: false when no .git exists anywhere in the ancestry', RC.hasGitEntryInAncestry(child) === false);
+      fs.mkdirSync(path.join(base, '.git'), { recursive: true }); // a real repo's .git is a DIRECTORY
+      t('8a hasGitEntryInAncestry: true for a .git DIRECTORY in a parent', RC.hasGitEntryInAncestry(child) === true);
+      fs.rmSync(path.join(base, '.git'), { recursive: true, force: true });
+      fs.writeFileSync(path.join(base, '.git'), 'gitdir: /elsewhere\n'); // a worktree's .git is a FILE
+      t('8a hasGitEntryInAncestry: true for a .git FILE in a parent (worktree form)', RC.hasGitEntryInAncestry(child) === true);
+      try { fs.rmSync(base, { recursive: true, force: true }); } catch { }
+    }
+
+    // ---- 8b: a genuine, well-formed repo (one real commit) ----
+    const REPO = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rc-gitprobe-repo-'));
+    const git = (...args) => spawnSync('git', args, { cwd: REPO, encoding: 'utf8' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(REPO, 'seed.txt'), 'seed\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'seed');
+    const realHead = git('rev-parse', 'HEAD').stdout.trim();
+    const headLooksReal = /^[0-9a-f]{40}$/i.test(realHead);
+    if (!headLooksReal) {
+      console.log('  SKIP PART 8b-8f (gitProbe repo scenarios): could not establish a real HEAD in this environment');
+    } else {
+      const p1 = RC.gitProbe(REPO);
+      t('8b gitProbe on a genuine repo returns state:repo with the real HEAD', p1.state === 'repo' && p1.commit === realHead.toLowerCase(), JSON.stringify(p1));
+      t('8b resolveHeadCommit agrees with gitProbe on a genuine repo', RC.resolveHeadCommit(REPO) === realHead.toLowerCase());
+
+      // ---- 8c: GIT_DIR poisoning on a REAL repo must be NEUTRALIZED — the probe must still see the real
+      // repo/commit, never fall back to a false no-git/undetermined reading (review C's exact 2.1 trigger:
+      // "prefixing GIT_DIR=<nonexistent> ... to forge-gate-evidence record"). ----
+      const savedGitDir = process.env.GIT_DIR;
+      const savedCeiling = process.env.GIT_CEILING_DIRECTORIES;
+      try {
+        process.env.GIT_DIR = path.join(os.tmpdir(), 'forge-rc-nonexistent-gitdir-' + Date.now());
+        process.env.GIT_CEILING_DIRECTORIES = REPO; // would also block upward discovery if honored
+        const p2 = RC.gitProbe(REPO);
+        t('8c a poisoned GIT_DIR (nonexistent path) on a real repo is REFUSED — the probe still sees the real repo/commit, unfooled', p2.state === 'repo' && p2.commit === realHead.toLowerCase(), JSON.stringify(p2));
+      } finally {
+        if (savedGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = savedGitDir;
+        if (savedCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES; else process.env.GIT_CEILING_DIRECTORIES = savedCeiling;
+      }
+
+      // ---- 8d: git absent from PATH must read UNDETERMINED, never no-repo (fail-closed, same as before
+      // the D2 fix ever existed). ----
+      const savedPath = process.env.PATH;
+      const savedPathLower = process.env.Path; // Windows env vars are case-insensitive but Node exposes both keys
+      try {
+        process.env.PATH = '';
+        if (savedPathLower !== undefined) process.env.Path = '';
+        const p3 = RC.gitProbe(REPO);
+        t('8d git absent from PATH reads UNDETERMINED, never no-repo', p3.state === 'undetermined', JSON.stringify(p3));
+      } finally {
+        if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+        if (savedPathLower === undefined) delete process.env.Path; else process.env.Path = savedPathLower;
+      }
+
+      // ---- 8e: a subdirectory of this real repo (no .git of its own) is a ".git entry in a parent of the
+      // root" — must resolve via git's own upward discovery to state:repo, i.e. NEVER no-repo. ----
+      const child = path.join(REPO, 'a-subdir');
+      fs.mkdirSync(child, { recursive: true });
+      const p4 = RC.gitProbe(child);
+      t('8e a .git entry in a PARENT of the root is never classified no-repo (resolves via real upward discovery to state:repo)', p4.state !== 'no-repo', JSON.stringify(p4));
+
+      // ---- 8f: a repo with NO commits yet must read UNDETERMINED, never no-repo and never a fabricated
+      // commit (git's own "does not have any commits yet" refusal). ----
+      const EMPTYREPO = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rc-gitprobe-empty-'));
+      spawnSync('git', ['init', '-q'], { cwd: EMPTYREPO, encoding: 'utf8' });
+      const p5 = RC.gitProbe(EMPTYREPO);
+      t('8f a repo with NO commits yet reads UNDETERMINED, never no-repo, never a fabricated commit', p5.state === 'undetermined', JSON.stringify(p5));
+      t('8f resolveHeadCommit is null (not a fabricated sha) on a repo with no commits', RC.resolveHeadCommit(EMPTYREPO) === null);
+      try { fs.rmSync(EMPTYREPO, { recursive: true, force: true }); } catch { }
+    }
+    try { fs.rmSync(REPO, { recursive: true, force: true }); } catch { }
+  }
+
+  // ---- 8g: a genuinely git-less temp folder (no .git anywhere up to the filesystem root) is the ONLY
+  // state that reads no-repo — POSITIVELY confirmed when git is genuinely available; without a working
+  // git this degrades to undetermined instead (never fabricated as no-repo either way). ----
+  const NOGIT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rc-gitprobe-nogit-'));
+  const p6 = RC.gitProbe(NOGIT);
+  if (gitAvailable) {
+    t('8g a real non-repo temp folder reads POSITIVELY-confirmed no-repo (the only state that may relax a commit-binding requirement)', p6.state === 'no-repo', JSON.stringify(p6));
+  } else {
+    t('8g without a working git, a non-repo temp folder reads undetermined (never fabricated as no-repo)', p6.state === 'undetermined', JSON.stringify(p6));
+  }
+  // resolveHeadCommit must be null either way (no-repo AND undetermined both mean "no commit to bind to")
+  t('8g resolveHeadCommit is null on a real non-repo temp folder', RC.resolveHeadCommit(NOGIT) === null);
+  try { fs.rmSync(NOGIT, { recursive: true, force: true }); } catch { }
+}
+
+// ================================================================================================
+// PART 9 — N4 (2026-09-26 independent review, LOW): cleanGitEnv() must force English git output
+// (LC_ALL=C, LANG=C, LANGUAGE removed) regardless of what the CALLING process's own locale carries —
+// otherwise gitProbe()'s "not a git repository" text match silently misses a translated message and a
+// truly git-less project reads UNDETERMINED instead of the correctly relaxed no-repo (D2 regression).
+// ================================================================================================
+console.log('\nPART 9 — N4: cleanGitEnv() forces an English git locale');
+{
+  const savedLcAll = process.env.LC_ALL;
+  const savedLang = process.env.LANG;
+  const savedLanguage = process.env.LANGUAGE;
+  try {
+    process.env.LC_ALL = 'nl_NL.UTF-8';
+    process.env.LANG = 'nl_NL.UTF-8';
+    process.env.LANGUAGE = 'nl:fr';
+    const env = RC.cleanGitEnv();
+    t('9a cleanGitEnv() forces LC_ALL=C even when the parent process has a non-English LC_ALL', env.LC_ALL === 'C', 'got ' + JSON.stringify(env.LC_ALL));
+    t('9b cleanGitEnv() forces LANG=C even when the parent process has a non-English LANG', env.LANG === 'C', 'got ' + JSON.stringify(env.LANG));
+    t('9c cleanGitEnv() deletes LANGUAGE entirely so it can never re-introduce a translation under LC_ALL=C', !('LANGUAGE' in env), 'got ' + JSON.stringify(env.LANGUAGE));
+  } finally {
+    if (savedLcAll === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = savedLcAll;
+    if (savedLang === undefined) delete process.env.LANG; else process.env.LANG = savedLang;
+    if (savedLanguage === undefined) delete process.env.LANGUAGE; else process.env.LANGUAGE = savedLanguage;
+  }
+
+  // 9d: with NO locale vars set in the parent at all, cleanGitEnv() still produces an explicit English pin
+  // (never relies on the OS/parent already defaulting to English).
+  {
+    const e2 = RC.cleanGitEnv();
+    t('9d cleanGitEnv() pins LC_ALL/LANG to C even when the parent process sets no locale vars at all', e2.LC_ALL === 'C' && e2.LANG === 'C');
+  }
+
+  // 9e: still strips the GIT_* poisoning variables alongside the new locale pin (the N4 fix must not
+  // regress the WP-S13 2.1 fix living in the same function).
+  {
+    const savedGitDir = process.env.GIT_DIR;
+    try {
+      process.env.GIT_DIR = '/nonexistent/poisoned';
+      const e3 = RC.cleanGitEnv();
+      t('9e cleanGitEnv() still strips GIT_DIR alongside the new locale pin', !('GIT_DIR' in e3));
+    } finally {
+      if (savedGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = savedGitDir;
+    }
+  }
+}
+
+// ================================================================================================
+// PART 10 — N6 (2026-09-26 independent review, LOW): isReviewDispatch() must also accept the
+// DOCUMENTED `mission` field (commands/forge.md step 5's custom_subagent_created shape), never only
+// `task` — a custom reviewer logged exactly as documented was previously always counted as work,
+// blocking its own later independent-verification approval as false self-approval.
+// ================================================================================================
+console.log('\nPART 10 — N6: isReviewDispatch() accepts mission (documented field), keeps task working');
+{
+  const d = RC.isReviewDispatch;
+  t('10a a documented custom_subagent_created shape (role:"reviewer", mission:"review WP1") is recognised as a review dispatch',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', mission: 'review WP1' }) === true);
+  t('10b the pre-existing "task" field still works unchanged (no regression)',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1' }) === true);
+  t('10c a mission that describes IMPLEMENTER work (not review-only) still counts as work, even with a reviewer role',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', mission: 'implement WP1' }) === false);
+  t('10d contradictory task/mission (one review-only, one not) drops the review claim entirely — the safe reading wins',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1', mission: 'implement WP1' }) === false);
+  t('10e task AND mission both present and BOTH pure review text are accepted together',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1', mission: 'review WP1' }) === true);
+  t('10f neither task nor mission present is unproven — not a review dispatch (unchanged fail-closed reading)',
+    d({ event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer' }) === false);
+  t('10g the review C exact repro (role:"implementer", mission:"implement X") is still work, mission alone does not fabricate a review role',
+    d({ event_type: 'custom_subagent_created', agent: 'Review Boss', role: 'implementer', mission: 'implement X' }) === false);
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

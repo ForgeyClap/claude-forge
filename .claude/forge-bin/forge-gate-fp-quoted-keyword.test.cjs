@@ -342,6 +342,34 @@ for (const cmd of SEARCH_ALLOW) {
     assert.ok(!r.matched.includes('kill-by-name'), 'unexpectedly matched: ' + JSON.stringify(r.matched));
   });
 }
+// v2.8.0 verification review N1: a search tool is not inert when its own segment can still execute text.
+console.log('\n9b) verification N1 — a composed search command that can execute text must still fire kill-by-name');
+const COMPOSED_BLOCK = [
+  'grep x <(sh -c "pkill node")',
+  "Select-String -Pattern x -Path (. 'Stop-Process' -Name node)",
+  'git grep -O"pkill node #" x',
+  'ag --pager "pkill node" x',
+  'ack --pager "pkill node" x',
+  'grep x "$(pkill node)"',
+  'grep x "`pkill node`"',
+  'rg --pre "pkill node" x',
+];
+t('decide() still allows grep\'s everyday -o flag with a quoted kill verb (case-sensitive -O check)', () => {
+  const v = hook.decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'grep -o "pkill" notes.txt' } }, { watchdogTimeoutMs: 6000 });
+  assert.strictEqual(v.block, false, JSON.stringify(v));
+});
+for (const cmd of COMPOSED_BLOCK) {
+  t('decide() blocks the composed shape: ' + cmd, () => {
+    const v = hook.decide({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: cmd } }, { watchdogTimeoutMs: 6000 });
+    assert.strictEqual(v.block, true, JSON.stringify(v));
+  });
+}
+t('leadsWithInertSearchTool: ag/ack are no longer inert; process/command substitution and pager flags void the exemption', () => {
+  for (const s of ['ag x', 'ack x', 'grep x <(cat f)', 'grep x "$(date)"', 'grep x "`date`"', 'git grep -Ovi x', 'rg --pre ./p x', 'grep --open-files-in-pager=less x']) {
+    assert.strictEqual(gate.leadsWithInertSearchTool(s), false, s);
+  }
+});
+
 t('leadsWithInertSearchTool: wrappers, awk, sed, xargs and interpreters are never inert', () => {
   for (const s of ['sudo grep x', 'env grep x', 'awk "/kill/" f', 'sed -e "e pkill x"', 'xargs grep x', 'sh -c "grep x"', 'timeout 5 grep x']) {
     assert.strictEqual(gate.leadsWithInertSearchTool(s), false, s);

@@ -77,13 +77,31 @@ console.log('independent-verification (honesty-core)');
     iv(keten([werk('a'), { event_type: 'agent_work_package_created', agent: 'V', role: 'reviewer', mission: 'review WP1' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
   t('1 D3 counterweight: a GENUINE execution event under that same agent name still blocks self-review (the fix narrows, never disables, self-approval detection)',
     iv(keten([werk('a'), { event_type: 'agent_work_package_created', agent: 'V', role: 'reviewer' }, { event_type: 'subagent_completed', agent: 'V', wp_id: 'wpX' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === false);
-  t('1 D3: custom_subagent_created (het custom-rol-equivalent, forge.md:89) wordt hetzelfde behandeld',
-    iv(keten([werk('a'), { event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', custom: true }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
+  /** 2.3 REGRESSION FIX (WP-S13, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — the test that used
+   *  to live right here asserted `.ok === true` for a `custom_subagent_created` carrying `role:'reviewer'`
+   *  but NO `task` field (just `custom:true`) — i.e. NO real proof the dispatch was for review at all.
+   *  That was the exact D3 OVER-EXEMPTION review C's 2.3 finding names: `custom_subagent_created` is REAL
+   *  dispatch proof (dispatch_id/mission/allowed actions — the un-overridable `dispatch-logged` rule
+   *  accepts it as such), not a bare plan, so it must count as work UNLESS `isReviewDispatch(e)` proves
+   *  otherwise — exactly like `agent_started`/`subagent_started`. REPRODUCED (review C's own trigger,
+   *  adapted to this fixture's short agent names): a `custom_subagent_created` naming the reviewer with an
+   *  IMPLEMENTER role (or a reviewer role with no provable review task) let that same agent's later review
+   *  completion pass as independent — self-approval, undetected. */
+  t('1 2.3: custom_subagent_created naming the reviewer WITHOUT a provable review task (role alone is not proof) now correctly counts as work — self-approval is caught',
+    iv(keten([werk('a'), { event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', custom: true }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === false);
+  t('1 2.3 REPRODUCED: custom_subagent_created {agent:"Review Boss", role:"implementer", mission:"implement X"} then Review Boss approving FAILS as self-approval (review C\'s exact trigger)',
+    iv(keten([werk('a'), { event_type: 'custom_subagent_created', agent: 'Review Boss', role: 'implementer', mission: 'implement X' }, start('Review Boss', 'r1'), klaar('Review Boss', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === false);
+  t('1 2.3 counterweight: a GENUINE, provable review assignment (structured role + a task that describes ONLY review work) still does NOT count as work for that agent',
+    iv(keten([werk('a'), { event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', task: 'review WP1' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
+  t('1 2.3: a genuine custom_subagent_created dispatch (no review proof at all — an ordinary implementer) blocks its own agent from later reviewing, exactly like agent_started/subagent_started',
+    iv(keten([werk('a'), { event_type: 'custom_subagent_created', agent: 'V', role: 'implementer', task: 'implement WP1' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === false);
   t('1 D3: een work-package-aankondiging ZONDER agent blijft onschuldig (geen "anoniem werk" fail-closed meer voor dit type)',
     iv(keten([werk('a'), { event_type: 'agent_work_package_created', role: 'reviewer', mission: 'review WP1' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
-  t('1 D3: ASSIGNMENT_EVENT_TYPES bevat precies de twee aankondigingstypes, en beide blijven WERK voor staleness',
-    RC.ASSIGNMENT_EVENT_TYPES.has('agent_work_package_created') && RC.ASSIGNMENT_EVENT_TYPES.has('custom_subagent_created')
-    && RC.ASSIGNMENT_EVENT_TYPES.size === 2 && RC.isWorkEventType('agent_work_package_created') === true && RC.isWorkEventType('custom_subagent_created') === true);
+  t('1 2.3: ASSIGNMENT_EVENT_TYPES now contains ONLY the bare, unproven plan announcement — custom_subagent_created moved to IV_DISPATCH_TYPES (real dispatch proof)',
+    RC.ASSIGNMENT_EVENT_TYPES.has('agent_work_package_created') && !RC.ASSIGNMENT_EVENT_TYPES.has('custom_subagent_created')
+    && RC.ASSIGNMENT_EVENT_TYPES.size === 1
+    && RC.IV_DISPATCH_TYPES.has('custom_subagent_created') && RC.IV_DISPATCH_TYPES.has('agent_started') && RC.IV_DISPATCH_TYPES.has('subagent_started')
+    && RC.isWorkEventType('agent_work_package_created') === true && RC.isWorkEventType('custom_subagent_created') === true);
 
   // F-03 subjectbinding
   t('1 subject_log_hash die afwijkt van de echte runstaat wordt geweigerd',

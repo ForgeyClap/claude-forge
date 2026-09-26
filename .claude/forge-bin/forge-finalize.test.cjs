@@ -714,6 +714,175 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
   try { fs.rmSync(GITROOT4, { recursive: true, force: true }); } catch { }
 }
 
+// ================================================================================================
+// WP-S13 (2.1, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — headProbeOf must refuse (ok:false)
+// on an UNDETERMINED git state, never silently agree with a no-git claim the way it used to when
+// resolveHeadCommit's plain `null` covered both "confirmed no git" and "could not determine". 20d and 20e
+// mirror 20b (a genuinely no-git-incapable-of-confirming root) using the two concrete UNDETERMINED
+// triggers named in the finding: a repo with no commits yet, and a poisoned GIT_DIR on a real repo.
+// ================================================================================================
+{
+  // 20d: a repo with NO COMMITS YET (git genuinely present, but rev-parse HEAD refuses — UNDETERMINED,
+  // never no-repo) whose gate-evidence.json fabricates a no_git claim must be refused by finalize(),
+  // with an honest "could not be independently determined" reason — never accepted as confirmed no-git.
+  const GITROOT5 = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-nogit-nocommits-'));
+  fs.mkdirSync(path.join(GITROOT5, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT5, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT5, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT5, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT5, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT5, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT5, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const gitInitOk5 = spawnSync('git', ['init', '-q'], { cwd: GITROOT5, encoding: 'utf8' });
+  if (!gitInitOk5 || gitInitOk5.status !== 0) {
+    console.log('  SKIP 20d D2-vs-2.1 (no commits yet): no working `git` in this environment');
+  } else {
+    const RUN = 'fin-nogit-nocommits';
+    const dir5 = path.join(GITROOT5, '.claude', 'forge-runs', RUN);
+    fs.mkdirSync(dir5, { recursive: true });
+    fs.writeFileSync(path.join(dir5, 'gate-evidence.json'), JSON.stringify({
+      run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: null, worktree_clean: null, stable: true, no_git: true, reason: 'geen git-repository (vervalst — echte staat is UNDETERMINED, geen commits)' } }],
+    }));
+    const g5log = (type, extra) => spawnSync(process.execPath, [path.join(GITROOT5, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    g5log('run_started', { note: 's' });
+    g5log('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_G5 = require(path.join(GITROOT5, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const r = FIN_G5.finalize(GITROOT5, RUN);
+    t('20d a no-git claim on a repo with NO COMMITS YET (undetermined, not confirmed no-repo) is refused by finalize()', r.ok === false && /onafhankelijk.*vastgesteld/i.test(r.reason || ''), JSON.stringify(r).slice(0, 260));
+    t('20d no receipt was written', !fs.existsSync(FIN_G5.receiptFileOf(GITROOT5, RUN)));
+  }
+  try { fs.rmSync(GITROOT5, { recursive: true, force: true }); } catch { }
+}
+{
+  // 20e: a poisoned GIT_DIR (nonexistent path) on a REAL repo (with a real commit) — before this fix,
+  // resolveHeadCommit() would return null here exactly as it does on a genuine no-git root, so a no-git
+  // claim would have been wrongly accepted. Now gitProbe()'s env-hardening sees straight through the
+  // poisoning to the real commit, so this must refuse for the SAME reason 20b does (a repo that DOES
+  // have git), not the "could not be determined" reason.
+  const GITROOT6 = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-nogit-poisoned-'));
+  fs.mkdirSync(path.join(GITROOT6, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT6, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT6, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT6, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT6, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT6, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT6, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const git6 = (...args) => spawnSync('git', args, { cwd: GITROOT6, encoding: 'utf8' });
+  git6('init', '-q');
+  git6('config', 'user.email', 'test@example.com');
+  git6('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(GITROOT6, 'seed.txt'), 'seed\n');
+  git6('add', '.');
+  git6('commit', '-q', '-m', 'seed');
+  const head6 = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT6, encoding: 'utf8' }).stdout.trim();
+  const noGit6 = head6 === '' || !/^[0-9a-f]{40}$/i.test(head6);
+  if (noGit6) {
+    console.log('  SKIP 20e D2-vs-2.1 (poisoned GIT_DIR): no working `git` in this environment');
+  } else {
+    const RUN = 'fin-nogit-poisoned';
+    const dir6 = path.join(GITROOT6, '.claude', 'forge-runs', RUN);
+    fs.mkdirSync(dir6, { recursive: true });
+    fs.writeFileSync(path.join(dir6, 'gate-evidence.json'), JSON.stringify({
+      run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: null, worktree_clean: null, stable: true, no_git: true, reason: 'geen git-repository (vervalst onder een poisoned GIT_DIR)' } }],
+    }));
+    const g6log = (type, extra) => spawnSync(process.execPath, [path.join(GITROOT6, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    g6log('run_started', { note: 's' });
+    g6log('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_G6 = require(path.join(GITROOT6, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const savedGitDir6 = process.env.GIT_DIR;
+    try {
+      process.env.GIT_DIR = path.join(os.tmpdir(), 'finalize-nonexistent-gitdir-' + Date.now());
+      const r = FIN_G6.finalize(GITROOT6, RUN);
+      t('20e a poisoned GIT_DIR cannot smuggle a no-git claim through on a real repo — finalize() still sees the real commit and refuses', r.ok === false && /git-repository/.test(r.reason || ''), JSON.stringify(r).slice(0, 260));
+      t('20e no receipt was written', !fs.existsSync(FIN_G6.receiptFileOf(GITROOT6, RUN)));
+    } finally {
+      if (savedGitDir6 === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = savedGitDir6;
+    }
+  }
+  try { fs.rmSync(GITROOT6, { recursive: true, force: true }); } catch { }
+}
+
+// ================================================================================================
+// 21) ALSO-NOTED (2026-09-26 independent review, alongside N2/N3/N4/N6/N8) — evaluateAcceptance() used
+// to call resolveHeadCommit() directly, which collapses gitProbe's THREE states into commit-or-null, so a
+// LIVE-UNDETERMINED git state (git present, repo present, but rev-parse HEAD refuses for a reason other
+// than a clean "not a git repository") read exactly like a confirmed no-repo root: `headNow` was falsy
+// either way, so a receipt bound to a REAL commit silently fell through to {status:'current'} — reported
+// FINALIZED — instead of the honest "could not be determined". Reproduced here on a REAL repo that
+// already has a real commit: corrupt .git/HEAD AFTER a successful finalize (never delete .git itself, so
+// the .git entry is still there — this is exactly gitProbe's "inconsistent signal" undetermined path, not
+// a confirmed no-repo one).
+// ================================================================================================
+{
+  const GITROOT7 = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-undetermined-'));
+  fs.mkdirSync(path.join(GITROOT7, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT7, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT7, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT7, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT7, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT7, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT7, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const git7 = (...args) => spawnSync('git', args, { cwd: GITROOT7, encoding: 'utf8' });
+  git7('init', '-q');
+  git7('config', 'user.email', 'test@example.com');
+  git7('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(GITROOT7, 'seed.txt'), 'seed\n');
+  git7('add', '.');
+  git7('commit', '-q', '-m', 'seed');
+  const head7 = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT7, encoding: 'utf8' }).stdout.trim();
+  const noGit7 = head7 === '' || !/^[0-9a-f]{40}$/i.test(head7);
+  if (noGit7) {
+    console.log('  SKIP 21 also-noted (undetermined HEAD): no working `git` in this environment');
+  } else {
+    const RUN = 'fin-undetermined-head';
+    const dir7 = path.join(GITROOT7, '.claude', 'forge-runs', RUN);
+    fs.mkdirSync(dir7, { recursive: true });
+    fs.writeFileSync(path.join(dir7, 'gate-evidence.json'), JSON.stringify({
+      run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: head7, worktree_clean: true, stable: true } }],
+    }));
+    const g7log = (type, extra) => spawnSync(process.execPath, [path.join(GITROOT7, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    g7log('run_started', { note: 's' });
+    g7log('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_G7 = require(path.join(GITROOT7, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const r7 = FIN_G7.finalize(GITROOT7, RUN);
+    t('21 setup: finalize succeeds on the real git HEAD', r7.ok === true && r7.receipt.code_commit === head7, JSON.stringify(r7).slice(0, 200));
+    t('21 setup: check() reports FINALIZED while HEAD is readable and unchanged', FIN_G7.check(GITROOT7, RUN).verdict === 'FINALIZED');
+
+    // Corrupt .git/HEAD so git itself can no longer answer rev-parse HEAD cleanly — the .git ENTRY is
+    // still there (never deleted), so this is gitProbe's UNDETERMINED path, never a confirmed no-repo one.
+    // (Verified live against forge-runcontract.cjs's own gitProbe() while writing this fix: the corrupted
+    // repo reports {state:'undetermined', reason:'... inconsistent signaal ...'}.)
+    const headFile = path.join(GITROOT7, '.git', 'HEAD');
+    const headFileBefore = fs.readFileSync(headFile, 'utf8');
+    fs.writeFileSync(headFile, 'garbage-not-a-ref\n');
+    const probeAfterCorruption = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT7, encoding: 'utf8' });
+    const corruptionReallyMadeGitRefuse = probeAfterCorruption.status !== 0;
+    if (!corruptionReallyMadeGitRefuse) {
+      console.log('  SKIP 21 also-noted (undetermined HEAD): this git version tolerated the corrupted .git/HEAD — cannot force UNDETERMINED here');
+    } else {
+      const afterCorruption = FIN_G7.check(GITROOT7, RUN);
+      t('21 also-noted: an UNDETERMINED live git state (receipt bound to a real commit) reports verdict UNDETERMINED — never FINALIZED, never HISTORICAL', afterCorruption.verdict === 'UNDETERMINED', JSON.stringify(afterCorruption).slice(0, 260));
+      t('21 also-noted: the reason honestly says the state could not be established', /niet.*vastgesteld|kon niet/i.test(afterCorruption.reason || ''), afterCorruption.reason);
+
+      const idempotentAfterCorruption = FIN_G7.finalize(GITROOT7, RUN);
+      t('21 also-noted: an idempotent (repeat) finalize() also REFUSES on an undetermined git state, never silently re-succeeds', idempotentAfterCorruption.ok === false, JSON.stringify(idempotentAfterCorruption).slice(0, 260));
+      t('21 also-noted: the refusal is NOT flagged historical (we have no evidence of drift, only of not-knowing)', idempotentAfterCorruption.historical !== true);
+    }
+    // restore .git/HEAD before this fixture is torn down (tidy, even though the dir is about to be removed)
+    try { fs.writeFileSync(headFile, headFileBefore); } catch { /* best-effort tidy */ }
+  }
+  try { fs.rmSync(GITROOT7, { recursive: true, force: true }); } catch { }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }

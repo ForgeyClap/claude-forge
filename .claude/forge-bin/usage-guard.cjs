@@ -793,6 +793,15 @@ function windowLabel(l) {
   const extra = [model, surface].filter(Boolean).join('/');
   return extra ? kind + ' (' + extra + ')' : kind;
 }
+/** ALL_MODELS_KINDS — WP-S14 1.2 hardening (2026-09-26 independent review): `session` and `weekly_all`
+ *  are account-wide BY DEFINITION, never per-model — the endpoint's own shape never scopes them to a
+ *  model, but nothing should have to trust that forever. Treating these two kinds as all-models BY KIND
+ *  (not merely "no scope.model was present") means a malformed or unexpected `scope.model` on one of them
+ *  can never accidentally turn an account-wide window into a per-model one and get it silently filtered
+ *  out of the pause decision by windowAppliesNow(). Consulted in both normalizeWindows() (so the bad
+ *  field never even enters `w.model`) and windowAppliesNow() (defense in depth for any window object
+ *  built by another code path). */
+const ALL_MODELS_KINDS = new Set(['session', 'weekly_all']);
 function normalizeWindows(j) {
   const out = [];
   const seen = new Set();
@@ -828,7 +837,10 @@ function normalizeWindows(j) {
       // collapse "explicitly not active" and "the endpoint didn't say" into the same `false`, which is
       // exactly the distinction windowAppliesNow() needs (an explicit false is real information; an
       // absent field is not).
-      const model = (l && l.scope && l.scope.model && l.scope.model.display_name) ? String(l.scope.model.display_name) : null;
+      // WP-S14 1.2 hardening: force model=null for the known all-models KINDS regardless of what `scope`
+      // says — see ALL_MODELS_KINDS's own doc comment above.
+      const model = ALL_MODELS_KINDS.has(kind) ? null
+        : ((l && l.scope && l.scope.model && l.scope.model.display_name) ? String(l.scope.model.display_name) : null);
       out.push({ id: k, kind, group, pct, resetsAt: (l && l.resets_at) || null, severity: (l && l.severity) || null,
         isActive: (l && typeof l.is_active === 'boolean') ? l.is_active : null, model, label, source: 'limits' });
     }
@@ -846,14 +858,23 @@ function normalizeWindows(j) {
   }
   return out;
 }
-/** sameModel(a, b) -> true when two model labels plausibly name the same model (case/whitespace-
- *  insensitive, either containing the other — "Fable" vs "Fable 5.1"). Pure, never throws. Both empty/
- *  non-string -> false: an unknown model can never be said to match anything, which is the fail-safe
- *  direction (see windowAppliesNow's own doc comment). */
+/** normalizeModelToken(s) -> a comparable token — WP-S14 1.2 hardening (2026-09-26 independent review):
+ *  a raw model id (e.g. FORGE_USAGE_GUARD_MODEL=`claude-opus-4-8`) and the usage endpoint's human display
+ *  name (e.g. `Opus 4.8`) named the SAME model but never compared equal — lowercased, trimmed, the
+ *  `claude-` prefix stripped, and every separator (space/dot/dash/underscore) removed, so `claude-opus-4-8`
+ *  and `Opus 4.8` both normalize to `opus48`. Non-string -> ''. */
+function normalizeModelToken(s) {
+  if (typeof s !== 'string') return '';
+  return s.trim().toLowerCase().replace(/^claude[-_ ]+/, '').replace(/[\s._-]+/g, '');
+}
+/** sameModel(a, b) -> true when two model labels plausibly name the same model (case/separator/prefix-
+ *  insensitive — see normalizeModelToken — either normalized token containing the other, e.g. "Fable" vs
+ *  "Fable 5.1"). Pure, never throws. Both empty/non-string -> false: an unknown model can never be said to
+ *  match anything, which is the fail-safe direction (see windowAppliesNow's own doc comment). */
 function sameModel(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const x = a.trim().toLowerCase();
-  const y = b.trim().toLowerCase();
+  const x = normalizeModelToken(a);
+  const y = normalizeModelToken(b);
   if (!x || !y) return false;
   return x === y || x.includes(y) || y.includes(x);
 }
@@ -888,7 +909,10 @@ function resolveActiveModelHint(opts) {
  *  different model's session. This is the one behavior change N1 asks for: previously every window
  *  counted, so one filled per-model quota paused every model for days. Pure, never throws. */
 function windowAppliesNow(w, modelHint) {
-  if (!w || !w.model) return true; // all-models window: always governs, no exceptions
+  // WP-S14 1.2 hardening: `session`/`weekly_all` are all-models BY KIND, not only when `.model` happens
+  // to be unset — a window object built elsewhere with a (wrongly) populated `.model` on one of these
+  // kinds must still always govern. See ALL_MODELS_KINDS's own doc comment.
+  if (!w || !w.model || ALL_MODELS_KINDS.has(w.kind)) return true; // all-models window: always governs, no exceptions
   if (w.isActive === true) return true; // the endpoint says this window currently governs
   return sameModel(w.model, modelHint); // otherwise: only when we independently know this model is in use
 }
@@ -2175,23 +2199,50 @@ function ownsPid(pid, rec) {
   } catch (e) { return { ok: false, code: 'unverifiable', reason: 'could not verify pid ' + pid + ' (' + e.message + ') — refusing to kill it' }; }
 }
 
-/** cleanupStalePidFile(pidFile, rec) -> { removed, reason } — Part II (fresh-laptop re-audit, 2026-09-26):
- *  "a pid file pointing at a dead process must be detected and cleaned." No exit/signal handler this file
- *  registers can run on every way a watcher can end — SIGKILL, `taskkill /F`, an uninstall that removes
- *  Forge while the watcher is still running, an OS crash or a power loss all skip `process.on('exit'/
- *  'SIGTERM', ...)` entirely — so a stale pid file is always POSSIBLE, never fully preventable. The
- *  reactive half is this: any command that reads the pid file also cleans it up when it can PROVE the
- *  process behind it is gone, instead of reporting "not running" forever while the stale file just sits
- *  there until someone happens to run `start` or `stop`. Mirrors `stop`'s own ownsPid()-gated decision
- *  exactly, so the two commands never disagree about when a pid file is safe to remove: an 'unverifiable'
- *  pid (alive, identity unreadable) is left ALONE — deleting it could destroy a genuinely live watcher's
- *  only ownership evidence and let a second one start alongside it (the 2026-07-29 incident class). Only
- *  a provably dead/recycled/non-watcher pid is ever removed. Never throws. */
-function cleanupStalePidFile(pidFile, rec) {
-  if (!rec || !rec.pid) return { removed: false, reason: 'no pid file' };
-  const own = ownsPid(rec.pid, rec);
+/** sameOwnershipRecord(a, b) -> true when two pid-file reads refer to the EXACT same claim (pid AND
+ *  startedAt AND nonce all match). Comparing the pid alone is not enough: an OS can recycle a pid number,
+ *  and a fresh claim naturally carries neither the same startedAt nor the same nonce as the record that
+ *  was just judged dead. Both sides are expected to come from readPidRecordFrom() so the shape always
+ *  agrees (never compares a caller's partial summary against a full record). */
+function sameOwnershipRecord(a, b) {
+  if (!a || !b || !a.pid || !b.pid) return false;
+  return a.pid === b.pid && (a.startedAt || null) === (b.startedAt || null) && (a.nonce || null) === (b.nonce || null);
+}
+/** cleanupStalePidFile(pidFile, callerRec, deps) -> { removed, reason } — Part II (fresh-laptop
+ *  re-audit, 2026-09-26): "a pid file pointing at a dead process must be detected and cleaned." No
+ *  exit/signal handler this file registers can run on every way a watcher can end — SIGKILL, `taskkill
+ *  /F`, an uninstall that removes Forge while the watcher is still running, an OS crash or a power loss
+ *  all skip `process.on('exit'/'SIGTERM', ...)` entirely — so a stale pid file is always POSSIBLE, never
+ *  fully preventable. The reactive half is this: any command that reads the pid file also cleans it up
+ *  when it can PROVE the process behind it is gone, instead of reporting "not running" forever while the
+ *  stale file just sits there until someone happens to run `start` or `stop`. Mirrors `stop`'s own
+ *  ownsPid()-gated decision exactly, so the two commands never disagree about when a pid file is safe to
+ *  remove: an 'unverifiable' pid (alive, identity unreadable) is left ALONE — deleting it could destroy a
+ *  genuinely live watcher's only ownership evidence and let a second one start alongside it (the
+ *  2026-07-29 incident class). Only a provably dead/recycled/non-watcher pid is ever removed.
+ *
+ *  WP-S14 finding 1.1 (2026-09-26 independent review): the identity check below (ownsPid — a Windows CIM
+ *  query or a /proc read) can take real wall-clock time, long enough for a concurrent `start` to claim
+ *  this exact slot in between. Deleting blindly on the record read at the TOP of this function would then
+ *  delete a brand-new, live watcher's only ownership evidence, leaving the account unguarded. `callerRec`
+ *  is therefore used only to confirm there is something to look at; the actual before/after snapshots
+ *  (`before`/`after`) are BOTH taken by this function itself via readPidRecordFrom() so they are always
+ *  the same shape, and the delete only proceeds when they still agree on pid + startedAt + nonce — any
+ *  change at all means someone else is now holding (or claiming) this slot. `deps.verify` is an injectable
+ *  seam for ownsPid, used by the deterministic race test; production callers never need to pass it. Never
+ *  throws. */
+function cleanupStalePidFile(pidFile, callerRec, deps) {
+  const verify = (deps && deps.verify) || ownsPid;
+  if (!callerRec || !callerRec.pid) return { removed: false, reason: 'no pid file' };
+  const before = readPidRecordFrom(pidFile);
+  if (!before.pid) return { removed: false, reason: 'no pid file' };
+  const own = verify(before.pid, before);
   if (own.ok) return { removed: false, reason: 'still alive' };
   if (own.code === 'unverifiable') return { removed: false, reason: own.reason };
+  const after = readPidRecordFrom(pidFile);
+  if (!sameOwnershipRecord(before, after)) {
+    return { removed: false, reason: 'pid file changed while being cleaned up (now pid ' + (after && after.pid) + ') — a new claim may be in progress; leaving it alone' };
+  }
   try { fs.unlinkSync(pidFile); return { removed: true, reason: own.reason }; }
   catch (e) { return { removed: false, reason: 'unlink failed: ' + e.message }; }
 }
@@ -2779,7 +2830,7 @@ module.exports = {
   writeStateTo,
   fingerprintAccount, readAccountIdentity, detectAccountSwitch, stateForAccount,
   normalizeWindows, crossedWindows, windowLabel, watcherHealth, fmtReset, stillHighTrigger,
-  sameModel, resolveActiveModelHint, windowAppliesNow, triggerCanResumeByModelSwitch,
+  sameModel, normalizeModelToken, ALL_MODELS_KINDS, resolveActiveModelHint, windowAppliesNow, triggerCanResumeByModelSwitch,
   resolveGuardLanguage, pickLang,
   tick, doPause, doResume, accountStamp, ownsPid, readPosixCmdline, verdictFromCmdline, pidAlive, readCredentialFp,
   credentialGeneration, readCredentialSnapshot,

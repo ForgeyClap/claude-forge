@@ -102,6 +102,40 @@ test('the SAME root scanned twice never double-counts the same real project (ded
   for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
 });
 
+// A2 fix (WP-C2, 2026-09-26 laptop re-audit): two DIFFERENT real projects (different roots,
+// different resolved paths) that happen to share a folder NAME must both be marked `ambiguous`,
+// never silently deduped or presented as if only one existed.
+test('two different real projects that share a folder NAME are both marked ambiguous', { skip: SKIP_REASON }, async () => {
+  const rootA = makeRootWithProject('my-site');
+  const rootB = makeRootWithProject('my-site');
+  _setScanRootsForTests([rootA, rootB]);
+  _resetProjectsCacheForTests();
+
+  const result = await listProjects();
+  assert.equal(result.ok, true);
+  const matches = result.projects.filter((p) => p.name === 'my-site');
+  assert.equal(matches.length, 2, 'both real, differently-pathed projects must be present — never deduped by name');
+  assert.ok(matches.every((p) => p.ambiguous === true), 'every entry sharing the colliding name must be marked ambiguous');
+  const paths = new Set(matches.map((p) => p.path));
+  assert.equal(paths.size, 2, 'the two ambiguous entries must keep their own distinct real paths');
+
+  for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
+});
+
+test('a uniquely-named project is never marked ambiguous', { skip: SKIP_REASON }, async () => {
+  const rootA = makeRootWithProject('proj-unique');
+  _setScanRootsForTests([rootA]);
+  _resetProjectsCacheForTests();
+
+  const result = await listProjects();
+  assert.equal(result.ok, true);
+  const entry = result.projects.find((p) => p.name === 'proj-unique');
+  assert.ok(entry);
+  assert.equal(entry.ambiguous, false);
+
+  for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
+});
+
 test('a root that does not exist on disk contributes zero projects but never fails the whole scan', { skip: SKIP_REASON }, async () => {
   const rootA = makeRootWithProject('proj-delta');
   const missingRoot = path.join(rootA, 'this-path-does-not-exist-anywhere');
@@ -162,7 +196,10 @@ test('PARTIAL FAILURE: one root whose own spawn genuinely fails never hides a re
   for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
 });
 
-test('TOTAL FAILURE: when EVERY root\'s spawn fails, the result is an honest ok:false with every root\'s own error folded in', async () => {
+// Finding #4 (WP-C2, 2026-09-26 laptop re-audit): the client-visible `error` must be generic (no
+// root path, no username, no raw process-error text) while the real per-root detail still reaches
+// this process's own log — this test now asserts BOTH halves of that split.
+test('TOTAL FAILURE: the client-visible error is generic (no leaked paths); the real detail goes to console.error only', async () => {
   const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-multiroot-stub-'));
   tempRoots.push(stubDir);
   const stubPath = writeStubForgeSyncCjs(stubDir);
@@ -175,12 +212,23 @@ test('TOTAL FAILURE: when EVERY root\'s spawn fails, the result is an honest ok:
   _setScanRootsForTests([failingRootA, failingRootB]);
   _resetProjectsCacheForTests();
 
-  const result = await listProjects();
+  const originalConsoleError = console.error;
+  const loggedLines = [];
+  console.error = (...args) => { loggedLines.push(args.join(' ')); };
+  let result;
+  try {
+    result = await listProjects();
+  } finally {
+    console.error = originalConsoleError;
+  }
+
   assert.equal(result.ok, false);
   assert.equal(result.projects.length, 0);
   assert.match(result.error, /forge-sync list failed for every scan root/);
-  assert.match(result.error, /FAIL-THIS-ROOT-a/);
-  assert.match(result.error, /FAIL-THIS-ROOT-b/);
+  assert.doesNotMatch(result.error, /FAIL-THIS-ROOT-a/, 'the client-visible error must never contain a real root path');
+  assert.doesNotMatch(result.error, /FAIL-THIS-ROOT-b/, 'the client-visible error must never contain a real root path');
+  assert.ok(loggedLines.some((l) => l.includes('FAIL-THIS-ROOT-a')), 'the real detail must still reach the gateway\'s own log');
+  assert.ok(loggedLines.some((l) => l.includes('FAIL-THIS-ROOT-b')), 'the real detail must still reach the gateway\'s own log');
 
   for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
 });

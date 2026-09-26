@@ -74,13 +74,14 @@ t('UNPINNED (no user file at all): effectiveConfig resolves model/effort to null
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-t('UNPINNED: buildCommand() omits -m and -c model_reasoning_effort= entirely', () => {
+t('UNPINNED: buildCommand() omits -m and -c model_reasoning_effort= entirely, returns an argv ARRAY', () => {
   const root = freshRoot();
   const eff = CR.effectiveConfig(root);
-  const cmd = CR.buildCommand(eff, { adversarial: false });
-  assert.ok(!/ -m /.test(cmd), 'unpinned command still passes -m: ' + cmd);
-  assert.ok(!/model_reasoning_effort=/.test(cmd), 'unpinned command still passes an effort: ' + cmd);
-  assert.ok(/-s read-only/.test(cmd), 'unpinned command drops the read-only sandbox: ' + cmd);
+  const argv = CR.buildCommand(eff, { adversarial: false });
+  assert.ok(Array.isArray(argv), 'buildCommand() must return an argv array, never a shell string: ' + JSON.stringify(argv));
+  assert.ok(!argv.includes('-m'), 'unpinned command still passes -m: ' + JSON.stringify(argv));
+  assert.ok(!argv.some((a) => /model_reasoning_effort=/.test(a)), 'unpinned command still passes an effort: ' + JSON.stringify(argv));
+  assert.strictEqual(argv[argv.indexOf('-s') + 1], 'read-only', 'unpinned command drops the read-only sandbox: ' + JSON.stringify(argv));
   assert.strictEqual(CR.modelLabel(eff), 'Codex default model');
   assert.strictEqual(CR.effortLabel(eff), 'Codex default effort');
   assert.strictEqual(CR.isPinned(eff), false);
@@ -100,20 +101,20 @@ t('PINNED (synthetic user override): effectiveConfig merges the override onto th
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-t('PINNED: buildCommand() carries the overridden model AND effort (not just names them in prose)', () => {
+t('PINNED: buildCommand() carries the overridden model AND effort as argv elements (not just names them in prose)', () => {
   const root = freshRoot();
   fs.writeFileSync(path.join(root, '.claude', 'config', 'orchestration', 'codex-review.user.json'), JSON.stringify({ review: { model: 'test-model-x', reasoning_effort: 'medium' } }));
   const eff = CR.effectiveConfig(root);
   for (const opts of [{ adversarial: false }, { adversarial: true }]) {
-    const cmd = CR.buildCommand(eff, opts);
-    assert.ok(cmd.includes('test-model-x'), 'command does not pass the pinned model: ' + cmd);
-    assert.ok(cmd.includes('model_reasoning_effort=medium'), 'command does not pass the pinned effort: ' + cmd);
-    assert.ok(/-s read-only/.test(cmd), 'command does not enforce the read-only sandbox: ' + cmd);
+    const argv = CR.buildCommand(eff, opts);
+    assert.ok(argv.includes('test-model-x'), 'command does not pass the pinned model: ' + JSON.stringify(argv));
+    assert.ok(argv.includes('model_reasoning_effort=medium'), 'command does not pass the pinned effort: ' + JSON.stringify(argv));
+    assert.strictEqual(argv[argv.indexOf('-s') + 1], 'read-only', 'command does not enforce the read-only sandbox: ' + JSON.stringify(argv));
   }
   assert.strictEqual(CR.modelLabel(eff), 'test-model-x');
   assert.strictEqual(CR.effortLabel(eff), 'medium');
   assert.strictEqual(CR.isPinned(eff), true);
-  assert.ok(/ADVERSARIAL CODE REVIEW/.test(CR.buildCommand(eff, { adversarial: true })), 'adversarial command missing the adversarial prefix');
+  assert.ok(CR.buildCommand(eff, { adversarial: true }).some((a) => /ADVERSARIAL CODE REVIEW/.test(a)), 'adversarial command missing the adversarial prefix');
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -123,10 +124,49 @@ t('a user file that overrides only ONE field leaves the other untouched', () => 
   const eff = CR.effectiveConfig(root);
   assert.strictEqual(eff.review.model, 'only-model-set');
   assert.strictEqual(eff.review.reasoning_effort, null, 'reasoning_effort should still be the shipped default (null) since the override did not set it');
-  const cmd = CR.buildCommand(eff, {});
-  assert.ok(cmd.includes('only-model-set'));
-  assert.ok(!/model_reasoning_effort=/.test(cmd), 'a model-only override must not invent an effort flag: ' + cmd);
+  const argv = CR.buildCommand(eff, {});
+  assert.ok(argv.includes('only-model-set'));
+  assert.ok(!argv.some((a) => /model_reasoning_effort=/.test(a)), 'a model-only override must not invent an effort flag: ' + JSON.stringify(argv));
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+// --- WP-S14 3.1 (2026-09-26 independent review): the user file may ONLY override review.model and
+//     review.reasoning_effort; the sandbox is hard-coded read-only regardless of any config value; an
+//     invalid model/effort is ignored rather than passed through. ---
+
+t('3.1: a user override of review.sandbox is ignored — buildCommand() still enforces -s read-only', () => {
+  const root = freshRoot();
+  fs.writeFileSync(path.join(root, '.claude', 'config', 'orchestration', 'codex-review.user.json'), JSON.stringify({ review: { sandbox: 'danger-full-access' } }));
+  const eff = CR.effectiveConfig(root);
+  const argv = CR.buildCommand(eff, {});
+  assert.strictEqual(argv[argv.indexOf('-s') + 1], 'read-only', 'a sandbox override must never reach the real command: ' + JSON.stringify(argv));
+});
+
+t('3.1: a model string with a space/extra flag is rejected — never smuggled into argv', () => {
+  const root = freshRoot();
+  fs.writeFileSync(path.join(root, '.claude', 'config', 'orchestration', 'codex-review.user.json'), JSON.stringify({ review: { model: 'gpt-5 --dangerously-bypass-approvals-and-sandbox' } }));
+  const eff = CR.effectiveConfig(root);
+  assert.strictEqual(eff.review.model, null);
+  const argv = CR.buildCommand(eff, {});
+  assert.ok(!argv.some((a) => /dangerously-bypass/.test(a)), 'the smuggled flag must never appear in argv: ' + JSON.stringify(argv));
+});
+
+t('3.1: honesty.never_claim_model_that_did_not_run cannot be overridden by the user file', () => {
+  const root = freshRoot();
+  fs.writeFileSync(path.join(root, '.claude', 'config', 'orchestration', 'codex-review.user.json'), JSON.stringify({ honesty: { never_claim_model_that_did_not_run: false } }));
+  const eff = CR.effectiveConfig(root);
+  assert.strictEqual(eff.honesty.never_claim_model_that_did_not_run, true, 'the honesty flag must survive from the shipped file');
+});
+
+t('3.1: a valid model+effort pin still applies (only invalid/out-of-scope pieces are rejected)', () => {
+  const root = freshRoot();
+  fs.writeFileSync(path.join(root, '.claude', 'config', 'orchestration', 'codex-review.user.json'), JSON.stringify({ review: { model: 'gpt-6-astra', reasoning_effort: 'xhigh' } }));
+  const eff = CR.effectiveConfig(root);
+  assert.strictEqual(eff.review.model, 'gpt-6-astra');
+  assert.strictEqual(eff.review.reasoning_effort, 'xhigh');
+  const argv = CR.buildCommand(eff, {});
+  assert.ok(argv.includes('gpt-6-astra'));
+  assert.ok(argv.includes('model_reasoning_effort=xhigh'));
 });
 
 t('a corrupt or missing user file degrades to the shipped default, never a crash', () => {

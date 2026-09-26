@@ -402,7 +402,7 @@ function segmentTriggerClears(trig, entry, mask) {
   // only thing that can see them. So for a gate flagged patternInertToolOnly the quoted-trigger exemption
   // applies ONLY to a bare assignment at rest or to a segment led by a known pure search tool; every other
   // shape keeps the old quote-blind catch (over-blocking is the documented safe direction).
-  if (trig.patternInertToolOnly && !onlyQuotedAssignmentAtRest(entry) && !leadsWithInertSearchTool(entry.segment)) return true;
+  if (trig.patternInertToolOnly && !onlyQuotedAssignmentAtRest(entry) && !leadsWithInertSearchTool(entry.segment, mask, entry.offset)) return true;
   return triggerClearsQuotes(trigger, entry.segment, entry.offset, mask);
 }
 
@@ -413,10 +413,28 @@ function segmentTriggerClears(trig, entry, mask) {
  *  (system()), sed (GNU `e`), xargs/find -exec, every shell/interpreter, and every wrapper (sudo, env, time,
  *  timeout, nohup, nice, doas, watch) — a wrapper in front means the first word is the wrapper, so this
  *  returns false and the match keeps counting. */
-const INERT_SEARCH_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'findstr', 'select-string', 'sls']);
-function leadsWithInertSearchTool(segment) {
+// v2.8.0 verification review (N1): ag and ack are NOT inert (both accept --pager <cmd>), and even a pure search
+// tool is only inert when nothing ELSE in its segment can execute text: an unquoted `(` (PowerShell sub-expression
+// in argument position, e.g. `-Path (. 'Stop-Process' -Name x)`), a process substitution `<(`/`>(`, a command
+// substitution `$(` or a backtick anywhere (both also run inside double quotes in bash), or a pager/pre-processor
+// flag the tool itself runs through a shell (`git grep -O<cmd>`, `--open-files-in-pager`, `--pager`, `rg --pre`).
+const INERT_SEARCH_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'findstr', 'select-string', 'sls']);
+// case-SENSITIVE: `-O` (git grep's pager) is not grep's everyday `-o`
+const EXEC_CAPABLE_FLAG_RE = /(?:^|\s)["']?(?:-O|--open-files-in-pager|--pager|--pre)/;
+function segmentCanExecuteEmbeddedText(segment, mask, baseOffset) {
+  const s = String(segment || '');
+  if (/<\(|>\(|\$\(|`/.test(s)) return true;
+  if (EXEC_CAPABLE_FLAG_RE.test(s)) return true;
+  for (let i = s.indexOf('('); i !== -1; i = s.indexOf('(', i + 1)) {
+    // no mask (a direct unit call) or an unresolved mask => treat every paren as live (fail toward blocking)
+    if (!mask || mask.unterminated || typeof mask.inside !== 'function' || !mask.inside((baseOffset || 0) + i)) return true;
+  }
+  return false;
+}
+function leadsWithInertSearchTool(segment, mask, baseOffset) {
   const words = String(segment || '').trim().split(/\s+/);
   if (!words.length || !words[0]) return false;
+  if (segmentCanExecuteEmbeddedText(segment, mask, baseOffset)) return false;
   const first = words[0].replace(/^["']|["']$/g, '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
   if (INERT_SEARCH_TOOLS.has(first)) return true;
   if (first === 'git') {

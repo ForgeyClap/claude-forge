@@ -9,6 +9,12 @@
 // wherever this repo happens to be cloned) — see paths.mjs's own SYNC_SCAN_ROOTS comment for why
 // that missed a real project living somewhere else on a fresh machine (e.g. the Desktop).
 //
+// A2 fix (WP-C2, 2026-09-26 laptop re-audit): dedup by PATH does not mean unique by NAME — with
+// several real scan roots now in play, two different real projects can share a folder name (a
+// Desktop `my-site` and a Documents `my-site`). Every entry below carries an `ambiguous` flag for
+// exactly that case (see computeProjectsAsync()), which server.mjs's resolveProjectByName() uses
+// to refuse a silent first-match pick.
+//
 // R2 fix (WP3 T3.1-T3.10, architecture-review risk): the previous version used execFileSync,
 // blocking the gateway's single thread on every cache-miss/expiry. Now async (execFile,
 // promisified) with stale-while-revalidate: a cache hit within TTL still returns synchronously
@@ -131,8 +137,15 @@ async function computeProjectsAsync() {
   const results = await Promise.all(activeScanRoots().map(scanOneRoot));
   const succeeded = results.filter((r) => r.ok);
   if (succeeded.length === 0) {
+    // Finding #4 (WP-C2, 2026-09-26 laptop re-audit): the detail string below names every scan
+    // root's real absolute path (which starts with the OS home directory / username) plus the raw
+    // child-process error text. That is genuine local system detail — it must never reach a client
+    // response (this `error` value is what GET /api/projects returns verbatim, and what every
+    // route's `registryError` passthrough in server.mjs sends back too). Kept in this process's
+    // own log only; the client gets one generic, non-identifying message.
     const detail = results.map((r) => r.root + ': ' + r.error).join(' | ');
-    return { ok: false, error: 'forge-sync list failed for every scan root: ' + detail, projects: [] };
+    console.error('[projects] forge-sync list failed for every scan root: ' + detail);
+    return { ok: false, error: 'forge-sync list failed for every scan root (see the gateway process log for details)', projects: [] };
   }
 
   const seenResolvedPaths = new Set();
@@ -145,7 +158,19 @@ async function computeProjectsAsync() {
       projectPaths.push(p);
     }
   }
-  return { ok: true, projects: projectPaths.map(buildProjectEntry) };
+  const projects = projectPaths.map(buildProjectEntry);
+  // A2 fix (WP-C2, 2026-09-26 laptop re-audit): dedup above is by resolved PATH, not by name — two
+  // real, different projects (e.g. a Desktop `my-site` and a Documents `my-site`, now that multi-
+  // root discovery scans both) can legitimately share a folder NAME. Every name-based lookup in
+  // this gateway (server.mjs's resolveProjectByName) must be able to tell the two apart rather than
+  // silently picking one, so each entry is marked here, once, with whether its name collides with
+  // another real discovered project — this is exactly what the dashboard needs to show a path
+  // instead of just a name for those, and exactly what resolveProjectByName checks before ever
+  // returning a single entry for an ambiguous name.
+  const nameCounts = new Map();
+  for (const p of projects) nameCounts.set(p.name, (nameCounts.get(p.name) || 0) + 1);
+  const projectsWithAmbiguity = projects.map((p) => ({ ...p, ambiguous: nameCounts.get(p.name) > 1 }));
+  return { ok: true, projects: projectsWithAmbiguity };
 }
 
 function buildDataObject(result, capturedAtMs) {

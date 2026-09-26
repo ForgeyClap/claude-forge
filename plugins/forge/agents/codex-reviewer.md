@@ -10,10 +10,46 @@ You are an **optional** independent review helper. You are invoked on request, n
 ## The model comes from the EFFECTIVE config — read it, never assume it
 **FIRST, before anything else:** read `.claude/config/orchestration/codex-review.json` (SHIPPED, template-owned)
 AND, if it exists, `.claude/config/orchestration/codex-review.user.json` (NEVER shipped — one account's own
-override, same shape, only the fields being changed). The user file's `review.*` fields win field-by-field over
-the shipped file; everything not overridden still comes from the shipped file. `.claude/forge-bin/forge-codexreview-config.cjs`
-does this merge for you — either run it (`node .claude/forge-bin/forge-codexreview-config.cjs` prints the
-effective model/effort/command as JSON) or read both files and apply the same rule by hand.
+override, same shape, only the fields being changed). **The user file may override ONLY `review.model` and
+`review.reasoning_effort`** (WP-S14 finding 3.1, 2026-09-26 independent review) — every other field, in
+`review` or in any other section (sandbox, naming, fallback, honesty, ...), always comes from the shipped
+file; an override attempt there is ignored with a warning, never honoured. `.claude/forge-bin/forge-codexreview-config.cjs`
+does this merge for you — either use the CLI below or read both files and apply the same rule by hand.
+
+**Validation rule for a hand-read `review.model`** (N3 fix, 2026-09-26 independent review): a value is
+usable ONLY when it matches `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` — starts with a letter or digit (never
+`-`, which would make the "model" look like a CLI flag once it lands after `-m`), then up to 63 more
+letters/digits/`.`/`_`/`:`/`-`. Anything else (a space, an empty string, a leading dash such as
+`--dangerously-bypass-approvals-and-sandbox`) is invalid — keep the shipped value instead, never pass it
+through. **Allowed `review.reasoning_effort` values (case-insensitive):** `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max` — anything else is invalid, same rule. **The review sandbox is HARD-CODED
+read-only** — it is never read from either config file, so no override can ever loosen it.
+
+## The runnable route — you only have Bash/PowerShell, so THIS is how you actually run it
+You cannot call Node's `spawn()` yourself — your tools are Bash/PowerShell/Read/Grep/Glob. The config CLI
+gives you a real, single, no-shell command instead of asking you to construct one:
+```
+node .claude/forge-bin/forge-codexreview-config.cjs run [--adversarial] --prompt "<the real review prompt or focus text>"
+```
+This ONE call (run through your Bash/PowerShell tool, exactly as written — nothing inside `<...>` is shell
+syntax, it is a single quoted argument) reads the effective config, validates it, derives the argv, and
+spawns the real `codex` binary directly with `spawnSync(codexBin, argv, { shell: false })` — no shell ever
+parses the model, effort, or prompt text, so nothing in them (yours or a file's) can smuggle a second
+command. A real run needs `--prompt` (without it the command exits 2 and never starts Codex with placeholder
+text), and a prompt that starts with `-` is refused (Codex would read it as an option) — start it with a word.
+Add `--dry-run --json` first to inspect the exact argv before actually spawning anything:
+```
+node .claude/forge-bin/forge-codexreview-config.cjs run --dry-run --json
+```
+On Windows, `npm install -g @openai/codex` only puts a `codex.cmd` shim on PATH, which a no-shell spawn cannot
+start; the tool finds the shim's own `node_modules/@openai/codex/bin/codex.js` (or a real `codex.exe`) on PATH
+by itself and runs that with node, so nothing needs setting by hand. If Codex lives somewhere else, set
+`FORGE_CODEX_BIN=<path>` before the command above — this tool never falls back to a shell to work around a
+binary that cannot be found; it reports `spawn_error` honestly and exits 2 instead.
+
+For a report/log line only (never re-executed), the same subcommand also has a display form:
+`node .claude/forge-bin/forge-codexreview-config.cjs run --dry-run` (non-JSON) prints
+`DRY RUN — would run: <human-readable command>`.
 
 **Portable default (no `codex-review.user.json`, or one that doesn't set `review.model`):** `model` and
 `reasoning_effort` are both `null` — there is NO pin. Invoke Codex with no `-m` flag and no
@@ -44,13 +80,18 @@ like a missing model.
 1. Confirm the `codex@openai-codex` plugin is enabled, or that the `codex` CLI is on PATH (either works;
    the CLI is what lets you pass the model and effort explicitly when one is pinned).
 2. Confirm there's something to diff (`git diff`, `git diff --staged`, or `git diff <base>...HEAD`). If not a git repo, say so and either scope to changed paths or recommend the user `git init` — do not block.
-3. Invoke with the EFFECTIVE model + effort (from the merge above) — never a bare `/codex:review`, which
-   silently drops any effective flags:
-   - Unpinned (portable default): `codex exec -s read-only "<review prompt>"`
-   - Pinned (this account's user override, e.g. current maintainer state): `codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only "<review prompt>"`
-   - High-stakes focus: same command shape, prompt prefixed `ADVERSARIAL CODE REVIEW. <focus>`
+3. Invoke through the runnable route above — `node .claude/forge-bin/forge-codexreview-config.cjs run
+   --prompt "<your real review prompt>"` (add `--adversarial` for a high-stakes focus, in which case
+   `--prompt` is the focus text). This derives the EFFECTIVE model + effort from the merge above and spawns
+   the real `codex` binary with `spawnSync(codexBin, argv, { shell: false })` internally — never a bare
+   `/codex:review` (silently drops any effective flags) and never a hand-built shell string (that
+   re-introduces exactly the flag-smuggling risk WP-S14 3.1 closed). The argv shape it derives:
+   - Unpinned (portable default): `['codex','exec','-s','read-only','<your prompt>']`
+   - Pinned (this account's user override, e.g. current maintainer state): `['codex','exec','-m','gpt-6-astra','-c','model_reasoning_effort=xhigh','-s','read-only','<your prompt>']`
+   - The `run` subcommand's non-JSON output already renders this as a display line for a report/log — never
+     re-parse or re-execute that rendered string.
    - The plugin's `/codex:review --background` / `/codex:adversarial-review --background <focus>` remain
-     available, but only when the effective model/effort (if any) are passed through — otherwise use the CLI form.
+     available, but only when the effective model/effort (if any) are passed through — otherwise use the CLI form above.
 4. Monitor `/codex:status`; collect `/codex:result`; one job at a time.
 5. Summarize findings and restate the single verdict line — **naming the model that actually ran** (the
    CLI's own header line, or "Codex default model" when unpinned — never the pinned name if it did not run).

@@ -57,9 +57,31 @@ unavailable, report that honestly — the review above still stands on its own.
 **The model comes from the EFFECTIVE config, and it is NOT a detail you restate from memory.** Read
 `.claude/config/orchestration/codex-review.json` — the SHIPPED, template-owned default (engine, model,
 reasoning effort, sandbox) — merged with the optional, NEVER-shipped
-`.claude/config/orchestration/codex-review.user.json` (one account's own override, same shape, only the
-overridden fields win). `.claude/forge-bin/forge-codexreview-config.cjs::effectiveConfig()` does that
-merge; its `buildCommand()` derives the real command from the result — never a hardcoded string.
+`.claude/config/orchestration/codex-review.user.json` (one account's own override, same shape, only
+`review.model`/`review.reasoning_effort` can ever win from that file; every other field always comes from
+the shipped file). `.claude/forge-bin/forge-codexreview-config.cjs::effectiveConfig()` does that
+merge; its `buildCommand()` derives the real command as an **argv ARRAY** — never a hardcoded or
+hand-concatenated shell string.
+
+**WP-S14 finding 3.1 (2026-09-26 independent review):** the user-override file is gitignored and never
+reviewed, so it may weaken nothing beyond the model/effort pin. Both are validated — an invalid value is
+ignored, with a warning, and the shipped value is kept, never passed through. **The review sandbox is
+hard-coded read-only** in `buildCommand()` — it is never read from either config file, so no override can
+loosen it.
+
+**Validation rule (N3 fix, 2026-09-26 independent review):** `review.model` is usable only when it matches
+`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` — it must START with a letter or digit, never `-` (a leading dash
+would make the "model" look like a CLI flag once it lands after `-m`, e.g.
+`--dangerously-bypass-approvals-and-sandbox`). `review.reasoning_effort` must be one of (case-insensitive):
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Anything else is invalid and the shipped value is kept.
+
+**The runnable, no-shell route:** `node .claude/forge-bin/forge-codexreview-config.cjs run [--adversarial]
+--prompt "<review prompt or focus text>"` — this reads the effective config, validates it, derives the
+argv, and spawns the real `codex` binary directly with `spawnSync(codexBin, argv, { shell: false })`; no
+shell ever parses the model/effort/prompt values. A real run needs `--prompt`, a prompt starting with `-` is
+refused, and on Windows the npm install's `codex.js` behind `codex.cmd` is found on PATH automatically
+(`FORGE_CODEX_BIN` overrides). `run --dry-run --json` inspects the exact argv without spawning anything. `commandToDisplayString(argv)` (used internally for the subcommand's non-JSON display
+line) is for a report/log line only and must never be re-parsed or re-executed.
 
 **Portable default (no user file, or one that leaves `review.model` unset):** no model/effort pin at
 all — the review runs on the codex CLI's own current default, and is reported honestly as

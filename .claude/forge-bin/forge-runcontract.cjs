@@ -501,7 +501,15 @@ function readEventsJsonl(eventsPath, runId) {
   if (cls) {
     if (cls.status === 'missing') throw new Error('forge-runcontract: could not read events file ' + eventsPath + ': ' + (cls.error || 'missing'));
     if (cls.status === 'partial' || cls.status === 'corrupt') {
-      throw new Error('forge-runcontract: events log is ' + cls.status.toUpperCase() + ' (regel ' + cls.badLines.map((b) => b.line + (b.reason ? ':' + b.reason : '')).join(',') + ') — a completion contract never judges a damaged log (fail-closed); repair or investigate ' + eventsPath);
+      /** WP-S13 (2.2, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — this is a FACT about the run's
+       *  OWN log (a genuinely damaged/tampered chain), never a tool/environment problem. Tagged so a
+       *  caller like forge-certify.cjs's contractState() can tell "this run's log is damaged" apart from
+       *  "this tool could not evaluate at all" (module missing, no rules file) WITHOUT re-implementing the
+       *  classifier's own judgement or fragile string-matching the message. See forgeLogDamaged's doc at
+       *  its one other use site (contractState) for why the distinction matters. */
+      const err = new Error('forge-runcontract: events log is ' + cls.status.toUpperCase() + ' (regel ' + cls.badLines.map((b) => b.line + (b.reason ? ':' + b.reason : '')).join(',') + ') — a completion contract never judges a damaged log (fail-closed); repair or investigate ' + eventsPath);
+      err.forgeLogDamaged = true;
+      throw err;
     }
     return cls.entries;
   }
@@ -516,7 +524,12 @@ function readEventsJsonl(eventsPath, runId) {
     const s = line.trim();
     if (!s) continue;
     try { events.push(JSON.parse(s)); }
-    catch { throw new Error('forge-runcontract: events log has an unparseable line ' + lineNo + ' — fail-closed (was: silently skipped)'); }
+    catch {
+      // net als hierboven: een onparseerbare regel is een feit over DEZE log, geen infrastructuurfout.
+      const err = new Error('forge-runcontract: events log has an unparseable line ' + lineNo + ' — fail-closed (was: silently skipped)');
+      err.forgeLogDamaged = true;
+      throw err;
+    }
   }
   return events;
 }
@@ -681,13 +694,28 @@ const NON_WORK_EVENT_TYPES = new Set([
    *  zelf produceerde viel daardoor buiten de werkersverzameling, en zulk werk ná een review maakte hem
    *  niet stale. Ze zijn nu gewoon werk — wie iets oplevert, is een uitvoerder. */
 ]);
-/** ASSIGNMENT_EVENT_TYPES (D3 fix, 2026-09-26 fresh-laptop re-audit) — an event that only ANNOUNCES who a
- *  work package is assigned to, logged by the Lead ABOUT another agent (forge.md:89), never by that agent
- *  about itself. It stays a work-type event for isWorkEvent/isStalingEvent (new planned work still makes a
- *  prior "everything reviewed" verdict stale), but its `agent` field must never be read as that agent doing
- *  work in independentVerification's worker-attribution loop — see the call site below. */
-const ASSIGNMENT_EVENT_TYPES = new Set(['agent_work_package_created', 'custom_subagent_created']);
-/** IV_DISPATCH_TYPES — `agent_started`/`subagent_started` worden door de Lead gelogd OVER een agent.
+/** ASSIGNMENT_EVENT_TYPES (D3 fix, 2026-09-26 fresh-laptop re-audit; NARROWED by the 2.3 fix, WP-S13,
+ *  same date, review C VERDICT FAIL) — an event that only ANNOUNCES who a work package is assigned to,
+ *  logged by the Lead ABOUT another agent (forge.md:89), never by that agent about itself, and carrying
+ *  NO proof the agent was actually dispatched (no dispatch_id, no runtime, no allowed-actions — a bare
+ *  plan). It stays a work-type event for isWorkEvent/isStalingEvent (new planned work still makes a prior
+ *  "everything reviewed" verdict stale), but its `agent` field must never be read as that agent doing work
+ *  in independentVerification's worker-attribution loop — see the call site below.
+ *
+ *  2.3 REGRESSION FIX: the original D3 fix put `custom_subagent_created` in this set too, unconditionally
+ *  exempting it from worker attribution. That event is NOT a bare plan — the un-overridable
+ *  `dispatch-logged` rule (FORGE_HARD_RULES.json) accepts it as REAL proof an agent was dispatched
+ *  (dispatch_id, mission, allowed actions), exactly like `agent_started`/`subagent_started`.
+ *  REPRODUCED: `custom_subagent_created {agent:"Review Boss", role:"implementer", mission:"implement X"}`
+ *  with no later event naming Review Boss let Review Boss's own later approval pass as independent —
+ *  before D3 this was correctly blocked as self-approval. Moved to IV_DISPATCH_TYPES below, where it now
+ *  gets the exact same `!isReviewDispatch(e)` gating as the other two real dispatch events: it counts as
+ *  work UNLESS the event itself proves it was a review assignment. Only `agent_work_package_created` (the
+ *  bare, unproven plan) stays unconditionally exempt here. */
+const ASSIGNMENT_EVENT_TYPES = new Set(['agent_work_package_created']);
+/** IV_DISPATCH_TYPES — `agent_started`/`subagent_started`/`custom_subagent_created` worden door de Lead
+ *  gelogd OVER een agent, maar zijn stuk voor stuk ECHT dispatchbewijs (dispatch_id/mission/allowed
+ *  actions) — geen kaal plan.
  *
  *  R6-02 (zesde herreview) weerlegde mijn eerdere aanname dat ze daarom categorisch geen werk zijn: een
  *  probe met `agent_started {agent:"Review Boss", task:"implement patch"}` liet de log letterlijk zien dat
@@ -696,8 +724,9 @@ const ASSIGNMENT_EVENT_TYPES = new Set(['agent_work_package_created', 'custom_su
  *
  *  Nu omgekeerd: een dispatch is WERK, tenzij hij aantoonbaar een REVIEW-opdracht is. Bewijzen dat je
  *  voor review bent ingezet ligt bij het event; ontbreekt dat bewijs, dan is de veilige lezing dat er
- *  uitvoerend werk is gedispatcht. */
-const IV_DISPATCH_TYPES = new Set(['agent_started', 'subagent_started']);
+ *  uitvoerend werk is gedispatcht. `custom_subagent_created` volgt vanaf de 2.3-fix (WP-S13) exact
+ *  dezelfde regel — zie ASSIGNMENT_EVENT_TYPES hierboven voor waarom hij daar is weggehaald. */
+const IV_DISPATCH_TYPES = new Set(['agent_started', 'subagent_started', 'custom_subagent_created']);
 /** R7-04 (zevende herreview) — MIJN EIGEN R6-02-FIX WAS TE RUIM. Het volstond dat "review" ergens in een
  *  vrij tekstveld voorkwam, dus `task: "implement review feedback"` gold als reviewopdracht: precies de
  *  implementatie-dispatch die R6-02 juist moest vangen. Vrije tekst laten beslissen over een
@@ -747,6 +776,17 @@ const REVIEW_WOORDEN = new Set([
   'changes', 'wijzigingen', 'work', 'werk', 'package', 'pakket', 'only', 'alleen', 'read-only',
 ]);
 const ONSCHULDIGE_VERWIJZING_RE = /^(?:wp[-_]?\d+|#\d+|[a-f0-9]{7,40}|[\w./-]+\.(?:js|cjs|mjs|ts|json|md)|\d+)$/i;
+/** N6 fix (2026-09-26 independent review, LOW) — this used to read ONLY `e.task`, but the documented
+ *  `custom_subagent_created` event (commands/forge.md step 5: "log `custom_subagent_created` with: name ·
+ *  role · why needed · project evidence · mission · inputs · ...") carries `mission`, never `task`. A
+ *  custom reviewer dispatched EXACTLY as documented (role:"review", mission:"review the auth diff") could
+ *  never be recognised as a review dispatch — it always counted as work, which fails CLOSED (safe) but
+ *  wrongly blocks that reviewer's own later approval as self-approval. Now both `task` and `mission` are
+ *  accepted; TAAK_VELDEN below is checked with the same "every present field must independently read as
+ *  review-only, one contradiction drops the claim" discipline already used for the role fields above — a
+ *  dispatch carrying `task:"implement X"` alongside `mission:"review Y"` still counts as work, the safe
+ *  reading, never review just because one of the two fields looks like review. */
+const TAAK_VELDEN = ['task', 'mission'];
 function isReviewDispatch(e) {
   if (!e || typeof e !== 'object') return false;
   // Alleen gestructureerde rolvelden tellen — `note`/`goal` zijn narratief en beslissen hier niets meer.
@@ -754,15 +794,21 @@ function isReviewDispatch(e) {
   if (!rolVelden.length) return false;
   // Eén tegenstrijdig rolveld is genoeg om de reviewclaim te laten vervallen.
   if (!rolVelden.every((f) => REVIEW_ROLE_RE.test(e[f].trim()))) return false;
-  // Zonder taak is onbekend waarvoor de agent is ingezet — dat is geen bewijs van review.
-  const taak = typeof e.task === 'string' ? e.task.trim() : '';
-  if (!taak) return false;
-  /** ALLOWLIST (R10-01): elk woord moet uit de reviewwoordenschat komen of een onschuldige verwijzing
-   *  zijn. Eén onbekend woord maakt het uitvoerend werk — ook een woord dat ik nooit heb bedacht. */
-  const woorden = taak.toLowerCase().split(/[\s,;:()[\]]+/).filter(Boolean);
-  if (!woorden.length) return false;
-  if (!woorden.some((w) => /review|verif|validat|audit|inspect|assess|controle|beoorde|toets|nakijk/.test(w))) return false;
-  return woorden.every((w) => REVIEW_WOORDEN.has(w) || ONSCHULDIGE_VERWIJZING_RE.test(w));
+  // Zonder taak/mission is onbekend waarvoor de agent is ingezet — dat is geen bewijs van review.
+  const taakVelden = TAAK_VELDEN.filter((f) => typeof e[f] === 'string' && e[f].trim() !== '');
+  if (!taakVelden.length) return false;
+  /** ALLOWLIST (R10-01, uitgebreid met `mission` door N6): elk woord in ELK aanwezig taakveld moet uit de
+   *  reviewwoordenschat komen of een onschuldige verwijzing zijn. Eén onbekend woord — in `task` OF
+   *  `mission` — maakt het uitvoerend werk; een aanwezig veld dat niet puur review beschrijft laat de hele
+   *  claim vervallen, ook als het andere veld wel puur review beschrijft. */
+  for (const f of taakVelden) {
+    const taak = e[f].trim();
+    const woorden = taak.toLowerCase().split(/[\s,;:()[\]]+/).filter(Boolean);
+    if (!woorden.length) return false;
+    if (!woorden.some((w) => /review|verif|validat|audit|inspect|assess|controle|beoorde|toets|nakijk/.test(w))) return false;
+    if (!woorden.every((w) => REVIEW_WOORDEN.has(w) || ONSCHULDIGE_VERWIJZING_RE.test(w))) return false;
+  }
+  return true;
 }
 function isWorkEventType(type) {
   return !NON_WORK_EVENT_TYPES.has(type) && !REVIEW_START_TYPES.has(type) && !REVIEW_DONE_TYPES.has(type);
@@ -890,18 +936,24 @@ function independentVerification(events, opts) {
      *  Dat is de gevaarlijkste variant: de uitvoerder logt zijn werk anoniem, verdwijnt uit `workers`, en
      *  keurt het daarna onder een naam goed. Anoniem werk maakt de onafhankelijkheid dus ONBEPAALBAAR —
      *  fail-closed, niet onzichtbaar. */
-    /** D3 fix (2026-09-26, fresh-laptop re-audit) — `agent_work_package_created`/`custom_subagent_created`
-     *  is the LEAD announcing who a work package is ASSIGNED to (forge.md:89: "agent, role, runtime,
-     *  mission, ... status:'previewing'"), logged BY the Lead, naming the intended executor in `agent`.
-     *  Crediting that name as a WORKER let a reviewer's own work-package assignment count as the reviewer
-     *  doing work in this run — REPRODUCED (executed replay of a real mission): "de reviewer (review boss)
-     *  deed in deze run zelf werk — dat is zelf-goedkeuring", purely because the Lead had logged the review
-     *  Boss's OWN dispatch announcement. Creating a work package FOR an agent is not that agent DOING
-     *  anything — only a genuine execution event (agent_started/subagent_started/subagent_completed/etc.)
-     *  proves the named agent actually worked. These two event types stay counted for STALENESS
-     *  (isStalingEvent below still calls isWorkEvent — new planned work still makes a prior "everything is
-     *  done" review stale), and stay OUT of `anoniemWerk` too (an assignment with no named assignee is not
-     *  the dangerous "who did this?" case N-01 exists for — nobody DID anything here at all). */
+    /** D3 fix (2026-09-26, fresh-laptop re-audit) — `agent_work_package_created` is the LEAD announcing
+     *  who a work package is ASSIGNED to (forge.md:89: "agent, role, runtime, mission, ...
+     *  status:'previewing'"), logged BY the Lead, naming the intended executor in `agent`, with NO proof
+     *  a dispatch actually happened. Crediting that name as a WORKER let a reviewer's own work-package
+     *  assignment count as the reviewer doing work in this run — REPRODUCED (executed replay of a real
+     *  mission): "de reviewer (review boss) deed in deze run zelf werk — dat is zelf-goedkeuring", purely
+     *  because the Lead had logged the review Boss's OWN dispatch announcement. Creating a work package
+     *  FOR an agent is not that agent DOING anything — only a genuine execution event
+     *  (agent_started/subagent_started/custom_subagent_created/subagent_completed/etc.) proves the named
+     *  agent actually worked. This event type stays counted for STALENESS (isStalingEvent below still
+     *  calls isWorkEvent — new planned work still makes a prior "everything is done" review stale), and
+     *  stays OUT of `anoniemWerk` too (an assignment with no named assignee is not the dangerous "who did
+     *  this?" case N-01 exists for — nobody DID anything here at all).
+     *  2.3 fix (WP-S13, same date) — `custom_subagent_created` is REAL dispatch proof (dispatch_id,
+     *  mission, allowed actions — see IV_DISPATCH_TYPES), unlike the bare plan above, so it was moved OUT
+     *  of ASSIGNMENT_EVENT_TYPES and into IV_DISPATCH_TYPES: `isWorkEvent(e)` now gates it through
+     *  `!isReviewDispatch(e)` exactly like `agent_started`/`subagent_started`, so it counts as work unless
+     *  the event itself PROVES it was a review assignment. */
     if (isWorkEvent(e) && !ASSIGNMENT_EVENT_TYPES.has(type)) {
       if (agent) workers.add(agent);
       else anoniemWerk.push(type);
@@ -1103,16 +1155,9 @@ function sanitizeIv(iv) {
   };
 }
 
-/** resolveHeadCommit(root) -> 40-hex sha of null.
- *
- *  GEMETEN FOUT (post-fix herreview 2026-08-09, N-02): de eerste versie stond inline in de CLI en
- *  verwees naar een variabele `root` die daar niet bestaat. Dat gooide een ReferenceError, die door de
- *  eigen `catch {}` STIL werd opgeslokt — commitSha bleef null en de HEAD-vergelijking heeft nooit
- *  gedraaid, terwijl ik hem als werkend rapporteerde. Twee lessen, hier vastgelegd: (1) een catch die
- *  een programmeerfout niet onderscheidt van een verwachte omgevingsfout maakt een bug onzichtbaar;
- *  (2) een pad dat alleen in productie loopt heeft een eigen test nodig. Daarom is dit nu een
- *  geëxporteerde functie met een expliciete parameter, en gooit een ReferenceError/TypeError door
- *  in plaats van te verdwijnen. */
+/** resolveHeadCommit(root) / gitProbe(root) — see the full doc right above their implementation,
+ *  further down this file (near knownAgentNames). gitProbe is the ONE shared, three-way git probe
+ *  (WP-S13, 2.1); resolveHeadCommit is its thin backward-compatible wrapper. */
 /** canonicalEvidenceDigest(root, runId) -> {digest, gates} of null.
  *
  *  N-03 (post-fix herreview 2026-08-09): `evidence_digest` werd alleen op VORM gecontroleerd — elke
@@ -1257,23 +1302,128 @@ function knownAgentNames(root) {
   return namen;
 }
 
-function resolveHeadCommit(root) {
-  if (typeof root !== 'string' || !root) throw new TypeError('resolveHeadCommit: root moet een pad zijn, kreeg ' + typeof root);
+/** cleanGitEnv() -> a copy of process.env with every variable that could redirect git AWAY from the
+ *  real repository at `-C root` stripped: GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+ *  GIT_CEILING_DIRECTORIES, and any GIT_CONFIG* variable (GIT_CONFIG_COUNT/KEY_n/VALUE_n/GLOBAL/SYSTEM/
+ *  NOSYSTEM/...). WP-S13 (2.1, 2026-09-26 laptop re-audit): before this fix a caller could prefix
+ *  `GIT_DIR=<nonexistent>` (or a GIT_CEILING_DIRECTORIES above root) to a Forge tool invocation and make a
+ *  project that DOES have git look exactly like one that has none — every no-git relaxation in this file
+ *  trusted that false signal. Every git spawn in this module goes through this env, so the probe below can
+ *  never be fooled by the calling process's own environment.
+ *
+ *  N4 fix (2026-09-26 independent review, LOW): gitProbe()'s `zegtNietEenRepo` check below matches git's
+ *  "not a git repository" message literally — but that message is TRANSLATED by locale (LC_ALL/LANG) or
+ *  LANGUAGE. Under a non-English locale a truly git-less project would get git's message in another
+ *  language, the regex would miss it, and the root would read as 'undetermined' instead of the correctly
+ *  relaxed 'no-repo' — fails closed (never silently wrong), but quietly undoes the D2 no-git relaxation
+ *  this file exists for. Force English output from every git call fed this env, regardless of what the
+ *  parent process's own locale carries: LC_ALL/LANG win over every other locale category, LANGUAGE (glibc's
+ *  own priority-ordered override list) is removed so it can never re-introduce a translation underneath. */
+function cleanGitEnv() {
+  const env = Object.assign({}, process.env);
+  delete env.GIT_DIR; delete env.GIT_WORK_TREE; delete env.GIT_INDEX_FILE; delete env.GIT_CEILING_DIRECTORIES;
+  for (const k of Object.keys(env)) { if (k.indexOf('GIT_CONFIG') === 0) delete env[k]; }
+  env.LC_ALL = 'C';
+  env.LANG = 'C';
+  delete env.LANGUAGE;
+  return env;
+}
+
+/** hasGitEntryInAncestry(root) -> true when a `.git` entry (file OR directory — a worktree's `.git` is a
+ *  FILE, a normal repo's is a directory; both count) exists at `root` or any parent, up to the filesystem
+ *  root. A pure filesystem check, independent of git's own exit code/stderr — the second, independent leg
+ *  `gitProbe()` requires before it will ever call a root "no-repo" (see its doc). */
+function hasGitEntryInAncestry(root) {
+  let dir = path.resolve(root);
+  for (;;) {
+    try { fs.lstatSync(path.join(dir, '.git')); return true; } catch { /* geen .git hier — verder omhoog */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) return false; // filesystem-root bereikt zonder ooit een .git te vinden
+    dir = parent;
+  }
+}
+
+/** gitProbe(root) -> ONE shared, honest, THREE-WAY probe of a root's git state (WP-S13, 2.1, 2026-09-26
+ *  laptop re-audit, review C VERDICT FAIL). Before this fix, `resolveHeadCommit` returned `null` for
+ *  BOTH "definitely no git repository" and "git exists but refused/failed/timed out for some other
+ *  reason" (dubious ownership, a repo with no commits yet, a poisoned env, ENOENT). Every no-git
+ *  relaxation in this file (and in forge-gate-evidence.cjs / forge-finalize.cjs) trusted that single
+ *  `null` as a confirmed "no git here" — so a repo that merely refused (Windows "dubious ownership" is
+ *  the common case) could be walked straight through the relaxed path meant ONLY for a genuinely
+ *  git-less project. `resolveHeadCommit`, `gitState` (forge-gate-evidence.cjs) and `headProbeOf`
+ *  (forge-finalize.cjs) now ALL call into this ONE function so they can never independently disagree
+ *  about the same root again.
+ *
+ *  Returns exactly one of:
+ *   {state:'repo', commit:'<40-hex>'}   — a REAL commit was resolved. The only state a caller may bind
+ *                                         gate evidence to a source commit under.
+ *   {state:'no-repo'}                   — POSITIVELY confirmed, on BOTH independent legs: (1) git itself
+ *                                         (run with the poisoning-resistant env below) says "not a git
+ *                                         repository", AND (2) no `.git` entry exists anywhere from
+ *                                         `root` up to the filesystem root. Only THIS state may relax a
+ *                                         commit-binding requirement — and even then the binding is
+ *                                         honestly to the gate's OWN output digest, never to a source-tree
+ *                                         digest (no source-tree digest exists here; see the no_git
+ *                                         branches in forge-gate-evidence.cjs / canonicalEvidenceDigest).
+ *   {state:'undetermined', reason}      — git is missing (ENOENT), timed out, was killed by a signal,
+ *                                         refused for a reason OTHER than "not a git repository"
+ *                                         (dubious ownership / safe.directory, permission), returned a
+ *                                         malformed HEAD, OR the filesystem check found a `.git` entry
+ *                                         despite git's own "not a git repository" error (an inconsistent
+ *                                         signal — never trusted). MUST be treated exactly like a real git
+ *                                         failure by every caller — fail-closed, same as before the D2 fix
+ *                                         existed. Never, ever treated as 'no-repo'. */
+function gitProbe(root) {
+  if (typeof root !== 'string' || !root) throw new TypeError('gitProbe: root moet een pad zijn, kreeg ' + typeof root);
+  const { spawnSync } = require('child_process'); // lazy: een kale check() blijft puur
   let g;
   try {
-    const { spawnSync } = require('child_process'); // lazy: een kale check() blijft puur
-    g = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+    g = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000, env: cleanGitEnv() });
   } catch (e) {
-    /** R5-09 (vijfde herreview): hier stond een allowlist van DOORGOOI-fouten (ReferenceError/TypeError),
-     *  waardoor elke ANDERE onverwachte uitzondering stil naar null degradeerde — precies de vorm die
-     *  R3-01 leerde te vermijden. Nu omgekeerd: alleen het bekende, verwachte geval (git bestaat niet)
-     *  degradeert; al het onverwachte gaat door, zodat een bug zichtbaar blijft. */
-    if (e && (e.code === 'ENOENT' || e.code === 'EACCES')) return null;
-    throw e;
+    // git zelf is niet uitvoerbaar (ENOENT) of de spawn faalde anderszins — dat is per definitie ONBESLIST,
+    // nooit stilzwijgend 'no-repo': er is helemaal niets gemeten.
+    return { state: 'undetermined', reason: 'git niet uitvoerbaar: ' + (e && e.message ? e.message : String(e)) };
   }
-  if (!g || g.status !== 0) return null; // geen git-repo (of git faalde) — eerlijke beperking
-  const s = String(g.stdout || '').trim();
-  return /^[0-9a-f]{40}$/i.test(s) ? s : null;
+  if (!g) return { state: 'undetermined', reason: 'git-aanroep leverde geen resultaat' };
+  if (g.error) return { state: 'undetermined', reason: 'git-aanroep faalde: ' + (g.error.message || String(g.error)) };
+  if (g.signal) return { state: 'undetermined', reason: 'git-aanroep werd afgebroken door signaal ' + g.signal + ' (timeout of externe kill) — geen betrouwbare meting' };
+  if (g.status === 0) {
+    const s = String(g.stdout || '').trim();
+    if (/^[0-9a-f]{40}$/i.test(s)) return { state: 'repo', commit: s.toLowerCase() };
+    return { state: 'undetermined', reason: 'git gaf exit 0 maar geen welgevormde 40-hex HEAD terug (' + JSON.stringify(s.slice(0, 80)) + ')' };
+  }
+  const stderr = String(g.stderr || '');
+  const zegtNietEenRepo = /not a git repository/i.test(stderr);
+  if (zegtNietEenRepo && !hasGitEntryInAncestry(root)) return { state: 'no-repo' };
+  if (zegtNietEenRepo) {
+    // git zegt "not a git repository", maar er ligt WEL een .git-item hoger in de boom — een inconsistent
+    // signaal (bv. GIT_DISCOVERY_ACROSS_FILESYSTEM, een kapotte .git, of een permissiemuur). Nooit
+    // vertrouwd als bevestigd geen-git: er ligt duidelijk iets, we konden het alleen niet eerlijk lezen.
+    return { state: 'undetermined', reason: 'git meldt "not a git repository", maar er is wél een .git-item boven ' + root + ' — inconsistent signaal, niet vertrouwd als bevestigd geen-git' };
+  }
+  // Elke andere weigering (dubious ownership/safe.directory, een repo zonder commits nog
+  // ("does not have any commits yet"), permissiefouten, ...) is git dat WEL een repository ziet maar
+  // niet kan/wil antwoorden — dat is onbeslist, nooit een bevestiging van geen-git.
+  return { state: 'undetermined', reason: 'git weigerde (exit ' + g.status + '): ' + stderr.trim().slice(0, 300) };
+}
+
+/** resolveHeadCommit(root) -> 40-hex sha of null. A thin, backward-compatible wrapper over gitProbe():
+ *  null now covers BOTH 'no-repo' and 'undetermined' — exactly as intended for a caller that only wants
+ *  "a commit if there is one to bind to". Any caller that needs to tell "confirmed no git" apart from
+ *  "could not determine" (the whole point of the 2.1 fix) MUST call gitProbe() directly instead — see
+ *  check()'s own `noGitAtRoot` and forge-finalize.cjs's `headProbeOf` for the two real examples.
+ *
+ *  GEMETEN FOUT (post-fix herreview 2026-08-09, N-02): de eerste versie stond inline in de CLI en
+ *  verwees naar een variabele `root` die daar niet bestaat. Dat gooide een ReferenceError, die door de
+ *  eigen `catch {}` STIL werd opgeslokt — commitSha bleef null en de HEAD-vergelijking heeft nooit
+ *  gedraaid, terwijl ik hem als werkend rapporteerde. Twee lessen, hier vastgelegd: (1) een catch die
+ *  een programmeerfout niet onderscheidt van een verwachte omgevingsfout maakt een bug onzichtbaar;
+ *  (2) een pad dat alleen in productie loopt heeft een eigen test nodig. Daarom is dit nu een
+ *  geëxporteerde functie met een expliciete parameter, en gooit een ReferenceError/TypeError door
+ *  in plaats van te verdwijnen. */
+function resolveHeadCommit(root) {
+  const p = gitProbe(root);
+  return p.state === 'repo' ? p.commit : null;
 }
 
 function checkSatisfied(rule, ctx) {
@@ -1497,14 +1647,21 @@ function check(params, opts) {
   /** R9-09/R9-06 (gehesen, R10): één HEAD-resolutie en één bewijsset-lezing voor de HELE check — niet
    *  per regel opnieuw. De velden gaan ook mee in het resultaat (ruleset_sha256_used e.d.), dus ze
    *  moeten buiten de lus leven. */
-  /** D2 fix (2026-09-26, fresh-laptop re-audit) — `noGitAtRoot` is a REAL, INDEPENDENT probe of THIS root
-   *  (never affected by a caller-supplied params.commit_sha override), so a caller who simply omitted
-   *  commit_sha on a project that DOES have git can never be confused with a project that genuinely has
-   *  none. Only a genuinely git-less root relaxes the completion event's commit_sha requirement below
-   *  (see independentVerification's opts.noGit) — a project with real git keeps the exact same fail-closed
-   *  behaviour as before this fix. */
-  const headCommitProbe = resolveHeadCommit(root);
-  const noGitAtRoot = headCommitProbe === null;
+  /** D2 fix (2026-09-26, fresh-laptop re-audit) / 2.1 fix (WP-S13, same date, review C VERDICT FAIL) —
+   *  `noGitAtRoot` is a REAL, INDEPENDENT probe of THIS root (never affected by a caller-supplied
+   *  params.commit_sha override), so a caller who simply omitted commit_sha on a project that DOES have
+   *  git can never be confused with a project that genuinely has none. It is now the THREE-WAY gitProbe(),
+   *  and `noGitAtRoot` is true ONLY on its POSITIVELY confirmed 'no-repo' state — never on 'undetermined'
+   *  (git missing, timed out, dubious-ownership/safe.directory refusal, a repo with no commits yet, a
+   *  poisoned env). Before this fix both 'no-repo' and 'undetermined' collapsed onto the same `null`
+   *  return from resolveHeadCommit(), so an UNDETERMINED root was silently treated exactly like a
+   *  confirmed no-git one — review C's 2.1 finding. Only a genuinely git-less root (state:'no-repo')
+   *  relaxes the completion event's commit_sha requirement below (see independentVerification's opts.noGit)
+   *  — a project with real git, OR one this probe simply could not read, keeps the exact same fail-closed
+   *  behaviour as before the D2 fix ever existed. */
+  const gitProbeResult = gitProbe(root);
+  const headCommitProbe = gitProbeResult.state === 'repo' ? gitProbeResult.commit : null;
+  const noGitAtRoot = gitProbeResult.state === 'no-repo';
   const effectieveCommit = params.commit_sha !== undefined ? params.commit_sha : headCommitProbe;
   const evidenceSet = canonicalEvidenceDigest(root, params.run_id);
   for (const rule of rules) {
@@ -1677,7 +1834,10 @@ module.exports = {
   independentVerification,
   // geëxporteerd zodat tests kunnen AFDWINGEN dat elk gebruikt eventtype echt bij de writer geregistreerd
   // staat (F-08) — een magic string die niemand kan loggen is een route die alleen op papier bestaat.
-  NON_WORK_EVENT_TYPES, ASSIGNMENT_EVENT_TYPES, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
+  NON_WORK_EVENT_TYPES, ASSIGNMENT_EVENT_TYPES, IV_DISPATCH_TYPES, isReviewDispatch, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
+  // WP-S13 (2.1) — the ONE shared, three-way git probe + its env hardening, so gate-evidence.cjs and
+  // finalize.cjs can never independently disagree with check() about the same root.
+  gitProbe, cleanGitEnv, hasGitEntryInAncestry,
   check, listRules, loadRules, loadRulesMeta, ruleApplies, checkSatisfied, findOwnerOverride, isMeaningfulReason, loadOwnerAllowlist,
   readEventsJsonl, listRunArtifacts, hasEvent, hasArtifact, logGateEvaluated, eventIsDisproven,
   // RC-MANIFEST-STALE (2026-09-24) — exported so a test can exercise the manifest-completeness gate and the

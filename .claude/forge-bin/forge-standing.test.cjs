@@ -267,6 +267,109 @@ t('two cannot_override_core rules sharing a topic both stay active (tie among co
 });
 
 // ---------------------------------------------------------------------------
+// 4b) external-audit 3.2 (MEDIUM) — a user (owner-added) rule may add or reinforce, but must
+//     NEVER shadow a shipped template rule sharing its topic, regardless of trigger precedence
+// ---------------------------------------------------------------------------
+console.log('\n4b) 3.2 fix — a user rule can never shadow a shipped template rule sharing a topic');
+
+t('a user-file glob rule (nominally the HIGHEST-precedence trigger) still cannot shadow a template always-rule sharing a topic', () => {
+  const { templatePath, userPath } = fixturePair([
+    baseRule({ id: 'template-always', trigger: 'always', topic: 'pushtest' }),
+  ]);
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [
+    baseRule({ id: 'user-glob-everything', trigger: 'glob', glob: '**', topic: 'pushtest', source: 'unit-test fixture (owner-style rule)' }),
+  ] }));
+  const r = standing.match({ paths: ['any/file.js'] }, { rulesPath: templatePath, userRulesPath: userPath });
+  assert.ok(r.active.some((x) => x.id === 'template-always'), 'the shipped template rule must stay active');
+  assert.ok(!r.active.some((x) => x.id === 'user-glob-everything'), 'the user rule must not push the template rule out of active');
+  const shadow = r.shadowed.find((x) => x.id === 'user-glob-everything');
+  assert.ok(shadow, 'the user rule must be reported as shadowed, never silently dropped');
+  assert.strictEqual(shadow.beaten_by, 'template-always');
+});
+
+t('remember(topic:"push", trigger:"glob", glob:"**") never removes a shipped push-topic template rule from match() results (this is the review\'s exact never-auto-push scenario)', () => {
+  const { templatePath, userPath } = fixturePair([
+    baseRule({ id: 'never-auto-push', trigger: 'always', topic: 'push' }),
+  ]);
+  standing.remember('anything goes now', { rulesPath: templatePath, userRulesPath: userPath, topic: 'push', trigger: 'glob', glob: '**' });
+  const r = standing.match({ paths: ['x/y.js'] }, { rulesPath: templatePath, userRulesPath: userPath });
+  assert.ok(r.active.some((x) => x.id === 'never-auto-push'), 'the shipped push-topic rule must remain active no matter what the owner remembers');
+});
+
+t('a user rule with a NEW topic (no template rule shares it) is never shadowed — adding is unaffected by the fix', () => {
+  const { templatePath, userPath } = fixturePair([baseRule({ id: 'unrelated-template-rule', topic: 'other-topic' })]);
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [
+    baseRule({ id: 'user-new-topic-rule', trigger: 'always', topic: 'brand-new-topic', source: 'unit-test fixture (owner-style rule)' }),
+  ] }));
+  const r = standing.match({}, { rulesPath: templatePath, userRulesPath: userPath });
+  assert.ok(r.active.some((x) => x.id === 'user-new-topic-rule'), 'a user rule on its own topic must still activate normally');
+  assert.ok(!r.shadowed.some((x) => x.id === 'user-new-topic-rule'));
+});
+
+t('two template rules sharing a topic still resolve by ordinary trigger precedence (the +100 origin floor is a flat tie-breaker, it does not change template-vs-template ordering)', () => {
+  const r = standing.match({ type: 'scraping' }); // real seed data: domain rule beats the always rule for topic "outreach"
+  assert.ok(r.active.some((x) => x.id === 'draft-only-outreach-scraping'));
+  assert.ok(!r.active.some((x) => x.id === 'draft-only-outreach-global'));
+});
+
+t('a user rule sharing a topic with a cannot_override_core template rule is still shadowed by it (core protection composes with the origin floor)', () => {
+  const { templatePath, userPath } = fixturePair([
+    baseRule({ id: 'core-template-rule', trigger: 'always', topic: 'coreuser', cannot_override_core: true }),
+  ]);
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [
+    baseRule({ id: 'user-glob-vs-core', trigger: 'glob', glob: '**', topic: 'coreuser', source: 'unit-test fixture (owner-style rule)' }),
+  ] }));
+  const r = standing.match({ paths: ['a/b.js'] }, { rulesPath: templatePath, userRulesPath: userPath });
+  assert.ok(r.active.some((x) => x.id === 'core-template-rule'));
+  assert.ok(!r.active.some((x) => x.id === 'user-glob-vs-core'));
+});
+
+// ---------------------------------------------------------------------------
+// 4c) external-audit N2 (LOW, 2026-09-26) — a user rule hand-marked cannot_override_core:true
+//     must never get rank()'s Infinite rank and shadow a shipped template rule sharing its topic
+// ---------------------------------------------------------------------------
+console.log('\n4c) N2 fix — a user-file cannot_override_core:true is always forced false');
+
+t('a hand-edited user rule with cannot_override_core:true on topic "push" never shadows a shipped never-auto-push template rule (the review\'s exact scenario)', () => {
+  const { templatePath, userPath } = fixturePair([
+    baseRule({ id: 'never-auto-push', trigger: 'always', topic: 'push' }),
+  ]);
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [
+    baseRule({ id: 'sneaky-core-claim', trigger: 'always', topic: 'push', cannot_override_core: true, source: 'unit-test fixture (hand-edited user file, N2 scenario)' }),
+  ] }));
+  const r = standing.match({}, { rulesPath: templatePath, userRulesPath: userPath });
+  assert.ok(r.active.some((x) => x.id === 'never-auto-push'), 'the shipped push-topic rule must remain active');
+  assert.ok(!r.active.some((x) => x.id === 'sneaky-core-claim'), 'the user rule must never win — before the fix its fake cannot_override_core:true gave it rank Infinity, shadowing the template rule instead');
+  const shadow = r.shadowed.find((x) => x.id === 'sneaky-core-claim');
+  assert.ok(shadow, 'the losing user rule must be visibly reported as shadowed, never silently dropped');
+  assert.strictEqual(shadow.beaten_by, 'never-auto-push');
+});
+
+t('load() strips cannot_override_core:true from every user-file rule regardless of trigger, so it can never outrank a template rule\'s +100 floor', () => {
+  const { templatePath, userPath } = fixturePair([
+    baseRule({ id: 'template-glob-rule', trigger: 'glob', glob: '**', topic: 'n2test' }),
+  ]);
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [
+    baseRule({ id: 'user-fake-core', trigger: 'always', topic: 'n2test', cannot_override_core: true, source: 'unit-test fixture (hand-edited user file, N2 scenario)' }),
+  ] }));
+  const data = standing.load({ rulesPath: templatePath, userRulesPath: userPath });
+  const loaded = data.rules.find((x) => x.id === 'user-fake-core');
+  assert.strictEqual(loaded.cannot_override_core, false, 'the user rule\'s on-disk cannot_override_core:true must be forced false by load()');
+
+  const r = standing.match({ paths: ['a/b.js'] }, { rulesPath: templatePath, userRulesPath: userPath });
+  assert.ok(r.active.some((x) => x.id === 'template-glob-rule'), 'the shipped glob rule must win the topic');
+  assert.ok(!r.active.some((x) => x.id === 'user-fake-core'), 'the fake-core user rule must lose (it is NOT an Infinite rank, and its always-trigger is below the template floor)');
+  const shadow = r.shadowed.find((x) => x.id === 'user-fake-core');
+  assert.ok(shadow, 'the losing user rule must be reported as shadowed, never silently dropped');
+  assert.strictEqual(shadow.beaten_by, 'template-glob-rule');
+});
+
+// ---------------------------------------------------------------------------
 // 5) malformed / missing config is refused, not silently accepted
 // ---------------------------------------------------------------------------
 console.log('\n5) config integrity — refuses malformed input rather than silently passing everything');
@@ -307,10 +410,20 @@ t('a duplicate rule id within the template throws', () => {
   const { templatePath, userPath } = fixturePair([baseRule({ id: 'dup' }), baseRule({ id: 'dup' })]);
   assert.throws(() => standing.load({ rulesPath: templatePath, userRulesPath: userPath }));
 });
-t('a rule id shared between the template and the user file throws (cross-file duplicate is still caught)', () => {
-  const { templatePath, userPath } = fixturePair([baseRule({ id: 'shared-id' })]);
-  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [baseRule({ id: 'shared-id' })] }));
-  assert.throws(() => standing.load({ rulesPath: templatePath, userRulesPath: userPath }));
+t('a rule id shared between the template and the user file: the shipped template rule wins, the user one is dropped with a warning, load() does NOT throw (3.2 fix)', () => {
+  const { templatePath, userPath } = fixturePair([baseRule({ id: 'shared-id', text: 'shipped template text' })]);
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [baseRule({ id: 'shared-id', text: 'owner override attempt' })] }));
+  const warnings = [];
+  const origErr = console.error;
+  console.error = (msg) => warnings.push(msg);
+  let data;
+  try { data = standing.load({ rulesPath: templatePath, userRulesPath: userPath }); }
+  finally { console.error = origErr; }
+  const matches = data.rules.filter((r) => r.id === 'shared-id');
+  assert.strictEqual(matches.length, 1, 'only one "shared-id" rule may survive the merge');
+  assert.strictEqual(matches[0].text, 'shipped template text', 'the shipped template rule must win an id collision, never the user one');
+  assert.ok(warnings.some((w) => /shared-id/.test(w)), 'a visible warning must name the dropped colliding user rule');
 });
 t('trigger:"domain" without a "domain" field throws', () => {
   const { templatePath, userPath } = fixturePair([baseRule({ trigger: 'domain', domain: null })]);
@@ -329,11 +442,19 @@ t('invalid JSON syntax throws with a clear message, not a silent empty result', 
 t('a missing rules file throws (never silently returns "no rules")', () => {
   assert.throws(() => standing.load({ rulesPath: path.join(freshDir('forge-standing-nope'), 'does-not-exist.json') }));
 });
-t('a malformed (non-array-rules) user file throws rather than being silently ignored', () => {
+t('a malformed (non-array-rules) user file falls back to the shipped template rules with a visible warning — it never crashes load() and never silently masks the warning either (3.2 fix)', () => {
   const { templatePath, userPath } = fixturePair([baseRule({ id: 'seed-ok' })]);
   fs.mkdirSync(path.dirname(userPath), { recursive: true });
   fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: 'not-an-array' }));
-  assert.throws(() => standing.load({ rulesPath: templatePath, userRulesPath: userPath }));
+  const warnings = [];
+  const origErr = console.error;
+  console.error = (msg) => warnings.push(msg);
+  let data;
+  try { data = standing.load({ rulesPath: templatePath, userRulesPath: userPath }); }
+  finally { console.error = origErr; }
+  assert.strictEqual(data.rules.length, 1, 'only the shipped template rule should survive');
+  assert.strictEqual(data.rules[0].id, 'seed-ok');
+  assert.ok(warnings.length > 0, 'a broken user file must print a visible warning, not fail silently');
 });
 
 // ---------------------------------------------------------------------------
@@ -569,14 +690,14 @@ t('CLI remember with no env override set falls back to the real files — proven
 // ---------------------------------------------------------------------------
 console.log('\n9) migration — owner-remember rules move out of the template, they never stay in both places');
 
-t('load() migrates an owner-remember-sourced template rule into a brand-new user file, and removes it from the template on disk', () => {
+t('load() migrates an owner-remember-sourced template rule into a brand-new user file, and removes it from the template on disk (opts.migrate:true — the explicit opt-in seam, since this is a fixture path, not this install\'s own CONFIG_PATH; see section 9b for the default read-only behavior)', () => {
   const { templatePath, userPath } = fixturePair([
     baseRule({ id: 'product-rule-migr-1' }),
     baseRule({ id: 'owner-rule-to-migrate', source: standing.OWNER_REMEMBER_SOURCE, text: 'an owner rule that should not ship' }),
   ]);
   assert.ok(!fs.existsSync(userPath), 'no user file should exist before migration runs');
 
-  const data = standing.load({ rulesPath: templatePath, userRulesPath: userPath });
+  const data = standing.load({ rulesPath: templatePath, userRulesPath: userPath, migrate: true });
 
   // moved, not copied: present exactly once, in the user file, absent from the template on disk
   const templateOnDisk = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
@@ -595,11 +716,11 @@ t('migration is idempotent: a second load() call after migration does not duplic
     baseRule({ id: 'product-rule-migr-2' }),
     baseRule({ id: 'owner-rule-idempotent', source: standing.OWNER_REMEMBER_SOURCE }),
   ]);
-  standing.load({ rulesPath: templatePath, userRulesPath: userPath });
+  standing.load({ rulesPath: templatePath, userRulesPath: userPath, migrate: true });
   // force a fresh (uncached) re-read by re-invoking load() with the same paths after clearing the module
   // cache the only way this module exposes: writing a new remember() elsewhere invalidates it globally.
   standing.remember('unrelated cache-buster', { rulesPath: templatePath, userRulesPath: path.join(path.dirname(userPath), 'other-user.json') });
-  const data2 = standing.load({ rulesPath: templatePath, userRulesPath: userPath });
+  const data2 = standing.load({ rulesPath: templatePath, userRulesPath: userPath, migrate: true });
   assert.strictEqual(data2.rules.filter((r) => r.id === 'owner-rule-idempotent').length, 1, 'must appear exactly once after a second migration pass');
   const userOnDisk = JSON.parse(fs.readFileSync(userPath, 'utf8'));
   assert.strictEqual(userOnDisk.rules.filter((r) => r.id === 'owner-rule-idempotent').length, 1);
@@ -613,11 +734,40 @@ t('migration merges into an EXISTING user file (with its own prior rules) instea
   fs.mkdirSync(path.dirname(userPath), { recursive: true });
   fs.writeFileSync(userPath, JSON.stringify({ version: 1, rules: [baseRule({ id: 'already-remembered-earlier', source: standing.OWNER_REMEMBER_SOURCE })] }));
 
-  const data = standing.load({ rulesPath: templatePath, userRulesPath: userPath });
+  const data = standing.load({ rulesPath: templatePath, userRulesPath: userPath, migrate: true });
   assert.ok(data.rules.some((r) => r.id === 'already-remembered-earlier'), 'a prior user rule must survive migration');
   assert.ok(data.rules.some((r) => r.id === 'owner-rule-merge-target'), 'the newly migrated rule must also be present');
   const userOnDisk = JSON.parse(fs.readFileSync(userPath, 'utf8'));
   assert.strictEqual(userOnDisk.rules.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// 9b) external-audit 3.3 (LOW) — migration is READ-ONLY unless this IS the install's own
+//     CONFIG_PATH, or the caller explicitly opts in with migrate:true (forge-audit-loop --root
+//     <other project> must never rewrite that project's rules file or create a user file next to it)
+// ---------------------------------------------------------------------------
+console.log('\n9b) 3.3 fix — migration never runs on a foreign/fixture rules file by default (read-only)');
+
+t('load() on a rules file that is NOT this install\'s own CONFIG_PATH never migrates an owner rule out of it, and never creates a sibling user file, when opts.migrate is not set', () => {
+  const { templatePath, userPath } = fixturePair([
+    baseRule({ id: 'foreign-product-rule' }),
+    baseRule({ id: 'foreign-owner-rule', source: standing.OWNER_REMEMBER_SOURCE, text: 'an owner rule living in someone else\'s template' }),
+  ]);
+  const before = fs.readFileSync(templatePath, 'utf8');
+
+  const data = standing.load({ rulesPath: templatePath, userRulesPath: userPath }); // no migrate:true
+
+  assert.strictEqual(fs.readFileSync(templatePath, 'utf8'), before, 'a foreign/fixture template read must never be rewritten');
+  assert.ok(!fs.existsSync(userPath), 'a foreign/fixture template read must never create a sibling user file');
+  assert.ok(data.rules.some((r) => r.id === 'foreign-owner-rule'), 'the owner rule must still be visible via the merged read even though it was not migrated on disk');
+  assert.ok(data.rules.some((r) => r.id === 'foreign-product-rule'));
+});
+
+t('load() against the REAL, on-disk CONFIG_PATH (no opts.rulesPath override) migrates automatically — the default, own-install case stays unchanged', () => {
+  // Uses the real files with no owner-remember rule present (verified clean by section 1b) — a no-op
+  // migration, but proves the auto-migrate path still runs for this install's own template by default.
+  const data = standing.load();
+  assert.strictEqual(data.rules.filter((r) => r.source === standing.OWNER_REMEMBER_SOURCE && r._origin === 'template').length, 0);
 });
 
 console.log('');

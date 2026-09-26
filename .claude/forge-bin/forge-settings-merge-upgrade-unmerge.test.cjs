@@ -236,23 +236,91 @@ t('checkSettingsMerge reports a pending upgrade as "not up to date" (missing-ent
 });
 
 // ---------------------------------------------------------------------------
+console.log('\n2b) HOOK-COMMAND-NO-DOWNGRADE — a template OLDER than the project never rewrites hooks backwards');
+
+t('pure merge: a v2.8.0-form project against a 2.7.2-shaped template upgrades nothing, adds nothing, changes no hook', () => {
+  const project = mod.mergeForgeSettings({}, templateV280Fixture()).settings;
+  const before = JSON.stringify(project.hooks);
+  const { settings, added, upgraded } = mod.mergeForgeSettings(project, legacy272Fixture());
+  assert.strictEqual(upgraded.length, 0, JSON.stringify(upgraded));
+  assert.strictEqual(added.length, 0, JSON.stringify(added));
+  assert.strictEqual(JSON.stringify(settings.hooks), before, 'no hook may be rewritten back to the cwd-relative form');
+});
+
+t('checkSettingsMerge: a v2.8.0-form project against an older template on disk reads "up to date"', () => {
+  const dir = freshDir('settings-merge-nodowngrade-check');
+  const source = path.join(dir, 'old-template.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, legacy272Fixture());
+  writeJson(target, mod.mergeForgeSettings({}, templateV280Fixture()).settings);
+  const r = mod.checkSettingsMerge({ target, source });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.status, 'up-to-date');
+});
+
+t('applySettingsMerge: an older template is a true no-op on a v2.8.0-form project (file untouched, no backup)', () => {
+  const dir = freshDir('settings-merge-nodowngrade-apply');
+  const source = path.join(dir, 'old-template.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, legacy272Fixture());
+  writeJson(target, mod.mergeForgeSettings({}, templateV280Fixture()).settings);
+  const before = fs.readFileSync(target, 'utf8');
+  const r = mod.applySettingsMerge({ target, source });
+  assert.strictEqual(r.status, 'noop', JSON.stringify(r));
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), before);
+  assert.strictEqual(backupFiles(dir).length, 0);
+});
+
+t('the forward upgrade still happens (2.7.2 project, v2.8.0 template): the guard only blocks the backward direction', () => {
+  const { upgraded } = mod.mergeForgeSettings(legacy272Fixture(), templateV280Fixture());
+  assert.strictEqual(upgraded.length, 4, JSON.stringify(upgraded));
+  for (const u of upgraded) assert.ok(u.to.includes('$CLAUDE_PROJECT_DIR'), u.to);
+});
+
+t('doctor settings-wired names pending hook command updates in its warning (never a warn that says "missing 0, 0, 0")', () => {
+  const doctor = require('./forge-doctor.cjs');
+  const root = freshDir('settings-wired-upgrade-msg');
+  fs.mkdirSync(path.join(root, '.claude'));
+  writeJson(path.join(root, '.claude', 'settings.json'), legacy272Fixture());
+  const source = path.join(root, 'template-settings.json');
+  writeJson(source, templateV280Fixture());
+  const r = doctor.settingsWired(root, { source });
+  assert.strictEqual(r.level, 'warn', JSON.stringify(r));
+  assert.ok(/4 hook command update\(s\)/.test(r.detail), r.detail);
+  assert.strictEqual(r.upgraded.length, 4);
+});
+
+// ---------------------------------------------------------------------------
 console.log('\n3) unmergeForgeSettings() — pure-function safety property');
 
-t('unmerging a freshly-merged v2.8.0 settings.json removes every Forge hook and every template deny rule, leaves hooks:{} and permissions.deny:[]', () => {
+t('unmerging a freshly-merged v2.8.0 settings.json removes every Forge hook by default but KEEPS every template deny rule (B1 DENY-RULE-PRESERVATION)', () => {
   const merged = mod.mergeForgeSettings({}, templateV280Fixture()).settings;
   const mergedJson = JSON.stringify(merged);
-  const { settings, removed_hooks, removed_events, deny_removed } = mod.unmergeForgeSettings(merged, templateV280Fixture());
+  const { settings, removed_hooks, removed_events, deny_removed, deny_kept_matching_template } = mod.unmergeForgeSettings(merged, templateV280Fixture());
   assert.strictEqual(JSON.stringify(merged), mergedJson, 'unmergeForgeSettings must never mutate its `existing` argument');
 
   assert.deepStrictEqual(settings.hooks, {}, 'every event was ALL Forge hooks -> every event key is dropped');
-  assert.deepStrictEqual(settings.permissions.deny, []);
   // 6 hooks total: marker x2, reinject x1, toolhook x2 (both PostToolUse matchers), gate-hook x1
   assert.strictEqual(removed_hooks.length, 6, JSON.stringify(removed_hooks));
   assert.strictEqual(removed_events.length, 4); // PreCompact, SessionStart, PostToolUse, PreToolUse
-  assert.strictEqual(deny_removed.length, 29);
+
+  // B1: by default NOTHING is removed from permissions.deny, even though every rule also appears in the
+  // template — a leftover deny rule is harmless and protective (a user who had e.g. Read(./.env) BEFORE
+  // installing Forge must never lose that protection on uninstall).
+  assert.strictEqual(deny_removed.length, 0, 'default unmerge must never remove a deny rule');
+  assert.strictEqual(settings.permissions.deny.length, 29, 'every template-matching deny rule survives by default');
+  assert.strictEqual(deny_kept_matching_template.length, 29);
 });
 
-t('a foreign hook survives unmerge: its matcher entry is kept (with only the Forge hook removed from it)', () => {
+t('unmergeForgeSettings({removeDeny:true}) removes every deny rule that also appears in the template, reporting each one via deny_removed', () => {
+  const merged = mod.mergeForgeSettings({}, templateV280Fixture()).settings;
+  const { settings, deny_removed, deny_kept_matching_template } = mod.unmergeForgeSettings(merged, templateV280Fixture(), { removeDeny: true });
+  assert.deepStrictEqual(settings.permissions.deny, []);
+  assert.strictEqual(deny_removed.length, 29);
+  assert.strictEqual(deny_kept_matching_template.length, 0, 'a rule that was actually removed is not also reported as kept');
+});
+
+t('a foreign hook survives unmerge: its matcher entry is kept (with only the Forge hook removed from it); with removeDeny:true only the source rule is removed', () => {
   const existing = {
     hooks: {
       PreToolUse: [
@@ -268,13 +336,42 @@ t('a foreign hook survives unmerge: its matcher entry is kept (with only the For
     hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"', timeout: 10 }] }] },
     permissions: { deny: ['Read(./.env)'] },
   };
-  const { settings, removed_hooks, deny_removed } = mod.unmergeForgeSettings(existing, source);
+  const { settings, removed_hooks, deny_removed } = mod.unmergeForgeSettings(existing, source, { removeDeny: true });
   assert.strictEqual(settings.hooks.PreToolUse.length, 1, 'the matcher entry survives because a foreign hook remains');
   assert.strictEqual(settings.hooks.PreToolUse[0].hooks.length, 1);
   assert.strictEqual(settings.hooks.PreToolUse[0].hooks[0].command, 'node my-own-hook.cjs');
   assert.strictEqual(removed_hooks.length, 1);
   assert.deepStrictEqual(settings.permissions.deny, ['Bash(rm -rf *)'], 'the user\'s own deny rule survives; only the source rule is removed');
   assert.deepStrictEqual(deny_removed, ['Read(./.env)']);
+});
+
+t('B2: a user hook that merely MENTIONS a Forge script (chained in the user\'s own command) is never rewritten by apply and never deleted by unmerge — only reported', () => {
+  const chained = 'node my-audit.js && node .claude/forge-bin/forge-gate-hook.cjs';
+  const existing = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: chained, timeout: 10 }] }] } };
+  const source = { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"', timeout: 10 }] }] } };
+
+  // apply/merge side: the chained command is NOT recognized as Forge's own hook (not an exact known form),
+  // so it is never rewritten/"upgraded" — the real gate hook is added alongside it instead.
+  const { settings: mergedSettings, upgraded } = mod.mergeForgeSettings(existing, source);
+  assert.strictEqual(upgraded.length, 0, 'a command that only mentions a Forge script must never be treated as an upgrade candidate');
+  const entry = mergedSettings.hooks.PreToolUse.find((e) => e.matcher === 'Bash|PowerShell');
+  assert.ok(entry.hooks.some((h) => h.command === chained), 'the user\'s own chained command must survive byte-for-byte');
+  assert.ok(entry.hooks.some((h) => h.command === 'node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"'), 'the real gate hook is added since the chained command does not count as "already present"');
+
+  // unmerge side: the chained command is kept (never deleted), but reported for manual review.
+  const { settings: unmergedSettings, removed_hooks, reported_hooks } = mod.unmergeForgeSettings(existing, source);
+  assert.strictEqual(removed_hooks.length, 0, 'nothing is removed — the chained command is not an exact known Forge hook form');
+  assert.strictEqual(unmergedSettings.hooks.PreToolUse[0].hooks.length, 1);
+  assert.strictEqual(unmergedSettings.hooks.PreToolUse[0].hooks[0].command, chained, 'the user\'s own chained command survives unmerge byte-for-byte');
+  assert.strictEqual(reported_hooks.length, 1, JSON.stringify(reported_hooks));
+  assert.strictEqual(reported_hooks[0].command, chained);
+});
+
+t('EMPTY-EVENT-NOOP: a pre-existing empty event list (e.g. "Stop": []) is left completely untouched by unmerge, never reported as removed', () => {
+  const existing = { hooks: { Stop: [] } };
+  const { settings, removed_events } = mod.unmergeForgeSettings(existing, templateV280Fixture());
+  assert.deepStrictEqual(settings.hooks.Stop, [], 'a pre-existing empty list must survive exactly as-is');
+  assert.strictEqual(removed_events.includes('Stop'), false, 'an event that was already empty must never be reported as "removed" by this unmerge');
 });
 
 t('unmergeForgeSettings never introduces a hooks/permissions key that was not already present', () => {
@@ -285,7 +382,7 @@ t('unmergeForgeSettings never introduces a hooks/permissions key that was not al
 // ---------------------------------------------------------------------------
 console.log('\n4) applySettingsUnmerge() — file-level orchestration (real filesystem)');
 
-t('unmerge over a v2.8.0-merged file removes exactly Forge\'s hooks and the template\'s deny rules; a foreign hook + foreign deny rule survive; backup written', () => {
+t('unmerge --remove-deny over a v2.8.0-merged file removes exactly Forge\'s hooks and the template\'s deny rules; a foreign hook + foreign deny rule survive; backup written', () => {
   const dir = freshDir('settings-merge-unmerge-e2e');
   const source = path.join(dir, 'source.json');
   const target = path.join(dir, 'settings.json');
@@ -299,7 +396,7 @@ t('unmerge over a v2.8.0-merged file removes exactly Forge\'s hooks and the temp
   merged.ownerNote = 'do not touch this field';
   writeJson(target, merged);
 
-  const r = mod.applySettingsUnmerge({ target, source });
+  const r = mod.applySettingsUnmerge({ target, source, removeDeny: true });
   assert.strictEqual(r.ok, true, JSON.stringify(r));
   assert.strictEqual(r.status, 'unmerged');
   assert.ok(r.backupPath && fs.existsSync(r.backupPath));
@@ -319,6 +416,51 @@ t('unmerge over a v2.8.0-merged file removes exactly Forge\'s hooks and the temp
 
   assert.strictEqual(r.removed_hooks.length, 6);
   assert.strictEqual(r.deny_removed.length, 29);
+});
+
+t('B1: without --remove-deny, a deny rule identical to a template rule survives a real unmerge (kept), and is removed only with removeDeny:true', () => {
+  const dir = freshDir('settings-merge-unmerge-b1-deny-default');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, templateV280Fixture());
+
+  const merged = mod.mergeForgeSettings({}, templateV280Fixture()).settings; // permissions.deny has all 29 template rules
+  writeJson(target, merged);
+
+  const r1 = mod.applySettingsUnmerge({ target, source }); // default: no --remove-deny
+  assert.strictEqual(r1.ok, true, JSON.stringify(r1));
+  assert.strictEqual(r1.status, 'unmerged'); // hooks still get removed -> changed=true
+  assert.strictEqual(r1.deny_removed.length, 0, 'default unmerge must never remove a deny rule that matches the template');
+  assert.strictEqual(r1.deny_kept_matching_template.length, 29);
+  const written1 = JSON.parse(fs.readFileSync(target, 'utf8'));
+  assert.strictEqual(written1.permissions.deny.length, 29, 'Read(./.env)-style rules survive a default uninstall');
+  assert.ok(written1.permissions.deny.includes('Read(./.env)'));
+  assert.ok(written1.permissions.deny.includes('Read(~/.ssh/**)'));
+
+  // now uninstall again with --remove-deny explicitly -> the surviving template-matching rules are removed
+  const r2 = mod.applySettingsUnmerge({ target, source, removeDeny: true });
+  assert.strictEqual(r2.status, 'unmerged', JSON.stringify(r2));
+  assert.strictEqual(r2.deny_removed.length, 29);
+  const written2 = JSON.parse(fs.readFileSync(target, 'utf8'));
+  assert.deepStrictEqual(written2.permissions.deny, []);
+});
+
+t('EMPTY-EVENT-NOOP at file level: a target with "Stop": [] and no other Forge content is a true no-op — untouched, no write, no backup', () => {
+  const dir = freshDir('settings-merge-unmerge-empty-event-noop');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, templateV280Fixture());
+  writeJson(target, { hooks: { Stop: [] }, ownerNote: 'keep me' });
+  const before = fs.readFileSync(target, 'utf8');
+  const mtimeBefore = fs.statSync(target).mtimeMs;
+
+  const r = mod.applySettingsUnmerge({ target, source });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.status, 'noop', 'a pre-existing empty "Stop": [] must never be treated as Forge content to remove');
+  assert.strictEqual(r.removed_events.length, 0);
+  assert.strictEqual(fs.readFileSync(target, 'utf8'), before, 'a true no-op must never rewrite the file');
+  assert.strictEqual(fs.statSync(target).mtimeMs, mtimeBefore);
+  assert.strictEqual(backupFiles(dir).length, 0, 'a true no-op must never take a backup');
 });
 
 t('unmerge on a file with no Forge content is a true no-op: exit-equivalent noop, mtime unchanged, no new backup', () => {
@@ -420,18 +562,51 @@ const { spawnSync } = require('child_process');
 const CLI = path.join(__dirname, 'forge-settings-merge.cjs');
 function runCLI(argv) { return spawnSync(process.execPath, [CLI, ...argv], { encoding: 'utf8' }); }
 
-t('CLI unmerge: a v2.8.0-merged target -> exit 0, status unmerged, JSON output includes removed_hooks/deny_removed', () => {
+t('CLI unmerge --remove-deny: a v2.8.0-merged target -> exit 0, status unmerged, JSON output includes removed_hooks/deny_removed', () => {
   const dir = freshDir('settings-merge-unmerge-cli');
   const source = path.join(dir, 'source.json');
   const target = path.join(dir, 'settings.json');
   writeJson(source, templateV280Fixture());
   writeJson(target, mod.mergeForgeSettings({}, templateV280Fixture()).settings);
-  const r = runCLI(['unmerge', '--target', target, '--source', source, '--json']);
+  const r = runCLI(['unmerge', '--target', target, '--source', source, '--remove-deny', '--json']);
   assert.strictEqual(r.status, 0, r.stderr);
   const parsed = JSON.parse(r.stdout.trim());
   assert.strictEqual(parsed.status, 'unmerged');
   assert.strictEqual(parsed.removed_hooks.length, 6);
   assert.strictEqual(parsed.deny_removed.length, 29);
+});
+
+t('B1 CLI: without --remove-deny, deny rules matching the template are kept and NOT printed as removed; with --remove-deny every removed rule is printed in full (not just a count)', () => {
+  const dir = freshDir('settings-merge-unmerge-cli-b1');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, templateV280Fixture());
+  writeJson(target, mod.mergeForgeSettings({}, templateV280Fixture()).settings);
+
+  const r1 = runCLI(['unmerge', '--target', target, '--source', source]);
+  assert.strictEqual(r1.status, 0, r1.stderr);
+  assert.ok(!/removed deny rule\(s\)/.test(r1.stdout), 'default run must never print a "removed deny rule(s)" line');
+  assert.ok(r1.stdout.includes('Read(./.env)'), 'the kept-rules note must name the actual rule text, not just a count');
+  assert.strictEqual(JSON.parse(fs.readFileSync(target, 'utf8')).permissions.deny.length, 29, 'the deny rules are still on disk after the default run');
+
+  const r2 = runCLI(['unmerge', '--target', target, '--source', source, '--remove-deny']);
+  assert.strictEqual(r2.status, 0, r2.stderr);
+  assert.ok(r2.stdout.includes('removed deny rule(s): '), 'a --remove-deny run must announce the removal');
+  assert.ok(r2.stdout.includes('Read(./.env)'), 'every removed rule must be printed by name, not collapsed to a count');
+  assert.strictEqual(JSON.parse(fs.readFileSync(target, 'utf8')).permissions.deny.length, 0);
+});
+
+t('B2 CLI: a hook that only mentions a Forge script is reported by name on unmerge, never silently dropped', () => {
+  const dir = freshDir('settings-merge-unmerge-cli-b2');
+  const source = path.join(dir, 'source.json');
+  const target = path.join(dir, 'settings.json');
+  writeJson(source, templateV280Fixture());
+  const chained = 'node my-audit.js && node .claude/forge-bin/forge-gate-hook.cjs';
+  writeJson(target, { hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: chained, timeout: 10 }] }] } });
+  const r = runCLI(['unmerge', '--target', target, '--source', source]);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stdout.includes(chained), true, 'the reported hook command must be printed by name');
+  assert.strictEqual(JSON.parse(fs.readFileSync(target, 'utf8')).hooks.PreToolUse[0].hooks[0].command, chained, 'the command itself is never touched');
 });
 
 t('CLI unmerge is idempotent: a second real subprocess run reports noop, exit 0', () => {

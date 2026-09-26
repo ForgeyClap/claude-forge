@@ -2839,7 +2839,10 @@ console.log('\n72) forge-prompt-coach + vendored commands are pinned');
 {
   const tplDir = path.resolve(__dirname, '..');
   const files = new Set(sync.listSystemFiles(tplDir));
-  const walk72 = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk72(path.join(d, e.name)) : [path.join(d, e.name)]));
+  // v2.8.0: skip `.claude-flow/` — a gitignored runtime folder that external claude-flow tooling may drop into
+  // any directory (seen live: skills/forge-prompt-coach/.claude-flow/data/pending-insights.jsonl). It is never
+  // shipped (the release sync blocks it too), so it must not count as an unpinned payload file.
+  const walk72 = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === '.claude-flow' ? [] : walk72(path.join(d, e.name))) : [path.join(d, e.name)]));
   const rel72 = (f) => path.relative(tplDir, f).split(path.sep).join('/');
   const promptCoachDir = path.join(tplDir, 'skills', 'forge-prompt-coach');
   const promptCoachFiles = fs.existsSync(promptCoachDir) ? walk72(promptCoachDir).map(rel72) : [];
@@ -3055,6 +3058,250 @@ console.log('\n78) N4 fix — new user-state files are never template-owned (not
   t('78e the sync itself ran (ok or a reported, non-crashing outcome)', typeof r78.ok === 'boolean');
   for (const f of userStateFiles) {
     t('78f ' + f + ' bytes are byte-for-byte untouched after a real sync', fs.readFileSync(userFiles[f].abs, 'utf8') === userFiles[f].content);
+  }
+}
+
+// 79) external-audit 3.4 (LOW) — a v2.7-era project's owner-remember rule baked directly INTO the SYNCED
+// FORGE_STANDING_RULES.json (before the 2026-09-26 template/user split existed) must survive an upgrade:
+// forge-sync moves it into the project's own FORGE_STANDING_RULES.user.json BEFORE the template file is
+// ever compared/replaced — even when the drift is only resolved via --force-overwrite.
+console.log('\n79) 3.4 fix — a v2.7-era owner rule baked into FORGE_STANDING_RULES.json survives an upgrade');
+function standingRule(overrides) {
+  return Object.assign({
+    id: 'r-' + Math.random().toString(36).slice(2), text: 'rule text', scope: 'global', trigger: 'always',
+    domain: null, glob: null, topic: null, source: 'CLAUDE.md (fixture)', confidence: 'high', status: 'active',
+    cannot_override_core: false,
+  }, overrides || {});
+}
+{
+  const tpl79 = freshDir('t79-tpl');
+  fs.mkdirSync(path.join(tpl79, 'config', 'orchestration'), { recursive: true });
+  const cleanTemplateDoc = { version: 1, rules: [standingRule({ id: 'product-rule-79-new', text: 'new shipped rule' })] };
+  fs.writeFileSync(path.join(tpl79, 'config', 'orchestration', 'FORGE_STANDING_RULES.json'), JSON.stringify(cleanTemplateDoc, null, 2) + '\n');
+
+  const p79 = makeProject(freshDir('t79-root'), 'proj', null);
+  const projStandingDir = path.join(p79, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(projStandingDir, { recursive: true });
+  const v27Doc = {
+    version: 1,
+    rules: [
+      standingRule({ id: 'product-rule-79-old', text: 'old shipped rule' }),
+      standingRule({ id: 'owner-rule-v27', text: 'an owner rule baked directly into the old shipped file', source: 'owner /forge remember' }),
+    ],
+  };
+  fs.writeFileSync(path.join(projStandingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify(v27Doc, null, 2) + '\n');
+  const userPath79 = path.join(projStandingDir, 'FORGE_STANDING_RULES.user.json');
+  t('79 precondition: no user file exists yet before the upgrade', !fs.existsSync(userPath79));
+
+  const r79 = sync.safeSyncProject(tpl79, p79, { batchId: 'b79', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true });
+  t('79a the sync ran to completion (ok or a reported, non-crashing outcome)', typeof r79.ok === 'boolean');
+
+  const templateOnDiskAfter = JSON.parse(fs.readFileSync(path.join(projStandingDir, 'FORGE_STANDING_RULES.json'), 'utf8'));
+  t('79b the project template file is CLEAN after the upgrade: new shipped rule present', templateOnDiskAfter.rules.some((r) => r.id === 'product-rule-79-new'));
+  t('79c the project template file is CLEAN after the upgrade: zero owner-remember rules remain in it', !templateOnDiskAfter.rules.some((r) => r.source === 'owner /forge remember'));
+
+  t('79d the owner rule survived: FORGE_STANDING_RULES.user.json now exists', fs.existsSync(userPath79));
+  const userDocAfter = fs.existsSync(userPath79) ? JSON.parse(fs.readFileSync(userPath79, 'utf8')) : { rules: [] };
+  t('79e the owner rule survived byte-for-byte (same id) in the project\'s own user file', userDocAfter.rules.some((r) => r.id === 'owner-rule-v27'));
+
+  t('79f FORGE_STANDING_RULES.user.json is never template-owned (not in the synced SYSTEM file list)', !sync.listSystemFiles(tpl79).includes('config/orchestration/FORGE_STANDING_RULES.user.json'));
+}
+
+// 79g) the same preflight migration also protects the --unsafe (rawInstall) path, which has no
+// drift/conflict analysis at all and would otherwise replace the file unconditionally.
+{
+  const tpl79u = freshDir('t79u-tpl');
+  fs.mkdirSync(path.join(tpl79u, 'config', 'orchestration'), { recursive: true });
+  fs.writeFileSync(path.join(tpl79u, 'config', 'orchestration', 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: 'product-rule-79u-new' })] }, null, 2) + '\n');
+
+  const p79u = makeProject(freshDir('t79u-root'), 'proj', null);
+  const dir79u = path.join(p79u, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(dir79u, { recursive: true });
+  fs.writeFileSync(path.join(dir79u, 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: 'owner-rule-79u', source: 'owner /forge remember' })] }, null, 2) + '\n');
+
+  sync.rawInstall(tpl79u, p79u, { batchId: 'b79u', nowIso: '2026-01-01T00:00:00.000Z' });
+
+  const userPath79u = path.join(dir79u, 'FORGE_STANDING_RULES.user.json');
+  t('79g --unsafe (rawInstall) also preserves a v2.7-era owner rule via the same preflight migration', fs.existsSync(userPath79u) && JSON.parse(fs.readFileSync(userPath79u, 'utf8')).rules.some((r) => r.id === 'owner-rule-79u'));
+}
+
+// 79h) migrateOwnerStandingRules() unit-level: idempotent, no-op when nothing to migrate, never throws on a
+// missing/malformed project file.
+console.log('\n79h) migrateOwnerStandingRules() — unit-level safety net behavior');
+{
+  const noProjectDir = freshDir('t79h-empty');
+  fs.mkdirSync(path.join(noProjectDir, '.claude'), { recursive: true });
+  t('79h1 no FORGE_STANDING_RULES.json at all -> returns [] and writes nothing', (() => {
+    const before = fs.readdirSync(path.join(noProjectDir, '.claude'));
+    const ids = sync.migrateOwnerStandingRules(noProjectDir);
+    const after = fs.readdirSync(path.join(noProjectDir, '.claude'));
+    return Array.isArray(ids) && ids.length === 0 && JSON.stringify(before) === JSON.stringify(after);
+  })());
+
+  const malformedDir = freshDir('t79h-malformed');
+  const malformedStandingDir = path.join(malformedDir, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(malformedStandingDir, { recursive: true });
+  fs.writeFileSync(path.join(malformedStandingDir, 'FORGE_STANDING_RULES.json'), '{ not valid json');
+  t('79h2 a malformed project FORGE_STANDING_RULES.json never throws — returns []', (() => {
+    let ids;
+    try { ids = sync.migrateOwnerStandingRules(malformedDir); } catch { return false; }
+    return Array.isArray(ids) && ids.length === 0;
+  })());
+
+  const noOwnerDir = freshDir('t79h-noowner');
+  const noOwnerStandingDir = path.join(noOwnerDir, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(noOwnerStandingDir, { recursive: true });
+  fs.writeFileSync(path.join(noOwnerStandingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: 'shipped-only' })] }, null, 2) + '\n');
+  t('79h3 a project file with zero owner-remember rules is a no-op (no user file created)', sync.migrateOwnerStandingRules(noOwnerDir).length === 0 && !fs.existsSync(path.join(noOwnerStandingDir, 'FORGE_STANDING_RULES.user.json')));
+
+  const idempotentDir = freshDir('t79h-idem');
+  const idemStandingDir = path.join(idempotentDir, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(idemStandingDir, { recursive: true });
+  fs.writeFileSync(path.join(idemStandingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: 'owner-idem', source: 'owner /forge remember' })] }, null, 2) + '\n');
+  sync.migrateOwnerStandingRules(idempotentDir);
+  sync.migrateOwnerStandingRules(idempotentDir); // second call — must not duplicate
+  const idemUserDoc = JSON.parse(fs.readFileSync(path.join(idemStandingDir, 'FORGE_STANDING_RULES.user.json'), 'utf8'));
+  t('79h4 calling migrateOwnerStandingRules() twice never duplicates the rule in the user file', idemUserDoc.rules.filter((r) => r.id === 'owner-idem').length === 1);
+}
+
+// 79i) N8 (2026-09-26 independent review, LOW) — migrateOwnerStandingRules() must never destroy a
+// MALFORMED-but-PRESENT user file: it starts from an empty doc ONLY on a confirmed ENOENT; any other
+// read/parse/shape problem warns once and skips the migration, leaving the existing file byte-identical.
+console.log('\n79i) N8 fix — a malformed (present) user file is never overwritten by the migration');
+{
+  function withOwnerTemplate(dirPrefix) {
+    const dir = freshDir(dirPrefix);
+    const standingDir = path.join(dir, '.claude', 'config', 'orchestration');
+    fs.mkdirSync(standingDir, { recursive: true });
+    fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({
+      version: 1, rules: [standingRule({ id: 'owner-rule-79i', source: 'owner /forge remember' })],
+    }, null, 2) + '\n');
+    return { dir, standingDir };
+  }
+
+  // 79i1: bad JSON in an EXISTING user file
+  {
+    const { dir, standingDir } = withOwnerTemplate('t79i-badjson');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    const before = '{ this is not valid json at all';
+    fs.writeFileSync(userPath, before);
+    const warnings = [];
+    const origErr = console.error;
+    console.error = (msg) => warnings.push(msg);
+    let ids;
+    try { ids = sync.migrateOwnerStandingRules(dir); } finally { console.error = origErr; }
+    t('79i1 a bad-JSON user file never throws — returns []', Array.isArray(ids) && ids.length === 0);
+    t('79i1 the malformed user file is left BYTE-IDENTICAL (no destructive overwrite)', fs.readFileSync(userPath, 'utf8') === before);
+    t('79i1 a visible warning names the problem', warnings.some((w) => /FORGE_STANDING_RULES\.user\.json/.test(w)));
+    t('79i1 no stray .tmp file was left behind', !fs.readdirSync(standingDir).some((f) => f.endsWith('.tmp')));
+  }
+
+  // 79i2: valid JSON, but no "rules" array
+  {
+    const { dir, standingDir } = withOwnerTemplate('t79i-norules');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    const before = JSON.stringify({ version: 1, notes: 'no rules array here' });
+    fs.writeFileSync(userPath, before);
+    const ids = sync.migrateOwnerStandingRules(dir);
+    t('79i2 a present user file missing "rules" never throws — returns []', Array.isArray(ids) && ids.length === 0);
+    t('79i2 the malformed (shape) user file is left BYTE-IDENTICAL', fs.readFileSync(userPath, 'utf8') === before);
+  }
+
+  // 79i3: valid JSON, "rules" is not an array
+  {
+    const { dir, standingDir } = withOwnerTemplate('t79i-rulesnotarray');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    const before = JSON.stringify({ version: 1, rules: 'not-an-array' });
+    fs.writeFileSync(userPath, before);
+    const ids = sync.migrateOwnerStandingRules(dir);
+    t('79i3 rules:"not-an-array" never throws — returns []', Array.isArray(ids) && ids.length === 0);
+    t('79i3 the malformed (rules-not-array) user file is left BYTE-IDENTICAL', fs.readFileSync(userPath, 'utf8') === before);
+  }
+
+  // 79i4: genuinely ENOENT (no user file at all) still migrates normally — the fix narrows the "start
+  // empty" behavior to ENOENT only, it must not remove it for the real fresh-install case.
+  {
+    const { dir, standingDir } = withOwnerTemplate('t79i-enoent');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    t('79i4 precondition: no user file exists yet', !fs.existsSync(userPath));
+    const ids = sync.migrateOwnerStandingRules(dir);
+    t('79i4 ENOENT (genuinely fresh) still migrates normally', ids.includes('owner-rule-79i'));
+    t('79i4 the user file was created with the migrated rule', fs.existsSync(userPath) && JSON.parse(fs.readFileSync(userPath, 'utf8')).rules.some((r) => r.id === 'owner-rule-79i'));
+  }
+
+  // 79i5: end-to-end through safeSyncProject — a malformed existing user file must not stop the sync
+  // itself from completing, and must still come out byte-identical afterward.
+  {
+    const tpl = freshDir('t79i-e2e-tpl');
+    fs.mkdirSync(path.join(tpl, 'config', 'orchestration'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'config', 'orchestration', 'FORGE_STANDING_RULES.json'), JSON.stringify({ version: 1, rules: [standingRule({ id: 'product-rule-79i-e2e' })] }, null, 2) + '\n');
+    const p = makeProject(freshDir('t79i-e2e-root'), 'proj', null);
+    const standingDir = path.join(p, '.claude', 'config', 'orchestration');
+    fs.mkdirSync(standingDir, { recursive: true });
+    fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({
+      version: 1, rules: [standingRule({ id: 'owner-rule-79i-e2e', source: 'owner /forge remember' })],
+    }, null, 2) + '\n');
+    const userPath = path.join(standingDir, 'FORGE_STANDING_RULES.user.json');
+    const before = '{ malformed on purpose';
+    fs.writeFileSync(userPath, before);
+
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b79i-e2e', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true });
+    t('79i5 the sync still completes (does not crash / abort) despite the malformed user file', typeof r.ok === 'boolean');
+    t('79i5 the malformed user file is left BYTE-IDENTICAL after a real sync run', fs.readFileSync(userPath, 'utf8') === before);
+  }
+}
+
+// 79j) N8 — a null/non-object rule in either rules array must never crash the migration (skipped when
+// computing ids, left untouched — never silently dropped — in whatever gets written).
+console.log('\n79j) N8 fix — a null rule entry never crashes the migration');
+{
+  const dir = freshDir('t79j-nullrule');
+  const standingDir = path.join(dir, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(standingDir, { recursive: true });
+  fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({
+    version: 1,
+    rules: [null, standingRule({ id: 'owner-rule-79j', source: 'owner /forge remember' })],
+  }, null, 2) + '\n');
+  // pre-seed a user file that ALREADY has a null entry (e.g. from a hand-edit) — computing existingIds
+  // from this must never throw on the null's missing .id.
+  fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.user.json'), JSON.stringify({ version: 1, rules: [null] }, null, 2) + '\n');
+
+  let ids;
+  t('79j a null rule in the TEMPLATE and a null rule already in the USER file never throws', (() => {
+    try { ids = sync.migrateOwnerStandingRules(dir); return true; } catch { return false; }
+  })());
+  t('79j the real owner rule still migrated despite the null entries', Array.isArray(ids) && ids.includes('owner-rule-79j'));
+  const userDocAfter = JSON.parse(fs.readFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.user.json'), 'utf8'));
+  t('79j the pre-existing null entry is preserved (not silently dropped)', userDocAfter.rules.some((r) => r === null));
+  t('79j the migrated rule landed alongside it', userDocAfter.rules.some((r) => r && r.id === 'owner-rule-79j'));
+}
+
+// 79k) N8 — the write goes through the same symlink/containment guards every other forge-sync write
+// uses: a junctioned config/orchestration/ directory must refuse the write, never follow it outside
+// .claude/. Skipped honestly when this sandbox cannot create a junction (matches the M6/38 pattern).
+console.log('\n79k) N8 fix — the migration write honors the symlink/containment guard');
+{
+  const dir = freshDir('t79k-junction');
+  const standingDir = path.join(dir, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(path.join(dir, '.claude', 'config'), { recursive: true });
+  const outside = freshDir('t79k-outside');
+  let junctionOk = false;
+  try { fs.symlinkSync(outside, standingDir, 'junction'); junctionOk = true; }
+  catch (e) { console.log('     (79k evidence: could not create a junction in this environment — ' + e.message + ' — skipping honestly)'); }
+  if (junctionOk) {
+    fs.writeFileSync(path.join(standingDir, 'FORGE_STANDING_RULES.json'), JSON.stringify({
+      version: 1, rules: [standingRule({ id: 'owner-rule-79k', source: 'owner /forge remember' })],
+    }, null, 2) + '\n');
+    const warnings = [];
+    const origErr = console.error;
+    console.error = (msg) => warnings.push(msg);
+    let ids;
+    try { ids = sync.migrateOwnerStandingRules(dir); } finally { console.error = origErr; }
+    t('79k a junctioned orchestration/ dir refuses the migration write (returns [])', Array.isArray(ids) && ids.length === 0);
+    t('79k nothing was written into the OUTSIDE (junction target) directory', !fs.existsSync(path.join(outside, 'FORGE_STANDING_RULES.user.json')));
+    t('79k a visible warning explains the refusal', warnings.some((w) => /symlink|junction|escapes/.test(w)));
+  } else {
+    t('(79k skipped honestly — junction creation unavailable in this sandbox)', true);
   }
 }
 

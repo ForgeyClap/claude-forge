@@ -77,6 +77,26 @@ jobs:
           fi
 
       # 1) Syntax-check every .cjs source in the terminal command pack.
+      # 0c) Copy parity (v2.8.0, laptop re-audit Part V-E: "three hand-synced copies, no CI parity"). The plugin
+      # ships its own copies of some skills and agents, and of the global forge-core; in 2.7.2 the plugin's
+      # forge-core had silently drifted 13 lines from the global one. Any drift now fails CI.
+      - name: Plugin skill/agent copies and forge-core match their sources
+        run: |
+          bad=0
+          for d in plugins/forge/skills/*/; do
+            name=$(basename "$d")
+            if [ "$name" = "forge-core" ]; then src="global-install/.claude/skills/forge-core"; else src=".claude/skills/$name"; fi
+            if ! diff -rq "$src" "$d" >/dev/null 2>&1; then
+              echo "::error::plugins/forge/skills/$name differs from $src"; diff -rq "$src" "$d" || true; bad=1
+            fi
+          done
+          for f in plugins/forge/agents/*.md; do
+            src=".claude/agents/$(basename "$f")"
+            if ! cmp -s "$src" "$f"; then echo "::error file=$f::differs from $src"; bad=1; fi
+          done
+          if [ "$bad" -eq 0 ]; then echo "ok   plugin skill/agent copies and forge-core are in sync"; fi
+          exit $bad
+
       - name: node --check all .cjs in .claude/forge-bin
         run: |
           set -e

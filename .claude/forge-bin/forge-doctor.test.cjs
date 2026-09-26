@@ -12,6 +12,15 @@ const D = require('./forge-doctor.cjs');
 
 let pass = 0, fail = 0, skipped = 0;
 const t = (name, cond) => { if (cond) { pass++; console.log('  ok  ' + name); } else { fail++; console.error('  FAIL ' + name); } };
+/** tFn(name, fn) — for assertion-style tests whose body calls assert.* directly (a thrown AssertionError is
+ *  the failure, not a boolean return). Kept as a SEPARATE helper from the boolean t(name, cond) this file
+ *  uses everywhere else, on purpose: every existing `t('...', someBooleanExpression)` call site keeps
+ *  meaning exactly what it says, and a reader can tell at the call site which contract a given test follows.
+ *  WP-S11 (2026-09-26): found 12 gateWatchdogHealth/printSummary tests below written as `t(name, () => {...})`
+ *  — an un-invoked arrow function is always truthy, so t()'s own boolean check passed unconditionally and
+ *  every assert.* inside those bodies had never actually run. tFn() actually calls fn() and only counts a
+ *  pass when it returns without throwing. */
+const tFn = (name, fn) => { try { fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.error('  FAIL ' + name + ' — ' + (e && e.message || e)); } };
 /** skip(name, reason) — a test that could not be run HERE, stated out loud with why. It is counted into the
  *  trailing tally ("N passed, M failed, K skipped") so a reader of the summary line alone can see that
  *  something was not checked. The one thing a skip must never be is silently green: an assertion that
@@ -160,6 +169,19 @@ t('runTests: a real spawnSync timeout is labeled timedOut=true', rtTimeout.perSu
 t('runTests: a timed-out suite is "blocked", not counted in suitesFailed', rtTimeout.suitesBlocked === 1 && rtTimeout.suitesFailed === 0);
 t('runTests: overall ok=false when a suite is blocked (honestly not green)', rtTimeout.ok === false);
 t('runTests: timed-out suite entry carries the kill signal', rtTimeout.perSuite[0].signal === 'SIGTERM');
+// v2.8.0 (fresh-laptop simulation): the heaviest real suite takes ~95 s on the maintainer's PC, so a 120 s
+// per-suite limit turned a slower laptop's doctor red with nothing broken. Default >= 300 s, env-overridable.
+t('runTests: the default per-suite limit leaves room for the heaviest suite on a slow laptop (>= 300 s)', D.DOCTOR_SUITE_TIMEOUT_MS >= 300000, String(D.DOCTOR_SUITE_TIMEOUT_MS));
+{
+  const saved = process.env.FORGE_DOCTOR_SUITE_TIMEOUT_MS;
+  process.env.FORGE_DOCTOR_SUITE_TIMEOUT_MS = '500';
+  try {
+    const rtEnv = D.runTests(RT_TIMEOUT); // no opts.timeoutMs: the env override must apply
+    t('runTests: FORGE_DOCTOR_SUITE_TIMEOUT_MS overrides the default (busy-loop suite blocked after 500 ms)', rtEnv.suitesBlocked === 1 && rtEnv.perSuite[0].timedOut === true);
+  } finally {
+    if (saved === undefined) delete process.env.FORGE_DOCTOR_SUITE_TIMEOUT_MS; else process.env.FORGE_DOCTOR_SUITE_TIMEOUT_MS = saved;
+  }
+}
 
 // =====================================================================================================
 // 2026-07-14 FOLLOWUP A — FIX 1: anchor the tally regex so a phrase inside a test DESCRIPTION (echoed by
@@ -687,8 +709,10 @@ function issue2WriteRun(root, runId, firstLine, tamperLast) {
   return dir;
 }
 function issue2CertifyExpr(runDir, runId) {
-  const { events, malformed } = certifyRef.readEventsJsonl(runDir);
-  const chain = certifyRef.verifyChain(events || [], runId);
+  const { malformed } = certifyRef.readEventsJsonl(runDir);
+  // v2.8.0 (WP-S13): certify's verifyChain now takes the events FILE path and reads it through log-event.cjs's
+  // strict classifier (the same reader forge-runcontract's check() uses), not an in-memory array.
+  const chain = certifyRef.verifyChain(path.join(runDir, 'events.jsonl'), runId);
   return malformed === 0 && chain.ok;
 }
 const ISSUE2_CASES = [
@@ -1003,6 +1027,77 @@ t('checkTheChecks: flags a suite reporting a passing tally with 0 real assertion
 t('checkTheChecks: does NOT flag a suite with real t(...) assertion call sites', !ctc.noOp.some((n) => n.suite === 'real.test.cjs'));
 t('checkTheChecks: does NOT double-flag a genuinely vacuous (0 passed) suite — runTests already rejects it', !ctc.noOp.some((n) => n.suite === 'vacuous.test.cjs'));
 t('checkTheChecks: own ok is honestly false when a green no-op exists', ctc.ok === false);
+
+// --- vacuousBooleanTHelperSites (WP-S11, 2026-09-26): a DIFFERENT shape of no-op than the whole-suite one
+// above -- a suite with plenty of real t(...) sites overall, but ONE call site passing a bare, un-invoked
+// function literal to a BOOLEAN-style t(name, cond) helper (always truthy, so that one assertion body never
+// runs). This is exactly the shape found live in this file's own gateWatchdogHealth/printSummary tests.
+const PLANTED_VACUOUS_SRC = [
+  "let pass=0,fail=0;",
+  "const assert=require('assert');",
+  "const t=(name,cond)=>{if(cond){pass++;}else{fail++;console.error('FAIL '+name);}};",
+  "t('one plus one is two', 1+1===2);",
+  "t('a genuinely vacuous site: a bare, un-invoked arrow literal', () => {",
+  "  assert.strictEqual(1, 2); // would fail for real if this ever actually ran -- it never does",
+  "});",
+  "t('two plus two is four', 2+2===4);",
+  "console.log(pass+' passed, '+fail+' failed');",
+  "process.exitCode = fail ? 1 : 0;",
+  "",
+].join('\n');
+const plantedFindings = D.vacuousBooleanTHelperSites(PLANTED_VACUOUS_SRC);
+t('vacuousBooleanTHelperSites: a planted bare-function-literal call site in a boolean-style t() file IS flagged', plantedFindings.length === 1, JSON.stringify(plantedFindings));
+t('vacuousBooleanTHelperSites: the flagged line number points at the real t(...) call site, not line 1', plantedFindings[0] && plantedFindings[0].line === 5, JSON.stringify(plantedFindings));
+
+// a callback-style t(name, fn) file (forge-standing.test.cjs's own real shape) that ALSO passes a bare
+// function literal to t() -- exempt by construction: this t() genuinely calls fn(), so nothing is vacuous.
+const CALLBACK_STYLE_SRC = [
+  "let passed=0,failed=0;",
+  "const assert=require('assert');",
+  "function t(name, fn) {",
+  "  try { fn(); passed++; } catch (e) { failed++; console.log('FAIL '+name+' — '+e.message); }",
+  "}",
+  "t('one plus one is two', () => { assert.strictEqual(1+1, 2); });",
+  "t('two plus two is four', () => { assert.strictEqual(2+2, 4); });",
+  "console.log(passed+' passed, '+failed+' failed');",
+  "",
+].join('\n');
+t('vacuousBooleanTHelperSites: a real callback-style t(name, fn) file (fn is genuinely invoked) is NEVER flagged', D.vacuousBooleanTHelperSites(CALLBACK_STYLE_SRC).length === 0, JSON.stringify(D.vacuousBooleanTHelperSites(CALLBACK_STYLE_SRC)));
+t('classifyTHelper: correctly names the planted boolean-style helper "boolean"', D.classifyTHelper(D.stripJsComments(PLANTED_VACUOUS_SRC)) === 'boolean');
+t('classifyTHelper: correctly names the real callback-style helper "callback"', D.classifyTHelper(D.stripJsComments(CALLBACK_STYLE_SRC)) === 'callback');
+
+// an IIFE-wrapped call (the FIX this whole package applies) must never be flagged, even in a boolean-style file
+const IIFE_FIXED_SRC = [
+  "let pass=0,fail=0;",
+  "const assert=require('assert');",
+  "const t=(name,cond)=>{if(cond){pass++;}else{fail++;}};",
+  "t('an IIFE that actually runs its assertions and returns a real boolean', (() => {",
+  "  assert.strictEqual(1+1, 2);",
+  "  return true;",
+  "})());",
+  "",
+].join('\n');
+t('vacuousBooleanTHelperSites: a properly-invoked IIFE in a boolean-style file is NEVER flagged', D.vacuousBooleanTHelperSites(IIFE_FIXED_SRC).length === 0, JSON.stringify(D.vacuousBooleanTHelperSites(IIFE_FIXED_SRC)));
+
+// checkTheChecks() itself must surface the planted per-call-site finding under the SAME `noOp` field the
+// whole-suite check uses, on a suite that otherwise has plenty of real assertion sites (so the whole-suite
+// branch alone would have let it through silently).
+fs.writeFileSync(path.join(CTC_ROOT, '.claude', 'forge-bin', 'planted-vacuous-site.test.cjs'), PLANTED_VACUOUS_SRC);
+const ctcTests2 = D.runTests(CTC_ROOT);
+const ctc2 = D.checkTheChecks(CTC_ROOT, ctcTests2);
+t('checkTheChecks: a suite with real assertion sites overall, but one bare-function-literal call site, IS flagged via the SAME noOp field', ctc2.noOp.some((n) => n.suite === 'planted-vacuous-site.test.cjs' && /bare, un-invoked function/.test(n.reason)), JSON.stringify(ctc2.noOp));
+t('checkTheChecks: own ok is honestly false for the planted per-call-site finding too', ctc2.ok === false);
+
+// the doctor's OWN scan over the REAL forge-bin tree (this fix + WP-S11's IIFE conversions above) must
+// report zero NEW findings — the exact thing this whole detector exists to guarantee going forward.
+// Deliberately a STATIC-ONLY call: checkTheChecks() itself never spawns anything, but D.runTests(REAL_ROOT)
+// would (it actually RUNS every *.test.cjs suite in the real project as a child process) -- that is "the
+// full doctor" this package's own instructions say not to run here, and would recurse into this very file.
+// An empty perSuite[] disables only the (unrelated, testsResult-dependent) whole-suite-no-op branch; the
+// per-call-site scan this test cares about never looks at testsResult at all.
+const realCtc = D.checkTheChecks(REAL_ROOT, { perSuite: [] });
+const realVacuousFindings = realCtc.noOp.filter((n) => /bare, un-invoked function/.test(n.reason));
+t('checkTheChecks: scanning the REAL project tree finds zero bare-function-literal call sites (this file’s own 12 are fixed)', realVacuousFindings.length === 0, JSON.stringify(realVacuousFindings));
 t('countAssertionSites: recognizes the test(...) helper convention too (not just t(...))', D.countAssertionSites("function test(name, fn) {}\ntest('x', () => {});\n") > 0);
 t('countAssertionSites: recognizes direct assert.ok(...)/assert(...) calls', D.countAssertionSites("const assert = require('assert');\nassert.ok(1 === 1);\nassert(true);\n") > 0);
 t('countAssertionSites: a truly empty suite has 0 sites', D.countAssertionSites("console.log('hello');\n") === 0);
@@ -1622,6 +1717,27 @@ t('skillHygiene dangling-reference fixture: names BOTH dangling refs (root-ancho
 t('skillHygiene dangling-reference fixture: an advisory-only hygiene gap does NOT flip doctor.ok to false', shDangleRep.ok === true);
 const shDangleSummary = D.printSummary(shDangleRep);
 t('printSummary: names the failing skill+dangling refs under "skill-hygiene:"', /skill-hygiene: dangling-ref/.test(shDangleSummary) && /dangling reference/.test(shDangleSummary), shDangleSummary);
+
+// (4a) v2.8.0 PRIVATE USER-STATE file is NOT dangling. A skill that documents where the user's own
+// `*.user.json` lives (e.g. `.claude/config/orchestration/codex-review.user.json`) points at a file that is
+// absent on every fresh install by design — the maintainer's machine has one, which is exactly how the
+// laptop audit's "works here, fails there" happened. Reclassified under optional_refs, never silenced; a
+// missing ordinary file next to it is still a real dangling reference.
+const SH_USER_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-userstate-');
+fs.mkdirSync(path.join(SH_USER_ROOT, '.claude', 'skills', 'user-state-ref'), { recursive: true });
+fs.writeFileSync(path.join(SH_USER_ROOT, '.claude', 'skills', 'user-state-ref', 'SKILL.md'),
+  '---\nname: user-state-ref\ndescription: A short, valid description.\n---\n\n# user-state-ref\n\n'
+  + 'Your own pin lives in `.claude/config/orchestration/codex-review.user.json` (optional).\n');
+const shUserSkill = D.runDoctor(SH_USER_ROOT).advisory.completeness.skill_hygiene.skills.find((s) => s.skill === 'user-state-ref') || {};
+t('skillHygiene: a missing *.user.json reference is NOT dangling (private user state, absent on a fresh install)', shUserSkill.ok === true && !JSON.stringify(shUserSkill.issues || []).includes('codex-review.user.json'), JSON.stringify(shUserSkill));
+t('skillHygiene: the missing *.user.json is still REPORTED, under optional_refs', Array.isArray(shUserSkill.optional_refs) && shUserSkill.optional_refs.includes('.claude/config/orchestration/codex-review.user.json'), JSON.stringify(shUserSkill));
+const SH_USER2_ROOT = makeCompletenessBase('forge-doctor-skillhygiene-userstate2-');
+fs.mkdirSync(path.join(SH_USER2_ROOT, '.claude', 'skills', 'plain-json-ref'), { recursive: true });
+fs.writeFileSync(path.join(SH_USER2_ROOT, '.claude', 'skills', 'plain-json-ref', 'SKILL.md'),
+  '---\nname: plain-json-ref\ndescription: A short, valid description.\n---\n\n# plain-json-ref\n\n'
+  + 'Settings live in `.claude/config/orchestration/codex-review.json`.\n');
+const shPlainSkill = D.runDoctor(SH_USER2_ROOT).advisory.completeness.skill_hygiene.skills.find((s) => s.skill === 'plain-json-ref') || {};
+t('skillHygiene counterfactual: a missing ordinary .json reference IS still dangling', shPlainSkill.ok === false && JSON.stringify(shPlainSkill.issues || []).includes('codex-review.json'), JSON.stringify(shPlainSkill));
 
 // (4b) RUNTIME-GENERATED marker is NOT dangling (2026-08-09). MEASURED FALSE POSITIVE: the real doctor run
 // reported `skill-hygiene: forge-snapshot (1 dangling reference(s): .claude/.forge-snapshot-due.json)` — a
@@ -2503,7 +2619,7 @@ fs.mkdirSync(GWH_BIN, { recursive: true });
 for (const f of D.GATE_HOOK_DEPENDENCY_FILES) fs.copyFileSync(path.join(__dirname, f), path.join(GWH_BIN, f));
 fs.copyFileSync(path.join(__dirname, 'forge-gate-classify-worker.cjs'), path.join(GWH_BIN, 'forge-gate-classify-worker.cjs'));
 
-t('gateWatchdogHealth: a missing dependency file is reported (warn), names the exact file', () => {
+tFn('gateWatchdogHealth: a missing dependency file is reported (warn), names the exact file', () => {
   const victim = path.join(GWH_BIN, 'forge-gate-messages.cjs');
   const original = fs.readFileSync(victim, 'utf8');
   fs.unlinkSync(victim);
@@ -2518,7 +2634,7 @@ t('gateWatchdogHealth: a missing dependency file is reported (warn), names the e
   }
 });
 
-t('gateWatchdogHealth: a present-but-syntactically-broken dependency file is reported (warn), distinct from missing', () => {
+tFn('gateWatchdogHealth: a present-but-syntactically-broken dependency file is reported (warn), distinct from missing', () => {
   const victim = path.join(GWH_BIN, 'forge-gate-selfdisable.cjs');
   const original = fs.readFileSync(victim, 'utf8');
   fs.writeFileSync(victim, 'this is not valid javascript {{{ syntax error', 'utf8');
@@ -2532,17 +2648,25 @@ t('gateWatchdogHealth: a present-but-syntactically-broken dependency file is rep
   }
 });
 
-t('gateWatchdogHealth: the worker entry file is NEVER required directly (it would always throw outside a real Worker) -- only checked for existence', () => {
-  // sanity: requiring it directly (as this check must NOT do) really does throw, proving the exclusion is load-bearing
+tFn('gateWatchdogHealth: the worker entry file is NEVER required directly (it would always fail loudly outside a real Worker) -- only checked for existence', () => {
+  // sanity: loading it directly (as this check must NOT do) really does fail loudly, proving the exclusion is
+  // load-bearing. WP-S11 (2026-09-26): this used to `require(workerPath)` IN-PROCESS and assert.throws() on it,
+  // which was true when this test was written -- but WP-S4's own fix (isMainThread guard, see the worker
+  // file's own header) now makes a main-thread load print a friendly one-liner and call process.exit(1)
+  // instead of throwing a catchable error. process.exit() cannot be caught by assert.throws(): calling
+  // require() on this file in-process would silently kill the WHOLE test runner mid-suite, not fail one
+  // assertion. Spawn it as a real child process instead, exactly like `node forge-gate-classify-worker.cjs`,
+  // so the exit is observed safely.
   const workerPath = path.join(GWH_BIN, 'forge-gate-classify-worker.cjs');
-  delete require.cache[require.resolve(workerPath)];
-  assert.throws(() => require(workerPath), /workerData/);
+  const r = require('child_process').spawnSync(process.execPath, [workerPath], { encoding: 'utf8', timeout: 5000 });
+  assert.notStrictEqual(r.status, 0, 'running the worker file directly must never exit 0 (it must never be mistaken for a healthy standalone CLI): ' + JSON.stringify(r));
+  assert.ok(/worker_threads entry point/.test(r.stderr), 'expected the friendly "library, not a CLI" message on stderr: ' + r.stderr);
   // yet the real health check, with every file genuinely present and healthy, still reaches "ok" (proven by the
-  // end-to-end test below) -- i.e. it does not mistake the worker file's own direct-require throw for a real defect.
+  // end-to-end test below) -- i.e. it does not mistake the worker file's own direct-run exit for a real defect.
   assert.ok(!D.GATE_HOOK_DEPENDENCY_FILES.includes('forge-gate-classify-worker.cjs'), 'the worker entry file must not be in the direct-require list');
 });
 
-t('gateWatchdogHealth: end-to-end PASS (both canaries injected) -> ok:true, names the real classifier', () => {
+tFn('gateWatchdogHealth: end-to-end PASS (both canaries injected) -> ok:true, names the real classifier', () => {
   const spawnSyncImpl = (exe, args, opts) => {
     const input = JSON.parse(opts.input);
     const cmd = input.tool_input.command;
@@ -2555,7 +2679,7 @@ t('gateWatchdogHealth: end-to-end PASS (both canaries injected) -> ok:true, name
   assert.ok(/the real classifier/.test(r.detail), r.detail);
 });
 
-t('gateWatchdogHealth: end-to-end PASS via the fail-closed fallback (classifier-unavailable wording) -> ok:true, but names the fallback, not the real classifier', () => {
+tFn('gateWatchdogHealth: end-to-end PASS via the fail-closed fallback (classifier-unavailable wording) -> ok:true, but names the fallback, not the real classifier', () => {
   const spawnSyncImpl = (exe, args, opts) => {
     const input = JSON.parse(opts.input);
     const cmd = input.tool_input.command;
@@ -2568,14 +2692,14 @@ t('gateWatchdogHealth: end-to-end PASS via the fail-closed fallback (classifier-
   assert.ok(/fail-closed fallback/.test(r.detail), r.detail);
 });
 
-t('gateWatchdogHealth: end-to-end FAIL when the harmless command does not exit 0 -> warn', () => {
+tFn('gateWatchdogHealth: end-to-end FAIL when the harmless command does not exit 0 -> warn', () => {
   const spawnSyncImpl = () => ({ status: 1, stderr: 'boom', error: null, signal: null });
   const r = D.gateWatchdogHealth(GWH_ROOT, { spawnSyncImpl });
   assert.strictEqual(r.ok, false);
   assert.ok(/did NOT behave as expected/.test(r.detail), r.detail);
 });
 
-t('gateWatchdogHealth: end-to-end FAIL when the destructive-shaped canary is NOT blocked -> warn (the severe, doubly-failed case)', () => {
+tFn('gateWatchdogHealth: end-to-end FAIL when the destructive-shaped canary is NOT blocked -> warn (the severe, doubly-failed case)', () => {
   const spawnSyncImpl = (exe, args, opts) => {
     const input = JSON.parse(opts.input);
     const cmd = input.tool_input.command;
@@ -2587,7 +2711,7 @@ t('gateWatchdogHealth: end-to-end FAIL when the destructive-shaped canary is NOT
   assert.ok(/wanted 2, BLOCKED/.test(r.detail), r.detail);
 });
 
-t('gateWatchdogHealth: REAL end-to-end against the actual project (no injected spawnSyncImpl) reports ok:true, and never touches the real project config/once-store', () => {
+tFn('gateWatchdogHealth: REAL end-to-end against the actual project (no injected spawnSyncImpl) reports ok:true, and never touches the real project config/once-store', () => {
   // sec-v3r M1 (independent re-review): this used to spawn the REAL hook with cwd pointed at the real project
   // root, which (via forge-config.cjs's own __dirname-relative default) made it read/write the REAL project's
   // FORGE_CONFIG.json and once-store on every doctor run -- risking spending a real pending owner one-off
@@ -2622,7 +2746,7 @@ t('gateWatchdogHealth: REAL end-to-end against the actual project (no injected s
   assert.deepStrictEqual(realOnceFilesOf(), onceBefore, 'gateWatchdogHealth must never create/touch a real FORGE_CONFIG* file at the project root');
 });
 
-t('gateWatchdogHealth: an isolated copy with a PENDING one-off grant is recognised as not-clean and the canary is skipped, leaving the grant unspent', () => {
+tFn('gateWatchdogHealth: an isolated copy with a PENDING one-off grant is recognised as not-clean and the canary is skipped, leaving the grant unspent', () => {
   const isolated = D.buildIsolatedGateProject();
   try {
     const CFG = require(path.join(__dirname, 'forge-config.cjs'));
@@ -2639,7 +2763,7 @@ t('gateWatchdogHealth: an isolated copy with a PENDING one-off grant is recognis
   }
 });
 
-t('gateWatchdogHealth: an isolated copy that is persistently OFF (no once-grant) is also recognised as not-clean and the canary is skipped', () => {
+tFn('gateWatchdogHealth: an isolated copy that is persistently OFF (no once-grant) is also recognised as not-clean and the canary is skipped', () => {
   const isolated = D.buildIsolatedGateProject();
   try {
     const CFG = require(path.join(__dirname, 'forge-config.cjs'));
@@ -2652,13 +2776,21 @@ t('gateWatchdogHealth: an isolated copy that is persistently OFF (no once-grant)
   }
 });
 
-t('printSummary: renders the gate-watchdog-health line as advisory, ok as a green check', () => {
-  const rep = { root: GWH_ROOT, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: true, detail: 'the real hook was run end-to-end: a harmless command exited 0, and a harmless destructive-SHAPED canary (never executed, only classified) was BLOCKED (exit 2) by the real classifier' } } };
+tFn('printSummary: renders the gate-watchdog-health line as advisory, ok as a green check', () => {
+  // WP-S11 (2026-09-26): this fixture never set rep.ok — printSummary's ALL GREEN/FAILURES ABOVE verdict line
+  // reads rep.ok directly (forge-doctor.cjs's own printSummary, near the end), it is NOT derived from the
+  // `checks` object here. This test's own assertion never looked at the verdict line, so the gap was silent;
+  // fixed here so this fixture is honest even though the gap did not fail this specific assertion.
+  const rep = { root: GWH_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: true, detail: 'the real hook was run end-to-end: a harmless command exited 0, and a harmless destructive-SHAPED canary (never executed, only classified) was BLOCKED (exit 2) by the real classifier' } } };
   const out = D.printSummary(rep);
   assert.ok(/✓ gate watchdog health \(advisory\): the real hook was run end-to-end/.test(out), out);
 });
-t('printSummary: renders the gate-watchdog-health line as a visible, non-blocking warn when degraded', () => {
-  const rep = { root: GWH_ROOT, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: false, detail: '1 hook dependency file(s) missing from X: forge-gate-messages.cjs' } } };
+tFn('printSummary: renders the gate-watchdog-health line as a visible, non-blocking warn when degraded', () => {
+  // WP-S11 (2026-09-26): same fixture gap as above -- rep.ok was never set, so `/⇒ ALL GREEN/` below could
+  // never have matched (printSummary reads rep.ok directly, never derives it from `checks`), regardless of
+  // whether the advisory warn itself correctly stays out of the verdict. This test only became real once
+  // tFn actually invoked the callback; ok:true here is what the fixture always meant to assert against.
+  const rep = { root: GWH_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: false, detail: '1 hook dependency file(s) missing from X: forge-gate-messages.cjs' } } };
   const out = D.printSummary(rep);
   assert.ok(/⚠ gate watchdog health \(advisory, non-blocking\): 1 hook dependency/.test(out), out);
   assert.ok(/⇒ ALL GREEN/.test(out), 'an advisory warn alone must never flip the overall verdict: ' + out);

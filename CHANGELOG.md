@@ -9,6 +9,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.8.0] - 2026-09-26
+
+The fresh-laptop release. An independent re-audit removed Forge completely and installed v2.7.2 from scratch
+on a clean Windows 11 laptop (PowerShell 5.1, Node 24, **no bash**, `claude` not on PATH, Claude Code installed
+but no plugins, skills, ECC or Codex) and found that several things only worked on the maintainer's own PC.
+This release fixes every item of that audit, and every issue three independent read-only security reviews then
+found in the fixes. It was verified on a simulated laptop of exactly that shape before release.
+
+### Works on a fresh machine, not just the maintainer's
+- **The doctor and the tests are portable.** Every stopwatch assertion is now a design target with a generous
+  hard limit (the old bars failed CI at 65–80 ms against 60 ms); `FORGE_STRICT_TIMING=1` restores the strict
+  bars for benchmarking. A Claude Code install with zero plugins/skills (the laptop shape) and a home with no
+  `~/.claude` at all (the CI shape) both pass. The context-budget baseline measures only product-owned
+  surfaces, never the author's global catalogs. The per-suite limit is 300 s (was 120 s, which the heaviest
+  suite nearly used up on a fast PC); override with `FORGE_DOCTOR_SUITE_TIMEOUT_MS`. The `settings-wired`
+  check now reads the installer's own template.
+- **Hooks work from any folder.** Every shipped hook runs through `$CLAUDE_PROJECT_DIR` (four used a
+  cwd-relative path that broke after a `cd` into a subfolder), and PowerShell tool calls are now logged too.
+  An upgrade rewrites the old hook commands in place instead of adding duplicates, and only ever forward: an
+  older template never turns the new hook commands back into the fragile form (the doctor now says which hook
+  command updates are pending instead of warning about "0 missing").
+- **Windows without bash.** Every agent that lists `Bash` now also lists `PowerShell`, and the tool policy
+  knows it. The read-only reviewers (review, security, search, SEO, verify) lost `memory: project`, which made
+  Claude Code silently give them Write and Edit.
+- **No author paths.** The Discord service and project discovery no longer default to the maintainer's own
+  folder; projects on the Desktop, in Documents or in a configured root are found. Development leftovers
+  (a prompt dump, a 668 KB generated matrix, one-off scripts, session notes) are gone from the public repo.
+
+### Usage guard (audit N1)
+- A full **per-model** weekly window (for example Fable at 100 %) no longer pauses all of Forge for days while
+  you work on another model. All-models windows always pause; a per-model window pauses only with real
+  evidence that model is in use, and a pause caused only by another model's window lifts when you switch.
+  The pause notice says which window paused Forge and follows your `language` setting.
+- An upgrade is no longer mistaken for an account switch, a dead-process pid file is cleaned up safely, and on
+  Windows the "cannot measure" note no longer talks about the macOS Keychain.
+
+### Gate hook (the beginner safety net)
+- **Closed a self-disable route:** `forge.cmd|forge.ps1|forge.sh config set gate-hook off` (and `unset`)
+  passed the gate in 2.7.2; it is now blocked exactly like the direct form. The fail-closed fallback also
+  blocks it when the classifier itself cannot load.
+- **Fewer false blocks on harmless commands:** a quoted search pattern followed by a real pipe
+  (`grep -nE "a|Bash|b" f | head`), `ls -R docs | grep "rm"`, and a JSON string assigned to a variable no
+  longer trip the opaque-exec, destructive-delete or kill-by-name gates. A kill or delete verb inside a live
+  interpreter argument (`sh -c "pkill x"`, `powershell -Command "Stop-Process -Name x"`, `cmd /c "taskkill …"`)
+  is still blocked; only pure search tools and bare assignments are exempt, and a search command loses that
+  exemption as soon as it could run text itself (process or command substitution, a PowerShell sub-expression,
+  git grep's `-O` pager, `rg --pre`; `ag` and `ack` are not treated as pure search tools).
+
+### Your private settings never ship (audit N4)
+- Every fresh install used to receive the maintainer's own `/forge remember` rule about the maintainer's private
+  Codex account. Owner additions now live in a private `FORGE_STANDING_RULES.user.json` that never ships and is never
+  synced; existing owner rules are moved there automatically (also during an upgrade from 2.7.x). A private
+  rule can add or reinforce but can never switch off a shipped protection such as never-auto-push (a hand-edited
+  `cannot_override_core` flag in the private file is ignored), and a broken private file falls back to the
+  shipped rules instead of dropping them all. The upgrade migration never overwrites a private file it cannot
+  read: it warns and leaves the file alone.
+- The same split for scout verdicts, the bench baseline and the Codex reviewer pin: the shipped Codex config
+  now pins no model (the Codex CLI's own default works on any account), and a private `codex-review.user.json`
+  may set only the model and effort — the review sandbox stays read-only no matter what. A model name or review
+  prompt that starts with a dash is refused (it would reach Codex as an option).
+- The Codex reviewer has one real command to run a review without a shell
+  (`node .claude/forge-bin/forge-codexreview-config.cjs run --prompt "..."`). On Windows it finds the npm install
+  behind `codex.cmd` by itself, so nothing has to be set by hand.
+- `forge-sync` keeps its backups inside the project.
+
+### Honest completion (audit N2, D2, D3, D6)
+- A run that follows `forge.md` literally now completes: the contract accepts the `subagent_completed` /
+  `subagent_failed` events forge.md documents (with the work package's `wp_id`), and forge.md now says so.
+- A project without git can finish, bound to its gates' own output digests — but only when git itself
+  positively confirms there is no repository (with git's environment variables stripped); git missing, a
+  "dubious ownership" refusal or a repo with no commits yet refuse instead of passing.
+- `certify` can no longer say CERTIFIED over a red contract (a damaged log counts as red), and creating a work
+  package for a reviewer no longer counts as the reviewer doing work — while a real dispatch still does.
+- git's answer is read in English whatever your system language, a custom reviewer logged exactly as forge.md
+  documents it (with `mission`) counts as a reviewer, and `finalize` says "undetermined" instead of "current"
+  when git cannot be read right now.
+
+### Command Center
+- Every write route now needs the execution token (four did not). A project name that exists in two places
+  answers "ambiguous project name" with both paths instead of silently acting on the first one, and says how to
+  resolve it (rename one folder, or open the project from its own folder). The optional
+  extra projects root rejects network shares, drive roots, relative paths, your home folder in any spelling, a
+  folder that contains your home folder, and a link that points to it, and error messages no longer
+  reveal your home path.
+
+### Installer
+- **New:** `install.ps1 -Uninstall` / `install.sh --uninstall` removes exactly what the installer wrote, using
+  an install manifest with file hashes. It keeps your own data (memory, run logs, your CLAUDE.md, `.env`), any
+  Forge file you edited, and the secret-protecting deny rules in `settings.json`. A second run changes nothing.
+- Fixed: on Windows Git Bash every recorded hash was corrupted (`sha256sum` escapes paths with backslashes),
+  which produced an invalid manifest. All shipped `.sh` files are now executable in git, and CI checks it.
+
+### Beginner experience and docs
+- The mandatory path no longer asks 2–4 clarifying questions, stops to confirm the folder, offers instead of
+  runs the installer, hands the user commands (`git rm --cached .env`, Codex commands, dashboard start), or asks
+  `(Y/n)`: at most one question, only when two readings lead to materially different work or something would
+  be sent, paid or deployed. The `forge-quality` and `forge-council` skills are English. A refused git checkpoint
+  no longer stops the build.
+- Docs now match the code: four gates ("a classifier, not a proof"), the owner's `!` route to switch the gate off,
+  an honest list of every network call, real counts (120 tools, 136 test suites, 535 payload files), a "Remove
+  Forge" section, and no more claims about features that do not exist.
+- The shipped skill registry lists exactly the skills that ship (72 plus the global forge-core); it carried a
+  row for a skill that never existed in the public repo.
+
+### CI
+- Green on Linux and Windows, Node 18 and 22 (2.7.2's tag was red on 3 of 5 jobs: a stopwatch assertion and a
+  Windows step that leaked the installer's intended exit code). The release was tagged only after CI passed.
+
+### How this release was verified
+- Full source doctor all green; the laptop simulation (fresh install, empty `~/.claude`, no bash, no `claude`
+  on PATH) green with all gate probes behaving; the Command Center gateway suite green in its real location (1037 tests).
+- Three independent read-only security reviews (gate hook; gateway + settings merge; usage guard + run contract
+  + state split) and one verification review after the fixes; every item that review raised (one medium, six
+  low) is fixed with a test. Codex was not used for this release (its usage
+  limit was exhausted); the reviews above are the project's own independent reviewers and are recorded as such.
+
+### Known limitations
+- The dashboard shows the new "ambiguous project name" answer as an error; it does not yet show the path next to
+  a duplicated project name.
+- The Command Center's execution token protects against web pages, not against other programs running as the
+  same user on the same machine (a single-user-computer assumption, now stated in the code).
+- The gate hook remains a text classifier, not a sandbox; its documented blind spots are unchanged.
+
+### Corrections to the 2.7.2 notes
+- "Task scripts ship with the executable bit" was false at the 2.7.2 tag (no file had mode 100755); true from 2.8.0.
+- "The gateway suite is unchanged in this release" was false (seven gateway files changed).
+- 2.7.2 did not wait for an external Codex verdict: it shipped without the final Codex pass by owner decision.
+- The 2.7.2 heading says 2026-09-24; the release was tagged on 2026-09-26, and its CI was red while the notes said green.
+
 ## [2.7.2] - 2026-09-24
 
 Two things in one release. First, loop iteration 1 after 2.7.1: a read-only Deep Learn scan of the whole project, a
@@ -1082,7 +1211,8 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.2...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.2...v2.8.0
 [2.7.2]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.4.0...v2.7.0

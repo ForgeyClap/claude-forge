@@ -99,21 +99,33 @@ function evidenceDigestOf(root, runId) {
   } catch { return null; }
 }
 
-/** headProbeOf(root) — WP-S10 (D2, 2026-09-26): an INDEPENDENT, LIVE probe of THIS root's git state,
- *  reusing forge-runcontract.cjs's own `resolveHeadCommit` (the same helper the run contract itself uses
- *  for its `noGitAtRoot`). A receipt's `code_commit` is allowed to be `null` only when a real check of
- *  the CURRENT root, run right now, confirms there genuinely is no git repository here — never merely
- *  because `gate-evidence.json` (the run's OWN, possibly stale/hand-edited/cross-machine output) says
- *  `code.no_git:true`. Distinguishes "confirmed no git" (`commit: null`) from "could not determine"
- *  (`ok: false`) so an undetermined probe is never silently treated as a confirmed no-git claim
- *  (fail-closed, same discipline as the rest of this file). */
+/** headProbeOf(root) — WP-S10 (D2, 2026-09-26), REBUILT by WP-S13 (2.1, same date, review C VERDICT
+ *  FAIL): an INDEPENDENT, LIVE probe of THIS root's git state, reusing forge-runcontract.cjs's own
+ *  shared, THREE-WAY `gitProbe()` (the same helper check() itself uses for its `noGitAtRoot`). A
+ *  receipt's `code_commit` is allowed to be `null` only when a real check of the CURRENT root, run right
+ *  now, POSITIVELY CONFIRMS there is no git repository here (`gitProbe`'s `state:'no-repo'`) — never
+ *  merely because `gate-evidence.json` (the run's OWN, possibly stale/hand-edited/cross-machine output)
+ *  says `code.no_git:true`, and never merely because the probe could not determine an answer.
+ *
+ *  2.1 REGRESSION FIX: the previous version called `resolveHeadCommit` directly, which returns `null`
+ *  for BOTH a confirmed no-git root AND an UNDETERMINED one (dubious ownership, no commits yet, a
+ *  poisoned GIT_DIR, git missing) — so `ok:true, commit:null` fired on an undetermined root exactly as
+ *  readily as on a genuinely git-less one, and the two call sites below (which only ever compared
+ *  `commit !== null`) could never tell them apart. Now `ok:true` is returned ONLY for gitProbe's two
+ *  DETERMINED states ('repo' and 'no-repo'); 'undetermined' always yields `ok:false`, so it is refused by
+ *  both call sites' existing `if (!probe.ok) return refused` branch — fail-closed, same discipline as
+ *  the rest of this file. */
 function headProbeOf(root) {
   let RC;
   try { RC = require(path.join(__dirname, 'forge-runcontract.cjs')); }
   catch (e) { return { ok: false, reason: 'forge-runcontract.cjs niet laadbaar: ' + (e && e.message ? e.message : String(e)) }; }
-  if (typeof RC.resolveHeadCommit !== 'function') return { ok: false, reason: 'resolveHeadCommit niet beschikbaar in forge-runcontract.cjs' };
-  try { return { ok: true, commit: RC.resolveHeadCommit(root) }; }
+  if (typeof RC.gitProbe !== 'function') return { ok: false, reason: 'gitProbe niet beschikbaar in forge-runcontract.cjs' };
+  let p;
+  try { p = RC.gitProbe(root); }
   catch (e) { return { ok: false, reason: 'git-probe faalde: ' + (e && e.message ? e.message : String(e)) }; }
+  if (p.state === 'repo') return { ok: true, commit: p.commit, state: 'repo' };
+  if (p.state === 'no-repo') return { ok: true, commit: null, state: 'no-repo' };
+  return { ok: false, reason: p.reason || 'git-staat van deze root kon niet worden vastgesteld', state: 'undetermined' };
 }
 
 /** independentVerificationStatus — de gesaneerde onafhankelijkheidsstand die in de receipt hoort.
@@ -227,6 +239,21 @@ function rulesetHashOf(root) {
  *                                  the LIVE current state. Computed ONLY after the contract re-evaluation
  *                                  above succeeded — a genuinely red contract is always 'fail', never
  *                                  quietly hidden behind 'historical'.
+ *   {status:'undetermined', reason} — the LIVE git state of this root right now is neither a confirmed
+ *                                  repo nor a confirmed no-repo (`gitProbe`'s `state:'undetermined'` —
+ *                                  dubious ownership, no commits yet, a poisoned GIT_DIR, git missing,
+ *                                  timeout). Also-noted fix (2026-09-26 independent review, alongside N2/
+ *                                  N3/N4/N6/N8): this receipt is bound to a REAL commit (`code_commit`),
+ *                                  so a right-now-unreadable HEAD can never honestly be called either
+ *                                  'current' (we do not know it still matches) or 'historical' (we do not
+ *                                  know it does not) — it is reported as exactly what it is, undetermined,
+ *                                  same fail-closed discipline `headProbeOf`'s other two call sites in this
+ *                                  file already use. The contract is deliberately NEVER re-evaluated in
+ *                                  this branch: passing a fabricated `commit_sha` (e.g. `null`, as if this
+ *                                  were a confirmed no-git root) into `RC.check()` could wrongly trigger a
+ *                                  no-git relaxation path on a root that may well have a repository it
+ *                                  simply could not read right now — exactly the class of bug WP-S13's D2
+ *                                  fix closed elsewhere.
  *   {status:'current'}           — contract is currently green AND the pinned subject (commit + domain)
  *                                  still matches the live state: fully valid and current.
  *  Never throws — a re-check failure folds into {status:'fail'}. */
@@ -254,8 +281,19 @@ function evaluateAcceptance(root, runId, receipt) {
     return { status: 'fail', reason: 'de regelset is sinds de finalisatie veranderd (' + String(receipt.ruleset_sha256).slice(0, 12) + '… -> ' + String(nuRules).slice(0, 12) + '…) — het oordeel gold tegen andere regels' };
   }
   const RC = require(path.join(__dirname, 'forge-runcontract.cjs'));
-  let headNow = null;
-  try { headNow = typeof RC.resolveHeadCommit === 'function' ? RC.resolveHeadCommit(root) : null; } catch { headNow = null; }
+  /** Also-noted fix (2026-09-26 independent review): this used to call `RC.resolveHeadCommit(root)`
+   *  directly, which collapses gitProbe's THREE states into just a commit-or-null — so an UNDETERMINED
+   *  root (git could not answer right now) read exactly like a CONFIRMED no-repo root: `headNow` was
+   *  falsy either way, the `if (headNow && ...)` drift check below never fired, and execution fell
+   *  straight through to `{status:'current'}` for a receipt that is bound to a real `code_commit` we
+   *  simply could not reconfirm. `headProbeOf` (same three-way `gitProbe` this file's other two call
+   *  sites already gate on) tells the two apart; 'undetermined' short-circuits here, honestly, before the
+   *  contract is ever re-run with a commit_sha we do not actually know. */
+  const headProbe = headProbeOf(root);
+  if (!headProbe.ok) {
+    return { status: 'undetermined', reason: 'de huidige git-staat van deze root kon niet worden vastgesteld (' + headProbe.reason + ') — dit eindverdict is noch bevestigd actueel, noch bevestigd historisch' };
+  }
+  const headNow = headProbe.commit; // null ONLY for a POSITIVELY CONFIRMED no-repo root (headProbe.ok === true)
   let contractNow = null;
   try { contractNow = RC.check({ run_id: runId, domain: receipt.domain || undefined, commit_sha: headNow }, { root }); }
   catch (e) { return { status: 'fail', reason: 'het contract kon bij acceptatie niet worden herbeoordeeld (' + (e && e.message ? e.message : String(e)) + ') — een receipt die niet herbevestigd kan worden, wordt niet vertrouwd' }; }
@@ -638,6 +676,14 @@ function check(root, runId) {
         code_commit_then: acceptance.code_commit_then, code_commit_now: acceptance.code_commit_now,
         domain_then: acceptance.domain_then, domain_now: acceptance.domain_now,
       };
+    }
+    /** Also-noted fix (2026-09-26 independent review): without this branch, an 'undetermined' acceptance
+     *  fell through to the FINALIZED return below — exactly the bug being fixed, one call site later.
+     *  Neither STALE (we have no evidence it is actually wrong) nor HISTORICAL (we have no evidence the
+     *  commit drifted) is honest here — a dedicated verdict says plainly that the current git state could
+     *  not be reconfirmed right now. */
+    if (acceptance.status === 'undetermined') {
+      return { verdict: 'UNDETERMINED', receipt, reason: acceptance.reason };
     }
   }
   /** R4-07/R5-08: ook de UITSLAG draagt de caveat, niet alleen de receipt — een consument die alleen

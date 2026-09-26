@@ -116,5 +116,56 @@ try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }
   fs.rmSync(ROOT, { recursive: true, force: true });
 }
 
+// ================================================================================================
+// WP-S13 (2.1, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — gitState()/record() must accept ONLY
+// a POSITIVELY CONFIRMED no-git root (`confirmed_no_repo:true` on BOTH before/after readings) as no_git:true.
+// An UNDETERMINED reading (a repo with no commits yet, a poisoned GIT_DIR) must fall through to stable:false
+// exactly like before the D2 no-git path ever existed — never a silently relaxed no_git:true record.
+// ================================================================================================
+{
+  const gitAvailable = (() => { try { const r = spawnSync('git', ['--version'], { encoding: 'utf8' }); return !!r && r.status === 0; } catch { return false; } })();
+  if (!gitAvailable) {
+    console.log('  SKIP WP-S13 gitState scenarios: no working `git` on PATH in this environment');
+  } else {
+    // 8a: a genuinely git-less root (no .git anywhere) — the ONLY case allowed to record no_git:true.
+    const NOGIT = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-evidence-nogit-'));
+    fs.mkdirSync(path.join(NOGIT, '.claude', 'forge-runs', 'r-nogit'), { recursive: true });
+    const rNoGit = E.record('r-nogit', [{ name: 'g', cmd: process.execPath, args: ['-e', 'console.log("x")'] }], { root: NOGIT, quiet: true });
+    const gNoGit = rNoGit.manifest.gates[0];
+    t('8a a confirmed no-git root records no_git:true, stable:true, commit:null', gNoGit.code.no_git === true && gNoGit.code.stable === true && gNoGit.code.commit === null, JSON.stringify(gNoGit.code));
+    fs.rmSync(NOGIT, { recursive: true, force: true });
+
+    // 8f: a repo with NO commits yet — UNDETERMINED, must never record no_git:true (the exact class this
+    // fix closes: before it, both readings' `available:false` looked identical to a confirmed no-git root).
+    const EMPTYREPO = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-evidence-emptyrepo-'));
+    spawnSync('git', ['init', '-q'], { cwd: EMPTYREPO, encoding: 'utf8' });
+    fs.mkdirSync(path.join(EMPTYREPO, '.claude', 'forge-runs', 'r-emptyrepo'), { recursive: true });
+    const rEmpty = E.record('r-emptyrepo', [{ name: 'g', cmd: process.execPath, args: ['-e', 'console.log("x")'] }], { root: EMPTYREPO, quiet: true });
+    const gEmpty = rEmpty.manifest.gates[0];
+    t('8f a repo with NO commits yet is UNDETERMINED — never recorded no_git:true (was the exact D2-vs-2.1 gap)', gEmpty.code.no_git === false && gEmpty.code.stable === false, JSON.stringify(gEmpty.code));
+    fs.rmSync(EMPTYREPO, { recursive: true, force: true });
+
+    // 8c: a poisoned GIT_DIR on a REAL repo (with a real commit) must NOT be recorded as no_git — the
+    // env-hardening in gitProbe()/cleanGitEnv() must make record() see the REAL commit regardless.
+    const REALREPO = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-evidence-realrepo-'));
+    const git = (...args) => spawnSync('git', args, { cwd: REALREPO, encoding: 'utf8' });
+    git('init', '-q'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(REALREPO, 'seed.txt'), 'seed\n');
+    git('add', '.'); git('commit', '-q', '-m', 'seed');
+    const realHead = git('rev-parse', 'HEAD').stdout.trim();
+    fs.mkdirSync(path.join(REALREPO, '.claude', 'forge-runs', 'r-poisoned'), { recursive: true });
+    const savedGitDir = process.env.GIT_DIR;
+    try {
+      process.env.GIT_DIR = path.join(os.tmpdir(), 'gate-evidence-nonexistent-gitdir-' + Date.now());
+      const rPoisoned = E.record('r-poisoned', [{ name: 'g', cmd: process.execPath, args: ['-e', 'console.log("x")'] }], { root: REALREPO, quiet: true });
+      const gPoisoned = rPoisoned.manifest.gates[0];
+      t('8c a poisoned GIT_DIR on a real repo is NEUTRALIZED — record() still sees the REAL commit, never a false no_git:true', gPoisoned.code.no_git === false && gPoisoned.code.commit === realHead.toLowerCase(), JSON.stringify(gPoisoned.code));
+    } finally {
+      if (savedGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = savedGitDir;
+    }
+    fs.rmSync(REALREPO, { recursive: true, force: true });
+  }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

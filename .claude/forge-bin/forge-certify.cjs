@@ -20,9 +20,13 @@
  *                                 generic activity). A run with only orchestrator events has NOT proven
  *                                 multi-agent orchestration.
  *   2. proof_integrity          — the events.jsonl hash chain (entry_hash = sha256(canonical(event) +
- *                                 prev_hash), mirrored EXACTLY from forge-doctor.cjs chainCheck() / the
- *                                 chaining logic in forge-dashboard/log-event.cjs — read both before
- *                                 editing this) is intact for this run. Any malformed JSONL line also
+ *                                 prev_hash)) is intact for this run. WP-S13 (2.2, 2026-09-26): delegates
+ *                                 to forge-dashboard/log-event.cjs's own `readEventsClassified({verifyChain:
+ *                                 true, runId})` — the EXACT SAME strict reader forge-runcontract.cjs's
+ *                                 check() uses — so this criterion can never again be weaker than the run
+ *                                 contract's own judgement of the same log (review C VERDICT FAIL, 2.2:
+ *                                 certify's OWN prior chain reimplementation tolerated a damaged log the
+ *                                 contract itself refused to judge). Any malformed JSONL line also
  *                                 fails this criterion (can't trust a chain over unparseable bytes).
  *   3. claim_equals_proof       — every check_passed / quality_gate_passed / retest_completed event
  *                                 carries real evidence (command/output/evidence/output_artifact) and,
@@ -149,36 +153,67 @@ function realDispatchEvidence(events) {
   return hits;
 }
 
-// ---- criterion 2: hash-chain integrity — MIRRORED from forge-doctor.cjs chainCanon()/chainCheck() ----
+// ---- criterion 2: hash-chain integrity ----
+// chainCanon is kept for fixture-building (this file's own tests reuse it to hand-construct a valid
+// chain the exact same way log-event.cjs's writer does) — it is byte-identical to log-event.cjs's own
+// canonicalization, just no longer used by verifyChain() itself (see below).
 function chainCanon(ev) {
   const k = Object.keys(ev).filter((x) => x !== 'entry_hash' && x !== 'prev_hash').sort();
   const o = {}; for (const x of k) o[x] = ev[x];
   return JSON.stringify(o);
 }
-// Fix (2026-07-15, HIGH bug, mirrors forge-doctor.cjs chainCheck() — read that fix's comment first): a
-// MIXED run (a legacy prefix with no entry_hash, followed later by real chained events once log-event.cjs's
-// hash chain was adopted mid-run) used to validate the WHOLE array from index 0 the moment ANY event had a
-// hash, reporting the legacy prefix's hash-less events as "missing hash fields" — indistinguishable from a
-// genuine tamper (cry-wolf: a benign continuation of an old run read identically to real tampering). Fix:
-// find the FIRST index carrying an entry_hash and validate ONLY from there onward. A run with NO entry_hash
-// anywhere at all is still "cannot be verified" (unchanged — certify is fail-closed on a fully legacy run,
-// stricter than doctor's advisory-style skip). A genuine tamper anywhere in the chained section is still
-// caught exactly as before — this only stops penalizing an untouched legacy prefix.
-function verifyChain(events, runId) {
-  const startIdx = events.findIndex((e) => e && e.entry_hash);
-  if (startIdx === -1) {
-    return { ok: false, chained: false, reason: 'no hash-chain present on any event (legacy/unchained run) — tamper-evidence cannot be verified' };
+/** verifyChain(eventsPath, runId) -> {ok, chained, status, reason}.
+ *
+ *  WP-S13 (2.2, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — REBUILT from a from-scratch local
+ *  reimplementation into a thin wrapper over forge-dashboard/log-event.cjs's own
+ *  `readEventsClassified(eventsPath, {verifyChain:true, runId})` — the EXACT SAME strict reader
+ *  forge-runcontract.cjs's check() uses to decide whether a completion contract can trust this log at
+ *  all. Single source of truth: this criterion can never again independently disagree with the run
+ *  contract about the same log.
+ *
+ *  REPRODUCED (the bug this closes): the old local reimplementation tolerated a legacy-unchained-PREFIX
+ *  followed by a valid chained tail (a deliberate, documented leniency from a 2026-07-15 fix, BUG2) — but
+ *  log-event.cjs's OWN 2026-08-07 hardening (Codex r5 #4) later made the STRICT reader reject ANY
+ *  unchained entry once a log contains even one chained entry, regardless of position, specifically to
+ *  stop an attacker inserting hashless "evidence" events before a real chain. forge-runcontract.cjs
+ *  adopted that stricter reader; certify's own local copy never did, so the exact same log could read
+ *  "chain OK" here while check() genuinely refused it — the mismatch this fix closes. A run that
+ *  continues a legacy log by adopting hash-chaining can therefore no longer pass this criterion either —
+ *  consistent with forge-runcontract.cjs's own already-shipped behaviour ("a run can never pass a strict
+ *  completion gate again" once it mixes chained and unchained entries), not a new restriction invented
+ *  here.
+ *
+ *  A run with NO entry_hash ANYWHERE (fully legacy/unchained) is still, deliberately, "cannot be
+ *  verified" here (unchanged from before this rebuild) — log-event.cjs's classifier reports such a run as
+ *  merely 'valid' (nothing to contradict), but proof_integrity specifically wants to see a REAL chain
+ *  before trusting it; a vacuous absence of contradictions is not proof of integrity. */
+function verifyChain(eventsPath, runId) {
+  let M;
+  try { M = require(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs')); }
+  catch (e) {
+    return { ok: false, chained: false, status: 'unreadable', reason: 'de event-classifier (log-event.cjs) kon niet worden geladen: ' + (e && e.message ? e.message : String(e)) + ' — zonder ketenvalidatie is proof_integrity niet te vertrouwen (fail-closed)' };
   }
-  const seen = new Set(['genesis:' + runId]);
-  for (let i = startIdx; i < events.length; i++) {
-    const e = events[i];
-    if (!e || !e.entry_hash || !e.prev_hash) return { ok: false, chained: true, reason: 'event ' + i + ' missing hash fields' };
-    const expect = crypto.createHash('sha256').update(chainCanon(e) + e.prev_hash).digest('hex');
-    if (expect !== e.entry_hash) return { ok: false, chained: true, reason: 'event ' + i + ' self-hash mismatch (edited?)' };
-    if (!seen.has(e.prev_hash)) return { ok: false, chained: true, reason: 'event ' + i + ' prev_hash links nowhere (truncation/removal?)' };
-    seen.add(e.entry_hash);
+  if (!M || typeof M.readEventsClassified !== 'function') {
+    return { ok: false, chained: false, status: 'unreadable', reason: 'log-event.cjs levert geen readEventsClassified() — deze installatie kan de hashketen niet verifiëren (fail-closed)' };
   }
-  return { ok: true, chained: true, reason: '', chain_start_index: startIdx };
+  let cls;
+  try { cls = M.readEventsClassified(eventsPath, { verifyChain: true, runId }); }
+  catch (e) { return { ok: false, chained: false, status: 'unreadable', reason: 'readEventsClassified faalde: ' + (e && e.message ? e.message : String(e)) }; }
+  if (!cls || typeof cls !== 'object') return { ok: false, chained: false, status: 'unreadable', reason: 'readEventsClassified leverde geen resultaat' };
+  if (cls.status === 'missing') return { ok: false, chained: false, status: cls.status, reason: 'events.jsonl ontbreekt of is onleesbaar: ' + (cls.error || 'missing') };
+  if (cls.status === 'empty') return { ok: true, chained: false, status: cls.status, reason: '' };
+  if (cls.status === 'partial' || cls.status === 'corrupt') {
+    const badDesc = (cls.badLines || []).map((b) => b.line + (b.reason ? ':' + b.reason : '')).join(', ');
+    return { ok: false, chained: true, status: cls.status, reason: 'events log is ' + cls.status.toUpperCase() + ' (' + badDesc + ')' };
+  }
+  // status === 'valid': schema + hashketen zijn intact voor elk GEKETEND event; een volledig ongeketende
+  // log leest hier ook 'valid' (niets om te weerspreken) — dat is geen keten, dus geen bewijs van
+  // integriteit. Alleen ECHT geketende events tellen als proof_integrity.
+  const hadChain = Array.isArray(cls.entries) && cls.entries.some((e) => e && typeof e === 'object' && e.entry_hash !== undefined);
+  if (!hadChain) {
+    return { ok: false, chained: false, status: cls.status, reason: 'no hash-chain present on any event (legacy/unchained run) — tamper-evidence cannot be verified' };
+  }
+  return { ok: true, chained: true, status: cls.status, reason: '' };
 }
 
 // ---- criterion 3: CLAIM=PROOF on pass-assertion events ----
@@ -333,12 +368,26 @@ function loadRuncontractTool() {
   try { _runcontractCache = require('./forge-runcontract.cjs'); } catch { _runcontractCache = null; }
   return _runcontractCache;
 }
-/** contractState(runId, root) -> {evaluated, ok, missing, reason}. `evaluated:false` covers EVERY
- * infrastructure reason the contract could not be computed at all (module unavailable, no
- * FORGE_HARD_RULES.json at this root, an unreadable/corrupt events log, an invalid run_id, …) — this NEVER
- * counts against `certified` below, exactly like registryCheck()'s own honest "skipped" discipline. Only a
- * contract the tool genuinely computed and that reports `ok:false` (real, applicable, unmet block-rules) can
- * pull CERTIFIED down; a contract this tool could not compute at all says nothing either way. */
+/** contractState(runId, root) -> {evaluated, ok, missing, reason}. `evaluated:false` covers ONLY a
+ * genuine INFRASTRUCTURE reason the contract could not be computed at all — module unavailable, no
+ * FORGE_HARD_RULES.json at this root, an invalid run_id, or any other exception forge-runcontract.cjs's
+ * check() throws that is NOT itself a fact about this run's own log. This NEVER counts against
+ * `certified` below, exactly like registryCheck()'s own honest "skipped" discipline — but see the D6/2.2
+ * note printed by the caller: an `evaluated:false` result must always be LABELED "(contract not
+ * evaluated)", never presented as a silent, unremarked part of a clean CERTIFIED.
+ *
+ * WP-S13 (2.2, 2026-09-26 laptop re-audit, review C VERDICT FAIL) — REBUILT. The previous version
+ * treated ANY exception from check() — including a DAMAGED LOG (check()'s own strict reader throws when
+ * the hash chain is corrupt/partial, an entirely different and far more serious fact than "no rules file
+ * here") — identically as "not evaluated — not held against this certificate". REPRODUCED: a run with a
+ * genuinely red contract (missing rules) got its damaged log turned into an "infrastructure could not
+ * compute this" excuse the moment ONE unchained line was prepended (or a prev_hash forked), because
+ * check() throws on read, before it ever gets to judge a single rule — `evaluated:false` swallowed that
+ * fact instead of surfacing it, and the D6 guard (`contractRed`) never fired. check()'s readEventsJsonl
+ * now TAGS that specific class of exception (`err.forgeLogDamaged === true` — see its own doc) so this
+ * function can tell "the log itself is damaged" (a REAL, damning fact about this run — evaluated:true,
+ * ok:false) apart from "this tool genuinely could not compute anything" (module/rules missing —
+ * evaluated:false, unchanged). */
 function contractState(runId, root) {
   const mod = loadRuncontractTool();
   if (!mod || typeof mod.check !== 'function') {
@@ -351,6 +400,12 @@ function contractState(runId, root) {
       reason: r.ok === true ? '' : 'the run contract reports ' + (Array.isArray(r.missing) ? r.missing.length : 0) + ' unmet rule(s): ' + (Array.isArray(r.missing) ? r.missing.join(', ') : ''),
     };
   } catch (e) {
+    if (e && e.forgeLogDamaged === true) {
+      return {
+        evaluated: true, ok: false, missing: [],
+        reason: 'the run contract could not judge a single rule because the events log itself is damaged (' + (e && e.message ? e.message : String(e)) + ') — a damaged log is a red contract, never an unevaluated one',
+      };
+    }
     return { evaluated: false, ok: null, missing: [], reason: 'the run contract could not be evaluated (' + (e && e.message ? e.message : String(e)) + ') — not held against this certificate' };
   }
 }
@@ -374,6 +429,7 @@ function notCertified(runId, root, reason, extra) {
 function certifyRun(runId, root) {
   root = path.resolve(root);
   const runDir = path.join(root, '.claude', 'forge-runs', runId);
+  const eventsPath = path.join(runDir, 'events.jsonl');
   const { events, malformed, error } = readEventsJsonl(runDir);
 
   if (error) return notCertified(runId, root, error);
@@ -391,7 +447,7 @@ function certifyRun(runId, root) {
     reason: dispatchHits.length > 0 ? '' : 'no subagent_started/subagent_completed/agent_started/agent_completed event from a real named Boss — only orchestrator/generic activity, no multi-agent orchestration proven',
   };
 
-  const chain = verifyChain(events, runId);
+  const chain = verifyChain(eventsPath, runId);
   const c2 = {
     id: 2, name: 'proof_integrity', ok: malformed === 0 && chain.ok, chained: chain.chained, malformed_lines: malformed,
     reason: malformed > 0 ? malformed + ' malformed JSONL line(s) in events.jsonl — cannot trust the hash chain' : chain.reason,
@@ -436,9 +492,18 @@ function certifyRun(runId, root) {
   const completionClaimExists = anyCompletionClaimPresent(events, runDir);
   const unverifiedCompletion = certified && checksVerified === 0 && completionClaimExists;
   const freeTextClaims = freeTextPassClaims(events);
+  /** 2.2 fix (WP-S13, 2026-09-26 laptop re-audit) — `contract.evaluated === false` means this tool
+   *  genuinely could not compute the contract at all (module/rules missing — see contractState's doc).
+   *  That must NEVER read as a silent, unremarked part of an otherwise-clean CERTIFIED/NOT CERTIFIED
+   *  label — a reader who only sees the label must be told the contract said nothing either way, not
+   *  assume it was checked and passed. `contractRed`'s own branch never needs this note: it only fires
+   *  when `contract.evaluated` is true. */
+  const contractNotEvaluatedNote = contract.evaluated ? '' : ' (contract not evaluated)';
   const label = !certified
-    ? (contractRed && criteriaOk ? 'NOT CERTIFIED — run contract is red (' + contract.reason + ')' : 'NOT CERTIFIED')
-    : (unverifiedCompletion ? 'CERTIFIED (UNVERIFIED — no standardized checks; completion rests on free-text claims)' : 'CERTIFIED');
+    ? (contractRed && criteriaOk ? 'NOT CERTIFIED — run contract is red (' + contract.reason + ')' : 'NOT CERTIFIED' + contractNotEvaluatedNote)
+    : (unverifiedCompletion
+        ? 'CERTIFIED (UNVERIFIED — no standardized checks; completion rests on free-text claims)' + contractNotEvaluatedNote
+        : 'CERTIFIED' + contractNotEvaluatedNote);
 
   return {
     run_id: runId, root, certified, event_count: events.length, malformed_lines: malformed,

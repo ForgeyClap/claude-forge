@@ -42,9 +42,16 @@
  *                     unknown_drift/conflict are NEVER silently overwritten. An existing-but-UNREADABLE system
  *                     file REFUSES the whole project sync (never silently treated as "new").
  *   2. BACKUP      — before ANY write: copy every file about to change into BOTH
- *                     <project>/.claude/forge-backups/<batchId>/<rel> (per-project) AND, when a
- *                     --central-backup-root is given (defaulted to <root>/.forge-backup-hub unless
- *                     --no-central-backup), <centralRoot>/.claude/forge-backups/<batchId>/<projectId>/<rel>.
+ *                     <project>/.claude/forge-backups/<batchId>/<rel> (per-project) AND a second, central
+ *                     copy at <centralRoot>/.claude/forge-backups/<batchId>/<projectId>/<rel>, unless
+ *                     --no-central-backup is passed. `centralRoot` defaults differently per command (N10
+ *                     fix, 2026-09-26 external audit — see defaultCentralBackupRoot()'s own doc comment):
+ *                     for the single-project commands `install`/`rollback` it now defaults INSIDE the
+ *                     project itself (<project>/.claude/forge-backups-central) — never a folder outside
+ *                     .claude/ that forge-sync has no business writing to by default; for the multi-project
+ *                     commands `sync-all`/`rollback-batch` it still defaults to <rootDir>/.forge-backup-hub,
+ *                     since the caller already explicitly named that whole multi-project root. Any command
+ *                     accepts --central-backup-root to point the second copy somewhere else entirely.
  *                     manifest.json records batchId/ts/runId/templateVersion/projectId/projectPath/
  *                     files[{rel,oldHash,newHash,existed}]/hadVersionFile/oldVersion/hadReceipt/oldReceipt.
  *                     Reusing a --batch-id that already backed up THIS project refuses (pass --resume-batch).
@@ -114,7 +121,7 @@
  * the caller so tests stay deterministic):
  *   listSystemFiles, sha256, sha256Normalized, fileStatus, templateVersion, claudeDirOf, safeJoin,
  *   isSymlinkPath, containmentSafe, projectId, receiptPath, readReceipt, writeReceipt,
- *   receiptLastTemplateHashMap, readOverrideAllowlist, preflight, buildPlan, fullFileManifest,
+ *   receiptLastTemplateHashMap, readOverrideAllowlist, migrateOwnerStandingRules, preflight, buildPlan, fullFileManifest,
  *   aggregateManifestHash, backupDirFor, centralBackupDir, takeBackup, applyPlanSafely, runValidation,
  *   decideValidationOutcome, seedCanaryRun, verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches,
  *   restoreFromManifest, rollbackProject, rollbackBatch, acquireLock, releaseLock, safeSyncProject,
@@ -791,6 +798,119 @@ function overridesAllowlistPath(projectDir) { return path.join(claudeDirOf(proje
 function readOverrideAllowlist(projectDir) {
   try { const obj = JSON.parse(fs.readFileSync(overridesAllowlistPath(projectDir), 'utf8')); return new Set(Array.isArray(obj.overrides) ? obj.overrides : []); }
   catch { return new Set(); }
+}
+
+// ---- v2.7-era owner-standing-rule preflight migration (external-audit 3.4, LOW) ----
+const STANDING_RULES_REL = 'config/orchestration/FORGE_STANDING_RULES.json';
+const STANDING_RULES_USER_REL = 'config/orchestration/FORGE_STANDING_RULES.user.json';
+const STANDING_OWNER_REMEMBER_SOURCE = 'owner /forge remember';
+
+/** migrateOwnerStandingRules(projectDir) — 3.4 fix: before v2.8.0's template/user split
+ *  (forge-standing.cjs, N4/P1), an owner "/forge remember" wrote its new rule straight into the SYSTEM
+ *  (template-synced) FORGE_STANDING_RULES.json. That file is compared/replaced on every install/sync-all —
+ *  including a --force-overwrite of an unresolved conflict — so upgrading a v2.7-era project either (a)
+ *  looks unchanged-since-last-receipt and gets silently overwritten by the new, rule-free template, or (b)
+ *  looks like drift/conflict and gets replaced the moment --force-overwrite runs, in both cases BEFORE
+ *  forge-standing.cjs's own load()-time migration ever gets a chance to run against the old content. This
+ *  runs as a preflight step, called at the very top of every real write path (safeSyncProject, rawInstall)
+ *  BEFORE that file is ever compared or replaced: it reads the project's CURRENT on-disk copy, and MOVES
+ *  (never duplicates — checked by id) every rule whose source is exactly STANDING_OWNER_REMEMBER_SOURCE
+ *  into that project's own FORGE_STANDING_RULES.user.json — a file this SYSTEM list deliberately never
+ *  syncs/overwrites (see the comment next to 'FORGE_STANDING_RULES.json' in SYSTEM above). It never rewrites
+ *  the template copy itself here (the imminent sync/replace does that; forge-standing.cjs's own load()-time
+ *  migration cleans up a leftover copy on any run that does not proceed to replace it) — no duplication risk
+ *  either way, since re-migration is id-checked. Best-effort and silently a no-op when the project has no
+ *  such file yet, the file is unreadable/malformed, or there is nothing to migrate — this is a safety net
+ *  for an old install shape, never a hard requirement for a project that never had the file. Returns the
+ *  migrated rule ids (possibly empty) so a caller can log/report it. */
+/** N8 fix (2026-09-26 independent review, LOW) — before this fix, ANY user-file read/parse/shape problem
+ *  (not just "the file does not exist yet") fell into the same `catch { userDoc = { version: 1, rules: [] } }`
+ *  as a genuinely fresh install, so a MALFORMED-but-PRESENT FORGE_STANDING_RULES.user.json (bad JSON, no
+ *  "rules" array) got silently REPLACED with just the migrated rules — no backup, the owner's existing
+ *  (if broken) content gone — exactly the case forge-standing.cjs's own load()-time migration deliberately
+ *  refuses to touch. This starts from an empty doc ONLY on a confirmed ENOENT; any OTHER read/parse/shape
+ *  failure now warns ONCE and skips the migration entirely (nothing written, template copy left as-is —
+ *  it gets another chance on a later sync once the owner fixes or removes the file). The write itself now
+ *  goes through the same safeJoin/isSymlinkPath/containmentSafe guards every other forge-sync write uses,
+ *  and forge-sync's own writeAtomic() instead of a plain writeFileSync — this file is written outside the
+ *  normal preflight/apply pipeline (it runs BEFORE that pipeline, see the doc comment above), so it never
+ *  inherited those guards for free. A `null`/non-object entry in either rules array is skipped when
+ *  computing ids instead of throwing (`r.id` on `null` used to crash the whole sync); it is left in place,
+ *  untouched, in whatever gets written — never silently dropped. */
+function migrateOwnerStandingRules(projectDir) {
+  const dst = claudeDirOf(projectDir);
+  const templatePath = path.join(dst, STANDING_RULES_REL);
+  const userPath = path.join(dst, STANDING_RULES_USER_REL);
+
+  let templateDoc;
+  try { templateDoc = JSON.parse(fs.readFileSync(templatePath, 'utf8')); }
+  catch { return []; } // no file yet, or unreadable/corrupt — nothing this safety net can act on
+  if (!templateDoc || !Array.isArray(templateDoc.rules)) return [];
+
+  const toMigrate = templateDoc.rules.filter((r) => r && typeof r === 'object' && r.source === STANDING_OWNER_REMEMBER_SOURCE);
+  if (toMigrate.length === 0) return [];
+
+  let userDoc;
+  let userRaw;
+  try {
+    userRaw = fs.readFileSync(userPath, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      userDoc = { version: 1, rules: [] }; // genuinely fresh — no owner file yet, safe to start empty
+    } else {
+      console.error('forge-sync: WARNING — could not read ' + userPath + ' while migrating owner rule(s) out of ' +
+        templatePath + ' (' + e.message + '); skipping this migration pass, nothing written — fix or remove ' +
+        'that file to let it complete on a later sync');
+      return [];
+    }
+  }
+  if (userRaw !== undefined) {
+    try {
+      userDoc = JSON.parse(userRaw);
+    } catch (e) {
+      console.error('forge-sync: WARNING — ' + userPath + ' is not valid JSON; skipping this migration pass, ' +
+        'nothing written (' + e.message + ')');
+      return [];
+    }
+    if (!userDoc || typeof userDoc !== 'object' || !Array.isArray(userDoc.rules)) {
+      console.error('forge-sync: WARNING — ' + userPath + ' is present but missing a "rules" array; skipping ' +
+        'this migration pass, nothing written — the existing (malformed) file is left exactly as-is');
+      return [];
+    }
+  }
+
+  const existingIds = new Set(userDoc.rules.filter((r) => r && typeof r === 'object').map((r) => r.id));
+  const toAppend = toMigrate.filter((r) => !existingIds.has(r.id));
+  const migratedIds = toMigrate.map((r) => r.id);
+  if (toAppend.length === 0) return migratedIds; // already migrated on an earlier pass — nothing new to write
+
+  const nextUserDoc = Object.assign({}, userDoc, { rules: userDoc.rules.concat(toAppend) });
+
+  const safeUserPath = safeJoin(dst, STANDING_RULES_USER_REL);
+  if (safeUserPath == null || path.resolve(safeUserPath) !== path.resolve(userPath)) {
+    console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' does not resolve to a safe path under .claude/');
+    return [];
+  }
+  if (isSymlinkPath(userPath)) {
+    console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' is a symlink');
+    return [];
+  }
+  if (!containmentSafe(dst, userPath)) {
+    console.error('forge-sync: WARNING — refusing to migrate owner rule(s): ' + userPath + ' escapes .claude/ via a symlinked/junctioned ancestor directory');
+    return [];
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(userPath), { recursive: true });
+    writeAtomic(userPath, JSON.stringify(nextUserDoc, null, 2) + '\n');
+  } catch (e) {
+    // Best-effort, same posture as forge-standing.cjs's own migration: a write failure here never blocks
+    // the sync — the owner rule simply stays visible in the (about to be replaced) template copy for this
+    // pass, and gets another migration chance on a later sync or the next forge-standing.cjs load().
+    console.error('forge-sync: could not write ' + userPath + ' while migrating owner rule(s) out of ' + templatePath + ' (' + e.message + ') — continuing sync');
+    return [];
+  }
+  return migratedIds;
 }
 
 /**
@@ -1875,6 +1995,11 @@ function safeSyncProject(templateDir, projectDir, opts) {
     };
   }
 
+  // 3.4 fix: move any v2.7-era owner standing rule into the project's own user file BEFORE the SYSTEM
+  // FORGE_STANDING_RULES.json is ever compared/replaced below — including under --force-overwrite. Never
+  // during --dry-run, which must write nothing at all (see this file's own SAFE FLOW doc comment).
+  if (!opts.dryRun) migrateOwnerStandingRules(projectDir);
+
   const templateVer = templateVersion(templateDir);
   const plan = buildPlan(templateDir, projectDir, { forceOverwrite: !!opts.forceOverwrite });
 
@@ -2152,6 +2277,10 @@ function rawInstall(templateDir, projectDir, opts) {
   opts = opts || {};
   const dst = claudeDirOf(projectDir);
   if (!fs.existsSync(dst)) { console.error('not a project (.claude missing): ' + projectDir); return { ok: false, exitCode: 1, projectDir }; }
+  // 3.4 fix: same preflight owner-rule migration as safeSyncProject — --unsafe still replaces
+  // FORGE_STANDING_RULES.json below with no drift/conflict analysis at all, so this is the ONLY chance to
+  // save a v2.7-era owner rule on this path. Never during --dry-run (writes nothing at all).
+  if (!opts.dryRun) migrateOwnerStandingRules(projectDir);
   const allowlist = readOverrideAllowlist(projectDir); // S2: --unsafe must ALSO never touch a declared override
   const toChange = [];
   const skippedOverrides = [];
@@ -2522,8 +2651,8 @@ function printSettingsMergeResult(projectDir, r) {
   if (r.status === 'created') console.log(name + ': settings.json created (from template)');
   else if (r.status === 'would-create') console.log('[dry-run] ' + name + ': settings.json would be created (from template)');
   else if (r.status === 'noop') console.log(name + ': settings.json already merged' + dupNote(r));
-  else if (r.status === 'would-merge') console.log('[dry-run] ' + name + ': settings.json would merge — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s)');
-  else if (r.status === 'merged') console.log(name + ': settings.json merged — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), +' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath + dupNote(r));
+  else if (r.status === 'would-merge') console.log('[dry-run] ' + name + ': settings.json would merge — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), ' + (Array.isArray(r.upgraded) ? r.upgraded.length : 0) + ' hook command update(s), +' + r.deny_added.length + ' deny rule(s)');
+  else if (r.status === 'merged') console.log(name + ': settings.json merged — +' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), ' + (Array.isArray(r.upgraded) ? r.upgraded.length : 0) + ' hook command update(s), +' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath + dupNote(r));
   else if (r.status === 'refused' || r.status === 'would-refuse') console.error(name + ': ' + r.message);
   // SUCCESS-WITHOUT-SETTINGS (wp-f2): a malformed TEMPLATE source (usage-error) used to be silently omitted
   // from every printer — the ONLY status this function never printed anything for.
@@ -2533,7 +2662,7 @@ function printSettingsMergeResult(projectDir, r) {
 module.exports = {
   listSystemFiles, sha256, sha256Normalized, normalizeEolBuffer, fileStatus, templateVersion, claudeDirOf, safeJoin, isSymlinkPath,
   containmentSafe, projectId, receiptPath, readReceipt, writeReceipt, writeAtomic, receiptLastTemplateHashMap,
-  overridesAllowlistPath, readOverrideAllowlist,
+  overridesAllowlistPath, readOverrideAllowlist, migrateOwnerStandingRules,
   preflight, buildPlan, fullFileManifest, aggregateManifestHash,
   versionFilePath, readVersionFile, backupDirFor, centralBackupDir, takeBackup, applyPlanSafely, runValidation,
   decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck, seedCanaryRun, seedProjectScaffold, undoScaffold,
