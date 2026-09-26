@@ -15,6 +15,21 @@
 # Owner approval files (usage guard): the owner's secret and the per-machine override grant — never commit them
 .claude/config/forge-owner-grant.txt
 .claude/config/forge-usage-guard-override-grant.json
+# Single-use /forge config approvals (N8, 2026-09-26 laptop re-audit): each spent approval leaves
+# one of these behind (forge-config-once-store.cjs) — never useful to commit, and `git add -A` at a
+# checkpoint would otherwise stage the owner's own approval words.
+.claude/FORGE_CONFIG.once.*.consumed.*.json
+.claude/FORGE_CONFIG.once.*.pending.json
+
+# Forge user-state files (never shipped, never committed) — the installer records what IT wrote here
+# for --uninstall/-Uninstall to read back; owner additions to template-owned files (standing rules,
+# scout vetting, the Codex pin) are kept in a separate *.user.json next to the shipped default and
+# merged at read time, so an update never overwrites your own additions. Exact filenames confirmed
+# by the Lead once the source-side split lands.
+.claude/.forge-install-manifest.json
+.claude/config/orchestration/FORGE_STANDING_RULES.user.json
+.claude/config/orchestration/FORGE_SCOUT_VETTING.user.json
+.claude/config/orchestration/codex-review.user.json
 
 # Secrets — never commit real env files (placeholders live in .env.example)
 .env

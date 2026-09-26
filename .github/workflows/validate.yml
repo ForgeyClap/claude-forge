@@ -51,6 +51,31 @@ jobs:
             echo "ok   $m = $v"
           done
 
+      # 0b) Executable-bit gate (v2.8.0, laptop re-audit N9): CHANGELOG has claimed since 2.2.0 that the
+      # task scripts "ship with the executable bit", but the tagged v2.7.2 archive had 0 files with mode
+      # 100755 — git's own index never actually carried the bit, so a fresh `git clone` unpacked every
+      # *.sh as 644 and a bare `./install.sh` refused with "Permission denied". `git ls-files -s` reads
+      # the mode git will check out, not the working tree's current OS-level bit (which core.filemode
+      # can ignore) — this is the one check that would have actually caught the 2.7.2 regression.
+      - name: Every tracked *.sh carries the executable bit (100755) in git's index
+        run: |
+          set -e
+          bad=0
+          while IFS= read -r line; do
+            mode=$(printf '%s' "$line" | awk '{print $1}')
+            path=$(printf '%s' "$line" | cut -f2)
+            if [ "$mode" != "100755" ]; then
+              echo "::error file=$path::tracked as mode $mode, expected 100755 (git update-index --chmod=+x \"$path\")"
+              bad=1
+            else
+              echo "ok   $path ($mode)"
+            fi
+          done < <(git ls-files -s -- '*.sh')
+          if [ "$bad" = "1" ]; then
+            echo "::error::one or more *.sh files are not executable in git's index -- see above"
+            exit 1
+          fi
+
       # 1) Syntax-check every .cjs source in the terminal command pack.
       - name: node --check all .cjs in .claude/forge-bin
         run: |

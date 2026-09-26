@@ -329,7 +329,9 @@ jobs:
           entries=$(find "$proj/.claude/settings.json" -mindepth 1 | wc -l)
           [ "$entries" -eq 0 ] || { echo "::error::something was nested inside the settings.json directory (found $entries entr(y/ies))"; exit 1; }
           [ -d "$proj/.claude/settings.json" ] || { echo "::error::settings.json is no longer a directory — it should never have been touched"; exit 1; }
-          [ -f "$proj/.claude/settings.forge-recommended.json" ] && { echo "::error::a recommended-file fallback should not exist either — this is a hard refusal"; exit 1; }
+          # the fallback is stamped (settings.forge-recommended-<stamp>-<rand>.json): match the family, not one fixed name
+          rec=$(find "$proj/.claude" -maxdepth 1 -name 'settings.forge-recommended*.json' | head -1)
+          [ -z "$rec" ] || { echo "::error::a recommended-file fallback should not exist either — this is a hard refusal (found $rec)"; exit 1; }
           [ -f "$proj/.claude/forge-bin/forge-doctor.cjs" ] || { echo "::error::every OTHER payload file should still install even though settings.json was refused"; exit 1; }
           echo "ok   install.sh refused the directory-shaped settings.json (exit $status), nested nothing, everything else still installed"
 
@@ -344,11 +346,176 @@ jobs:
           $settingsDir = Join-Path $proj '.claude\settings.json'
           New-Item -ItemType Directory -Force $settingsDir | Out-Null
           powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes
+          # v2.8.0: capture + assert the refusal's exit code (the POSIX step always did). The installer exits
+          # non-zero BY DESIGN here; without an explicit `exit 0` below, pwsh ends the step with that leftover
+          # $LASTEXITCODE and the job fails even though every assertion passed (the v2.7.2 Windows/Node 18 red).
+          $status = $LASTEXITCODE
+          if ($status -eq 0) { Write-Host '::error::install.ps1 accepted a directory-shaped settings.json instead of refusing it'; exit 1 }
           if (-not (Test-Path -LiteralPath $settingsDir -PathType Container)) { Write-Host '::error::settings.json is no longer a directory -- it should never have been touched'; exit 1 }
           $entries = Get-ChildItem -LiteralPath $settingsDir -Force
           if ($entries.Count -ne 0) { Write-Host "::error::something was nested inside the settings.json directory (found $($entries.Count) entr(y/ies))"; exit 1 }
-          $recommended = Join-Path $proj '.claude\settings.forge-recommended.json'
-          if (Test-Path -LiteralPath $recommended -PathType Leaf) { Write-Host '::error::a recommended-file fallback should not exist either -- this is a hard refusal'; exit 1 }
+          # The fallback file is written with a stamp (settings.forge-recommended-<stamp>-<rand>.json), so match the
+          # whole family -- a fixed-name check could never fail.
+          $recommended = @(Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Filter 'settings.forge-recommended*.json' -File -ErrorAction SilentlyContinue)
+          if ($recommended.Count -ne 0) { Write-Host "::error::a recommended-file fallback should not exist either -- this is a hard refusal (found $($recommended[0].Name))"; exit 1 }
           $doctorPath = Join-Path $proj '.claude\forge-bin\forge-doctor.cjs'
           if (-not (Test-Path -LiteralPath $doctorPath -PathType Leaf)) { Write-Host '::error::every OTHER payload file should still install even though settings.json was refused'; exit 1 }
-          Write-Host 'ok   install.ps1 refused the directory-shaped settings.json, nested nothing, everything else still installed'
+          Write-Host "ok   install.ps1 refused the directory-shaped settings.json (exit $status), nested nothing, everything else still installed"
+          exit 0
+
+      # v2.8.0 (WP-D1, laptop re-audit "Part IX #12" / "there is no uninstaller"): --uninstall / -Uninstall
+      # must remove exactly what THIS install wrote (verified by hash), and nothing a user added or edited.
+      - name: --uninstall removes exactly what it wrote, keeps user files, is idempotent (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          proj="$RUNNER_TEMP/uninstall-project"
+          mkdir -p "$proj"
+          bash install.sh --project "$proj" --yes >/dev/null
+          [ -d "$proj/.claude/forge-bin" ] || { echo "::error::install did not create .claude/forge-bin -- nothing to test uninstall against"; exit 1; }
+          # a file the USER created after install (Forge never wrote this path)
+          printf 'my own notes\n' > "$proj/.claude/MY_OWN_NOTES.md"
+          # a payload file the user EDITED after install -- must survive because its hash no longer
+          # matches what the installer recorded (outside forge-bin, so forge-bin itself can still go to zero)
+          edited="$proj/.claude/skills/forge-prd/SKILL.md"
+          [ -f "$edited" ] || { echo "::error::fixture assumption broken: $edited does not exist after install"; exit 1; }
+          printf '\n<!-- my own edit, kept across uninstall -->\n' >> "$edited"
+          # the user's OWN .gitignore line, next to Forge's own appended block
+          printf 'my-own-ignore-rule/\n' >> "$proj/.gitignore"
+          bash install.sh --uninstall --project "$proj" --yes
+          [ ! -d "$proj/.claude/forge-bin" ] || { echo "::error::.claude/forge-bin still exists after --uninstall"; exit 1; }
+          echo "ok   .claude/forge-bin is gone"
+          [ -f "$proj/.claude/MY_OWN_NOTES.md" ] || { echo "::error::a file the user created was deleted by --uninstall"; exit 1; }
+          echo "ok   the user-created file survived"
+          grep -qF 'my own edit, kept across uninstall' "$edited" || { echo "::error::the user-edited payload file was deleted or reverted by --uninstall"; exit 1; }
+          echo "ok   the user-edited payload file survived, unchanged"
+          grep -qxF '.claude/forge-runs/*/*' "$proj/.gitignore" && { echo "::error::a Forge-added .gitignore line survived --uninstall"; exit 1; }
+          grep -qxF 'my-own-ignore-rule/' "$proj/.gitignore" || { echo "::error::the user's own .gitignore line was removed by --uninstall"; exit 1; }
+          echo "ok   Forge's .gitignore lines are gone, the user's own line stayed"
+          before=$(find "$proj/.claude" -type f 2>/dev/null | sort)
+          bash install.sh --uninstall --project "$proj" --yes >/dev/null
+          after=$(find "$proj/.claude" -type f 2>/dev/null | sort)
+          [ "$before" = "$after" ] || { echo "::error::a second --uninstall changed the file set (not idempotent)"; exit 1; }
+          echo "ok   a second --uninstall is a no-op"
+
+      - name: -Uninstall removes exactly what it wrote, keeps user files, is idempotent (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'uninstall-project'
+          New-Item -ItemType Directory -Force $proj | Out-Null
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
+          $forgeBin = Join-Path $proj '.claude\forge-bin'
+          if (-not (Test-Path -LiteralPath $forgeBin -PathType Container)) { Write-Host '::error::install did not create .claude\forge-bin -- nothing to test uninstall against'; exit 1 }
+          $notes = Join-Path $proj '.claude\MY_OWN_NOTES.md'
+          Set-Content -LiteralPath $notes -Value 'my own notes'
+          $edited = Join-Path $proj '.claude\skills\forge-prd\SKILL.md'
+          if (-not (Test-Path -LiteralPath $edited -PathType Leaf)) { Write-Host "::error::fixture assumption broken: $edited does not exist after install"; exit 1 }
+          Add-Content -LiteralPath $edited -Value "`n<!-- my own edit, kept across uninstall -->"
+          Add-Content -LiteralPath (Join-Path $proj '.gitignore') -Value 'my-own-ignore-rule/'
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -ProjectDir $proj -Yes
+          $status = $LASTEXITCODE
+          if ($status -ne 0) { Write-Host "::error::-Uninstall exited $status"; exit 1 }
+          if (Test-Path -LiteralPath $forgeBin -PathType Container) { Write-Host '::error::.claude\forge-bin still exists after -Uninstall'; exit 1 }
+          Write-Host 'ok   .claude\forge-bin is gone'
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { Write-Host '::error::a file the user created was deleted by -Uninstall'; exit 1 }
+          Write-Host 'ok   the user-created file survived'
+          $editedText = Get-Content -Raw -LiteralPath $edited
+          if ($editedText -notmatch 'my own edit, kept across uninstall') { Write-Host '::error::the user-edited payload file was deleted or reverted by -Uninstall'; exit 1 }
+          Write-Host 'ok   the user-edited payload file survived, unchanged'
+          $giLines = Get-Content -LiteralPath (Join-Path $proj '.gitignore')
+          if ($giLines -contains '.claude/forge-runs/*/*') { Write-Host '::error::a Forge-added .gitignore line survived -Uninstall'; exit 1 }
+          if ($giLines -notcontains 'my-own-ignore-rule/') { Write-Host "::error::the user's own .gitignore line was removed by -Uninstall"; exit 1 }
+          Write-Host "ok   Forge's .gitignore lines are gone, the user's own line stayed"
+          $before = @(Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Recurse -File | ForEach-Object { $_.FullName }) | Sort-Object
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -ProjectDir $proj -Yes | Out-Null
+          $status2 = $LASTEXITCODE
+          if ($status2 -ne 0) { Write-Host "::error::a second -Uninstall exited $status2"; exit 1 }
+          $after = @(Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) | Sort-Object
+          if (($before -join "`n") -ne ($after -join "`n")) { Write-Host '::error::a second -Uninstall changed the file set (not idempotent)'; exit 1 }
+          Write-Host 'ok   a second -Uninstall is a no-op'
+          exit 0
+
+      # v2.8.0 upgrade path (laptop re-audit N8/D1): a project installed by an OLD (2.7.2-shaped) release
+      # has cwd-relative hook commands with no $CLAUDE_PROJECT_DIR and no separate PowerShell matcher. The
+      # merge must recognise those as the SAME hook (just an older form) and normalise them, never leave the
+      # old form in place AND add a second, duplicate entry for the same script under the same matcher.
+      # NOTE: this assertion will only pass once the settings-merge tool's own upgrade-recognition change
+      # (owned by a different work package) has been synced into this dist copy -- written correctly now so
+      # it starts passing the moment that lands, instead of being invented later.
+      - name: Upgrading a 2.7.2-shaped settings.json de-duplicates hooks into the $CLAUDE_PROJECT_DIR form (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          proj="$RUNNER_TEMP/upgrade-project"
+          mkdir -p "$proj/.claude"
+          cat > "$proj/.claude/settings.json" <<'OLDSETTINGS'
+          {
+            "hooks": {
+              "PreCompact": [
+                { "matcher": "manual", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-snapshot-marker.cjs", "timeout": 15 } ] },
+                { "matcher": "auto",   "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-snapshot-marker.cjs", "timeout": 15 } ] }
+              ],
+              "SessionStart": [
+                { "matcher": "compact", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-snapshot-reinject.cjs", "timeout": 15 } ] }
+              ],
+              "PostToolUse": [
+                { "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-toolhook.cjs", "timeout": 10 } ] }
+              ],
+              "PreToolUse": [
+                { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-gate-hook.cjs", "timeout": 10 } ] }
+              ]
+            }
+          }
+          OLDSETTINGS
+          bash install.sh --project "$proj" --yes >/dev/null
+          node tests/installer/assert-hook-dedup.js "$proj/.claude/settings.json" || {
+            echo "::warning::hook de-duplication on upgrade is not green yet -- expected until the settings-merge tool's upgrade-recognition change is synced into this dist copy (see the step comment)";
+            exit 1;
+          }
+
+      - name: Upgrading a 2.7.2-shaped settings.json de-duplicates hooks into the $CLAUDE_PROJECT_DIR form (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'upgrade-project'
+          New-Item -ItemType Directory -Force (Join-Path $proj '.claude') | Out-Null
+          $old = @'
+          {
+            "hooks": {
+              "PreCompact": [
+                { "matcher": "manual", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-snapshot-marker.cjs", "timeout": 15 } ] },
+                { "matcher": "auto",   "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-snapshot-marker.cjs", "timeout": 15 } ] }
+              ],
+              "SessionStart": [
+                { "matcher": "compact", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-snapshot-reinject.cjs", "timeout": 15 } ] }
+              ],
+              "PostToolUse": [
+                { "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-toolhook.cjs", "timeout": 10 } ] }
+              ],
+              "PreToolUse": [
+                { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node .claude/forge-bin/forge-gate-hook.cjs", "timeout": 10 } ] }
+              ]
+            }
+          }
+          '@
+          $settingsPath = Join-Path $proj '.claude\settings.json'
+          [System.IO.File]::WriteAllText($settingsPath, $old, (New-Object System.Text.UTF8Encoding $false))
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
+          node tests/installer/assert-hook-dedup.js $settingsPath
+          $status = $LASTEXITCODE
+          if ($status -ne 0) {
+            Write-Host '::warning::hook de-duplication on upgrade is not green yet -- expected until the settings-merge tool''s upgrade-recognition change is synced into this dist copy (see the step comment)'
+            exit 1
+          }
+          exit 0

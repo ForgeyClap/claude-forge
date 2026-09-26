@@ -28,8 +28,23 @@
 .PARAMETER ProjectOnly
   Only install the per-project payload into <ProjectDir>\.claude.
 
+.PARAMETER Uninstall
+  Remove exactly what a claude-forge installer wrote, and nothing else. Every write this
+  installer makes is recorded in an install manifest (path + sha256) -- project-side at
+  <ProjectDir>\.claude\.forge-install-manifest.json, global-side at
+  $HOME\.claude\forge\install-manifest.json. Uninstall deletes a listed file ONLY when its
+  current hash still matches the manifest; a file you edited yourself is left in place and
+  reported as kept. Pre-2.8.0 installs have no manifest: uninstall then falls back to a
+  byte-identical comparison against this installer's own shipped payload. Your own data
+  (CLAUDE.md if it predates Forge, .env, FORGE_MEMORY*, forge-runs, agent-memory) is always
+  left in place. Honors -ProjectDir, -Yes, -DryRun, -GlobalOnly/-ProjectOnly the same way
+  install does. Safe to run twice: a second uninstall is a no-op.
+
 .EXAMPLE
   .\install.ps1
+
+.EXAMPLE
+  .\install.ps1 -Uninstall
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/ForgeyClap/claude-forge/main/install.ps1 | iex"
@@ -42,7 +57,8 @@ param(
   [switch]$Yes,
   [switch]$DryRun,
   [switch]$GlobalOnly,
-  [switch]$ProjectOnly
+  [switch]$ProjectOnly,
+  [switch]$Uninstall
 )
 
 Set-StrictMode -Version 3.0
@@ -357,7 +373,12 @@ function Copy-ForgeTree {
     [bool]$ProtectSettings = $false,
     # Passed straight through to Copy-ForgeSettingsFile — see that function's own param comment for why this
     # must be an explicit parameter rather than an ambient `$sourceDir`/`$SourceDir` variable lookup.
-    [string]$MergeToolPath = $null
+    [string]$MergeToolPath = $null,
+    # v2.8.0 uninstaller support: when set, every file this call actually copies (never settings.json —
+    # that file is MERGED, never owned/deleted by an uninstall) is recorded into $script:ForgeManifest
+    # under this scope ('global' or 'project'), relative to $ManifestRoot, with its sha256 at write time.
+    [string]$ManifestScope = $null,
+    [string]$ManifestRoot = $null
   )
 
   if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
@@ -373,12 +394,322 @@ function Copy-ForgeTree {
     if ($ProtectSettings -and $rel -eq 'settings.json') {
       $fileOk = Copy-ForgeSettingsFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun -MergeToolPath $MergeToolPath
       if (-not $fileOk) { $allOk = $false }
+      # never manifested: settings.json is merged, not owned — an uninstall must never delete it
     } else {
       Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+      if (-not $IsDryRun -and $ManifestScope) {
+        Add-ForgeManifestEntry -Scope $ManifestScope -RootDir $ManifestRoot -AbsPath $dest
+      }
     }
   }
 
   return $allOk
+}
+
+# ---------------------------------------------------------------------------
+# Install manifest (v2.8.0) — WHAT the uninstaller is allowed to remove.
+#
+# The uninstaller must remove EXACTLY what the installer wrote, never more. Rather than hand
+# -Uninstall a hardcoded file list (which drifts from the real payload the moment either one
+# changes), the installer records every file it actually copies — path + sha256 at write time —
+# into two small JSON manifests: project-side and global-side (see Write-ForgeManifestFile).
+# -Uninstall then deletes a listed file ONLY when its CURRENT hash still matches what was
+# recorded: a file you edited yourself differs and is left in place, reported as kept. This is
+# the same "never blindly trust a path, verify the content" discipline
+# Copy-ForgeSettingsFile/forge-settings-merge.cjs already use for settings.json.
+# ---------------------------------------------------------------------------
+
+# Add-ForgeManifestEntry — records one written file (by its sha256 at THIS moment) into
+# $script:ForgeManifest[$Scope], relative to $RootDir (forward-slash, so the same manifest reads
+# identically on POSIX and Windows). A no-op if the file does not exist (e.g. a dry-run path, or
+# a write that was itself skipped/refused).
+function Add-ForgeManifestEntry {
+  param(
+    [Parameter(Mandatory = $true)][string]$Scope,
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$AbsPath
+  )
+  if (-not (Test-Path -LiteralPath $AbsPath -PathType Leaf)) { return }
+  $rootFull = Resolve-ForgeFullPath $RootDir
+  $absFull = Resolve-ForgeFullPath $AbsPath
+  if ($absFull.Length -le $rootFull.Length) { return }
+  $rel = ($absFull.Substring($rootFull.Length).TrimStart('\', '/')) -replace '\\', '/'
+  $hash = (Get-FileHash -LiteralPath $AbsPath -Algorithm SHA256).Hash
+  [void] $script:ForgeManifest[$Scope].Add([ordered]@{ path = $rel; sha256 = $hash })
+}
+
+# Write-ForgeManifestFile — writes the accumulated manifest for one scope to disk. A no-op when
+# nothing was recorded for that scope this run (e.g. a -ProjectOnly install never touches the
+# global manifest, and must not overwrite/clear one from an earlier -GlobalOnly install).
+function Write-ForgeManifestFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Scope,
+    [Parameter(Mandatory = $true)][string]$DestFile,
+    [Parameter(Mandatory = $true)][string]$Version
+  )
+  $entries = $script:ForgeManifest[$Scope]
+  if (-not $entries -or $entries.Count -eq 0) { return }
+  $destDir = Split-Path -Parent -Path $DestFile
+  if (-not (Test-Path -LiteralPath $destDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+  }
+  $sorted = @($entries | Sort-Object path)
+  $manifest = [ordered]@{
+    forge_version = $Version
+    written_at    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    scope         = $Scope
+    _doc          = 'Every file this installer wrote for this scope, with its sha256 at write time. -Uninstall / --uninstall deletes a listed file only when its CURRENT hash still matches -- a file you edited yourself is left in place and reported as kept.'
+    files         = $sorted
+  }
+  $json = ($manifest | ConvertTo-Json -Depth 5)
+  [System.IO.File]::WriteAllText($DestFile, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+  Write-ForgeLog "  wrote: $DestFile ($($sorted.Count) file(s) recorded for uninstall)"
+}
+
+# Resolve-ForgeSource — the SAME in-place-or-download detection Main uses for install, factored
+# out so -Uninstall's pre-2.8.0 (no-manifest) fallback can hash-compare against the identical
+# shipped payload without duplicating the download/checksum logic. Returns @{ SourceDir; TempDir }
+# ($TempDir is $null unless a download actually happened; the caller is responsible for cleaning
+# it up in a finally block, exactly like Main does for its own download).
+function Resolve-ForgeSource {
+  param(
+    [Parameter(Mandatory = $true)][bool]$PipeMode,
+    [Parameter(Mandatory = $true)][string]$ScriptDir,
+    [Parameter(Mandatory = $true)][string]$ForgeRef,
+    [Parameter(Mandatory = $true)][bool]$IsDryRun
+  )
+  if (-not $PipeMode) {
+    $inPlaceGlobal = Join-Path $ScriptDir 'global-install\.claude'
+    $inPlaceProject = Join-Path $ScriptDir '.claude'
+    if ((Test-Path -LiteralPath $inPlaceGlobal -PathType Container) -and
+        (Test-Path -LiteralPath $inPlaceProject -PathType Container)) {
+      return @{ SourceDir = $ScriptDir; TempDir = $null }
+    }
+  }
+  if ($IsDryRun) { return @{ SourceDir = ''; TempDir = $null } }
+  $tempDirLocal = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-uninstall-" + [guid]::NewGuid().ToString('N'))
+  try {
+    New-Item -ItemType Directory -Path $tempDirLocal -Force | Out-Null
+    $archiveUrl = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$ForgeRef.zip"
+    $archivePath = Join-Path $tempDirLocal 'claude-forge.zip'
+    Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath -UseBasicParsing
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $tempDirLocal -Force
+    $extracted = Get-ChildItem -LiteralPath $tempDirLocal -Directory | Where-Object { $_.Name -like "$RepoName-*" } | Select-Object -First 1
+    if ($extracted -and (Test-Path -LiteralPath (Join-Path $extracted.FullName 'global-install\.claude') -PathType Container)) {
+      return @{ SourceDir = $extracted.FullName; TempDir = $tempDirLocal }
+    }
+  } catch {
+    Write-ForgeError "could not fetch the claude-forge payload to compare against ($($_.Exception.Message))"
+  }
+  return @{ SourceDir = ''; TempDir = $tempDirLocal }
+}
+
+# Remove-ForgeEmptyDirs — walks upward from $StartDir toward (but never removing) $StopAt,
+# removing one directory at a time ONLY when it is already completely empty. Never recursive:
+# each Remove-Item call targets exactly one directory that Get-ChildItem just proved has zero
+# entries, so this can never delete anything with content in it.
+function Remove-ForgeEmptyDirs {
+  param(
+    [Parameter(Mandatory = $true)][string]$StartDir,
+    [Parameter(Mandatory = $true)][string]$StopAt
+  )
+  $stopFull = Resolve-ForgeFullPath $StopAt
+  $dir = $StartDir
+  while ($true) {
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { break }
+    if ((Resolve-ForgeFullPath $dir) -ieq $stopFull) { break }
+    # @(...) forces an array even when exactly one child is found -- a bare (unwrapped) single
+    # FileInfo/DirectoryInfo result has no .Count property under Set-StrictMode -Version 3.0
+    # (measured: "The property 'Count' cannot be found on this object").
+    $children = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
+    if ($children.Count -gt 0) { break }
+    Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+    $dir = Split-Path -Parent $dir
+    if (-not $dir) { break }
+  }
+}
+
+# Remove-ForgeManifestFiles — the manifest-driven removal path (2.8.0+ installs). Deletes a
+# listed file only when its current sha256 still matches what the installer recorded; a file you
+# edited yourself differs and is kept. Removes only the now-empty directories left behind.
+function Remove-ForgeManifestFiles {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)]$Entries,
+    [bool]$IsDryRun = $false
+  )
+  $removed = 0; $kept = 0; $missing = 0
+  $touchedDirs = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($e in $Entries) {
+    $relWin = ($e.path -replace '/', '\')
+    $abs = Join-Path $RootDir $relWin
+    if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { $missing++; continue }
+    $curHash = (Get-FileHash -LiteralPath $abs -Algorithm SHA256).Hash
+    if ($curHash -ieq $e.sha256) {
+      if ($IsDryRun) {
+        Write-ForgeLog "  [dry-run] would remove: $abs"
+      } else {
+        Remove-Item -LiteralPath $abs -Force
+        Write-ForgeLog "  removed: $abs"
+        [void] $touchedDirs.Add((Split-Path -Parent $abs))
+      }
+      $removed++
+    } else {
+      Write-ForgeLog "  kept (you edited this file): $abs"
+      $kept++
+    }
+  }
+  if (-not $IsDryRun) {
+    foreach ($d in @($touchedDirs | Select-Object -Unique)) {
+      Remove-ForgeEmptyDirs -StartDir $d -StopAt $RootDir
+    }
+  }
+  return [ordered]@{ removed = $removed; kept = $kept; missing = $missing }
+}
+
+# Remove-ForgePayloadFallback — the pre-2.8.0 (no-manifest) fallback: removes a file under
+# $DestRootDir only when it is byte-identical (sha256-equal) to the corresponding file under
+# $PayloadSourceDir (this installer's own shipped payload). Never removes a file that differs
+# (your own edit, or a different release) or one this build's payload does not even ship.
+function Remove-ForgePayloadFallback {
+  param(
+    [Parameter(Mandatory = $true)][string]$PayloadSourceDir,
+    [Parameter(Mandatory = $true)][string]$DestRootDir,
+    [bool]$IsDryRun = $false,
+    [string[]]$SkipRel = @()
+  )
+  if (-not (Test-Path -LiteralPath $PayloadSourceDir -PathType Container)) {
+    return [ordered]@{ removed = 0; kept = 0 }
+  }
+  $removed = 0; $kept = 0
+  $touchedDirs = New-Object 'System.Collections.Generic.List[string]'
+  $files = Get-ChildItem -LiteralPath $PayloadSourceDir -Recurse -File -Force
+  foreach ($f in $files) {
+    $rel = $f.FullName.Substring($PayloadSourceDir.Length).TrimStart('\', '/')
+    $relSlash = $rel -replace '\\', '/'
+    if ($SkipRel -contains $relSlash) { continue }
+    $dest = Join-Path $DestRootDir $rel
+    if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) { continue }
+    $srcHash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+    $dstHash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
+    if ($srcHash -eq $dstHash) {
+      if ($IsDryRun) {
+        Write-ForgeLog "  [dry-run] would remove (byte-identical to the shipped payload): $dest"
+      } else {
+        Remove-Item -LiteralPath $dest -Force
+        Write-ForgeLog "  removed: $dest"
+        [void] $touchedDirs.Add((Split-Path -Parent $dest))
+      }
+      $removed++
+    } else {
+      Write-ForgeLog "  kept (you edited this file, or it is from a different release): $dest"
+      $kept++
+    }
+  }
+  if (-not $IsDryRun) {
+    foreach ($d in @($touchedDirs | Select-Object -Unique)) {
+      Remove-ForgeEmptyDirs -StartDir $d -StopAt $DestRootDir
+    }
+  }
+  return [ordered]@{ removed = $removed; kept = $kept }
+}
+
+# Remove-ForgeGitignoreLines — removes ONLY the exact lines templates\gitignore.snippet added
+# (plus the installer's own header comment), never a line the project already had for its own
+# reasons. Collapses a run of blank lines left behind by the removal down to at most one, and
+# trims trailing blank lines, without touching any other content.
+function Remove-ForgeGitignoreLines {
+  param(
+    [Parameter(Mandatory = $true)][string]$GitignorePath,
+    [Parameter(Mandatory = $true)][string]$SnippetPath,
+    [bool]$IsDryRun = $false
+  )
+  if (-not (Test-Path -LiteralPath $GitignorePath -PathType Leaf)) {
+    Write-ForgeLog "  kept:  $GitignorePath (does not exist -- nothing to remove)"
+    return
+  }
+  if (-not (Test-Path -LiteralPath $SnippetPath -PathType Leaf)) {
+    Write-ForgeLog "  skipped: gitignore.snippet is not available -- cannot identify which lines Forge added, so $GitignorePath was left untouched"
+    return
+  }
+  $forgeLines = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($line in (Get-Content -LiteralPath $SnippetPath)) {
+    $t = $line.Trim()
+    if ($t -eq '' -or $t.StartsWith('#')) { continue }
+    [void] $forgeLines.Add($t)
+  }
+  $header = '# --- Forge (added by the claude-forge installer) ---'
+  $existing = @(Get-Content -LiteralPath $GitignorePath -ErrorAction SilentlyContinue)
+  $kept = New-Object 'System.Collections.Generic.List[string]'
+  $removedCount = 0
+  foreach ($line in $existing) {
+    $t = $line.Trim()
+    if ($t -eq $header -or $forgeLines.Contains($t)) { $removedCount++; continue }
+    [void] $kept.Add($line)
+  }
+  if ($removedCount -eq 0) {
+    Write-ForgeLog "  kept:  $GitignorePath (no Forge lines found -- already clean)"
+    return
+  }
+  $collapsed = New-Object 'System.Collections.Generic.List[string]'
+  $prevBlank = $false
+  foreach ($line in $kept) {
+    $isBlank = ($line.Trim() -eq '')
+    if ($isBlank -and $prevBlank) { continue }
+    [void] $collapsed.Add($line)
+    $prevBlank = $isBlank
+  }
+  while ($collapsed.Count -gt 0 -and $collapsed[$collapsed.Count - 1].Trim() -eq '') {
+    $collapsed.RemoveAt($collapsed.Count - 1)
+  }
+  if ($IsDryRun) {
+    Write-ForgeLog "  [dry-run] would remove $removedCount Forge line(s) from $GitignorePath"
+    return
+  }
+  $text = if ($collapsed.Count -gt 0) { ($collapsed -join "`n") + "`n" } else { '' }
+  [System.IO.File]::WriteAllText($GitignorePath, $text, (New-Object System.Text.UTF8Encoding($false)))
+  Write-ForgeLog "  wrote: $GitignorePath (-$removedCount Forge line(s) removed; your own lines kept)"
+}
+
+# Invoke-ForgeSettingsUnmerge — settings.json is MERGED on install, so it must never be deleted
+# on uninstall; this calls forge-settings-merge.cjs's own `unmerge` subcommand (mirrors `apply`:
+# 0 done/no-op, 1 refused-safe, 2 usage) to lift back out exactly the entries `apply` added. If
+# the local copy of the tool does not know `unmerge` yet, or node/the tool are unavailable, this
+# leaves settings.json completely untouched and says so in one plain line -- it never falls back
+# to editing the file itself.
+function Invoke-ForgeSettingsUnmerge {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetSettings,
+    [Parameter(Mandatory = $true)][string]$SourceSettings,
+    [bool]$IsDryRun = $false
+  )
+  if (-not (Test-Path -LiteralPath $TargetSettings -PathType Leaf)) {
+    Write-ForgeLog "  kept:  $TargetSettings (does not exist -- nothing to unmerge)"
+    return
+  }
+  $mergeTool = Join-Path (Split-Path -Parent (Split-Path -Parent $TargetSettings)) '.claude\forge-bin\forge-settings-merge.cjs'
+  if (-not (Test-Path -LiteralPath $mergeTool -PathType Leaf)) {
+    Write-ForgeLog "  kept:  $TargetSettings unmerged -- forge-settings-merge.cjs is not on disk here; left untouched"
+    return
+  }
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $nodeCmd) {
+    Write-ForgeLog "  kept:  $TargetSettings unmerged -- node is not on PATH; left untouched"
+    return
+  }
+  $cliArgs = @('unmerge', '--target', $TargetSettings, '--source', $SourceSettings)
+  if ($IsDryRun) { $cliArgs += '--dry-run' }
+  $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { $out = & node $mergeTool @cliArgs 2>&1 }
+  finally { $ErrorActionPreference = $prevEap }
+  $code = $LASTEXITCODE
+  if ($code -eq 0) {
+    Write-ForgeLog "  $out"
+  } elseif ($code -eq 1) {
+    Write-ForgeLog "  kept:  $TargetSettings -- unmerge refused ($out); left untouched"
+  } else {
+    Write-ForgeLog "  kept:  $TargetSettings unmerged -- this copy of forge-settings-merge.cjs does not support 'unmerge' yet; left untouched"
+  }
 }
 
 # Seed the project-root files Forge needs but the .claude payload does not carry:
@@ -402,6 +733,9 @@ function Add-ForgeProjectRootSeed {
     } else {
       Copy-Item -LiteralPath $claudeTemplate -Destination $claudeMd -Force
       Write-ForgeLog "  wrote: $claudeMd (project brain -- edit it, it is yours)"
+      # Manifested ONLY on this branch (freshly written by Forge) — never on the "kept" branch
+      # above, so an uninstall can never delete a CLAUDE.md that predates Forge.
+      Add-ForgeManifestEntry -Scope 'project' -RootDir $ProjectDir -AbsPath $claudeMd
     }
   }
 
@@ -477,6 +811,9 @@ function Write-ForgeVersionMarker {
       $prev = Get-Content -LiteralPath $markerPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
       if ($prev.forge_version -eq $Version -and $prev.template -eq $templatePath) {
         Write-ForgeLog "  kept:  $markerPath (forge_version $Version unchanged -- marker left as-is)"
+        # Still manifested: this file is always Forge-owned installer metadata (never hand-authored
+        # by a user before Forge exists), regardless of which branch wrote/kept it this run.
+        Add-ForgeManifestEntry -Scope 'project' -RootDir $ProjectDir -AbsPath $markerPath
         return
       }
     } catch {
@@ -494,6 +831,7 @@ function Write-ForgeVersionMarker {
     $json = ($marker | ConvertTo-Json -Depth 3)
     [System.IO.File]::WriteAllText($markerPath, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
     Write-ForgeLog "  wrote: $markerPath (forge_version $Version)"
+    Add-ForgeManifestEntry -Scope 'project' -RootDir $ProjectDir -AbsPath $markerPath
   } catch {
     Write-ForgeError "could not write $markerPath (forge-sync status will report installed=none): $($_.Exception.Message)"
   }
@@ -518,6 +856,13 @@ function Main {
 
   $doGlobal = -not $projectOnly
   $doProject = -not $globalOnly
+
+  # v2.8.0 install manifest accumulator (see Add-ForgeManifestEntry/Write-ForgeManifestFile above) --
+  # reset here so a fresh run never carries entries over from a previous call in the same process.
+  $script:ForgeManifest = @{
+    global  = New-Object 'System.Collections.Generic.List[object]'
+    project = New-Object 'System.Collections.Generic.List[object]'
+  }
 
   # ---------------------------------------------------------------------------
   # 0. refuse a HOME target (review HIGH #3): a one-liner run from %USERPROFILE%
@@ -713,7 +1058,7 @@ function Main {
     if ($doGlobal) {
       Write-ForgeLog ''
       Write-ForgeLog "Installing global core -> $HOME\.claude"
-      $globalOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir 'global-install\.claude') -DestDir (Join-Path $forgeHome '.claude') -IsDryRun $isDryRun
+      $globalOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir 'global-install\.claude') -DestDir (Join-Path $forgeHome '.claude') -IsDryRun $isDryRun -ManifestScope 'global' -ManifestRoot $forgeHome
       # The CANONICAL TEMPLATE (external audit II-A, 2026-09-23). The forge-core skill sends every
       # "install Forge V2 into this project", the bare-folder auto-install and the "stay current" rule to
       # ~\.claude\forge\template\ -- and this installer never created it, so all three pointed at nothing
@@ -722,14 +1067,26 @@ function Main {
       $templateDir = Join-Path $forgeHome '.claude\forge\template'
       Write-ForgeLog ''
       Write-ForgeLog "Installing canonical template -> $templateDir (used by forge-sync and the auto-installer)"
-      $templateOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $templateDir '.claude') -IsDryRun $isDryRun
+      $templateOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $templateDir '.claude') -IsDryRun $isDryRun -ManifestScope 'global' -ManifestRoot $forgeHome
       if ($templateOk -and -not $isDryRun) {
         $seedMd = Join-Path $sourceDir 'templates\project-CLAUDE.md'
         $seedGi = Join-Path $sourceDir 'templates\gitignore.snippet'
         $seedEnv = Join-Path $sourceDir '.env.example'
-        if (Test-Path -LiteralPath $seedMd) { Copy-Item -LiteralPath $seedMd -Destination (Join-Path $templateDir 'CLAUDE.md') -Force }
-        if (Test-Path -LiteralPath $seedGi) { Copy-Item -LiteralPath $seedGi -Destination (Join-Path $templateDir 'gitignore.snippet') -Force }
-        if (Test-Path -LiteralPath $seedEnv) { Copy-Item -LiteralPath $seedEnv -Destination (Join-Path $templateDir 'env.example') -Force }
+        if (Test-Path -LiteralPath $seedMd) {
+          $tSeedMd = Join-Path $templateDir 'CLAUDE.md'
+          Copy-Item -LiteralPath $seedMd -Destination $tSeedMd -Force
+          Add-ForgeManifestEntry -Scope 'global' -RootDir $forgeHome -AbsPath $tSeedMd
+        }
+        if (Test-Path -LiteralPath $seedGi) {
+          $tSeedGi = Join-Path $templateDir 'gitignore.snippet'
+          Copy-Item -LiteralPath $seedGi -Destination $tSeedGi -Force
+          Add-ForgeManifestEntry -Scope 'global' -RootDir $forgeHome -AbsPath $tSeedGi
+        }
+        if (Test-Path -LiteralPath $seedEnv) {
+          $tSeedEnv = Join-Path $templateDir 'env.example'
+          Copy-Item -LiteralPath $seedEnv -Destination $tSeedEnv -Force
+          Add-ForgeManifestEntry -Scope 'global' -RootDir $forgeHome -AbsPath $tSeedEnv
+        }
       } elseif (-not $templateOk) {
         Write-ForgeError 'canonical template copy had failures (project installs still work; forge-sync update checks will not)'
         $globalOk = $false
@@ -750,7 +1107,7 @@ function Main {
           New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
         }
       }
-      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs')
+      $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs') -ManifestScope 'project' -ManifestRoot $projectDir
       # Seed the two project-root files Forge documents but the payload copy never delivered.
       # Added 2026-08-13 after a real fresh-install measurement: without them three suites
       # (forge-configdrift, forge-tool-index, forge-toolhook) fail on a brand-new project and the
@@ -761,6 +1118,18 @@ function Main {
       # already-resolved home Main uses everywhere else (HOME-RESOLUTION-DRIFT fix) -- passed explicitly,
       # never recomputed inside the function.
       Write-ForgeVersionMarker -ProjectDir $projectDir -Version $forgeVersion -ForgeHome $forgeHome -IsDryRun $isDryRun
+    }
+
+    # v2.8.0: persist the manifest(s) an uninstall will read back — see Add-ForgeManifestEntry's
+    # header comment. Only for the scope(s) this run actually touched, and never on a dry-run (which
+    # never wrote anything real to hash in the first place).
+    if (-not $isDryRun) {
+      if ($doGlobal) {
+        Write-ForgeManifestFile -Scope 'global' -DestFile (Join-Path $forgeHome '.claude\forge\install-manifest.json') -Version $forgeVersion
+      }
+      if ($doProject) {
+        Write-ForgeManifestFile -Scope 'project' -DestFile (Join-Path $projectDir '.claude\.forge-install-manifest.json') -Version $forgeVersion
+      }
     }
 
     # -------------------------------------------------------------------------
@@ -801,4 +1170,140 @@ function Main {
   }
 }
 
-Main
+# ---------------------------------------------------------------------------
+# Uninstall (v2.8.0) -- removes exactly what an install wrote, verified by hash; see the
+# .PARAMETER Uninstall doc comment at the top of this file for the full contract.
+# ---------------------------------------------------------------------------
+function Invoke-ForgeUninstall {
+  $projectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
+  $forgeHome = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { $HOME }
+  $assumeYes = [bool]$Yes -or ($env:FORGE_YES -eq '1')
+  $isDryRun = [bool]$DryRun
+  $globalOnly = [bool]$GlobalOnly
+  $projectOnly = [bool]$ProjectOnly
+  $forgeRef = if ($env:FORGE_REF) { $env:FORGE_REF } else { 'main' }
+
+  if ($globalOnly -and $projectOnly) {
+    Write-ForgeError '-GlobalOnly and -ProjectOnly are mutually exclusive'
+    exit 1
+  }
+  $doGlobal = -not $projectOnly
+  $doProject = -not $globalOnly
+
+  Write-ForgeLog 'claude-forge uninstaller'
+  Write-ForgeLog ''
+  if ($doProject) { Write-ForgeLog "This will remove Forge's own files from: $projectDir\.claude (only files the installer itself wrote, verified by hash)" }
+  if ($doGlobal) { Write-ForgeLog "This will remove Forge's global core from: $forgeHome\.claude (forge-core skill, /forge, /setup-forge, the canonical template)" }
+  Write-ForgeLog 'A file you edited yourself, and your own data (memory, run logs, CLAUDE.md, .env), are left in place.'
+  Write-ForgeLog ''
+  if ($isDryRun) { Write-ForgeLog '(dry-run mode -- nothing will actually be removed)' }
+
+  if (-not $assumeYes -and -not $isDryRun) {
+    if ([Environment]::UserInteractive) {
+      $reply = Read-Host 'Proceed with uninstall? [y/N]'
+      if ($reply -notmatch '^(y|Y|yes|YES)$') {
+        Write-ForgeLog 'Aborted.'
+        exit 0
+      }
+    } else {
+      Write-ForgeError 'non-interactive session and no -Yes/-y or FORGE_YES=1 given -- aborting to avoid unattended removal'
+      exit 1
+    }
+  }
+
+  $pipeMode = [string]::IsNullOrEmpty($PSScriptRoot)
+  $scriptDir = if ($pipeMode) { '' } else { $PSScriptRoot }
+  $srcInfo = Resolve-ForgeSource -PipeMode $pipeMode -ScriptDir $scriptDir -ForgeRef $forgeRef -IsDryRun $isDryRun
+  $sourceDir = $srcInfo.SourceDir
+  $tempDir = $srcInfo.TempDir
+
+  try {
+    if ($doProject) {
+      Write-ForgeLog ''
+      Write-ForgeLog "Project: $projectDir\.claude"
+      $manifestPath = Join-Path $projectDir '.claude\.forge-install-manifest.json'
+      if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $r = Remove-ForgeManifestFiles -RootDir $projectDir -Entries @($manifest.files) -IsDryRun $isDryRun
+        Write-ForgeLog "  manifest: removed $($r.removed), kept $($r.kept) (edited by you), $($r.missing) already gone"
+        if (-not $isDryRun) { Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue }
+      } elseif ($sourceDir -and (Test-Path -LiteralPath (Join-Path $sourceDir '.claude') -PathType Container)) {
+        Write-ForgeLog '  no install manifest found (a pre-2.8.0 install) -- falling back to a byte-identical comparison against the shipped payload'
+        $r = Remove-ForgePayloadFallback -PayloadSourceDir (Join-Path $sourceDir '.claude') -DestRootDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -SkipRel @('settings.json')
+        Write-ForgeLog "  fallback: removed $($r.removed), kept $($r.kept)"
+      } else {
+        Write-ForgeLog '  no install manifest found, and no payload available to compare against -- nothing removed from .claude (run the uninstaller from a claude-forge checkout, or with network access, to use the fallback)'
+      }
+
+      # settings.json is MERGED, never deleted -- unmerge only.
+      $settingsTarget = Join-Path $projectDir '.claude\settings.json'
+      $settingsSource = if ($sourceDir) { Join-Path $sourceDir '.claude\settings.json' } else { '' }
+      if ($settingsSource -and (Test-Path -LiteralPath $settingsSource -PathType Leaf)) {
+        Invoke-ForgeSettingsUnmerge -TargetSettings $settingsTarget -SourceSettings $settingsSource -IsDryRun $isDryRun
+      } else {
+        Write-ForgeLog "  kept:  $settingsTarget unmerged -- no payload settings.json available to unmerge against"
+      }
+
+      # .gitignore: remove ONLY the exact lines the installer's snippet added.
+      if ($sourceDir) {
+        $giSnippet = Join-Path $sourceDir 'templates\gitignore.snippet'
+        Remove-ForgeGitignoreLines -GitignorePath (Join-Path $projectDir '.gitignore') -SnippetPath $giSnippet -IsDryRun $isDryRun
+      } else {
+        Write-ForgeLog '  skipped: .gitignore -- no payload gitignore.snippet available to identify Forge''s own lines'
+      }
+
+      Write-ForgeLog ''
+      Write-ForgeLog '  left in place (your own data): CLAUDE.md (if it predates Forge or you edited it), .env, FORGE_MEMORY*.md, .claude/forge-runs/, .claude/agent-memory/, and .claude/settings.json (unmerged above, never deleted)'
+    }
+
+    if ($doGlobal) {
+      Write-ForgeLog ''
+      Write-ForgeLog "Global: $forgeHome\.claude"
+      $gManifestPath = Join-Path $forgeHome '.claude\forge\install-manifest.json'
+      if (Test-Path -LiteralPath $gManifestPath -PathType Leaf) {
+        $gManifest = Get-Content -LiteralPath $gManifestPath -Raw | ConvertFrom-Json
+        $r = Remove-ForgeManifestFiles -RootDir $forgeHome -Entries @($gManifest.files) -IsDryRun $isDryRun
+        Write-ForgeLog "  manifest: removed $($r.removed), kept $($r.kept) (edited by you), $($r.missing) already gone"
+        if (-not $isDryRun) { Remove-Item -LiteralPath $gManifestPath -Force -ErrorAction SilentlyContinue }
+      } elseif ($sourceDir) {
+        Write-ForgeLog '  no install manifest found (a pre-2.8.0 install) -- falling back to a byte-identical comparison against the shipped payload'
+        $r1 = Remove-ForgePayloadFallback -PayloadSourceDir (Join-Path $sourceDir 'global-install\.claude') -DestRootDir (Join-Path $forgeHome '.claude') -IsDryRun $isDryRun
+        $r2 = Remove-ForgePayloadFallback -PayloadSourceDir (Join-Path $sourceDir '.claude') -DestRootDir (Join-Path $forgeHome '.claude\forge\template\.claude') -IsDryRun $isDryRun -SkipRel @('settings.json')
+        Write-ForgeLog "  fallback: removed $($r1.removed + $r2.removed), kept $($r1.kept + $r2.kept)"
+      } else {
+        Write-ForgeLog '  no install manifest found, and no payload available to compare against -- nothing removed from the global core'
+      }
+
+      # Stale usage-guard pid file (audit Part II, N8): remove ONLY when it points at a dead process.
+      $pidFile = Join-Path $forgeHome '.claude\forge-usage-guard.pid'
+      if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
+        $dead = $true
+        try {
+          $rec = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
+          if ($rec.pid -and (Get-Process -Id $rec.pid -ErrorAction SilentlyContinue)) { $dead = $false }
+        } catch {
+          $dead = $true # unreadable/malformed -- treat as stale, same as the tool's own stale-slot takeover does
+        }
+        if ($dead) {
+          if ($isDryRun) { Write-ForgeLog "  [dry-run] would remove stale pid file: $pidFile" }
+          else { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue; Write-ForgeLog "  removed: $pidFile (pointed at a dead process)" }
+        } else {
+          Write-ForgeLog "  kept:  $pidFile (a usage-guard watcher is still running -- stop it first: node .claude\forge-bin\usage-guard.cjs stop)"
+        }
+      }
+
+      Write-ForgeLog ''
+      Write-ForgeLog '  left in place (your own data / other tools'' state): FORGE_USAGE_GUARD_STATE.json, FORGE_USAGE_PRESSURE.json, .credentials.json, forge-usage-guard-account-map.json, and anything else under ~\.claude this installer did not write'
+    }
+
+    Write-ForgeLog ''
+    if ($isDryRun) { Write-ForgeLog 'Dry run complete. Nothing was removed.' }
+    else { Write-ForgeLog 'claude-forge uninstall complete.' }
+  } finally {
+    if ($tempDir -and (Test-Path -LiteralPath $tempDir -PathType Container)) {
+      Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+if ($Uninstall) { Invoke-ForgeUninstall } else { Main }

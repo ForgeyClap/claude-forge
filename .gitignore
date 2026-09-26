@@ -44,6 +44,22 @@ NVIDIA Build and NIM Model Mapping for Permanent Forge Agent Roles.pdf
 # per-machine override grant record are never committed — the same two lines the installer snippet adds to a project.
 .claude/config/forge-owner-grant.txt
 .claude/config/forge-usage-guard-override-grant.json
+# Single-use /forge config approvals (N8, 2026-09-26 laptop re-audit) — see templates/gitignore.snippet,
+# which adds the same two lines to every installed project.
+.claude/FORGE_CONFIG.once.*.consumed.*.json
+.claude/FORGE_CONFIG.once.*.pending.json
+
+# Forge user-state files (never shipped, never committed) — see templates/gitignore.snippet for the
+# full explanation. Also excluded here so a local install-then-test cycle in THIS clone never stages
+# them. Exact filenames confirmed by the Lead once the source-side split lands.
+.claude/.forge-install-manifest.json
+.claude/config/orchestration/FORGE_STANDING_RULES.user.json
+.claude/config/orchestration/FORGE_SCOUT_VETTING.user.json
+.claude/config/orchestration/codex-review.user.json
+
+# Local-only installer test scratch (WP-D1) — throwaway install/uninstall runs against fake
+# HOME/project dirs, never real state, never committed.
+_itest/
 # Forge onboarding — temp key fill-file + runtime markers (never commit)
 .env.forge-setup
 .env.forge-tmp
