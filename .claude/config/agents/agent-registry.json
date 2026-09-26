@@ -87,6 +87,58 @@
       "agentFile": ".claude/agents/docs-boss.md"
     }
   },
-  "extensionRule": "New agent? Only with permanent name + role + skill bundle + model mapping + self-review + loop position, added to this file (template) and synced. Never spawn ad-hoc differently-named agents for work an existing Boss covers.",
-  "_agentFilesNote": "Each Boss has a real agent-definition file (agentFile) with frontmatter (name/description/tools/model/memory:project) + body; the Lead dispatches Agent({subagent_type:<kebab>, model:<claudeTier>}). Files are template-owned + synced."
+  "specialistAgents": {
+    "_doc": "2026-09-26 (laptop re-audit D column: '7 specialist agents unregistered' — registry/model map listed 12 of 19 real .claude/agents/*.md files). OPTIONAL, domain-specific specialist agents — real agent-md files, dispatched directly by Boss/Head Chef when a work package needs this exact domain (Electron, payments, MCP, ML, data science) or on explicit request (codex-reviewer, verify-boss are opt-in second opinions/re-executors). Deliberately kept OUT of the `agents` map above: that map's exact count of 12 is a hard invariant several tools anchor on (e.g. nvidia-provider.test.cjs's 'agent registry has the 12 permanent Bosses'), and forge-certify.cjs's loadProjectAgentNames() already treats these as real on-request specialists proven by their own agent-md file, not by a registry row. Each entry here follows the SAME contract as a permanent Boss (permanent name + clear role + model assignment + self-review duty), added HERE template-first, then synced.",
+    "data-scientist": {
+      "name": "Data Scientist",
+      "role": "Data science / EDA & modeling (specialist)",
+      "responsibilities": "Exploratory data analysis to statistical modeling with rigorous validation; always attaches honest uncertainty/confidence labels; never fabricates a metric or claims certainty. Dispatched for prediction/data-analysis work packages.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/data-scientist.md"
+    },
+    "electron-pro": {
+      "name": "Electron Pro",
+      "role": "Electron desktop apps (specialist)",
+      "responsibilities": "Builds/hardens Electron apps: safe IPC, context isolation, no nodeIntegration in the renderer, and a real signed installer. Dispatched for desktop-app work packages.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/electron-pro.md"
+    },
+    "mcp-developer": {
+      "name": "MCP Developer",
+      "role": "Model Context Protocol servers/clients (specialist)",
+      "responsibilities": "Builds/debugs MCP servers and clients: JSON-RPC 2.0 compliance, schema-validated inputs, minimal scopes, secure config. Dispatched for skill/integration authoring that exposes an MCP surface.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/mcp-developer.md"
+    },
+    "ml-engineer": {
+      "name": "ML Engineer",
+      "role": "Production ML engineering (specialist)",
+      "responsibilities": "Training-to-serving pipelines: reproducibility, model versioning, drift monitoring, safe rollout. Never triggers a real-money or irreversible action automatically. Dispatched for ML-pipeline work packages.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/ml-engineer.md"
+    },
+    "payment-integration": {
+      "name": "Payment Integration",
+      "role": "Payments / financial transactions (specialist)",
+      "responsibilities": "Stripe/gateway integration, PCI-safe tokenization, verified webhooks, idempotent charge/refund flows. Never hardcodes a key. Dispatched for payment-integration work packages.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/payment-integration.md"
+    },
+    "codex-reviewer": {
+      "name": "Codex Reviewer",
+      "role": "Optional independent code-quality reviewer",
+      "responsibilities": "On request only, never a mandatory gate: runs the official Codex plugin on the model pinned in config/orchestration/codex-review.json for an independent second opinion on important/sensitive code; falls back to a clearly labeled non-independent ECC review when Codex is unavailable.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/codex-reviewer.md"
+    },
+    "verify-boss": {
+      "name": "Verify Boss",
+      "role": "Optional independent re-executor",
+      "responsibilities": "On request only, never a mandatory gate: re-runs the exact build/test/health-check command a Boss claims passed, from a cold read of the diff, and reports the literal exit code. Read+execute-only — can re-run a claim but can never edit the evidence it verifies.",
+      "selfReview": true,
+      "agentFile": ".claude/agents/verify-boss.md"
+    }
+  },
+  "extensionRule": "New agent? Only with permanent name + role + skill bundle + model mapping + self-review + loop position, added to this file (template) and synced. Never spawn ad-hoc differently-named agents for work an existing Boss covers. Optional domain specialists and opt-in reviewers follow the same contract under `specialistAgents` above instead of the fixed 12-Boss `agents` map (which several tools anchor an exact count on).",
+  "_agentFilesNote": "Each Boss/specialist has a real agent-definition file (agentFile) with frontmatter (name/description/tools/model, + memory:project ONLY for agents whose tool-policy class allows Write/Edit — dropped 2026-09-26 from review-boss/security-boss/search-boss/seo-boss/verify-boss because Claude Code turns memory:project into an automatic Write/Edit grant, which contradicted their read-only/exec-reviewer class) + body; the Lead dispatches Agent({subagent_type:<kebab>, model:<claudeTier>}). Files are template-owned + synced."
 }

@@ -307,16 +307,17 @@ function toForwardSlashes(p) { return String(p).replace(/\\/g, '/'); }
 
 // Model tier per Forge role → Paperclip adapterConfig.model (+ effort). Mirrors .claude/FORGE_MODEL_ROUTING.json
 // (user decision 2026-07-03). WHY: with no explicit model, Paperclip falls back to the adapter's "cheap"
-// profile (claude-sonnet-4-6, effort low) — even for the Lead. We set it per tier so the Lead runs on Opus 4.8
-// and routine work on the CURRENT Sonnet. The `sonnet`/`haiku` aliases resolve to the current version at
-// runtime (Sonnet 5 / Haiku 4.5), so Paperclip's stale model list never pins us to Sonnet 4.6. Opus uses the
-// explicit id `claude-opus-4-8` (it IS in Paperclip's list → clean "Claude Opus 4.8" label). The Lead may PATCH
-// a specific agent to opus at runtime for the highest-stakes work (dynamic escalation).
+// profile (claude-sonnet-4-6, effort low) — even for the Lead. We set it per tier so the Lead runs on the
+// current Opus and routine work on the CURRENT Sonnet. The `sonnet`/`haiku` aliases resolve to the current
+// version at runtime (Sonnet 5 / Haiku 4.5), so Paperclip's stale model list never pins us to Sonnet 4.6.
+// Opus uses the explicit id `claude-opus-5-5` (2026-09-26: updated from the retired `claude-opus-4-8` —
+// re-verify this id is still in Paperclip's own model list after any Paperclip upgrade; if Paperclip has not
+// caught up yet, the Lead may PATCH a specific agent to opus at runtime as a stopgap).
 const OPUS_ROLES = new Set(['lead', 'orchestrator', 'boss', 'ceo', 'architect', 'cto', 'security', 'security-reviewer', 'codex-reviewer']);
 const HAIKU_ROLES = new Set(['classifier', 'summarizer', 'memory-writer', 'formatter']);
 function modelFor(role) {
   const k = String(role || '').toLowerCase();
-  if (OPUS_ROLES.has(k)) return { model: 'claude-opus-4-8', effort: 'high' };
+  if (OPUS_ROLES.has(k)) return { model: 'claude-opus-5-5', effort: 'high' };
   if (HAIKU_ROLES.has(k)) return { model: 'haiku' }; // alias → current Haiku 4.5 (effort unsupported on Haiku)
   return { model: 'sonnet', effort: 'high' };         // alias → current Sonnet 5 (versatile default)
 }

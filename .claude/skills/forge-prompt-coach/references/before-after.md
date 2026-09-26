@@ -1,9 +1,9 @@
 # Ten bad-to-good pairs
 
-Source: `.claude/forge-research/prompt-coaching-2026-09-24.md` §D — ten constructed examples built from the
-patterns in [CC-BP], [LOV] and [SUPA]. They are illustrations, not real owner requests. The Dutch text is the
-research wording; the English line under each pair is a translation. `{braces}` are details Forge fills in
-from the request or the project.
+Ten constructed examples built from the patterns identified in Forge's internal UX research (dev-only, not
+part of a fresh install — see `SKILL.md` "Evidence base"). They are illustrations, not real owner requests.
+The Dutch text is the original research wording; the English line under each pair is a translation.
+`{braces}` are details Forge fills in from the request or the project.
 
 Each pair shows the same four steps: the weak request → the ONE question (option A recommended) → the
 assumptions Forge fills in itself → the rewritten request that Forge confirms in one sentence

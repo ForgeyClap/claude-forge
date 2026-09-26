@@ -63,7 +63,7 @@ The dashboard is the **Command Center** (`http://127.0.0.1:4100`, owner decision
 - latest run id: <id> · events written: <n> (via `.claude/forge-dashboard/log-event.cjs`)
 - **Forge Session Mode:** on / paused / off (from `FORGE_SESSION_STATE.json`)
 Legacy Control Center (ONLY if the owner explicitly requested `legacy dashboard` this run): started yes/no · port <from `.claude/forge-dashboard/PORT`> · health check result.
-Allowed wording: "Command Center health check passed (4100)." · "Command Center not reachable — start command printed, not executed." · "Events written via log-event.cjs; dashboard not started (not requested)." Never claim a URL is live unless tested/confirmed.
+Allowed wording: "Command Center health check passed (4100)." · "Command Center not reachable — Forge tried to start it itself (supervisor) and it is still not answering." · "Command Center not installed in this project (optional) — continuing without it." · "Events written via log-event.cjs; dashboard not started (not requested)." Never print a start/build command for the user to run, and never claim a URL is live unless tested/confirmed.
 
 ## 8b. Command Pack Update (include on install / when it changed)
 - forge-bin installed: yes/no · PowerShell scripts: installed/not · CMD scripts: installed/not · Bash scripts: installed/not
@@ -84,7 +84,7 @@ Allowed wording: "Command Center health check passed (4100)." · "Command Center
 
 ## 12. Codex block (v7.1 — exact state, never faked)
 - Codex considered / invoked: · **Codex state** (one of): `CODEX REAL INVOKED` · `CODEX BLOCKED: TRUST/TTY` · `CODEX BLOCKED: NO GIT` · `CODEX BLOCKED: NO OUTPUT` · `CODEX NOT AVAILABLE` · `CODEX NOT INVOKED` · `CODEX FALLBACK USED`.
-- If blocked: cite `artifacts/codex-unlock-diagnosis.md` (CLI/version/auth/git/TTY/trust/exit-code) + the **exact manual command** the user can run in an interactive terminal. Never claim Codex proof without real output.
+- If blocked: cite `artifacts/codex-unlock-diagnosis.md` (CLI/version/auth/git/TTY/trust/exit-code) and state in one plain line that Codex was not run and why — **never hand the user a manual command to run**; the diagnosis artifact keeps the attempted command only as an internal record. Never claim Codex proof without real output.
 
 ## 12b. Browser proof + Skill Registry + Fresh-install (v7.1)
 - **Browser proof:** tool used · dashboard URL · run id · lenses checked · screenshot paths · layout observations · pass/fail — or **PARTIAL** with the exact reason (no Playwright/Chrome). Cite `artifacts/dashboard-browser-proof.md`. Never claim a screenshot you didn't take.

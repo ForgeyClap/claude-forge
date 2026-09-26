@@ -56,9 +56,15 @@ t5('V15: a LIVE holder (heartbeat keeps refreshing) is NEVER reclaimed by a wait
       await slowDone; // hold well past staleMs while the heartbeat keeps refreshing mtime
       assert.strictEqual(fence(), true, 'A must still hold the lock at write time — it was never reclaimed');
       return 'A-done';
-    }, { staleMs: 150, timeoutMs: 50 });
-    await new Promise((res) => setTimeout(res, 400)); // > 2x staleMs — A's heartbeat must have kept it alive
-    const waiterB = await S.withStateLock(lockPath, () => { bAcquired = true; return 'B'; }, { staleMs: 150, timeoutMs: 50 });
+    // Part V-D/N3-style CI robustness (fresh-laptop re-audit, 2026-09-26): staleMs was 150 (heartbeat
+    // every 50ms, only 100ms of slack before a delayed heartbeat tick would make a genuinely-live A look
+    // stale to B) — on a slow/loaded CI runner a single delayed setInterval callback could exceed that,
+    // flaking this real-product guarantee's OWN test rather than revealing a real bug. Raised to 900ms
+    // (heartbeat every 300ms, 600ms slack) — generous headroom, same relative shape, never a production
+    // default (DEFAULT_STALE_MS is untouched; only this test's explicit override changes).
+    }, { staleMs: 900, timeoutMs: 50 });
+    await new Promise((res) => setTimeout(res, 2000)); // > 2x staleMs — A's heartbeat must have kept it alive
+    const waiterB = await S.withStateLock(lockPath, () => { bAcquired = true; return 'B'; }, { staleMs: 900, timeoutMs: 50 });
     assert.strictEqual(waiterB.ok, false, 'B must be refused while A is still genuinely alive and heartbeating: ' + JSON.stringify(waiterB));
     assert.strictEqual(bAcquired, false, 'B\'s transaction must never have run');
     releaseSlow();
@@ -107,9 +113,12 @@ t5('V15: full withStateLock schedule — A holds > stale interval and stays ACTI
     let releaseA;
     const aGate = new Promise((res) => { releaseA = res; });
     const order = [];
-    const holderA = S.withStateLock(lockPath, async () => { order.push('A-start'); await aGate; order.push('A-end'); return 'A'; }, { staleMs: 120, timeoutMs: 60 });
-    await new Promise((res) => setTimeout(res, 300)); // well past staleMs — A is still active (heartbeat)
-    const holderB = await S.withStateLock(lockPath, () => { order.push('B-ran'); return 'B'; }, { staleMs: 120, timeoutMs: 60 });
+    // Part V-D/N3-style CI robustness (fresh-laptop re-audit, 2026-09-26): staleMs raised from 120 to 900
+    // (same rationale as the LIVE-holder test above — a tight heartbeat/staleMs ratio can flake on a
+    // slow/loaded runner; DEFAULT_STALE_MS itself is untouched, only this test's override).
+    const holderA = S.withStateLock(lockPath, async () => { order.push('A-start'); await aGate; order.push('A-end'); return 'A'; }, { staleMs: 900, timeoutMs: 60 });
+    await new Promise((res) => setTimeout(res, 2000)); // well past staleMs — A is still active (heartbeat)
+    const holderB = await S.withStateLock(lockPath, () => { order.push('B-ran'); return 'B'; }, { staleMs: 900, timeoutMs: 60 });
     assert.strictEqual(holderB.ok, false, 'B must never acquire while A is still alive: ' + JSON.stringify(holderB));
     assert.ok(!order.includes('B-ran'), 'B\'s transaction must never have executed — no overlap with A');
     releaseA();

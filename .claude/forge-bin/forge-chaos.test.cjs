@@ -440,5 +440,23 @@ console.log('\n10) exit-code stderr diagnostic — presence on non-zero exit, ab
   t('a non-zero-exit-code run (exitCode 2) has a NON-EMPTY stderr diagnostic with the exact literal prefix the CLI uses ("forge-chaos: ")', r.status === 2 && r.stderr.startsWith('forge-chaos: '));
 }
 
+// =====================================================================================================
+// 11) WP-S4 (v2.8.0 laptop-audit Part V-G/VI): `--help`/`-h` was never recognised by parseArgs() (only
+//     --json/--only/--keep-tmp), so it silently fell through to a REAL run of every scenario — several of
+//     which genuinely wait out provider timeouts/retries — observed as an indefinite hang. A short timeout
+//     proves it now returns almost immediately with a real usage line instead of falling into that path.
+// =====================================================================================================
+console.log('\n11) --help / -h returns quickly with a usage line, never runs the real scenarios');
+{
+  const r = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8', timeout: 5000 });
+  t('--help exits 0 (a timeout/null status means it fell through to the hang path again)', r.status === 0);
+  t('--help prints a Usage: line for forge-chaos.cjs', /^Usage: node forge-chaos\.cjs/.test(r.stdout || ''));
+  t('--help never prints a scenario [PASS]/[FAIL]/[SKIP] tag (it must not run the real harness)', !/\[(PASS|FAIL|SKIP)\]/.test(r.stdout || ''));
+}
+{
+  const r = spawnSync(process.execPath, [CLI, '-h'], { encoding: 'utf8', timeout: 5000 });
+  t('-h is the same shorthand for --help (exit 0, Usage: line)', r.status === 0 && /^Usage: node forge-chaos\.cjs/.test(r.stdout || ''));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

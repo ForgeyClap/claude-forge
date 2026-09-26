@@ -110,19 +110,22 @@ t('detectStack tolerates a malformed package.json (falls back to no-package-json
 });
 
 // ---------------------------------------------------------------------------------------------------------
-// 2) loadHardRules — universal defaults + optional project-local FORGE_HARD_RULES.json
+// 2) loadHardRules — universal defaults + optional project-local FORGE_PROJECT_HARD_RULES.json
+// (renamed 2026-09-26, N9 laptop re-audit: the old name FORGE_HARD_RULES.json collided with Forge's own
+// internal run-contract file at .claude/config/orchestration/FORGE_HARD_RULES.json — a different shape,
+// a different purpose. See test at the bottom of this section that proves the collision is gone.)
 // ---------------------------------------------------------------------------------------------------------
 console.log('\n2) loadHardRules — defaults + project-local merge');
 
-t('no FORGE_HARD_RULES.json present -> default-only, exactly the built-in universal rules', () => {
+t('no FORGE_PROJECT_HARD_RULES.json present -> default-only, exactly the built-in universal rules', () => {
   const r = PB.loadHardRules({ projectDir: nodeDir });
   assert.strictEqual(r.source, 'default-only');
   assert.strictEqual(r.rules.length, PB.DEFAULT_HARD_RULES.length);
 });
-t('a project-local FORGE_HARD_RULES.json extends (not replaces) the defaults', () => {
+t('a project-local FORGE_PROJECT_HARD_RULES.json extends (not replaces) the defaults', () => {
   const dir = freshDir('pb-hardrules');
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_HARD_RULES.json'), JSON.stringify({
+  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_PROJECT_HARD_RULES.json'), JSON.stringify({
     rules: [{ id: 'no-lorem-ipsum', text: 'Never ship lorem ipsum placeholder copy to production.' }],
   }));
   const r = PB.loadHardRules({ projectDir: dir });
@@ -133,7 +136,7 @@ t('a project-local FORGE_HARD_RULES.json extends (not replaces) the defaults', (
 t('a project rule cannot silently shadow a universal default id (same id is ignored, not overridden)', () => {
   const dir = freshDir('pb-hardrules-shadow');
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_HARD_RULES.json'), JSON.stringify({
+  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_PROJECT_HARD_RULES.json'), JSON.stringify({
     rules: [{ id: 'honesty-core', text: 'a weakened override attempt' }],
   }));
   const r = PB.loadHardRules({ projectDir: dir });
@@ -141,17 +144,31 @@ t('a project rule cannot silently shadow a universal default id (same id is igno
   assert.ok(!honesty.text.includes('weakened'));
   assert.strictEqual(r.rules.length, PB.DEFAULT_HARD_RULES.length);
 });
-t('a malformed FORGE_HARD_RULES.json throws (fail-closed, not silently ignored)', () => {
+t('a malformed FORGE_PROJECT_HARD_RULES.json throws (fail-closed, not silently ignored)', () => {
   const dir = freshDir('pb-hardrules-bad');
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_HARD_RULES.json'), '{ not valid json');
+  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_PROJECT_HARD_RULES.json'), '{ not valid json');
   assert.throws(() => PB.loadHardRules({ projectDir: dir }));
 });
-t('a FORGE_HARD_RULES.json rule missing "text" throws', () => {
+t('a FORGE_PROJECT_HARD_RULES.json rule missing "text" throws', () => {
   const dir = freshDir('pb-hardrules-missing');
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_HARD_RULES.json'), JSON.stringify({ rules: [{ id: 'x' }] }));
+  fs.writeFileSync(path.join(dir, '.claude', 'FORGE_PROJECT_HARD_RULES.json'), JSON.stringify({ rules: [{ id: 'x' }] }));
   assert.throws(() => PB.loadHardRules({ projectDir: dir }));
+});
+t('N9 regression: a real Forge orchestration FORGE_HARD_RULES.json (different shape, different path) never confuses loadHardRules', () => {
+  const dir = freshDir('pb-hardrules-collision');
+  fs.mkdirSync(path.join(dir, '.claude', 'config', 'orchestration'), { recursive: true });
+  // Forge's OWN internal run-contract file: same basename as the pre-fix bug, a totally different shape
+  // ({id,rule,trigger,...}, no "text" field) — before the rename this sat one path segment away from where
+  // loadHardRules looked, so it was silently invisible; now it is a DIFFERENT file entirely and must stay so.
+  fs.writeFileSync(path.join(dir, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    rules: [{ id: 'memory-read', rule: 'Project memory must be read before routing a run.', trigger: 'always' }],
+  }));
+  const r = PB.loadHardRules({ projectDir: dir });
+  assert.strictEqual(r.source, 'default-only');
+  assert.strictEqual(r.rules.length, PB.DEFAULT_HARD_RULES.length);
+  assert.ok(!r.rules.some((x) => x.id === 'memory-read'));
 });
 
 // ---------------------------------------------------------------------------------------------------------

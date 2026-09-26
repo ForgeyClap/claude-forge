@@ -88,3 +88,22 @@ test('GET /api/projects is unaffected by adding the POST route', async () => {
   assert.equal(res.statusCode === 200 || res.statusCode === 502, true);
   assert.equal(typeof res.json.ok, 'boolean');
 });
+
+// N6 fix (WP-C1, 2026-09-26 laptop re-audit): POST /api/projects had NO exec-token check at all
+// before this fix (audit: `POST /api/projects {"name":""}` no token -> 400 "validated, not
+// gated" — the body was validated before any auth check ever ran, and a VALID body created a real
+// project + started a detached installer with no auth at all). The token is now checked before
+// the body is even read, so a missing token is rejected regardless of what the body contains.
+test('N6 AUTH: POST /api/projects with an otherwise-valid body and NO exec token is rejected with 403, nothing is created', async () => {
+  const res = await requestWithBody(port, '/api/projects', { jsonBody: { name: 'No Token Project' }, omitExecToken: true });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json.ok, false);
+  assert.match(res.json.error, /execution token/);
+  assert.equal(fs.existsSync(path.join(tempRoot, 'No Token Project')), false);
+});
+
+test('N6 AUTH: POST /api/projects with an INVALID body and NO exec token is still rejected with 403 (token beats body validation)', async () => {
+  const res = await requestWithBody(port, '/api/projects', { jsonBody: { name: '' }, omitExecToken: true });
+  assert.equal(res.statusCode, 403);
+  assert.match(res.json.error, /execution token/);
+});

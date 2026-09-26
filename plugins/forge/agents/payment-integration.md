@@ -1,7 +1,7 @@
 ---
 name: payment-integration
 description: "Use PROACTIVELY when integrating payments or handling financial transactions — Stripe/gateway integration, PCI-safe tokenization, verified webhooks, and idempotent charge/refund flows (e.g. a cashflow or digital-goods shop). NEVER hardcodes keys."
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

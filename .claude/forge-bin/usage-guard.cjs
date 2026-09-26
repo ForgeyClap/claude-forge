@@ -303,6 +303,30 @@ function readGuardSwitch(opts) {
   const e = c.cfg[GUARD_SWITCH_KEY];
   return { on: !(e && e.value === false), unreadable: false };
 }
+/** resolveGuardLanguage(opts) -> 'nl'|'en' — which language this file's owner-facing pause/resume/
+ *  account-switch notices lead with (Part V-D, fresh-laptop re-audit, 2026-09-26: those three notices
+ *  were Dutch-only regardless of the owner's `language` setting — everything else in this file already
+ *  follows the bilingual NL/EN convention unconditionally). Soft-required through forge-config.cjs's own
+ *  `detectLang` (--lang flag > the `language` setting in the global config file > .forge-setup.json's
+ *  project marker > 'en') — never a re-implementation of that resolution order, and never a hard
+ *  dependency: a missing/unreadable forge-config.cjs (or any thrown error) falls back to 'en', matching
+ *  this file's own safe-default convention elsewhere (M3/M6). opts.configModule (test seam) mirrors
+ *  loadGuardConfig/readGuardSwitch above. Never throws. */
+function resolveGuardLanguage(opts) {
+  const o = opts || {};
+  let mod = o.configModule;
+  if (mod === undefined) { try { mod = require('./forge-config.cjs'); } catch { mod = null; } }
+  if (mod && typeof mod.detectLang === 'function') {
+    try {
+      const l = mod.detectLang(o.configOpts || {});
+      if (l === 'nl' || l === 'en') return l;
+    } catch { /* fall through to the English default below */ }
+  }
+  return 'en';
+}
+/** pickLang(lang, nl, en) -> nl when lang === 'nl', else en. Tiny helper so every language-aware notice
+ *  below reads the same way. Pure, never throws. */
+function pickLang(lang, nl, en) { return lang === 'nl' ? nl : en; }
 
 const GUARD_CFG = loadGuardConfig();
 const GUARD = resolveGuardSettings(args, GUARD_CFG.cfg);
@@ -605,18 +629,21 @@ function fingerprintAccount(oauthAccount) {
  *  credential. detectAccountSwitch() already treats an unknown current identity as "no switch, keep
  *  existing state" (see its own doc comment), so this is a safe degrade, never a silent misclassification.
  *  The raw fingerprint fingerprintAccount() computes is immediately translated through
- *  resolveLocalAccountLabel() into an OPAQUE LOCAL LABEL before it is ever returned — every caller
- *  downstream (state, journal, log, stdout) only ever sees the label, never the underlying fingerprint. */
+ *  resolveLocalAccountLabel() into an OPAQUE LOCAL LABEL before it is ever returned as `.fp` — every
+ *  caller downstream (state, journal, log, stdout) only ever sees the label there, never the underlying
+ *  fingerprint. `.rawFp` (N8, 2026-09-26) is the SAME never-persisted raw fingerprint, returned
+ *  alongside the label purely so detectAccountSwitch() can recognise an upgrade (see its own doc
+ *  comment) — every existing caller that only reads `.fp`/`.source` is unaffected. */
 function readAccountIdentity() {
   try {
     const j = JSON.parse(fs.readFileSync(IDENTITY_FILE, 'utf8'));
     const id = fingerprintAccount(j && j.oauthAccount);
     if (id.fp) {
       const mapped = guardRedact.resolveLocalAccountLabel(id.fp, { mapFile: ACCOUNT_MAP_FILE });
-      if (mapped) return { fp: mapped.label, source: id.source };
+      if (mapped) return { fp: mapped.label, source: id.source, rawFp: id.fp };
     }
   } catch { /* profile unreadable — identity unknown, see the header above */ }
-  return { fp: null, source: 'unknown' };
+  return { fp: null, source: 'unknown', rawFp: null };
 }
 /** readCredentialFp — de vingerafdruk van het credential dat NU in .credentials.json staat (zelfde
  *  derivatie als fetchUsage's credentialFp en readAccountIdentity's fallback). Null-veilig. */
@@ -701,20 +728,37 @@ function readCredentialSnapshot() {
 }
 /** detectAccountSwitch(state, ident) -> {switched, from, to, reason}. Pure. A switch requires TWO known
  *  fingerprints that differ: an unstamped legacy state (adoption) and an unknown current identity both
- *  degrade to "no switch" — wiping real state on a missing profile file would be worse than the bug. */
+ *  degrade to "no switch" — wiping real state on a missing profile file would be worse than the bug.
+ *
+ *  UPGRADE-NOT-SWITCH (N8, fresh-laptop re-audit, 2026-09-26): a state file stamped BEFORE the opaque-
+ *  label scheme existed carries the RAW account fingerprint directly in `state.account.fp` (the shape
+ *  fingerprintAccount() still produces internally). readAccountIdentity() now maps every identity through
+ *  resolveLocalAccountLabel() before returning it as `.fp`, so on the very first check after an upgrade
+ *  `from` (the old raw fingerprint) and `to` (the new label) are DIFFERENT STRINGS for the SAME account —
+ *  which used to read as a real switch and reset the guard state / resume every paused agent. `ident.rawFp`
+ *  (readAccountIdentity's own un-mapped fingerprint, computed fresh from the CURRENT profile every call) is
+ *  the provable answer: if it equals the OLD stored `from`, this is the same account under a new label
+ *  scheme, never a switch — no guessing from string shape, no assumption about label formats, and a test
+ *  that calls this function directly with plain ident objects (no `rawFp`) is completely unaffected, since
+ *  `from === undefined` is always false. */
 function detectAccountSwitch(state, ident) {
   const from = state && state.account && typeof state.account.fp === 'string' ? state.account.fp : null;
   const to = ident && typeof ident.fp === 'string' ? ident.fp : null;
   if (!from) return { switched: false, from: null, to, reason: to ? 'first-stamp (adoption)' : 'no identity available' };
   if (!to) return { switched: false, from, to: null, reason: 'current identity unknown — keeping existing state rather than guessing' };
   if (from === to) return { switched: false, from, to, reason: 'same account' };
+  if (ident && typeof ident.rawFp === 'string' && ident.rawFp === from) {
+    return { switched: false, from, to, reason: 'upgrade (the stored raw fingerprint matches this account\'s current fingerprint — only the label scheme changed)' };
+  }
   return { switched: true, from, to, reason: 'account fingerprint changed' };
 }
-/** stateForAccount(state, ident) -> state to use for THIS account. On a real switch the guard starts
- *  CLEAN: percentages, pause/trigger, paused-agent list and — deliberately — the paid-credits
+/** stateForAccount(state, ident, lang) -> state to use for THIS account. On a real switch the guard
+ *  starts CLEAN: percentages, pause/trigger, paused-agent list and — deliberately — the paid-credits
  *  ownerOverride are account-A facts and must never suppress or trip the guard on account B. The switch
- *  itself is recorded (previousAccount) rather than erased. */
-function stateForAccount(state, ident) {
+ *  itself is recorded (previousAccount) rather than erased. `lang` (Part V-D, 2026-09-26; OPTIONAL —
+ *  every existing 2-argument call, including every direct test call, is unaffected and gets the English
+ *  default) picks which language `accountSwitchNotice` is written in, following resolveGuardLanguage(). */
+function stateForAccount(state, ident, lang) {
   const st = state && typeof state === 'object' ? state : { mode: 'ok' };
   const sw = detectAccountSwitch(st, ident);
   if (!sw.switched) {
@@ -727,8 +771,11 @@ function stateForAccount(state, ident) {
     mode: 'ok',
     account: { fp: sw.to, source: ident.source, stampedAt: new Date().toISOString() },
     previousAccount: { fp: sw.from, switchedAt: new Date().toISOString(), lastPercents: st.percents || null },
-    accountSwitchNotice: 'ACCOUNT SWITCH gedetecteerd (' + sw.from + ' -> ' + sw.to + '): guard-state is opnieuw begonnen. '
-      + 'Cijfers, pauze-status en een eventuele credits-override van het vorige account zijn NIET overgenomen.',
+    accountSwitchNotice: pickLang(lang,
+      'ACCOUNT SWITCH gedetecteerd (' + sw.from + ' -> ' + sw.to + '): guard-state is opnieuw begonnen. '
+        + 'Cijfers, pauze-status en een eventuele credits-override van het vorige account zijn NIET overgenomen.',
+      'ACCOUNT SWITCH detected (' + sw.from + ' -> ' + sw.to + '): guard state has started over. '
+        + 'Percentages, pause status and any credits override from the previous account were NOT carried over.'),
   };
 }
 
@@ -774,8 +821,16 @@ function normalizeWindows(j) {
       // so with two weekly_scoped windows (Opus 96%, Sonnet 20%) whichever came FIRST in limits[] decided
       // whether the guard resumed — pausing on Opus and resuming because Sonnet was low, then re-pausing
       // next tick: flapping, or the mirror image, staying paused on a window that never crossed.
+      // `model` (N1, 2026-09-26): the window's own model scope, when it has one — null for an all-models
+      // window (session, weekly_all, or any future kind without a `scope.model`). This is what lets the
+      // pause decision tell a per-model limit apart from an account-wide one; see windowAppliesNow() below.
+      // `isActive` is now a genuine TRI-STATE (true/false/null-unknown) — `l.is_active === true` used to
+      // collapse "explicitly not active" and "the endpoint didn't say" into the same `false`, which is
+      // exactly the distinction windowAppliesNow() needs (an explicit false is real information; an
+      // absent field is not).
+      const model = (l && l.scope && l.scope.model && l.scope.model.display_name) ? String(l.scope.model.display_name) : null;
       out.push({ id: k, kind, group, pct, resetsAt: (l && l.resets_at) || null, severity: (l && l.severity) || null,
-        isActive: l && l.is_active === true, label, source: 'limits' });
+        isActive: (l && typeof l.is_active === 'boolean') ? l.is_active : null, model, label, source: 'limits' });
     }
   }
   const legacy = [['session', 'session', j && j.five_hour], ['weekly_all', 'weekly', j && j.seven_day]];
@@ -784,10 +839,58 @@ function normalizeWindows(j) {
     if (!Number.isFinite(pct)) continue;
     if (seen.has(key(kind, group, kind))) continue; // already reported as a typed window — same window
     seen.add(key(kind, group, kind));
+    // the legacy pair is always account-wide (never per-model) — model stays null, isActive stays false
+    // (never consulted: windowAppliesNow() always treats a null-model window as applying).
     out.push({ id: key(kind, group, kind), kind, group, pct, resetsAt: (w && w.resets_at) || null,
-      severity: null, isActive: false, label: kind, source: 'legacy' });
+      severity: null, isActive: false, model: null, label: kind, source: 'legacy' });
   }
   return out;
+}
+/** sameModel(a, b) -> true when two model labels plausibly name the same model (case/whitespace-
+ *  insensitive, either containing the other — "Fable" vs "Fable 5.1"). Pure, never throws. Both empty/
+ *  non-string -> false: an unknown model can never be said to match anything, which is the fail-safe
+ *  direction (see windowAppliesNow's own doc comment). */
+function sameModel(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+/** resolveActiveModelHint(opts) -> string|null — best-effort "which model is this session actually
+ *  using right now", for a background watcher that has no direct view into a live Claude Code session.
+ *  N1 fail-safe design decision (2026-09-26): the AUTHORITATIVE signal is the usage endpoint's own
+ *  per-window `is_active` flag (consulted directly in windowAppliesNow, not through this function) —
+ *  this hint is only the FALLBACK for when a window's `is_active` is missing/unknown. Sources, in order:
+ *  (1) opts.model — an explicit, caller-supplied override (test seam / a future caller that already
+ *  knows the active model); (2) FORGE_USAGE_GUARD_MODEL — a narrow, explicit, opt-in env var (same
+ *  convention as FORGE_USAGE_GUARD_HOME/_STATE/etc. above) that a wrapper invoking this guard MAY set
+ *  when it genuinely knows the active model; unset by default, so an ordinary install never fabricates
+ *  one. No other source is consulted — there is no reliable, safe way for a detached background process
+ *  to read another process's live `/model` selection, and GUESSING here is exactly what would let a real
+ *  per-model limit pause silently ignored (the opposite failure from N1). Never throws. */
+function resolveActiveModelHint(opts) {
+  const o = opts || {};
+  if (typeof o.model === 'string' && o.model.trim()) return o.model.trim();
+  const envModel = process.env.FORGE_USAGE_GUARD_MODEL;
+  if (typeof envModel === 'string' && envModel.trim()) return envModel.trim();
+  return null;
+}
+/** windowAppliesNow(w, modelHint) -> boolean — the N1 fix (fresh-laptop re-audit, 2026-09-26): should
+ *  THIS window govern the pause decision right now? An all-models window (no `.model`: session,
+ *  weekly_all, or any future kind without a model scope) always applies — switching models never helps
+ *  with an account-wide limit, and this file must never silently ignore a real one. A per-model window
+ *  applies only when we have POSITIVE evidence it is the one in force: the endpoint's own `is_active ===
+ *  true` flag (authoritative — it is the live source, not a local guess), or an explicit model hint that
+ *  names this same model. FAIL SAFE, deliberately asymmetric: when neither is known (is_active is
+ *  false/unknown AND no matching hint) the window does NOT apply — it is reported as advisory only (see
+ *  the tick() call sites), never silently dropped from `status`/logs, just never used to pause a
+ *  different model's session. This is the one behavior change N1 asks for: previously every window
+ *  counted, so one filled per-model quota paused every model for days. Pure, never throws. */
+function windowAppliesNow(w, modelHint) {
+  if (!w || !w.model) return true; // all-models window: always governs, no exceptions
+  if (w.isActive === true) return true; // the endpoint says this window currently governs
+  return sameModel(w.model, modelHint); // otherwise: only when we independently know this model is in use
 }
 /** stillHighTrigger — the resume decision, pure and testable (broad Codex audit #15, 2026-08-05).
  *  Each pause trigger is looked up by its STABLE id first. A trigger without an id (recorded by an older
@@ -818,6 +921,28 @@ function crossedWindows(windows, pauseAt) {
   if (!Number.isFinite(pauseAt)) return [];
   return (Array.isArray(windows) ? windows : []).filter((w) => Number.isFinite(w.pct) && w.pct >= pauseAt);
 }
+/** triggerCanResumeByModelSwitch(triggers, windows, modelHint) -> boolean — N1's second half: "switching
+ *  models is enough" to resume a pause that was caused SOLELY by per-model window(s). Requires BOTH: (1)
+ *  every trigger that caused the pause carries a `.model` (a mixed or all-models trigger never clears
+ *  this way — an account-wide limit is unaffected by which model is selected, so it keeps blocking
+ *  regardless); and (2) positive evidence none of those trigger windows is the one in force any more —
+ *  preferring the live `isActive` on the SAME window id in the current tick's data (the endpoint's own,
+ *  freshest signal), falling back to modelHint only when that window's current isActive is unknown. FAIL
+ *  SAFE: an unresolvable trigger (no live window with that id AND isActive unknown AND no modelHint) is
+ *  treated as STILL applying — never auto-resume on an absence of information, only on a positive "this
+ *  is not it any more". Pure, never throws. */
+function triggerCanResumeByModelSwitch(triggers, windows, modelHint) {
+  const ts = Array.isArray(triggers) ? triggers : [];
+  if (!ts.length) return false;
+  if (!ts.every((t) => t && t.model)) return false; // any all-models trigger in the mix -> never clear this way
+  const ws = Array.isArray(windows) ? windows : [];
+  return ts.every((t) => {
+    const live = t.id ? ws.find((w) => w.id === t.id) : null;
+    if (live && live.isActive === true) return false; // still the governing window per the live endpoint data
+    if (live && live.isActive === false) return true; // the endpoint itself confirms this model is not in force
+    return modelHint ? !sameModel(t.model, modelHint) : false; // unknown -> only a confident, DIFFERENT hint clears it
+  });
+}
 /** watcherHealth — a live PID is NOT proof the watcher is doing its job: on 2026-08-03 the process was
  *  alive while its last real check was 80 minutes old (it had silently stopped ticking). Freshness is
  *  judged against 3 intervals; no timestamp at all is honest uncertainty, never a green light. */
@@ -845,7 +970,12 @@ function credentialsPresent() {
   try { return fs.statSync(CRED_FILE).isFile(); } catch { return false; }
 }
 function noCredentialsLine(tail) {
-  return 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (macOS keeps the login in the Keychain) — ' + tail;
+  // v2.8.0 (fresh-laptop simulation): the Keychain remark is true on macOS only; on Windows/Linux the missing
+  // file simply means Claude Code has not been logged in on this machine (or keeps its login elsewhere).
+  const why = process.platform === 'darwin'
+    ? 'macOS keeps the Claude Code login in the Keychain, which the guard cannot read'
+    : 'Claude Code is not logged in on this machine yet, or keeps its login elsewhere';
+  return 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (' + why + ') — ' + tail;
 }
 /** guardNetworkAllowed(opts) -> { ok, reason } — GUARD-OFF-BYPASS (2026-09-24): the SINGLE point both
  *  fetchUsage() and pc() consult before ever touching the network or reading the login token. With the
@@ -1338,9 +1468,19 @@ async function withLockedState(D, transform, label) {
 async function doPause(u, crossed, ident, opts) {
   const o = opts || {};
   const signal = o.signal;
+  const lang = o.lang;
   const agents = await allAgents({ signal });
   const toPause = (agents || []).filter((a) => a.status !== 'paused');
-  const reason = 'USAGE GUARD: ' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' >= ' + PAUSE_AT + '% — auto-paused. Auto-resume when back to <= ' + RESUME_AT + '%.';
+  // N1 (fresh-laptop re-audit, 2026-09-26): "tell the user in one plain line which window paused them
+  // and that switching models is enough" — the window name(s) above already say WHICH window (the label
+  // itself carries the model, e.g. "weekly_scoped (Fable)"); this adds the second half, but ONLY when
+  // every crossed window here is per-model (`.model` set) — an all-models window in the mix means
+  // switching models will NOT resume Forge, so the sentence must never be added then.
+  const allPerModel = crossed.length > 0 && crossed.every((c) => c.model);
+  const switchNote = !allPerModel ? '' : pickLang(lang,
+    ' Wisselen naar een ander model is voldoende om Forge weer te laten werken.',
+    ' Switching to a different model is enough to resume Forge.');
+  const reason = 'USAGE GUARD: ' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' >= ' + PAUSE_AT + '% — auto-paused. Auto-resume when back to <= ' + RESUME_AT + '%.' + switchNote;
   if (DRY) { log('[dry-run] WOULD pause ' + toPause.length + ' agents (' + reason + ')'); return; }
   const paused = [];
   // r4 #15: een pauzeronde heeft een eigen pauseId en het journal is WRITE-AHEAD — de intent staat er
@@ -1430,11 +1570,23 @@ async function doPause(u, crossed, ident, opts) {
       ...(pending.length
         ? { pausePending: pending, lastError: 'pauze onderbroken (shutdown): ' + pending.length + ' agent(s) nog niet gepauzeerd — volgende tick probeert opnieuw / pause interrupted (shutdown): ' + pending.length + ' agent(s) not yet paused — the next tick retries' }
         : { pausePending: undefined }),
-      notice: '⛔ USAGE GUARD — PAUZEER. Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + PAUSE_AT + '%). '
-        + 'Geen nieuwe subagents/workflows starten. Rond lopend werk minimaal af en meld de pauze. '
-        + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
-        + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
-        + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).'),
+      // Part V-D (fresh-laptop re-audit, 2026-09-26): this owner-facing notice used to be Dutch-only
+      // regardless of the `language` setting — now follows `lang` (auto/en/nl, English fallback via
+      // resolveGuardLanguage/pickLang), and — N1 — names which window paused Forge and, only when every
+      // trigger window is per-model, that switching models is enough (switchNote, built above).
+      notice: pickLang(lang,
+        '⛔ USAGE GUARD — PAUZEER (' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + '). Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + PAUSE_AT + '%). '
+          + 'Geen nieuwe subagents/workflows starten. Rond lopend werk minimaal af en meld de pauze. '
+          + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
+          + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
+          + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).')
+          + switchNote,
+        '⛔ USAGE GUARD — PAUSED (' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + '). Measured (real): session ' + u.session.pct + '% · week ' + u.week.pct + '% (threshold ' + PAUSE_AT + '%). '
+          + 'Do not start new subagents/workflows. Wrap up running work minimally and report the pause. '
+          + 'Auto-resumes at <= ' + RESUME_AT + '% (session reset: ' + fmtReset(u.session.resetsAt) + ')'
+          + (Number.isFinite(resumeAtEpoch) ? ', or rhythm-resume around ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min margin)' : '') + '. '
+          + (agents === null ? '(Paperclip runtime unreachable — no agents to pause; the subagent stop still applies.)' : paused.length + ' Paperclip agents paused (the dashboard stays UP).')
+          + switchNote),
     }, fence); // V15 (third recheck): forwarded so the actual publish re-verifies, not only the check above
     } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
     return { fenced: false };
@@ -1457,6 +1609,7 @@ const RESUME_RETRY_MAX = 10;
 async function doResume(u, st, ident, opts) {
   const o = opts || {};
   const signal = o.signal;
+  const lang = o.lang;
   if (DRY) { log('[dry-run] WOULD resume ' + (st.pausedAgents || []).length + ' agents'); return; }
   let ok = 0;
   // UNIE van de state-lijst en de onopgeloste journalregels (uitgesteld punt 1, 2026-08-06): de state
@@ -1561,10 +1714,17 @@ async function doResume(u, st, ident, opts) {
       // which IS the clear: "eventual success clears" needs no extra code here, only that this object is
       // never built by extending a stale `st`/`fresh` the way the partial-failure branch above must.
       lastResumeAt: new Date().toISOString(), lastCheckAt: new Date().toISOString(), resumedAgents: ok, pendingCheckup: true,
-      resumeNotice: '✅ USAGE GUARD — usage gereset (sessie ' + u.session.pct + '% · week ' + u.week.pct + '%). GA VERDER met waar je mee bezig was. '
-        + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
-        + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
-        + ok + '/' + byId.size + ' Paperclip agents hervat.' + goneNote,
+      // Part V-D (fresh-laptop re-audit, 2026-09-26): this owner-facing notice used to be Dutch-only
+      // regardless of the `language` setting — now follows `lang` (English fallback).
+      resumeNotice: pickLang(lang,
+        '✅ USAGE GUARD — usage gereset (sessie ' + u.session.pct + '% · week ' + u.week.pct + '%). GA VERDER met waar je mee bezig was. '
+          + 'VERPLICHTE CHECKUP: (1) verifieer via de Paperclip API dat de agents resumed zijn en ECHT draaien (statuses + heartbeat-runs/tickets bewegen), '
+          + '(2) verifieer dat je eigen taak-status klopt met de werkelijkheid, (3) rapporteer eerlijk wat wel/niet hervat is. '
+          + ok + '/' + byId.size + ' Paperclip agents hervat.' + goneNote,
+        '✅ USAGE GUARD — usage reset (session ' + u.session.pct + '% · week ' + u.week.pct + '%). CONTINUE with what you were doing. '
+          + 'MANDATORY CHECKUP: (1) verify via the Paperclip API that the agents resumed and are REALLY running (statuses + heartbeat runs/tickets moving), '
+          + '(2) verify your own task status matches reality, (3) report honestly what did/did not resume. '
+          + ok + '/' + byId.size + ' Paperclip agents resumed.' + goneNote),
     }, fence);
     } catch (e) { if (e && e.code === 'EFENCED') return { fenced: true }; throw e; }
     return { fenced: false };
@@ -1648,10 +1808,13 @@ async function tick(deps, opts) {
   // double-detected switch self-corrects on the very next tick); only the ACTUAL PERSISTENCE of each
   // decision below (V15) is re-read fresh and serialized against every other writer via withLockedState().
   const rawState = D.readState();
+  // Part V-D (2026-09-26): resolved once per tick — see resolveGuardLanguage's own header for the exact
+  // fallback chain (--lang > the owner's `language` setting > the project marker > English).
+  const lang = resolveGuardLanguage({});
   const sw = detectAccountSwitch(rawState, ident);
-  const st = stateForAccount(rawState, ident);
+  const st = stateForAccount(rawState, ident, lang);
   if (sw.switched) {
-    await withLockedState(D, (fresh) => stateForAccount(fresh, ident), 'ACCOUNT SWITCH write');
+    await withLockedState(D, (fresh) => stateForAccount(fresh, ident, lang), 'ACCOUNT SWITCH write');
     D.log('ACCOUNT SWITCH — fingerprint ' + sw.from + ' -> ' + sw.to + ' (' + ident.source + '): guard state reset; previous account\'s percentages, pause state and credits override NOT carried over');
     // COMPENSATIE (uitgesteld punt 1, 2026-08-06): de reset hierboven wist de pausedAgents-lijst van het
     // VORIGE account — maar het journal kent ze nog. Hervat ze nu (Paperclip is account-agnostisch;
@@ -1744,7 +1907,7 @@ async function tick(deps, opts) {
         // `st` still carries the pausedAgents list from BEFORE this tick's override decision. doResume() OWNS
         // the mode transition from here (see the WAVE 10 note above) and logs the actual outcome itself
         // (RESUMED / RESUME PARTIAL, with real counts) — this branch never repeats or overclaims that outcome.
-        await D.doResume(u, st, ident, { signal: tickOpts.signal });
+        await D.doResume(u, st, ident, { signal: tickOpts.signal, lang });
       }
       const low = Number.isFinite(c.remaining) && Number.isFinite(c.limit) && c.limit > 0 && (c.remaining / c.limit) <= 0.1;
       D.log('OVERRIDE active (credits mode) — NOT pausing · session ' + u.session.pct + '% week ' + u.week.pct + '% · credits used ' + fmtMoney(c.used, c.currency, c.decimals) + '/' + fmtMoney(c.limit, c.currency, c.decimals) + (low ? ' · ⚠ CREDITS LOW' : '') + (wasPaused ? ' · reconciliation attempted for guard-owned pause(s) — see the resume outcome above for the actual result' : ''));
@@ -1813,6 +1976,9 @@ async function tick(deps, opts) {
     await withLockedState(D, (fresh) => { delete fresh.ownerOverride; }, 'OVERRIDE cache reconciled write');
     delete st.ownerOverride;
   }
+  // N1 (fresh-laptop re-audit, 2026-09-26): resolved ONCE per tick — see resolveActiveModelHint's own
+  // header for exactly what this is (and is not) allowed to be based on.
+  const modelHint = resolveActiveModelHint({});
   if (st.mode !== 'paused') {
     // GUARD-CORRUPT (2026-09-24): a corrupt state is ONLY ever allowed to move forward via a fresh,
     // successful, validated measurement (the `u` this tick just fetched for real) — never silently, and
@@ -1824,9 +1990,20 @@ async function tick(deps, opts) {
     // EVERY reported window can trip the guard, not just the legacy session/week pair — a daily or
     // per-model scoped limit at 100% used to be completely invisible here (fix 2026-08-03).
     // The trigger now records the window's STABLE id so resume can find THIS window again (audit #15).
-    const crossed = crossedWindows(u.windows, PAUSE_AT)
-      .map((w) => ({ id: w.id, name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt }));
-    if (crossed.length) { await D.doPause(u, crossed, ident, { signal: tickOpts.signal }); return; }
+    // N1 (fresh-laptop re-audit, 2026-09-26): a window at/over pause-at only actually PAUSES when
+    // windowAppliesNow() says it governs right now (always true for an all-models window; for a
+    // per-model window, only when it is the model in use or the endpoint's own is_active says so) — a
+    // full per-model window while a DIFFERENT model is running is reported as advisory, never silently
+    // dropped, but never blocks a session that is not the one at its limit either.
+    const allCrossed = crossedWindows(u.windows, PAUSE_AT);
+    const crossed = allCrossed.filter((w) => windowAppliesNow(w, modelHint))
+      .map((w) => ({ id: w.id, name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt, model: w.model }));
+    const advisory = allCrossed.filter((w) => !windowAppliesNow(w, modelHint));
+    if (advisory.length) {
+      D.log('ADVISORY — ' + advisory.map((w) => w.label + ' ' + w.pct + '%').join(' + ') + ' at/over pause-at ' + PAUSE_AT
+        + '% but not the model currently in use (and the endpoint does not say it is active) — NOT pausing; using that model would trip it');
+    }
+    if (crossed.length) { await D.doPause(u, crossed, ident, { signal: tickOpts.signal, lang }); return; }
     // keep pauseAt/resumeAt fresh on every tick (fix 2026-07-08) — otherwise a running watchdog started
     // with a different --pause-at than the last actual pause event leaves a stale threshold in the
     // state file, even though the real in-process trigger (PAUSE_AT, checked above) is already correct.
@@ -1840,7 +2017,7 @@ async function tick(deps, opts) {
       // credits, trigger) was never cleared, and a 100%-usage tick for the new account made zero pauses.
       // stateForAccount() returns the SAME object (mutated fresh) when nothing changed, or a genuinely NEW
       // reset object on a real switch — either way it is the correct base for the ok-mode fields below.
-      const reconciled = stateForAccount(fresh, ident);
+      const reconciled = stateForAccount(fresh, ident, lang);
       reconciled.mode = 'ok'; reconciled.pauseAt = PAUSE_AT; reconciled.resumeAt = RESUME_AT; reconciled.nvidiaShiftAt = NVIDIA_SHIFT_AT;
       reconciled.percents = { session: u.session.pct, week: u.week.pct }; reconciled.lastCheckAt = new Date().toISOString();
       delete reconciled.lastError; delete reconciled.corruptAt; delete reconciled.corruptReason;
@@ -1867,6 +2044,15 @@ async function tick(deps, opts) {
     // wrong model's percentage (flapping) or stay paused on a window that never crossed. The decision now
     // lives in stillHighTrigger(): stable id first, kind only when unambiguous, legacy pair as last resort.
     const stillHigh = stillHighTrigger(st.trigger, u.windows, RESUME_AT, { sessionPct: u.session.pct, weekPct: u.week.pct });
+    // N1 (fresh-laptop re-audit, 2026-09-26): "switching models is enough" — a pause caused SOLELY by
+    // per-model window(s) also clears when none of those windows is the one in force any more (the live
+    // is_active on that same window id, or a confident model hint that names a different model). An
+    // all-models trigger in the mix is never cleared this way. See triggerCanResumeByModelSwitch's own
+    // header for the exact, deliberately conservative fail-safe rules.
+    const modelSwitchedAway = stillHigh && triggerCanResumeByModelSwitch(st.trigger, u.windows, modelHint);
+    if (modelSwitchedAway) {
+      D.log('RESUME (model switch) — the pause trigger was only per-model window(s) (' + (st.trigger || []).map((t) => t.name + ' ' + t.pct + '%').join(' + ') + ') and none of them is the model in use any more — switching models was enough');
+    }
     // RESET-RHYTHM: resume on EITHER the real utilization drop OR wall-clock reaching resumeAtEpoch —
     // whichever comes first. NaN-safe: an absent/unparseable resumeAtEpoch never triggers this branch.
     const resumeAtEpoch = Number(st.resumeAtEpoch);
@@ -1876,12 +2062,15 @@ async function tick(deps, opts) {
     // (tot 120s wapperen, met resume/pauze-notices en agent-bounce). Staat er NU een venster boven de
     // pauzedrempel, dan wordt de pauze op DAT venster voortgezet (verse trigger + vers ritme) in plaats
     // van hervat; agents die al gepauzeerd zijn raakt doPause niet opnieuw aan.
-    if (!stillHigh || rhythmDue) {
-      const nowCrossed = crossedWindows(u.windows, PAUSE_AT)
-        .map((w) => ({ id: w.id, name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt }));
+    if (!stillHigh || rhythmDue || modelSwitchedAway) {
+      // N1: the same applicability filter as the "ok" branch above — a DIFFERENT model's window sitting
+      // at/over pause-at must never force a re-pause on behalf of a model this session is not using.
+      const nowAllCrossed = crossedWindows(u.windows, PAUSE_AT);
+      const nowCrossed = nowAllCrossed.filter((w) => windowAppliesNow(w, modelHint))
+        .map((w) => ({ id: w.id, name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt, model: w.model }));
       if (nowCrossed.length) {
         D.log('trigger cleared/rhythm due, but ' + nowCrossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' is at/over pause-at ' + PAUSE_AT + '% — staying paused on the CURRENT window instead of resume-then-repause flapping');
-        await D.doPause(u, nowCrossed, ident, { signal: tickOpts.signal });
+        await D.doPause(u, nowCrossed, ident, { signal: tickOpts.signal, lang });
         return;
       }
       // N08 (Codex recheck out-p10, 2026-09-24): usage has genuinely recovered (or rhythm is due) — RESUME
@@ -1891,7 +2080,7 @@ async function tick(deps, opts) {
       // repeatedly timing-out pending agent + one already-paused agent, usage now 0% — the old order
       // produced two pause requests and zero resumes across two ticks). Reset/resume state now GOVERNS
       // outstanding pause work, rather than being preempted by it — see the pausePending check moved below.
-      await D.doResume(u, st, ident, { signal: tickOpts.signal }); return;
+      await D.doResume(u, st, ident, { signal: tickOpts.signal, lang }); return;
     }
     // V29 (second Codex recheck, 2026-09-24): a PREVIOUS pause round that was interrupted mid-flight
     // (shutdown) leaves specific agents still genuinely unpaused even though mode already says 'paused'.
@@ -1904,7 +2093,7 @@ async function tick(deps, opts) {
     // is still not paused.
     if (Array.isArray(st.pausePending) && st.pausePending.length) {
       D.log('PAUSE RETRY — een eerdere pauzeronde werd onderbroken (' + st.pausePending.length + ' agent(s) nog niet gepauzeerd); dit telt nog niet als compleet, opnieuw proberen / a previous pause round was interrupted (' + st.pausePending.length + ' agent(s) not yet paused); not yet complete, retrying');
-      await D.doPause(u, st.trigger || [], ident, { signal: tickOpts.signal });
+      await D.doPause(u, st.trigger || [], ident, { signal: tickOpts.signal, lang });
       return;
     }
     await withLockedState(D, (fresh) => { fresh.percents = { session: u.session.pct, week: u.week.pct }; fresh.lastCheckAt = new Date().toISOString(); }, 'paused waiting write');
@@ -1984,6 +2173,27 @@ function ownsPid(pid, rec) {
     // the pid file has one) AND the `watch` subcommand — a status/CLI invocation is never the watcher.
     return verdictFromCmdline(pid, rec, out);
   } catch (e) { return { ok: false, code: 'unverifiable', reason: 'could not verify pid ' + pid + ' (' + e.message + ') — refusing to kill it' }; }
+}
+
+/** cleanupStalePidFile(pidFile, rec) -> { removed, reason } — Part II (fresh-laptop re-audit, 2026-09-26):
+ *  "a pid file pointing at a dead process must be detected and cleaned." No exit/signal handler this file
+ *  registers can run on every way a watcher can end — SIGKILL, `taskkill /F`, an uninstall that removes
+ *  Forge while the watcher is still running, an OS crash or a power loss all skip `process.on('exit'/
+ *  'SIGTERM', ...)` entirely — so a stale pid file is always POSSIBLE, never fully preventable. The
+ *  reactive half is this: any command that reads the pid file also cleans it up when it can PROVE the
+ *  process behind it is gone, instead of reporting "not running" forever while the stale file just sits
+ *  there until someone happens to run `start` or `stop`. Mirrors `stop`'s own ownsPid()-gated decision
+ *  exactly, so the two commands never disagree about when a pid file is safe to remove: an 'unverifiable'
+ *  pid (alive, identity unreadable) is left ALONE — deleting it could destroy a genuinely live watcher's
+ *  only ownership evidence and let a second one start alongside it (the 2026-07-29 incident class). Only
+ *  a provably dead/recycled/non-watcher pid is ever removed. Never throws. */
+function cleanupStalePidFile(pidFile, rec) {
+  if (!rec || !rec.pid) return { removed: false, reason: 'no pid file' };
+  const own = ownsPid(rec.pid, rec);
+  if (own.ok) return { removed: false, reason: 'still alive' };
+  if (own.code === 'unverifiable') return { removed: false, reason: own.reason };
+  try { fs.unlinkSync(pidFile); return { removed: true, reason: own.reason }; }
+  catch (e) { return { removed: false, reason: 'unlink failed: ' + e.message }; }
 }
 
 /** ================= WATCHER SINGLETON — ATOMIC CLAIM (broad Codex audit #17, 2026-08-05) ================
@@ -2240,7 +2450,7 @@ if (require.main === module) {
       const st = rawSt;
       console.log('account: ' + (ident.fp ? ident.fp + ' (' + ident.source + ')' : 'ONBEKEND — geen accountidentiteit leesbaar')
         + (swNow.switched
-          ? ' · ⚠ ACCOUNT SWITCH t.o.v. de opgeslagen state (' + swNow.from + ' -> ' + swNow.to + '): de cijfers/pauze/override hieronder zijn van het VORIGE account en worden bij de eerstvolgende watch-tick gereset'
+          ? pickLang(resolveGuardLanguage(), ' · ⚠ ACCOUNT SWITCH t.o.v. de opgeslagen state (' + swNow.from + ' -> ' + swNow.to + '): de cijfers/pauze/override hieronder zijn van het VORIGE account en worden bij de eerstvolgende watch-tick gereset', ' · ⚠ ACCOUNT SWITCH since the saved state (' + swNow.from + ' -> ' + swNow.to + '): the numbers/pause/override below belong to the PREVIOUS account and reset on the next watch tick')
           : (st.account ? '' : ' · state nog niet gestempeld (wordt bij de eerstvolgende tick geadopteerd)')));
       const ovr = st.ownerOverride && st.ownerOverride.active !== false ? ' · OVERRIDE ACTIVE (credits mode)' : '';
       const cr = st.credits ? ' · credits used ' + fmtMoney(st.credits.used, st.credits.currency, st.credits.decimals) + '/' + fmtMoney(st.credits.limit, st.credits.currency, st.credits.decimals) : '';
@@ -2253,11 +2463,19 @@ if (require.main === module) {
       // for a state written by an older build.
       const wh = watcherHealth({ pidAlive: !!(pid && pidAlive(pid)), lastCheckAt: st.heartbeatAt || st.lastCheckAt, intervalSec: INTERVAL });
       const staleTxt = wh.staleSec != null ? ' · laatste check ' + Math.round(wh.staleSec / 60) + ' min geleden' : '';
+      // Part II (2026-09-26): "not running" with a leftover pid file means the watcher ended without
+      // ever running its own cleanup (a hard kill/crash/reboot skips every exit/signal handler this file
+      // registers — see cleanupStalePidFile's own header). `status` is a read that runs often; use it to
+      // clean up the stale file reactively instead of leaving it until someone happens to run `start` or
+      // `stop`. Never removes a pid that is merely 'unverifiable' (possibly still alive).
+      const pidCleanup = (wh.state === 'not-running' && pid) ? cleanupStalePidFile(PID_FILE, rec) : null;
       console.log('watcher: ' + (
         wh.state === 'running' ? 'RUNNING (pid ' + pid + ')' + staleTxt
         : wh.state === 'stale' ? '⚠ HANGT — proces leeft (pid ' + pid + ') maar tikt niet meer' + staleTxt + ' (interval ' + wh.intervalSec + 's); herstart met: node .claude/forge-bin/usage-guard.cjs stop && node .claude/forge-bin/usage-guard.cjs start'
         : wh.state === 'unknown' ? 'proces leeft (pid ' + pid + ') maar heeft nog nooit een check gelogd — status onbekend'
-        : 'not running' + (pid ? ' (achtergebleven pid-bestand: ' + pid + ')' : '')));
+        : !pid ? 'not running'
+        : (pidCleanup && pidCleanup.removed) ? 'not running (leftover pid file for a dead process — cleaned up: pid ' + pid + ')'
+        : 'not running (achtergebleven pid-bestand: ' + pid + (pidCleanup ? ' — ' + pidCleanup.reason : '') + ')'));
       // NVIDIA-shift soft pressure signal — advisory only, real week% only, written on every status evaluation.
       const pressure = writePressureFile(u.week.pct, NVIDIA_SHIFT_AT, PAUSE_AT);
       if (pressure.level === 'nvidia-preferred') console.log('pressure: nvidia-preferred (week ' + u.week.pct + '% >= ' + NVIDIA_SHIFT_AT + '%)');
@@ -2561,9 +2779,11 @@ module.exports = {
   writeStateTo,
   fingerprintAccount, readAccountIdentity, detectAccountSwitch, stateForAccount,
   normalizeWindows, crossedWindows, windowLabel, watcherHealth, fmtReset, stillHighTrigger,
+  sameModel, resolveActiveModelHint, windowAppliesNow, triggerCanResumeByModelSwitch,
+  resolveGuardLanguage, pickLang,
   tick, doPause, doResume, accountStamp, ownsPid, readPosixCmdline, verdictFromCmdline, pidAlive, readCredentialFp,
   credentialGeneration, readCredentialSnapshot,
-  claimWatcherSlot, releaseWatcherSlot, incumbentStatus, readPidRecordFrom, STALE_LOCK_MS,
+  claimWatcherSlot, releaseWatcherSlot, incumbentStatus, readPidRecordFrom, STALE_LOCK_MS, cleanupStalePidFile,
   awaitChildClaim, journalAppend, unresolvedPausedAgents, rotateLogIfNeeded, compactJournalIfNeeded,
   computePressureLevel, buildPressureData, creditsExhausted,
   resolveGuardSettings, loadGuardConfig, settingsLine, disclosureLines, GUARD_DEFAULTS, guardBounds,

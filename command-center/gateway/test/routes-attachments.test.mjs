@@ -117,6 +117,21 @@ test('SIZE: POST /api/conversations/:id/attachments over the ~5MB cap is rejecte
   assert.equal(res.statusCode, 413);
 }, { timeout: 20000 });
 
+// N6 fix (WP-C1, 2026-09-26 laptop re-audit): POST .../attachments had NO exec-token check at all
+// before this fix (audit: "POST /api/conversations/<x>/attachments no token -> 404 (not gated)" —
+// a real local process could upload attachments with no auth at all, once a conversation existed).
+test('N6 AUTH: POST /api/conversations/:id/attachments with NO exec token is rejected with 403, and nothing is stored', async () => {
+  const boundary = 'HttpBoundaryN6';
+  const res = await requestWithBody(port, `/api/conversations/${convId}/attachments`, {
+    rawBody: multipartBody(boundary, 'no-token.txt', 'should never be stored'),
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+    omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json.ok, false);
+  assert.match(res.json.error, /execution token/);
+});
+
 test('GET /api/conversations/:id/attachments (wrong method) is rejected — attachments is a write-only route shape', async () => {
   const res = await requestWithBody(port, `/api/conversations/${convId}/attachments`, {
     method: 'GET',

@@ -3,13 +3,17 @@
 // anders tekst), gekoppeld aan de projectmap zodat runs in de juiste map draaien.
 // Gebruik: node src/setup-projects.js [projecten-basis-map]
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from './config.js';
 import { Router } from './router.js';
 import { AuditLedger } from './audit.js';
 
 const config = loadConfig();
-const baseDir = process.argv[2] ?? 'C:\\Users\\YOU\\Documents\\ForgeProjects';
+// C1 fix (WP-C1, 2026-09-26 laptop re-audit — coordinator flag): same home-derived default as
+// config.js's own DEFAULT_PROJECTS_DIR (not imported directly — this file's own argv-fallback
+// convention, same as the rest of this script) — never the maintainer's own hard-coded username.
+const baseDir = process.argv[2] ?? path.join(os.homedir(), 'Documents', 'ForgeProjects');
 const CATEGORY_NAME = '🔨 FORGE PROJECTS';
 
 const projectDirs = fs

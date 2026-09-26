@@ -104,6 +104,7 @@ import { Button, ExampleTag, Icon, IconButton, KeyHint, Machine } from '@/compon
 import type { ChatSendEffort, ChatSendMode, ChatSendModel, ChatSendOutcome } from '@/prototype/state/chat-send';
 import type { ChatMessage } from '@/prototype/types/prototype-types';
 import {
+  EXEC_TOKEN_HEADER,
   GATEWAY_ORIGIN,
   gwGet,
   pickArray,
@@ -111,6 +112,7 @@ import {
   pickNumber,
   pickRecord,
   pickString,
+  readExecToken,
 } from '@/prototype/state/gateway-client';
 import { RUN_PLAN_MESSAGE, sendArgsFor } from './compose-args';
 import {
@@ -550,9 +552,16 @@ export function Composer({
       try {
         const formData = new FormData();
         formData.append('file', file);
+        // N6 fix (WP-C1, 2026-09-26 laptop re-audit): the gateway now checks the exec token for
+        // EVERY non-GET request — this upload route never sent it at all before this fix. `null`
+        // (no meta tag found — see `readExecToken`'s own doc comment) means the header is simply
+        // omitted; the gateway then answers with an honest 403, surfaced as a toast below like any
+        // other upload failure.
+        const token = readExecToken();
+        const execHeaders: HeadersInit = token !== null ? { [EXEC_TOKEN_HEADER]: token } : {};
         const res = await globalThis.fetch(
           `${GATEWAY_ORIGIN}/api/conversations/${encodeURIComponent(state.activeConversationId)}/attachments`,
-          { method: 'POST', body: formData },
+          { method: 'POST', body: formData, headers: execHeaders },
         );
         const body: unknown = await res.json().catch(() => null);
         if (!res.ok) {

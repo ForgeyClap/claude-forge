@@ -9,32 +9,19 @@
   },
   "paths": {},
   "baseline": {
-    "generated_at": "2026-08-01T11:51:32.566Z",
+    "_doc": "N3 (2026-09-26 laptop + CI re-audit): this baseline used to also carry the author's own global_claude_md, every @-include, ecc_rules_common, workspace_claude_md, skill_catalog_global and skill_catalog_plugins — all machine-specific facts about ONE person's ~/.claude, not about this product. Shipped as-is by the installer, every OTHER machine's first doctor run got a `source_vanished` finding (an honest zero on their machine read as 'the meter is under-reporting') purely because it wasn't the author's machine. Only PRODUCT-OWNED surfaces are baselined now: this project's own CLAUDE.md and its own .claude/skills. A user's global chain and plugin/skill catalogs are never compared against these numbers. Re-run `--write-baseline` after a deliberate change to this project's CLAUDE.md or its skill set.",
+    "generated_at": "2026-09-26T00:00:00.000Z",
     "chars_per_token": 4,
     "max_skill_depth": 8,
     "estimate_note": "ESTIMATE ONLY: tokens are characters / chars_per_token. No tokenizer ran — these are not exact token counts. Calibrate against a real /context reading before treating any of them as a hard budget.",
-    "total_approx_tokens": 33262,
-    "total_chars": 133045,
+    "total_approx_tokens": 4800,
+    "total_chars": 19200,
     "posts": {
-      "global_claude_md": 3595,
-      "include:FRONTEND_WEBSITE_RULES.md": 1263,
-      "include:ECC_GLOBAL_POLICY.md": 1299,
-      "include:CODEX_GLOBAL_POLICY.md": 1547,
-      "include:TOKEN_EFFICIENCY_GLOBAL_POLICY.md": 2155,
-      "include:FABLE5_SAFE_GLOBAL_POLICY.md": 3582,
-      "include:ANTHROPIC_CLAUDE_CODE_SETUP_PLUGIN_POLICY.md": 638,
-      "include:GLOBAL_RESEARCH_RECOVERY_POLICY.md": 1419,
-      "ecc_rules_common": 4193,
-      "workspace_claude_md": 321,
       "project_claude_md": 1818,
-      "skill_catalog_project": 2982,
-      "skill_catalog_global": 6748,
-      "skill_catalog_plugins": 1705
+      "skill_catalog_project": 2982
     },
     "skill_sources": {
-      "skill_catalog_project": 57,
-      "skill_catalog_global": 109,
-      "skill_catalog_plugins": 40
+      "skill_catalog_project": 57
     }
   }
 }

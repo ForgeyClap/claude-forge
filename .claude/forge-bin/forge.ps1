@@ -61,10 +61,16 @@ switch ($cmd) {
     if ($rest.Count -ge 3) {
       $env:FORGE_EVENT_JSON = [string]$rest[2]
       & $node "$dash\log-event.cjs" $rest[0] $rest[1] --env FORGE_EVENT_JSON
+      $exitCode = $LASTEXITCODE
+      # WP-S4 (v2.8.0 laptop-audit Part V-F): the payload (which can carry owner-written free text) used to be
+      # left sitting in this process's environment forever after the call — clear it the instant it has been
+      # read, whether log-event.cjs succeeded or failed.
+      Remove-Item Env:FORGE_EVENT_JSON -ErrorAction SilentlyContinue
     } else {
       & $node "$dash\log-event.cjs" @rest
+      $exitCode = $LASTEXITCODE
     }
-    exit $LASTEXITCODE
+    exit $exitCode
   }
   # reconciles the run's manifest.json from logged events and reports which work packages remain
   # unfinished (forge-swarm-resume.cjs). Usage: .\forge.ps1 resume --run <run_id> [--json]
@@ -83,3 +89,13 @@ switch ($cmd) {
   'promptcheck' { & $node "$PSScriptRoot\forge-promptcheck.cjs" @rest }
   default       { Write-Host 'Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn | config | sweep | promptcheck' }
 }
+# WP-S4 (v2.8.0 laptop-audit Part V-F): `powershell -File forge.ps1 ...` does NOT propagate $LASTEXITCODE to
+# the process's own exit code on its own — PowerShell 5.1 silently returns 0 no matter what the last native
+# command's real exit code was, unless a script explicitly `exit`s with it (verified: a nested `& $node ...`
+# call that fails still fell through to a bare script end here, printing the tool's own failure text while the
+# process itself reported success — a caller/CI checking $LASTEXITCODE or `%ERRORLEVEL%` saw green). Every
+# branch above either already exits explicitly (log-event) or ends by invoking $node/a function that itself
+# invokes $node — this final line is REACHED for all of those (a branch's own `exit` above always short-
+# circuits it first) and propagates whatever $LASTEXITCODE that last real command left behind; $null (no
+# native command ran at all, e.g. the bare `default` help text) exits 0, exactly the previous behaviour.
+exit $LASTEXITCODE

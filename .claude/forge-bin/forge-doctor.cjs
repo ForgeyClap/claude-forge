@@ -675,14 +675,34 @@ function loadToolPolicy(root) {
   const file = path.join(claudeDir(root), 'config', 'agents', 'agent-tool-policy.json');
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 }
+/** memoryAllowedForClass(policyFile, agentName) -> true/false/null — N5 (2026-09-26 laptop re-audit, WP-S6a):
+ *  Claude Code grants Write+Edit to ANY agent whose frontmatter carries `memory: project`, regardless of its
+ *  `tools:` line — so a class whose policy forbids Write (read-only-audit, exec-reviewer) must never carry
+ *  `memory: project` in its agent-md, and every OTHER class must carry it (memory is how these roles persist
+ *  their own notes between runs). Derived straight from agent-tool-policy.json's `classes[...].forbidden`
+ *  list, never hardcoded here, so a future class stays correct without touching this file. Returns null
+ *  (unresolvable) when the policy file or this agent's class entry cannot be read — callers fall back to the
+ *  OLDER, stricter "memory is always required" behavior in that case rather than silently skipping the check. */
+function memoryAllowedForClass(policyFile, agentName) {
+  const cls = policyFile && policyFile.agents && policyFile.agents[agentName] && policyFile.agents[agentName].class;
+  const forbidden = cls && policyFile.classes && policyFile.classes[cls] && Array.isArray(policyFile.classes[cls].forbidden)
+    ? policyFile.classes[cls].forbidden : null;
+  return forbidden ? !forbidden.includes('Write') : null;
+}
 function agentsCheck(root) {
   const dir = path.join(claudeDir(root), 'agents');
   const missing = [], badFrontmatter = [], injection = [];
+  // loaded once, up front, and reused below for the least-privilege tool-grant comparison too.
+  const toolPolicyFileForAgents = loadToolPolicy(root);
   for (const name of BOSS_NAMES) {
     const file = path.join(dir, name + '.md');
     let text; try { text = fs.readFileSync(file, 'utf8'); } catch { missing.push(name); continue; }
     const fm = parseFrontmatter(text);
-    if (!fm || fm.name !== name || !fm.description || !fm.tools || !fm.model || !fm.memory) badFrontmatter.push(name);
+    const memoryAllowed = memoryAllowedForClass(toolPolicyFileForAgents, name);
+    // memoryAllowed === null: class unresolvable (policy missing/broken) -> fall back to requiring memory,
+    // the pre-WP-S6a behavior, rather than silently accepting either shape.
+    const memoryOk = memoryAllowed === false ? !(fm && fm.memory) : Boolean(fm && fm.memory === 'project');
+    if (!fm || fm.name !== name || !fm.description || !fm.tools || !fm.model || !memoryOk) badFrontmatter.push(name);
   }
   // injection-lint EVERY agent file present (Bosses + specialists + codex-reviewer), and collect each
   // one's REAL granted tools (keyed by filename, not the frontmatter's own `name:` field, so a bad/mismatched
@@ -700,7 +720,7 @@ function agentsCheck(root) {
   // tools against the pinned .claude/config/agents/agent-tool-policy.json source of truth. A missing/
   // unparseable policy file is itself a failure (never a silent pass — same "no evidence" discipline as
   // the other checks in this file), not just a skipped sub-check.
-  const toolPolicyFile = loadToolPolicy(root);
+  const toolPolicyFile = toolPolicyFileForAgents;
   let toolPolicy;
   if (!policy) {
     toolPolicy = { ok: false, reason: 'forge-policy.cjs module not available (toolPolicyCheck unavailable)', missingPolicy: [], missingAgentFile: [], classViolations: [], driftViolations: [] };
@@ -2224,12 +2244,15 @@ function promptCoachPresent(root) {
 }
 
 /** settingsTemplatePath(opts) -> absolute path to a template settings.json, or null. Mirrors forge-sync.cjs's
- *  OWN CLI template-resolution env var (FORGE_SYNC_TEMPLATE_DIR) — but deliberately WITHOUT that CLI's
- *  "no env var -> try a global template under the user's home directory, else fall back to this project's
- *  own .claude" steps: beginner_setup never reads the user's home directory (see the section header doc
- *  comment above), and comparing a project's settings.json against itself would always trivially read
- *  "up to date" and tell a beginner nothing real. opts.source (test/CLI injection) always wins; with neither
- *  set, there is honestly no template to compare against (reported as `note`, never guessed). */
+ *  OWN template-resolution order: an injected opts.source (test/CLI) first, then FORGE_SYNC_TEMPLATE_DIR,
+ *  then the SAME canonical global template forge-sync.cjs itself falls back to —
+ *  `<home>/.claude/forge/template/.claude/settings.json` — because that is exactly where install.ps1 and
+ *  install.sh copy the shipped `.claude` tree on an installer install (N8, 2026-09-26 laptop re-audit:
+ *  without this fallback, settings-wired could never run on an installer install and only ever said "note").
+ *  This is a READ-ONLY existence check — it never writes here or anywhere else. Comparing a project's
+ *  settings.json against itself is still avoided: this path is the shared template dir, not the project's
+ *  own .claude, so it never trivially reads "up to date" for the wrong reason. With none of the three
+ *  sources available there is honestly no template to compare against (reported as `note`, never guessed). */
 function settingsTemplatePath(opts) {
   const o = opts || {};
   if (o.source) return o.source;
@@ -2238,6 +2261,8 @@ function settingsTemplatePath(opts) {
     const p = path.join(path.resolve(envDir), 'settings.json');
     if (fs.existsSync(p)) return p;
   }
+  const globalTemplate = path.join(os.homedir(), '.claude', 'forge', 'template', '.claude', 'settings.json');
+  if (fs.existsSync(globalTemplate)) return globalTemplate;
   return null;
 }
 
@@ -2563,6 +2588,8 @@ function printSummary(rep) {
 
 module.exports = {
   nodeCheckAll, runTests, strictEventCheck, spaPresent, leakScan, agentsCheck, chainCheck, rebindingGuard, backfillContinuity, runDoctor, printSummary, secretLabel, parseFrontmatter, parseToolsList, loadToolPolicy, BOSS_NAMES, looksLikeRealSecret, secretPortion, STRONG_PLACEHOLDER_RE, isPatternDefinitionContext, parseEventsJsonlLenient, chainCanon, PATTERN_DEFINITION_PATHS, LEAK_SCAN_MAX_BYTES, LEAK_SCAN_MAX_LINE,
+  // N5 (2026-09-26 laptop re-audit) — class-aware `memory:` frontmatter requirement (see its own doc comment)
+  memoryAllowedForClass,
   // 2026-08-02 — nested-repository discovery + per-source accounting for the leak scan (see nestedGitRepos)
   trackedFiles, nestedGitRepos, gitLsFiles, NESTED_REPO_MAX_DEPTH, TEST_FIXTURE_RE,
   // WAVE A / A2 (2026-07-18) — doctor completeness checks

@@ -5,10 +5,12 @@ description: Makes a vague request buildable (9 ingredients, F1-F13, one 2-3-opt
 
 # forge-prompt-coach — from a vague request to a buildable one
 
-**Evidence base.** Every rule below comes from `.claude/forge-research/prompt-coaching-2026-09-24.md`
-(35 sources, run `forge-2026-09-24-config-v250`). Ids in square brackets, such as [GOOG] or [G-Q], are the
-short source ids of that file's §F list — look them up there. Nothing here is new research. Where this skill
-makes a Forge design choice that no source states (for example the exact gap ranking in §2), it says so.
+**Evidence base.** Every rule below is grounded in Forge's own internal UX research (35 sources, run
+`forge-2026-09-24-config-v250`). The ids in square brackets, such as [GOOG] or [G-Q], are short internal
+source labels kept for traceability during development — the underlying research file is a dev-only
+artifact and is not part of a fresh install, so the labels are not meant to be dereferenced by the shipped
+product; treat this SKILL.md as self-contained. Nothing here is new research. Where this skill makes a
+Forge design choice that no source states (for example the exact gap ranking in §2), it says so.
 
 **Why this exists.** The owner builds Forge for beginners who do not think in computer terms. Beginners
 write short requests: successful prompts are about 21 words, first attempts fewer than 9 [GOOG]. They expect
@@ -227,4 +229,4 @@ bad-to-good examples are in `references/before-after.md`.
 - `references/before-after.md` — the 10 bad-to-good pairs
 - `references/HOW-TO-ASK.md` — the beginner guide for the owner (NL, then EN)
 - `references/unsafe-advice.md` — tutorial tips that are actually unsafe, and Forge's safer equivalent (NL, then EN)
-- `.claude/forge-research/prompt-coaching-2026-09-24.md` — the evidence base and the full source list
+- `.claude/forge-research/prompt-coaching-2026-09-24.md` — the internal evidence base and full source list (dev-only; not part of a fresh install)

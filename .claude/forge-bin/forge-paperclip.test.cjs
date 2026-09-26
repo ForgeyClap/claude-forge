@@ -150,8 +150,8 @@ function caseDir() { const d = path.join(TMP, 'case' + (++caseN)); fs.mkdirSync(
 // gets Haiku; everything else gets the versatile Sonnet default (calls the REAL pc.modelFor)
 // ===================================================================================
 {
-  t('C1 lead -> opus 4.8, high effort', JSON.stringify(pc.modelFor('lead')) === JSON.stringify({ model: 'claude-opus-4-8', effort: 'high' }));
-  t('C1 security-reviewer -> opus 4.8, high effort', pc.modelFor('security-reviewer').model === 'claude-opus-4-8');
+  t('C1 lead -> opus 5.5, high effort', JSON.stringify(pc.modelFor('lead')) === JSON.stringify({ model: 'claude-opus-5-5', effort: 'high' }));
+  t('C1 security-reviewer -> opus 5.5, high effort', pc.modelFor('security-reviewer').model === 'claude-opus-5-5');
   t('C2 classifier -> haiku (no effort field, unsupported on Haiku per source comment)', JSON.stringify(pc.modelFor('classifier')) === JSON.stringify({ model: 'haiku' }));
   t('C3 an ordinary engineer role defaults to sonnet, high effort', JSON.stringify(pc.modelFor('engineer')) === JSON.stringify({ model: 'sonnet', effort: 'high' }));
   t('C3 unknown role also defaults to sonnet (never throws)', pc.modelFor('totally-unknown').model === 'sonnet');

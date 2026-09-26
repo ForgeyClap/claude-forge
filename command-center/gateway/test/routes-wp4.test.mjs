@@ -92,6 +92,67 @@ test('POST /api/conversations creates a real conversation for a real registry pr
   assert.ok(list.json.conversations.some((c) => c.id === res.json.conversation.id));
 });
 
+// N6 fix (WP-C1, 2026-09-26 laptop re-audit): POST /api/conversations had NO exec-token check at
+// all before this fix — a real, non-browser local process could create a real conversation with
+// no auth (audit: "POST /api/conversations no token -> 201 created"). GET stays the control: reads
+// never required the token and still don't.
+test('N6 AUTH: POST /api/conversations with NO exec token is rejected with 403, and nothing is created', async () => {
+  const before = await request(port, '/api/conversations');
+  const beforeCount = before.json.conversations.length;
+
+  const res = await requestWithBody(port, '/api/conversations', {
+    jsonBody: { project: THIS_PROJECT_NAME },
+    omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json.ok, false);
+  assert.match(res.json.error, /execution token/);
+
+  const after = await request(port, '/api/conversations');
+  assert.equal(after.json.conversations.length, beforeCount, 'a rejected create must never persist a conversation');
+});
+
+test('N6 CONTROL: GET /api/conversations with NO exec token still succeeds (reads never required it)', async () => {
+  const res = await requestWithBody(port, '/api/conversations', { method: 'GET', omitExecToken: true });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
+});
+
+test('N6 AUTH: POST /api/conversations with the REAL exec token succeeds', async () => {
+  const res = await requestWithBody(port, '/api/conversations', {
+    jsonBody: { project: THIS_PROJECT_NAME },
+    omitExecToken: true,
+    headers: { [EXEC_TOKEN_HEADER]: getExecToken() },
+  });
+  assert.equal(res.statusCode, 201);
+});
+
+// N6 fix: POST .../stop had NO exec-token check at all before this fix (audit: "POST
+// /api/conversations/<x>/stop no token -> 404 (not gated)" — a real local process could probe/stop
+// executions with no auth at all).
+test('N6 AUTH: POST /api/conversations/:id/stop with NO exec token is rejected with 403', async () => {
+  const created = await requestWithBody(port, '/api/conversations', { jsonBody: { project: THIS_PROJECT_NAME } });
+  const convId = created.json.conversation.id;
+  const res = await requestWithBody(port, '/api/conversations/' + convId + '/stop', {
+    jsonBody: {},
+    omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.match(res.json.error, /execution token/);
+});
+
+test('N6 AUTH: POST /api/conversations/:id/stop with the REAL exec token succeeds', async () => {
+  const created = await requestWithBody(port, '/api/conversations', { jsonBody: { project: THIS_PROJECT_NAME } });
+  const convId = created.json.conversation.id;
+  const res = await requestWithBody(port, '/api/conversations/' + convId + '/stop', {
+    jsonBody: {},
+    omitExecToken: true,
+    headers: { [EXEC_TOKEN_HEADER]: getExecToken() },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
+});
+
 // fix-conv-filter REGRESSION (forge-2026-07-29-cc-finish): GET /api/conversations?project=<name>
 // used to be read by no code at all — every caller got every conversation across every project
 // (live-measured before this fix: three different ?project= query values returned byte-identical
@@ -488,9 +549,12 @@ test('MODEL: POST /messages with no model field stores model:null on the turn-me
   assert.equal(userTurn.model, null);
 });
 
-// fix-sec-round #1 (HIGH): POST /messages requires the real per-boot exec token for every mode
-// except 'plan'. Every OTHER test in this file passes via `requestWithBody`'s new default (see
-// test-support/helpers.mjs) — these tests exercise the guard itself directly.
+// fix-sec-round #1 (HIGH) / N6 fix (WP-C1): POST /messages requires the real per-boot exec token
+// for EVERY mode, including 'plan' (the previous 'plan'-mode exemption was removed — see
+// server.mjs's own requestListener comment for why: the user's turn is always persisted first,
+// regardless of mode, so there was never a mode that genuinely needed to skip this check). Every
+// OTHER test in this file passes via `requestWithBody`'s new default (see test-support/helpers.mjs)
+// — these tests exercise the guard itself directly.
 test('AUTH: POST /messages with the default "execute" mode and NO exec token is rejected with 403', async () => {
   const created = await requestWithBody(port, '/api/conversations', { jsonBody: { project: THIS_PROJECT_NAME } });
   const convId = created.json.conversation.id;
@@ -524,12 +588,27 @@ test('AUTH: POST /messages with mode:"accept-edits" and NO exec token is rejecte
   assert.equal(res.statusCode, 403);
 });
 
-test('AUTH: POST /messages with mode:"plan" and NO exec token is still accepted (plan starts no write of its own)', async () => {
+// N6 fix (WP-C1): 'plan' mode used to be exempt from the exec-token check — it no longer is,
+// because appendUserTurn() persists the user's turn to the conversation store for EVERY mode
+// (including 'plan') before execution even starts, which is itself a real write.
+test('AUTH: POST /messages with mode:"plan" and NO exec token is rejected with 403 (the old plan exemption is gone)', async () => {
   const created = await requestWithBody(port, '/api/conversations', { jsonBody: { project: THIS_PROJECT_NAME } });
   const convId = created.json.conversation.id;
   const res = await requestWithBody(port, '/api/conversations/' + convId + '/messages', {
     jsonBody: { text: 'plan mode please', mode: 'plan' },
     omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.match(res.json.error, /execution token/);
+});
+
+test('AUTH: POST /messages with mode:"plan" and the REAL exec token succeeds', async () => {
+  const created = await requestWithBody(port, '/api/conversations', { jsonBody: { project: THIS_PROJECT_NAME } });
+  const convId = created.json.conversation.id;
+  const res = await requestWithBody(port, '/api/conversations/' + convId + '/messages', {
+    jsonBody: { text: 'plan mode please', mode: 'plan' },
+    omitExecToken: true,
+    headers: { [EXEC_TOKEN_HEADER]: getExecToken() },
   });
   assert.equal(res.statusCode, 202);
 });

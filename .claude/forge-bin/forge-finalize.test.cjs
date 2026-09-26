@@ -596,6 +596,124 @@ console.log('forge-finalize (hermetisch, root=' + ROOT + ')');
   try { fs.rmSync(GITROOT2, { recursive: true, force: true }); } catch { }
 }
 
+// ================================================================================================
+// 20) D2 (WP-S10, 2026-09-26, fresh-laptop re-audit) — a genuinely git-less project can reach a
+//     FINALIZED receipt with code_commit:null, but ONLY when an INDEPENDENT probe of the CURRENT root
+//     confirms that no-git claim (never a flag gate-evidence.json itself wrote). A no-git claim on a
+//     root that actually has git is refused both at finalize() (write time, 20b) and at check() (read
+//     time, on a hand-forged receipt, 20c). The 40-hex requirement is unchanged for every other project
+//     (every earlier test above already proves that, on ROOT's own fake-but-well-formed git commits).
+// ================================================================================================
+{
+  // 20a: ROOT above has no real .git directory (see test 18's own comment: "resolveHeadCommit() there
+  // is always null") — an HONEST no-git evidence set on THIS root must let finalize() succeed with
+  // code_commit:null.
+  const RUN = 'fin-nogit-ok';
+  const dir = path.join(ROOT, '.claude', 'forge-runs', RUN);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'gate-evidence.json'), JSON.stringify({
+    run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: null, worktree_clean: null, stable: true, no_git: true, reason: 'geen git-repository' } }],
+  }));
+  const nogitLog = (type, extra) => spawnSync(process.execPath, [LOGEVT, RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+  nogitLog('run_started', { note: 's' });
+  nogitLog('run_completed', { command: 'x', output: 'klaar' });
+  const r = F.finalize(ROOT, RUN);
+  t('20a a genuinely git-less project finalizes with an honest no-git evidence set', r.ok === true && r.receipt && r.receipt.code_commit === null, JSON.stringify(r).slice(0, 220));
+  t('20a check() confirms FINALIZED', F.check(ROOT, RUN).verdict === 'FINALIZED', JSON.stringify(F.check(ROOT, RUN)).slice(0, 160));
+}
+{
+  // 20b: a REAL git root whose gate-evidence.json FABRICATES a no_git claim (despite git genuinely being
+  // present) must be refused by finalize() itself — the independent probe catches the contradiction.
+  const GITROOT3 = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-nogit-forged-'));
+  fs.mkdirSync(path.join(GITROOT3, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT3, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT3, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT3, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT3, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT3, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT3, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const git3 = (...args) => spawnSync('git', args, { cwd: GITROOT3, encoding: 'utf8' });
+  git3('init', '-q');
+  git3('config', 'user.email', 'test@example.com');
+  git3('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(GITROOT3, 'seed.txt'), 'seed\n');
+  git3('add', '.');
+  git3('commit', '-q', '-m', 'seed');
+  const head3 = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT3, encoding: 'utf8' }).stdout.trim();
+  const noGit3 = head3 === '' || !/^[0-9a-f]{40}$/i.test(head3);
+  if (noGit3) {
+    console.log('  SKIP 20b D2-NOGIT-FORGED: no working `git` in this environment — cannot exercise a real git root');
+  } else {
+    const RUN = 'fin-nogit-forged';
+    const dir3 = path.join(GITROOT3, '.claude', 'forge-runs', RUN);
+    fs.mkdirSync(dir3, { recursive: true });
+    fs.writeFileSync(path.join(dir3, 'gate-evidence.json'), JSON.stringify({
+      run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: null, worktree_clean: null, stable: true, no_git: true, reason: 'geen git-repository (vervalst)' } }],
+    }));
+    const g3log = (type, extra) => spawnSync(process.execPath, [path.join(GITROOT3, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    g3log('run_started', { note: 's' });
+    g3log('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_G3 = require(path.join(GITROOT3, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const r = FIN_G3.finalize(GITROOT3, RUN);
+    t('20b a no-git claim on a root that DOES have git is refused by finalize()', r.ok === false && /git-repository/.test(r.reason || ''), JSON.stringify(r).slice(0, 240));
+    t('20b no receipt was written', !fs.existsSync(FIN_G3.receiptFileOf(GITROOT3, RUN)));
+  }
+  try { fs.rmSync(GITROOT3, { recursive: true, force: true }); } catch { }
+}
+{
+  // 20c: a receipt hand-forged to CLAIM code_commit:null (no-git) on a root that genuinely has git is
+  // refused as invalid by receiptState/check() at READ time too — never trusted at face value just
+  // because it is already sitting on disk as a "finalized" receipt.
+  const GITROOT4 = fs.mkdtempSync(path.join(os.tmpdir(), 'finalize-nogit-receipt-'));
+  fs.mkdirSync(path.join(GITROOT4, '.claude', 'forge-dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT4, '.claude', 'forge-bin'), { recursive: true });
+  fs.mkdirSync(path.join(GITROOT4, '.claude', 'config', 'orchestration'), { recursive: true });
+  fs.copyFileSync(LOGEVT, path.join(GITROOT4, '.claude', 'forge-dashboard', 'log-event.cjs'));
+  fs.copyFileSync(path.join(__dirname, 'forge-runcontract.cjs'), path.join(GITROOT4, '.claude', 'forge-bin', 'forge-runcontract.cjs'));
+  fs.copyFileSync(FIN, path.join(GITROOT4, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+  fs.writeFileSync(path.join(GITROOT4, '.claude', 'config', 'orchestration', 'FORGE_HARD_RULES.json'), JSON.stringify({
+    owners_allowlist: ['owner'],
+    rules: [{ id: 'has-start', rule: 'run has a start event', trigger: 'always', check: { type: 'event-present', key: ['run_started'] }, severity: 'block', override: 'n/a', source: 'test' }],
+  }, null, 2));
+  const git4 = (...args) => spawnSync('git', args, { cwd: GITROOT4, encoding: 'utf8' });
+  git4('init', '-q');
+  git4('config', 'user.email', 'test@example.com');
+  git4('config', 'user.name', 'Test');
+  fs.writeFileSync(path.join(GITROOT4, 'seed.txt'), 'seed\n');
+  git4('add', '.');
+  git4('commit', '-q', '-m', 'seed');
+  const head4 = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: GITROOT4, encoding: 'utf8' }).stdout.trim();
+  const noGit4 = head4 === '' || !/^[0-9a-f]{40}$/i.test(head4);
+  if (noGit4) {
+    console.log('  SKIP 20c D2-NOGIT-RECEIPT-FORGED: no working `git` in this environment — cannot exercise a real git root');
+  } else {
+    const RUN = 'fin-nogit-receipt-forged';
+    const dir4 = path.join(GITROOT4, '.claude', 'forge-runs', RUN);
+    const g4log = (type, extra) => {
+      fs.mkdirSync(dir4, { recursive: true });
+      const f = path.join(dir4, 'gate-evidence.json');
+      if (!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify({ run_id: RUN, gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'a'.repeat(64), evidence_verified: true, code: { commit: head4, worktree_clean: true, stable: true } }] }));
+      return spawnSync(process.execPath, [path.join(GITROOT4, '.claude', 'forge-dashboard', 'log-event.cjs'), RUN, type, JSON.stringify(Object.assign({ agent: 'orchestrator' }, extra || {}))], { encoding: 'utf8' });
+    };
+    g4log('run_started', { note: 's' });
+    g4log('run_completed', { command: 'x', output: 'klaar' });
+    const FIN_G4 = require(path.join(GITROOT4, '.claude', 'forge-bin', 'forge-finalize.cjs'));
+    const setup = FIN_G4.finalize(GITROOT4, RUN);
+    t('20c setup: a genuine git-bound finalize succeeds first', setup.ok === true && setup.receipt.code_commit === head4, JSON.stringify(setup).slice(0, 200));
+    // hand-edit the receipt to claim code_commit:null (a forged no-git claim) — bypasses finalize()
+    const receiptPath4 = FIN_G4.receiptFileOf(GITROOT4, RUN);
+    const realReceipt4 = JSON.parse(fs.readFileSync(receiptPath4, 'utf8'));
+    fs.writeFileSync(receiptPath4, JSON.stringify(Object.assign({}, realReceipt4, { code_commit: null }), null, 2));
+    const forged = FIN_G4.check(GITROOT4, RUN);
+    t('20c a receipt forged to claim code_commit:null on a root that DOES have git is refused (STALE)', forged.verdict === 'STALE', JSON.stringify(forged).slice(0, 240));
+    t('20c the refusal names the git-repository contradiction', /git-repository/.test(forged.reason || ''), forged.reason);
+  }
+  try { fs.rmSync(GITROOT4, { recursive: true, force: true }); } catch { }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 
 try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { }

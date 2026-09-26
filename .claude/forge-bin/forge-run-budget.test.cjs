@@ -493,6 +493,67 @@ t('CLI cap --root <fixture>: stdout is only the owner amount, stderr names the f
   assert.ok(/source forge-config\.budget-usd \(project\)/.test(r.stderr), r.stderr);
 });
 
+// -----------------------------------------------------------------------------------------------------
+// N4/Part V-G (2026-09-26, external audit) — --run containment: a bare token must resolve UNDER
+// .claude/forge-runs, never create a directory anywhere else in the project root.
+// -----------------------------------------------------------------------------------------------------
+t('resolveRunDir: a bare token (no path separator) resolves under <root>/.claude/forge-runs/<token>', () => {
+  const root = tmpRoot();
+  const r = B.resolveRunDir('x', { root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.dir, path.join(root, '.claude', 'forge-runs', 'x'));
+});
+t('resolveRunDir: a real .claude/forge-runs/<id> relative path still resolves exactly there (the maand-sweep.cmd shape)', () => {
+  const root = tmpRoot();
+  const r = B.resolveRunDir('.claude/forge-runs/forge-maand-sweep-2026-10', { root });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.dir, path.join(root, '.claude', 'forge-runs', 'forge-maand-sweep-2026-10'));
+});
+t('resolveRunDir: a path-shaped value that escapes .claude/forge-runs is refused, not resolved', () => {
+  const root = tmpRoot();
+  const r = B.resolveRunDir('../../evil', { root });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /outside \.claude\/forge-runs/);
+});
+t('resolveRunDir: --run pointing at .claude/forge-runs itself (no id) is refused', () => {
+  const root = tmpRoot();
+  const r = B.resolveRunDir('.claude/forge-runs', { root });
+  assert.strictEqual(r.ok, false);
+});
+t('resolveRunDir: an empty --run is refused', () => {
+  const root = tmpRoot();
+  const r = B.resolveRunDir('', { root });
+  assert.strictEqual(r.ok, false);
+});
+
+t('CLI classify --run x no longer creates "x/" in the project root (the exact audit repro)', () => {
+  const root = tmpRoot();
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'forge-run-budget.cjs'), 'classify', '--run', 'x', '--wrapper', 'test', '--cap', '5', '--exit', '0', '--root', root], { encoding: 'utf8' });
+  assert.ok(!fs.existsSync(path.join(root, 'x')), 'classify --run x must never create <root>/x — it must land under .claude/forge-runs/x instead of the project root');
+  assert.ok(fs.existsSync(path.join(root, '.claude', 'forge-runs', 'x')), 'it must instead land under .claude/forge-runs/x');
+});
+t('CLI classify --run x (a bare id) writes the verdict under .claude/forge-runs/x, not the project root', () => {
+  const root = tmpRoot();
+  const logFile = path.join(root, 'log.txt');
+  fs.writeFileSync(logFile, 'ok');
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'forge-run-budget.cjs'), 'classify', '--run', 'x', '--wrapper', 'test', '--cap', '5', '--exit', '0', '--log', logFile, '--root', root], { encoding: 'utf8' });
+  const verdictPath = path.join(root, '.claude', 'forge-runs', 'x', B.VERDICT_FILE);
+  assert.ok(fs.existsSync(verdictPath), 'the verdict file should land under .claude/forge-runs/x; stderr: ' + r.stderr + ' stdout: ' + r.stdout);
+  assert.ok(!fs.existsSync(path.join(root, 'x')), '<root>/x must never be created');
+});
+t('CLI classify --run ../../evil is refused, not written anywhere', () => {
+  const root = tmpRoot();
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'forge-run-budget.cjs'), 'classify', '--run', '../../evil', '--wrapper', 'test', '--cap', '5', '--exit', '0', '--root', root], { encoding: 'utf8' });
+  assert.notStrictEqual(r.status, 0);
+  assert.ok(/outside \.claude\/forge-runs/.test(r.stderr), r.stderr);
+});
+t('CLI stops --run x resolves under .claude/forge-runs, never reads/writes the project root', () => {
+  const root = tmpRoot();
+  const r = spawnSync(process.execPath, [path.join(__dirname, 'forge-run-budget.cjs'), 'stops', '--run', 'x', '--root', root], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 0); // no stops recorded -> exit 0
+  assert.ok(!fs.existsSync(path.join(root, 'x')));
+});
+
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
 try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch {}
 

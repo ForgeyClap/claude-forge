@@ -329,5 +329,75 @@ try {
   try { fs.rmSync(v13Git, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
+// ---- N9 laptop re-audit 2026-09-26: readForgeVersion reads the REAL installer marker, never "unknown" on a
+// real install ----
+const verDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-version-'));
+try {
+  t('readForgeVersion reports "unknown" when neither .claude/FORGE_VERSION.json nor a VERSION file exists',
+    setup.readForgeVersion(verDir) === 'unknown');
+
+  fs.mkdirSync(path.join(verDir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(verDir, '.claude', 'FORGE_VERSION.json'), JSON.stringify({ forge_version: '2.8.0', synced_at: '2026-09-26T00:00:00Z' }));
+  t('readForgeVersion reads the real installer marker .claude/FORGE_VERSION.json (forge_version) — this is the exact N9 fix: install.ps1 writes THIS file into the target project, never a bare VERSION file',
+    setup.readForgeVersion(verDir) === '2.8.0');
+
+  fs.writeFileSync(path.join(verDir, 'VERSION'), '9.9.9-should-not-win\n');
+  t('the installer marker still wins over a stray VERSION file when both exist', setup.readForgeVersion(verDir) === '2.8.0');
+
+  fs.rmSync(path.join(verDir, '.claude', 'FORGE_VERSION.json'));
+  t('falls back to a plain VERSION file when the installer marker is absent (e.g. a source checkout)', setup.readForgeVersion(verDir) === '9.9.9-should-not-win');
+
+  fs.writeFileSync(path.join(verDir, '.claude', 'FORGE_VERSION.json'), '{ not valid json');
+  t('a malformed FORGE_VERSION.json never throws — falls back to the VERSION file instead', setup.readForgeVersion(verDir) === '9.9.9-should-not-win');
+
+  fs.mkdirSync(path.join(verDir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(verDir, '.claude', 'FORGE_VERSION.json'), JSON.stringify({ forge_version: '2.8.0' }));
+  const throwawayGlobalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-version-global-'));
+  const markResult = setup.mark(verDir, { name: 'x', lang: 'en' }, throwawayGlobalDir); // never touch the real ~/.claude
+  const projMarker = JSON.parse(fs.readFileSync(markResult.projectMarkerPath, 'utf8'));
+  t('mark() now records the real version in the project marker instead of "unknown" (the exact N8/N9 symptom)', projMarker.version === '2.8.0', JSON.stringify(projMarker));
+  try { fs.rmSync(throwawayGlobalDir, { recursive: true, force: true }); } catch { /* best effort */ }
+} finally {
+  try { fs.rmSync(verDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+// ---- N9 laptop re-audit 2026-09-26: unstageTrackedEnv — Forge untracks .env ITSELF (git rm --cached),
+// instead of handing the owner "run git rm --cached .env" to type ----
+const fixDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-unstage-'));
+try {
+  const gitInit3 = spawnSync('git', ['init', '-q'], { cwd: fixDir, encoding: 'utf8' });
+  if (!gitInit3.error && gitInit3.status === 0) {
+    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: fixDir });
+    spawnSync('git', ['config', 'user.name', 'test'], { cwd: fixDir });
+    fs.writeFileSync(path.join(fixDir, '.env'), 'REAL_SECRET=do-not-lose-me\n');
+    spawnSync('git', ['add', '-A'], { cwd: fixDir });
+    spawnSync('git', ['commit', '-q', '-m', 'oops committed .env'], { cwd: fixDir });
+    t('.env is confirmed tracked before the fix (real repro, not assumed)', setup.checkEnvTracked(fixDir).tracked === true);
+
+    const u = setup.unstageTrackedEnv(fixDir);
+    t('unstageTrackedEnv succeeds and reports it unstaged the file', u.ok === true && u.unstaged === true, JSON.stringify(u));
+    t('after the fix, .env is no longer tracked by git', setup.checkEnvTracked(fixDir).tracked === false);
+    t('the .env FILE ITSELF is untouched on disk — this only removes it from the git INDEX, never from the working tree',
+      fs.existsSync(path.join(fixDir, '.env')) && fs.readFileSync(path.join(fixDir, '.env'), 'utf8') === 'REAL_SECRET=do-not-lose-me\n');
+
+    t('unstageTrackedEnv on an already-untracked .env is a harmless no-op (idempotent)',
+      setup.unstageTrackedEnv(fixDir).alreadyUntracked === true);
+
+    // Real CLI path: `guard --fix` — this is what the AGENT runs instead of handing the human a git command.
+    fs.writeFileSync(path.join(fixDir, '.env'), 'REAL_SECRET=again\n');
+    spawnSync('git', ['add', '-A'], { cwd: fixDir });
+    spawnSync('git', ['commit', '-q', '-m', 'oops again'], { cwd: fixDir });
+    const cliNoFix = run(['guard', '--project', fixDir]);
+    t('CLI `guard` (no --fix) still hard-stops with exit 3 and never runs git itself unasked', cliNoFix.status === 3 && setup.checkEnvTracked(fixDir).tracked === true);
+    t('the no-fix warning names --fix, never a raw git command for a human to type', /--fix/.test(cliNoFix.stderr) && !/git rm/.test(cliNoFix.stderr));
+    const cliFix = run(['guard', '--fix', '--project', fixDir]);
+    t('CLI `guard --fix` exits 0 and actually untracks .env', cliFix.status === 0 && setup.checkEnvTracked(fixDir).tracked === false, cliFix.stdout + cliFix.stderr);
+  } else {
+    console.log('  skip unstageTrackedEnv git probes (git not available)');
+  }
+} finally {
+  try { fs.rmSync(fixDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

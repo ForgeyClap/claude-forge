@@ -1,7 +1,7 @@
 ---
 name: build-boss
 description: Implementation and coding Boss for Forge. Implements the actual code changes assigned by Head Chef — follows the existing architecture, writes clean/maintainable/tested code, never bypasses QA or tests. Use PROACTIVELY whenever a work package requires writing or modifying code (features, bug fixes, refactors, scaffolding, integration glue).
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

@@ -51,6 +51,17 @@ function splitForSelfDisable(text) {
 // hand-rolled flag stripper only ever handled flags that take NO value).
 const CONFIG_WRAPPER_RE = /^(?:sudo|time|nohup)$/i;
 const CONFIG_BASENAME_RE = /^forge-config(?:-cli)?\.cjs$/i;
+// WP-S4 (v2.8.0 laptop-audit Part V-F): the fresh-laptop re-audit executed `forge.cmd|forge.ps1|forge.sh config
+// set gate-hook off|uit` (and `unset gate-hook`) end to end and found it passed the gate 4/4 with nothing
+// printed — this file only ever recognised the SCRIPT itself (forge-config(-cli).cjs), never the dispatcher
+// wrapper that forwards its `config` subcommand straight to that same script (see forge.cmd/.ps1/.sh's own
+// `config` branch: `shift` + forward everything else verbatim, or PowerShell's `@rest`). A wrapper call must
+// reach the exact same verdict as the direct call it is byte-for-byte equivalent to.
+const WRAPPER_BASENAME_RE = /^forge(?:\.(?:cmd|ps1|sh))?$/i; // forge | forge.cmd | forge.ps1 | forge.sh (any path prefix — basename only, same convention as CONFIG_BASENAME_RE)
+// A shell explicitly launching the wrapper file (`powershell -File forge.ps1 …`, `bash forge.sh …`) rather than
+// the OS resolving it directly (`forge.cmd`, `.\forge.ps1`) — mirrors the node-launcher handling below.
+const WRAPPER_LAUNCHER_RE = /^(?:powershell|pwsh|cmd|bash|sh|dash|zsh)(?:\.exe)?$/i;
+const WRAPPER_CONFIG_SUBCOMMAND = 'config'; // the ONLY forge(.cmd|.ps1|.sh) subcommand that reaches forge-config(-cli).cjs
 // The only two forge-config.cjs subcommands that can ever mutate a setting (see forge-config-cli.cjs's own
 // runCommand() switch) — anything else (list/get/explain/diff/parse/help, or a garbled non-command like the
 // literal string "--json" landing in argv[0] when a flag precedes the subcommand) is never trusted enough to
@@ -154,6 +165,12 @@ function parseConfigCall(segment) {
   if (isNodeToken(tokens[i])) {
     i++;
     while (tokens[i] && !tokens[i].quoted && /^-/.test(tokens[i].v)) i++; // node's own CLI flags, e.g. --no-warnings
+  } else if (tokens[i] && !tokens[i].quoted && WRAPPER_LAUNCHER_RE.test(tokens[i].v)) {
+    // WP-S4: `powershell -File forge.ps1 …` / `bash forge.sh …` — skip the launcher and any flag tokens before
+    // the wrapper's own script path, the same simplistic (but sufficient, fail-toward-refuse) skip node's own
+    // flags get above; the wrapper path token itself never starts with `-`/`/` so this cannot skip past it.
+    i++;
+    while (tokens[i] && !tokens[i].quoted && /^[-/]/.test(tokens[i].v)) i++;
   }
   if (!tokens[i]) return null;
   // sec-v5 M1: `\` here may be a genuine PowerShell/Windows directory separator (real, meaningful, never an
@@ -163,12 +180,27 @@ function parseConfigCall(segment) {
   // `forge-config\.cjs`, which a real Bash shell reduces to the literal `forge-config.cjs` before node ever
   // sees it, but whose raw text a naive split misreads as ending in `.cjs` with a spurious extra separator).
   // Never used to derive anything this file writes or executes — only to decide whether THIS segment names
-  // the config script at all.
+  // the config script (or the wrapper that forwards to it) at all.
   const rawBase = String(tokens[i].v).split(/[\\/]/).pop();
   const unescapedBase = shellUnescapeForCompare(String(tokens[i].v)).split(/[\\/]/).pop();
-  if (!CONFIG_BASENAME_RE.test(rawBase) && !CONFIG_BASENAME_RE.test(unescapedBase)) return null;
+  const isConfigScript = CONFIG_BASENAME_RE.test(rawBase) || CONFIG_BASENAME_RE.test(unescapedBase);
+  const isWrapperScript = !isConfigScript && (WRAPPER_BASENAME_RE.test(rawBase) || WRAPPER_BASENAME_RE.test(unescapedBase));
+  if (!isConfigScript && !isWrapperScript) return null;
+  let scriptEnd = i + 1;
+  if (isWrapperScript) {
+    // WP-S4: forge(.cmd|.ps1|.sh) forwards everything AFTER its own `config` subcommand verbatim to
+    // forge-config(-cli).cjs (see each wrapper's own `config` branch) — so `forge.ps1 config set gate-hook off`
+    // must parse to the exact same verdict as `forge-config.cjs set gate-hook off`. Any other subcommand (or
+    // none at all — `forge.ps1 status`, `forge.ps1 config` alone) never reaches forge-config.cjs, so it is not
+    // a config call; benign counterfactuals like `forge.ps1 config list` still fall through the mutating-cmd
+    // check below (list is not `set`/`unset`), same as calling forge-config.cjs directly.
+    const sub = tokens[scriptEnd];
+    if (!sub) return null;
+    if (shellUnescapeForCompare(String(sub.v)).toLowerCase() !== WRAPPER_CONFIG_SUBCOMMAND) return null;
+    scriptEnd += 1;
+  }
   if (!CONFIG_CLI || typeof CONFIG_CLI.parseArgv !== 'function') return null; // cannot confidently parse -> ambiguous fallback
-  const restTokens = tokens.slice(i + 1);
+  const restTokens = tokens.slice(scriptEnd);
   // sec-v5 M1: de-escaped BEFORE parseArgv ever sees it, so `a.cmd`/`a.pos[]`/`a.once`/etc. all already reflect
   // what a real shell would actually pass to node — an escaped verb/key/value (`s\et`, `gate-h\ook`, `of\f`)
   // now compares correctly without any special-casing downstream (isSelfDisableCall/isOnceExempt are
@@ -226,7 +258,13 @@ function deglue(segment) { return String(segment).replace(/["'\\]/g, ''); }
 function looksLikeAmbiguousConfigMutation(segment) {
   const words = deglue(segment).trim().split(/\s+/).filter(Boolean).map((w) => w.toLowerCase());
   if (!words.length) return false;
-  const hasScript = words.some((w) => CONFIG_BASENAME_RE.test(String(w).split(/[\\/]/).pop()));
+  const hasConfigScript = words.some((w) => CONFIG_BASENAME_RE.test(String(w).split(/[\\/]/).pop()));
+  // WP-S4: the same crude fallback, extended to the wrapper form — a bare wrapper basename only counts once
+  // its own `config` subcommand word is also present (mirrors parseConfigCall's own wrapper branch above),
+  // so `forge.ps1 status` (no "config" word) still cannot match here.
+  const hasWrapperScript = !hasConfigScript && words.includes(WRAPPER_CONFIG_SUBCOMMAND)
+    && words.some((w) => WRAPPER_BASENAME_RE.test(String(w).split(/[\\/]/).pop()));
+  const hasScript = hasConfigScript || hasWrapperScript;
   return hasScript && (words.includes('set') || words.includes('unset')) && words.includes('gate-hook');
 }
 
@@ -267,4 +305,5 @@ module.exports = {
   looksLikeAmbiguousConfigMutation, deglue, isNodeToken, OFF_WORDS, CONFIG_WRAPPER_RE, CONFIG_BASENAME_RE,
   CONFIG_MUTATING_CMDS, CONFIG_SPLIT_RE, joinLineContinuations, positionalTokenObjects, isLiteralToken,
   hasNonLiteralConfigMutation, shellUnescapeForCompare,
+  WRAPPER_BASENAME_RE, WRAPPER_LAUNCHER_RE, WRAPPER_CONFIG_SUBCOMMAND,
 };

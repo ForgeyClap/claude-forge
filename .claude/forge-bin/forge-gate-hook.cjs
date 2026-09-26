@@ -167,7 +167,12 @@ const WATCHDOG_UNAVAILABLE_FALLBACK_CHARS = 10000;
 // alternative is a fully deterministic nested-literal chain (no repeated class, so no backtracking ambiguity is
 // possible regardless of nesting depth) covering every real unambiguous abbreviation of -EncodedCommand,
 // starting at -en (the shortest prefix powershell.exe itself accepts without also matching -ExecutionPolicy).
-const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b|\biex\b|\bInvoke-Expression\b|\beval\b(?!-)|\|\s*(?:sudo\s+|env\s+)?(?:sh|bash|zsh|powershell(?:\.exe)?|pwsh(?:\.exe)?|cmd(?:\.exe)?)\b|-en(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?)?)?)?)?)?)?\b|\bkill\b[^\n]{0,200}(?:\$\(|`)\s*(?:pgrep|pidof)\b/i;
+// v2.7.3 (post-release review sec-release-v272 L1, defense-in-depth): two more bounded alternatives so the
+// classifier-unavailable branch also blocks a shell self-disable of the gate itself — a `forge-config[-cli]`
+// invocation naming `gate-hook` in either order. Bounded `{0,200}` (same rule as the kill/pipe alternatives,
+// never an unbounded `[^\n]*`); over-blocking is the safe direction in a corrupt-classifier state, so even the
+// legitimate once-shape is refused here (visible, retriable when the classifier is healthy) rather than allowed.
+const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b|\biex\b|\bInvoke-Expression\b|\beval\b(?!-)|\|\s*(?:sudo\s+|env\s+)?(?:sh|bash|zsh|powershell(?:\.exe)?|pwsh(?:\.exe)?|cmd(?:\.exe)?)\b|-en(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?)?)?)?)?)?)?\b|\bkill\b[^\n]{0,200}(?:\$\(|`)\s*(?:pgrep|pidof)\b|\bforge-config(?:-cli)?\b[^\n]{0,200}\bgate-hook\b|\bgate-hook\b[^\n]{0,200}\bforge-config(?:-cli)?\b/i;
 
 /** sha256(s) -> hex digest, used only to bind a once-consumption call to the exact command being evaluated
  *  (codex-recheck S06); never logged, never echoed back to the user. */

@@ -56,21 +56,44 @@ test('PATCH without the exec token is rejected with 403, even with an otherwise-
   assert.match(res.json.error, /execution token/);
 });
 
-test('PATCH with an unknown field in the body is rejected with 400 even with no token at all (schema checked first)', async () => {
+// N6 fix (WP-C1, 2026-09-26 laptop re-audit): the exec token is now checked ONCE in
+// requestListener, before ANY route runs — including before this route's own body/schema
+// validation. These two tests used to prove "schema checked first"; they now prove the opposite
+// (correctly: token beats schema, matching every other route on this gateway) — see the paired
+// "...AND the real exec token" tests just below for proof the schema check still runs afterwards.
+test('PATCH with an unknown field in the body and NO exec token is rejected with 403 (token is checked before schema now)', async () => {
   const res = await requestWithBody(port, agentModelUrl('boss', THIS_PROJECT_NAME), {
     method: 'PATCH',
     jsonBody: { nvidia: 'reasoning' },
     omitExecToken: true,
   });
+  assert.equal(res.statusCode, 403);
+  assert.match(res.json.error, /execution token/);
+});
+
+test('PATCH with an unknown field in the body AND the real exec token is rejected with 400 (schema still validated, after auth)', async () => {
+  const res = await requestWithBody(port, agentModelUrl('boss', THIS_PROJECT_NAME), {
+    method: 'PATCH',
+    jsonBody: { nvidia: 'reasoning' },
+  });
   assert.equal(res.statusCode, 400);
   assert.match(res.json.error, /unknown field/);
 });
 
-test('PATCH with an empty body is rejected with 400 (schema checked before the token)', async () => {
+test('PATCH with an empty body and NO exec token is rejected with 403 (token is checked before schema now)', async () => {
   const res = await requestWithBody(port, agentModelUrl('boss', THIS_PROJECT_NAME), {
     method: 'PATCH',
     jsonBody: {},
     omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.match(res.json.error, /execution token/);
+});
+
+test('PATCH with an empty body AND the real exec token is rejected with 400 (at least one of..., schema still validated after auth)', async () => {
+  const res = await requestWithBody(port, agentModelUrl('boss', THIS_PROJECT_NAME), {
+    method: 'PATCH',
+    jsonBody: {},
   });
   assert.equal(res.statusCode, 400);
   assert.match(res.json.error, /at least one of/);

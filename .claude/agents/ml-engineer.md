@@ -1,7 +1,7 @@
 ---
 name: ml-engineer
 description: "Use PROACTIVELY for production ML engineering — training-to-serving pipelines, reproducibility, model versioning, drift monitoring, and safe rollout. Never triggers real-money or irreversible actions automatically."
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

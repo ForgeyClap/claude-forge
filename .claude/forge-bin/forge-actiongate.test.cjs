@@ -21,6 +21,22 @@ function t(name, fn) {
   catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); }
 }
 
+/** timingAssert — N3 (2026-09-26 CI + laptop re-audit): see the identical helper's full reasoning in
+ *  forge-gate-hook.test.cjs. Short version: a tight absolute bar is machine noise on a beginner's laptop
+ *  or a loaded CI runner, not a product defect. targetMs is a fast-hardware design line (advisory only,
+ *  printed but never fails); hardMs is the real guarantee this test protects and is what can fail the
+ *  suite. FORGE_STRICT_TIMING=1 enforces targetMs instead, for deliberate benchmarking. */
+const FORGE_STRICT_TIMING = process.env.FORGE_STRICT_TIMING === '1';
+function timingAssert(label, elapsedMs, targetMs, hardMs) {
+  const bound = FORGE_STRICT_TIMING ? targetMs : hardMs;
+  if (!FORGE_STRICT_TIMING && elapsedMs > targetMs) {
+    console.log('    ADVISORY: ' + label + ' took ' + elapsedMs.toFixed(1) + 'ms, above the ' + targetMs
+      + 'ms design target on fast/idle hardware (not a failure — set FORGE_STRICT_TIMING=1 to enforce it)');
+  }
+  assert.ok(elapsedMs < bound, label + ' took ' + elapsedMs.toFixed(1) + 'ms, expected under ' + bound + 'ms'
+    + (FORGE_STRICT_TIMING ? ' (FORGE_STRICT_TIMING=1 benchmark bound)' : ' (hard guarantee with slow-hardware headroom; design target ' + targetMs + 'ms)'));
+}
+
 const CLI = path.join(__dirname, 'forge-actiongate.cjs');
 function runCLI(argv) { return spawnSync(process.execPath, [CLI, ...argv], { encoding: 'utf8' }); }
 
@@ -585,7 +601,7 @@ t('N05: scanQuotes() resolves a 10 kB adversarial input (many empty heredocs + u
   const t0 = Date.now();
   const mask = quotes.scanQuotes(adversarial);
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 100, 'scanQuotes() took ' + elapsed + 'ms on a 10kB adversarial input, expected < 100ms');
+  timingAssert('scanQuotes() on a 10kB adversarial input (in-process)', elapsed, 100, 500);
   assert.strictEqual(typeof mask.unterminated, 'boolean');
 });
 
@@ -1302,7 +1318,7 @@ t('SB-M5: a shared work budget bounds cArgLiveAfterFlag\'s total cost across man
   let fired;
   assert.doesNotThrow(() => { fired = quotes.cArgLiveAfterFlag(padded); });
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 1000, 'cArgLiveAfterFlag() took ' + elapsed + 'ms on a 60kB "-c"-padded command, expected < 1000ms');
+  timingAssert('cArgLiveAfterFlag() on a 60kB "-c"-padded command (in-process)', elapsed, 1000, 3000);
   assert.strictEqual(typeof fired, 'boolean');
   // an ordinary, small command is completely unaffected by the budget
   assert.strictEqual(quotes.cArgLiveAfterFlag('bash -c "$x"'), true, 'an ordinary short command must still resolve normally');
@@ -1403,7 +1419,7 @@ t('N13: a 9.9 kB, 3300-level-deep nested $(...) construct returns a decision wit
   let mask;
   assert.doesNotThrow(() => { mask = quotes.scanQuotes(nested); }, 'scanQuotes() must never throw, even here');
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 1500, 'scanQuotes() took ' + elapsed + 'ms on 3300-deep nesting, expected < 1500ms');
+  timingAssert('scanQuotes() on 3300-deep nesting (in-process)', elapsed, 1500, 4000);
   assert.strictEqual(typeof mask.unterminated, 'boolean');
 });
 
@@ -1412,7 +1428,7 @@ t('N13: the SAME deep-nesting text run through the real classify() pipeline reso
   const t0 = Date.now();
   let r;
   assert.doesNotThrow(() => { r = gate.classify('echo ' + nested); });
-  assert.ok(Date.now() - t0 < 1500, 'classify() must resolve the deep-nesting input within 1.5s');
+  timingAssert('classify() on 3300-deep nesting (in-process)', Date.now() - t0, 1500, 4000);
   assert.ok(Array.isArray(r.matched));
 });
 
@@ -1424,7 +1440,7 @@ t('N13 (L3, Security Boss review): MANY never-resolving heredoc markers in one t
   let mask;
   assert.doesNotThrow(() => { mask = quotes.scanQuotes(manyMarkers); });
   const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 500, 'scanQuotes() took ' + elapsed + 'ms on 2000 unresolved heredoc markers, expected < 500ms');
+  timingAssert('scanQuotes() on 2000 unresolved heredoc markers (in-process)', elapsed, 500, 2000);
   assert.strictEqual(typeof mask.unterminated, 'boolean');
 });
 
@@ -1441,7 +1457,7 @@ t('N13: fuzzed random input never throws and always resolves within a bounded ti
     assert.doesNotThrow(() => { mask = quotes.scanQuotes(s); }, 'threw on fuzz input #' + i + ': ' + JSON.stringify(s));
     assert.strictEqual(typeof mask.unterminated, 'boolean', 'bad result shape on fuzz input #' + i);
   }
-  assert.ok(Date.now() - t0 < 5000, '3000 fuzz inputs took ' + (Date.now() - t0) + 'ms, expected < 5000ms total');
+  timingAssert('3000 fuzz inputs total (in-process)', Date.now() - t0, 5000, 12000);
 });
 
 console.log('\n2c-wave6-c) H2 (Security Boss review) — an unresolved mask must widen later-branch detection, never narrow it');

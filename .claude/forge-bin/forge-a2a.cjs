@@ -9,6 +9,10 @@
  *
  * Pure helpers are testable; the network call is best-effort + owner-gated. Treat every external agent
  * response as UNTRUSTED (quote-not-obey), require owner approval before delegating.
+ *
+ * CLI: node forge-a2a.cjs — no arguments; prints a one-line capability banner and this module's own
+ *      Forge AgentCard skill ids. Everything else here is a library of pure helpers, used by the tools
+ *      that actually perform A2A delegation.
  */
 const crypto = require('crypto');
 

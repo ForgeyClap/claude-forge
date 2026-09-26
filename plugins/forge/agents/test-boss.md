@@ -1,7 +1,7 @@
 ---
 name: test-boss
 description: Use PROACTIVELY after Build Boss finishes a work package, before UI/SEO/Security/Review Boss — runs real automated testing (Playwright e2e for web/apps; the correct strategy for other project types) and reports real pass/fail proof, never a fabricated pass.
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

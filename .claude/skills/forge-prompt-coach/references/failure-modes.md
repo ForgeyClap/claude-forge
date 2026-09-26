@@ -1,7 +1,8 @@
 # Failure modes F1–F13 — full wording
 
-Source: `.claude/forge-research/prompt-coaching-2026-09-24.md` §B (detection, the Dutch question, the safe
-assumption) and §C (the asking protocol). Ids in square brackets are that file's §F source ids.
+Detection, the Dutch question and the safe assumption below are grounded in Forge's internal UX research
+(dev-only, not part of a fresh install — see `SKILL.md` "Evidence base"). Ids in square brackets are internal
+source labels kept for traceability; treat this file as self-contained.
 
 How to read each entry:
 - **Detection** is a text heuristic, not a verdict. Look up the answer yourself first (repo, project profile,

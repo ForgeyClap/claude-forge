@@ -2162,7 +2162,12 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
       if (p && p !== process.pid && G5.pidAlive(p)) process.kill(p);
     } catch { /* no pid file = nothing was spawned */ }
   };
-  const NO_CRED = 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (macOS keeps the login in the Keychain) — ';
+  // v2.8.0: the reason is platform-honest (the Keychain remark is macOS-only; a fresh Windows/Linux machine is
+  // simply not logged in yet) — mirror usage-guard.cjs's own wording per platform.
+  const NO_CRED = 'usage guard cannot measure on this machine: no ~/.claude/.credentials.json (' +
+    (process.platform === 'darwin'
+      ? 'macOS keeps the Claude Code login in the Keychain, which the guard cannot read'
+      : 'Claude Code is not logged in on this machine yet, or keeps its login elsewhere') + ') — ';
 
   t5('L1: a torn/malformed login file never puts token fragments or the home path into state, log or output', () => {
     const sb = sandbox5(null);
@@ -3733,6 +3738,280 @@ test('SB-M6(c/d): a genuinely-transient resume failure is retried across ticks, 
   assert.strictEqual(finalState.mode, 'ok', 'eventual success must still fully clear the pause: ' + JSON.stringify(finalState));
   assert.strictEqual(finalState.retriesExhausted, undefined, 'a successful resume must clear the exhausted flag: ' + JSON.stringify(finalState));
   assert.strictEqual(finalState.resumeRetryCount, undefined, 'a successful resume must clear the retry counter: ' + JSON.stringify(finalState));
+});
+
+// ============================================================================================
+// N1 — fresh-laptop re-audit, 2026-09-26: a full per-model window must not pause every model for
+// days while a DIFFERENT model still has room in the all-models window. See windowAppliesNow(),
+// triggerCanResumeByModelSwitch() and their tick() call sites in usage-guard.cjs for the fix.
+// ============================================================================================
+function usageWithLimits(sessionPct, weekPct, limits) {
+  const j = { five_hour: { utilization: sessionPct, resets_at: null }, seven_day: { utilization: weekPct, resets_at: null }, limits };
+  return { session: { pct: sessionPct, resetsAt: null }, week: { pct: weekPct, resetsAt: null }, windows: G.normalizeWindows(j), credits: { used: NaN, limit: NaN, remaining: NaN } };
+}
+
+test('N1 pure: windowAppliesNow — an all-models window (no .model) always applies, regardless of isActive', () => {
+  assert.strictEqual(G.windowAppliesNow({ model: null, isActive: false }, null), true);
+  assert.strictEqual(G.windowAppliesNow({ model: null, isActive: null }, 'Opus'), true);
+});
+test('N1 pure: windowAppliesNow — a per-model window applies when is_active says so, regardless of the hint', () => {
+  assert.strictEqual(G.windowAppliesNow({ model: 'Fable', isActive: true }, null), true);
+  assert.strictEqual(G.windowAppliesNow({ model: 'Fable', isActive: true }, 'Opus'), true);
+});
+test('N1 pure: windowAppliesNow — a per-model window applies when the model hint matches, even if is_active is unknown', () => {
+  assert.strictEqual(G.windowAppliesNow({ model: 'Fable 5.1', isActive: null }, 'Fable'), true);
+});
+test('N1 pure: windowAppliesNow FAIL SAFE — a per-model window does NOT apply when neither is_active nor the hint says so (advisory, never a silent ignore of a DIFFERENT window)', () => {
+  assert.strictEqual(G.windowAppliesNow({ model: 'Fable', isActive: false }, null), false);
+  assert.strictEqual(G.windowAppliesNow({ model: 'Fable', isActive: null }, 'Opus'), false);
+});
+test('N1 pure: sameModel is case/whitespace-insensitive and tolerates a version suffix on either side', () => {
+  assert.strictEqual(G.sameModel('Fable', 'fable 5.1'), true);
+  assert.strictEqual(G.sameModel('Opus 5.5', 'opus'), true);
+  assert.strictEqual(G.sameModel('Opus', 'Fable'), false);
+  assert.strictEqual(G.sameModel(null, 'Opus'), false);
+});
+test('N1 pure: resolveActiveModelHint — opts.model wins, then FORGE_USAGE_GUARD_MODEL, else null (never guesses)', () => {
+  assert.strictEqual(G.resolveActiveModelHint({ model: 'Sonnet' }), 'Sonnet');
+  const saved = process.env.FORGE_USAGE_GUARD_MODEL;
+  try {
+    process.env.FORGE_USAGE_GUARD_MODEL = 'Haiku';
+    assert.strictEqual(G.resolveActiveModelHint({}), 'Haiku');
+    assert.strictEqual(G.resolveActiveModelHint({ model: 'Sonnet' }), 'Sonnet', 'an explicit opts.model still wins over the env seam');
+  } finally {
+    if (saved === undefined) delete process.env.FORGE_USAGE_GUARD_MODEL; else process.env.FORGE_USAGE_GUARD_MODEL = saved;
+  }
+  delete process.env.FORGE_USAGE_GUARD_MODEL;
+  assert.strictEqual(G.resolveActiveModelHint({}), null, 'no source configured -> unknown, never a fabricated guess');
+});
+test('N1 pure: normalizeWindows carries the window\'s own model scope (null for session/weekly_all, the display_name for a scoped window) and a genuine tri-state isActive', () => {
+  const w = G.normalizeWindows({
+    five_hour: { utilization: 5, resets_at: null },
+    limits: [
+      { kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: false, resets_at: null, scope: { model: { display_name: 'Fable' } } },
+      { kind: 'weekly_all', group: 'weekly', percent: 40, resets_at: null }, // typed, no scope.model -> global
+    ],
+  });
+  const session = w.find((x) => x.kind === 'session');
+  const fable = w.find((x) => x.kind === 'weekly_scoped');
+  const weeklyAll = w.find((x) => x.kind === 'weekly_all');
+  assert.strictEqual(session.model, null, 'the legacy session window is never per-model');
+  assert.strictEqual(weeklyAll.model, null, 'a typed window with no scope.model is global, not per-model');
+  assert.strictEqual(fable.model, 'Fable');
+  assert.strictEqual(fable.isActive, false, 'an EXPLICIT is_active:false must survive as false, not be collapsed to "unknown"');
+  const unset = G.normalizeWindows({ limits: [{ kind: 'daily', percent: 50 }] })[0];
+  assert.strictEqual(unset.isActive, null, 'an ABSENT is_active must read as unknown (null), never silently "false"');
+});
+test('N1 pure: triggerCanResumeByModelSwitch — clears a pause caused SOLELY by a per-model trigger once the live window says is_active:false', () => {
+  const before = G.normalizeWindows({ limits: [{ kind: 'weekly_scoped', percent: 100, is_active: true, scope: { model: { display_name: 'Fable' } } }] });
+  const trigger = [{ id: before[0].id, name: before[0].label, metric: 'weekly_scoped', pct: 100, model: 'Fable' }];
+  const nowInactive = G.normalizeWindows({ limits: [{ kind: 'weekly_scoped', percent: 100, is_active: false, scope: { model: { display_name: 'Fable' } } }] });
+  assert.strictEqual(G.triggerCanResumeByModelSwitch(trigger, nowInactive, null), true, 'the live endpoint itself now says this window is not the one in force');
+});
+test('N1 pure: triggerCanResumeByModelSwitch — NEVER clears a pause that includes an all-models trigger, no matter the model hint', () => {
+  const trigger = [{ id: 'session|session|session', name: 'session', metric: 'session', pct: 99, model: null }];
+  assert.strictEqual(G.triggerCanResumeByModelSwitch(trigger, [], 'anything'), false, 'an account-wide limit is unaffected by which model is selected');
+});
+test('N1 pure: triggerCanResumeByModelSwitch FAIL SAFE — an unresolvable trigger (no live window, no hint) is treated as STILL applying, never auto-resumed on an absence of information', () => {
+  const trigger = [{ id: 'weekly_scoped|weekly|gone', name: 'weekly_scoped (Fable)', metric: 'weekly_scoped', pct: 100, model: 'Fable' }];
+  assert.strictEqual(G.triggerCanResumeByModelSwitch(trigger, [], null), false);
+});
+
+test('N1 integration: a full per-model window does NOT pause Forge while a DIFFERENT model has room in the all-models window — reported advisory, never silently dropped', async () => {
+  const limits = [{ kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: false, resets_at: null, scope: { model: { display_name: 'Fable' } } }];
+  const h = tickHarness({
+    initialState: { mode: 'ok', account: { fp: 'n1-advisory', source: 'account-uuid' } },
+    deps: {
+      readIdentity: () => ({ fp: 'n1-advisory', source: 'account-uuid' }),
+      fetchUsage: async () => usageWithLimits(5, 50, limits), // session 5%, week 50% — both well under pause-at
+    },
+  });
+  await G.tick(h.deps);
+  assert.strictEqual(h.calls.doPause.length, 0, 'a per-model window at 100% must never pause a session that is not using that model — this is the exact N1 bug');
+  assert.ok(h.calls.logs.some((l) => /ADVISORY/.test(l) && /Fable/.test(l) && /100/.test(l)), 'the guard must still say so plainly in the log, never silently drop it: ' + JSON.stringify(h.calls.logs));
+});
+
+test('N1 integration: the SAME per-model window DOES pause once the endpoint marks it is_active — the live signal is authoritative', async () => {
+  const limits = [{ kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: true, resets_at: null, scope: { model: { display_name: 'Fable' } } }];
+  const h = tickHarness({
+    initialState: { mode: 'ok', account: { fp: 'n1-active', source: 'account-uuid' } },
+    deps: {
+      readIdentity: () => ({ fp: 'n1-active', source: 'account-uuid' }),
+      fetchUsage: async () => usageWithLimits(5, 50, limits),
+    },
+  });
+  await G.tick(h.deps);
+  assert.strictEqual(h.calls.doPause.length, 1, 'is_active:true is the authoritative live signal — it must still pause');
+  assert.ok(h.calls.doPause[0].crossed.every((c) => c.model === 'Fable'), 'the trigger must carry the window\'s model, needed later for a model-switch resume');
+});
+
+test('N1 integration: "switching models is enough" — a pause caused solely by one per-model window auto-resumes once the live endpoint no longer marks it is_active, even though its percent is still 100', async () => {
+  const seedWindows = G.normalizeWindows({ limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: true, scope: { model: { display_name: 'Fable' } } }] });
+  const h = tickHarness({ initialState: { mode: 'ok' } });
+  h.state.value = {
+    mode: 'paused',
+    trigger: [{ id: seedWindows[0].id, name: seedWindows[0].label, metric: 'weekly_scoped', pct: 100, resetsAt: null, model: 'Fable' }],
+    pauseAt: 98, resumeAt: 0,
+    account: { fp: 'n1-resume', source: 'account-uuid' },
+    pausedAgents: [],
+  };
+  h.deps.readIdentity = () => ({ fp: 'n1-resume', source: 'account-uuid' });
+  h.deps.fetchUsage = async () => usageWithLimits(5, 50, [{ kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: false, resets_at: null, scope: { model: { display_name: 'Fable' } } }]);
+  await G.tick(h.deps);
+  assert.strictEqual(h.calls.doResume.length, 1, 'the endpoint itself now says the Fable window is not the one in force — switching models must be enough to resume: ' + JSON.stringify(h.calls));
+});
+
+test('N1 integration: a pause that ALSO includes an all-models window is never lifted just because the per-model trigger stopped being active', async () => {
+  const seedWindows = G.normalizeWindows({ limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: true, scope: { model: { display_name: 'Fable' } } }] });
+  const h = tickHarness({ initialState: { mode: 'ok' } });
+  h.state.value = {
+    mode: 'paused',
+    trigger: [
+      { id: 'weekly_all|weekly|weekly_all', name: 'weekly_all', metric: 'weekly_all', pct: 99, resetsAt: null, model: null },
+      { id: seedWindows[0].id, name: seedWindows[0].label, metric: 'weekly_scoped', pct: 100, resetsAt: null, model: 'Fable' },
+    ],
+    pauseAt: 98, resumeAt: 0,
+    account: { fp: 'n1-mixed', source: 'account-uuid' },
+    pausedAgents: [],
+  };
+  h.deps.readIdentity = () => ({ fp: 'n1-mixed', source: 'account-uuid' });
+  // weekly_all is STILL at 99% (over pause-at) — an unaffected model switch must never lift this.
+  h.deps.fetchUsage = async () => usageWithLimits(5, 99, [{ kind: 'weekly_scoped', group: 'weekly', percent: 100, is_active: false, resets_at: null, scope: { model: { display_name: 'Fable' } } }]);
+  await G.tick(h.deps);
+  assert.strictEqual(h.calls.doResume.length, 0, 'an all-models window in the trigger mix must keep the pause regardless of any per-model switch: ' + JSON.stringify(h.calls));
+});
+
+// ============================================================================================
+// N8 — fresh-laptop re-audit, 2026-09-26: an upgrade (raw fingerprint -> opaque label) must never
+// read as a real account switch and reset guard state / resume paused agents.
+// ============================================================================================
+test('N8 pure: detectAccountSwitch — a state stamped with the OLD raw fingerprint is an upgrade, not a switch, when ident.rawFp proves it is the SAME account', () => {
+  const r = G.detectAccountSwitch({ account: { fp: 'aaaaaaaaaaaa' } }, { fp: 'account-1-abc123', source: 'account-uuid', rawFp: 'aaaaaaaaaaaa' });
+  assert.strictEqual(r.switched, false, 'the raw fingerprint matches this account\'s CURRENT fingerprint — only the label scheme changed: ' + JSON.stringify(r));
+  assert.strictEqual(r.to, 'account-1-abc123');
+});
+test('N8 pure: detectAccountSwitch — WITHOUT a matching rawFp, a differently-shaped fp is still a real switch (no regression on the existing contract)', () => {
+  const r = G.detectAccountSwitch({ account: { fp: 'aaaaaaaaaaaa' } }, { fp: 'bbbbbbbbbbbb', source: 'account-uuid' });
+  assert.strictEqual(r.switched, true, 'a plain ident with no rawFp field must behave exactly as before this fix — existing callers/tests are unaffected');
+});
+test('N8 integration: stateForAccount migrates an old raw-fingerprint stamp to the new opaque label WITHOUT resetting mode/pausedAgents/trigger', () => {
+  const prev = {
+    mode: 'paused', pausedAgents: [{ id: 'agent-1', name: 'A1' }],
+    trigger: [{ id: 'session|session|session', name: 'session', metric: 'session', pct: 99 }],
+    percents: { session: 99, week: 50 },
+    account: { fp: 'aaaaaaaaaaaa', source: 'account-uuid' }, // the pre-2.7.2 shape: the raw fp stored directly
+  };
+  const ident = { fp: 'account-1-abc123', source: 'account-uuid', rawFp: 'aaaaaaaaaaaa' };
+  const next = G.stateForAccount(prev, ident);
+  assert.strictEqual(next.mode, 'paused', 'an upgrade must never resume a real, still-active pause');
+  assert.deepStrictEqual(next.pausedAgents, prev.pausedAgents, 'an upgrade must never forget which agents are paused');
+  assert.deepStrictEqual(next.trigger, prev.trigger);
+  assert.strictEqual(next.account.fp, 'account-1-abc123', 'the stamp itself IS migrated to the new label');
+  assert.strictEqual(next.previousAccount, undefined, 'this must never be recorded as a real account switch');
+});
+
+// ============================================================================================
+// Part II — fresh-laptop re-audit, 2026-09-26: a pid file pointing at a dead process must be
+// detected and cleaned (a hard kill/crash/reboot can always leave one behind; see
+// cleanupStalePidFile's own header for why this can never be fully prevented, only reacted to).
+// ============================================================================================
+test('Part II pure: cleanupStalePidFile removes a pid file whose process is provably dead', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pid-cleanup-'));
+  const pidFile = path.join(dir, 'watcher.pid');
+  try {
+    // a pid that is essentially guaranteed not to exist as a live process on this machine
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: 999999, script: __filename }) + '\n');
+    const r = G.cleanupStalePidFile(pidFile, { pid: 999999, script: __filename });
+    assert.strictEqual(r.removed, true, JSON.stringify(r));
+    assert.ok(!fs.existsSync(pidFile), 'the stale pid file must actually be gone');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+test('Part II pure: cleanupStalePidFile leaves a genuinely alive process\'s pid file alone', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-pid-cleanup2-'));
+  const pidFile = path.join(dir, 'watcher.pid');
+  try {
+    fs.writeFileSync(pidFile, JSON.stringify({ pid: process.pid, script: __filename }) + '\n');
+    // this test process itself is alive but is NOT running usage-guard.cjs's `watch` subcommand, so
+    // ownsPid() classifies it 'not-watcher' (provably not a live watcher) — still safe to remove.
+    const r = G.cleanupStalePidFile(pidFile, { pid: process.pid, script: __filename });
+    assert.strictEqual(r.removed, true, 'a live process that is provably NOT the watcher is still safe to clean up: ' + JSON.stringify(r));
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+});
+test('Part II pure: cleanupStalePidFile never touches an empty/absent pid file', () => {
+  const r = G.cleanupStalePidFile('/does/not/exist/watcher.pid', { pid: 0 });
+  assert.strictEqual(r.removed, false);
+});
+
+// ============================================================================================
+// Part V-D — fresh-laptop re-audit, 2026-09-26: pause/resume/account-switch notices must follow
+// the owner's `language` setting (auto/en/nl), English as the fallback — not Dutch-only.
+// ============================================================================================
+test('Part V-D pure: pickLang picks nl only for the literal "nl" language, English for anything else (including undefined/auto/unknown)', () => {
+  assert.strictEqual(G.pickLang('nl', 'NL-TEXT', 'EN-TEXT'), 'NL-TEXT');
+  assert.strictEqual(G.pickLang('en', 'NL-TEXT', 'EN-TEXT'), 'EN-TEXT');
+  assert.strictEqual(G.pickLang(undefined, 'NL-TEXT', 'EN-TEXT'), 'EN-TEXT');
+  assert.strictEqual(G.pickLang('auto', 'NL-TEXT', 'EN-TEXT'), 'EN-TEXT');
+});
+test('Part V-D pure: resolveGuardLanguage falls back to English when forge-config.cjs is unavailable — never throws, never silently NL', () => {
+  assert.strictEqual(G.resolveGuardLanguage({ configModule: null }), 'en');
+});
+test('Part V-D integration: stateForAccount\'s accountSwitchNotice follows the lang argument (English default when omitted, matching every pre-existing 2-argument call/test)', () => {
+  const prev = { mode: 'ok', account: { fp: 'aaaaaaaaaaaa' } };
+  const identB = { fp: 'bbbbbbbbbbbb', source: 'account-uuid' };
+  const nextDefault = G.stateForAccount(prev, identB);
+  assert.ok(/ACCOUNT SWITCH detected/.test(nextDefault.accountSwitchNotice), 'omitting lang must default to English: ' + nextDefault.accountSwitchNotice);
+  const nextNl = G.stateForAccount(prev, identB, 'nl');
+  assert.ok(/ACCOUNT SWITCH gedetecteerd/.test(nextNl.accountSwitchNotice), 'lang "nl" must produce the Dutch notice: ' + nextNl.accountSwitchNotice);
+});
+test('Part V-D integration: doPause\'s state.notice follows opts.lang (English default) — no longer Dutch-only regardless of the owner\'s language setting', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-lang-pause-'));
+  const stateFile = path.join(dir, 'state.json');
+  const saved = { FORGE_USAGE_GUARD_STATE: process.env.FORGE_USAGE_GUARD_STATE, FORGE_USAGE_GUARD_DENY_NETWORK: process.env.FORGE_USAGE_GUARD_DENY_NETWORK };
+  process.env.FORGE_USAGE_GUARD_STATE = stateFile;
+  delete require.cache[require.resolve('./usage-guard.cjs')];
+  const GL = require('./usage-guard.cjs');
+  try {
+    const u = { session: { pct: 99, resetsAt: null }, week: { pct: 40, resetsAt: null } };
+    const crossed = [{ id: 'session|session|session', name: 'session', pct: 99, metric: 'session', resetsAt: null, model: null }];
+    await GL.doPause(u, crossed, { fp: 'lang-test', source: 'account-uuid' }, { lang: 'en' });
+    const stEn = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(/PAUSED/.test(stEn.notice) && !/PAUZEER/.test(stEn.notice), 'lang:"en" must produce the English notice: ' + stEn.notice);
+    await GL.doPause(u, crossed, { fp: 'lang-test', source: 'account-uuid' }, { lang: 'nl' });
+    const stNl = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(/PAUZEER/.test(stNl.notice), 'lang:"nl" must produce the Dutch notice: ' + stNl.notice);
+  } finally {
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+test('N1 integration: doPause\'s notice names the paused window and adds the "switching models is enough" line ONLY when every crossed window is per-model', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-switchnote-'));
+  const stateFile = path.join(dir, 'state.json');
+  const saved = process.env.FORGE_USAGE_GUARD_STATE;
+  process.env.FORGE_USAGE_GUARD_STATE = stateFile;
+  delete require.cache[require.resolve('./usage-guard.cjs')];
+  const GL = require('./usage-guard.cjs');
+  try {
+    const u = { session: { pct: 5, resetsAt: null }, week: { pct: 50, resetsAt: null } };
+    const perModelOnly = [{ id: 'weekly_scoped|weekly|weekly_scoped (Fable)', name: 'weekly_scoped (Fable)', pct: 100, metric: 'weekly_scoped', resetsAt: null, model: 'Fable' }];
+    await GL.doPause(u, perModelOnly, { fp: 'switchnote-1', source: 'account-uuid' }, { lang: 'en' });
+    const st1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(/Fable/.test(st1.notice), 'the notice must name the window that paused Forge: ' + st1.notice);
+    assert.ok(/[Ss]witching to a different model is enough/.test(st1.notice), 'every crossed window is per-model — the switch-note must appear: ' + st1.notice);
+
+    const mixed = [
+      { id: 'weekly_all|weekly|weekly_all', name: 'weekly_all', pct: 99, metric: 'weekly_all', resetsAt: null, model: null },
+      { id: 'weekly_scoped|weekly|weekly_scoped (Fable)', name: 'weekly_scoped (Fable)', pct: 100, metric: 'weekly_scoped', resetsAt: null, model: 'Fable' },
+    ];
+    await GL.doPause(u, mixed, { fp: 'switchnote-2', source: 'account-uuid' }, { lang: 'en' });
+    const st2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(!/switching to a different model is enough/i.test(st2.notice), 'an all-models window in the mix must NEVER claim a model switch would help: ' + st2.notice);
+  } finally {
+    delete require.cache[require.resolve('./usage-guard.cjs')];
+    if (saved === undefined) delete process.env.FORGE_USAGE_GUARD_STATE; else process.env.FORGE_USAGE_GUARD_STATE = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 Promise.all(asyncQueue).then(() => {

@@ -178,6 +178,20 @@ console.log('9) real spawned CLI: exit codes, --json output, markdown sections')
 
   const badFlagRes = runCLI(['--bogus']);
   t('CLI with an unknown flag exits 2', badFlagRes.status === 2);
+
+  // N9 laptop re-audit 2026-09-26: commands/forge.md:22 calls `node forge-briefing.cjs <run_id>` — a plain
+  // positional argument, no --run. Before the fix this hit "unknown argument" (exit 2) on every documented call.
+  const posRes = runCLI(['run-cli']);
+  t('CLI accepts the positional <run_id> form documented by forge.md:22', posRes.status === 0);
+  t('positional form renders the same Ran/Blocked/Decisions sections as --run', /## Ran/.test(posRes.stdout) && /## Blocked/.test(posRes.stdout));
+
+  const posJsonRes = runCLI(['run-cli', '--json']);
+  t('positional <run_id> combined with --json still works, either argument order', posJsonRes.status === 0 && JSON.parse(posJsonRes.stdout).run_id === 'run-cli');
+  const jsonPosRes = runCLI(['--json', 'run-cli']);
+  t('--json before the positional <run_id> also works', jsonPosRes.status === 0 && JSON.parse(jsonPosRes.stdout).run_id === 'run-cli');
+
+  const conflictRes = runCLI(['run-cli', '--run', 'never-happened-cli']);
+  t('a positional run id that disagrees with --run is a usage error, not a silent pick', conflictRes.status === 2 && /given twice/.test(conflictRes.stderr));
 }
 
 console.log(pass + ' passed, ' + fail + ' failed');

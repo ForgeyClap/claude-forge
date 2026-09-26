@@ -3,14 +3,14 @@
 // guard on every request before any route logic runs, exactly as .claude/forge-dashboard/server.cjs
 // already does for the existing Control Center.
 import http from 'node:http';
-import { hostOk, crossSiteOk, safeIdOk, containmentOk, safeConvIdOk, execTokenOk, EXEC_TOKEN_HEADER } from './security.mjs';
+import { hostOk, crossSiteOk, safeIdOk, anyContainmentOk, safeConvIdOk, execTokenOk, EXEC_TOKEN_HEADER } from './security.mjs';
 import { listProjects } from './projects.mjs';
 import { createProject, validateProjectName, projectNameContainmentOk, getInstallStatus } from './projects-create.mjs';
 import { listRuns } from './runs.mjs';
 import { readEvents, attachEventsStream } from './events.mjs';
 import { buildHealth } from './health.mjs';
 import { serveStatic, STATIC_SECURITY_HEADERS } from './static.mjs';
-import { SYNC_SCAN_ROOT } from './paths.mjs';
+import { SYNC_SCAN_ROOTS } from './paths.mjs';
 import { buildMission } from './missions.mjs';
 import { buildAgentsRegistry } from './agents.mjs';
 import { patchAgentModel } from './agents-write.mjs';
@@ -251,7 +251,7 @@ async function resolveProjectByName(name) {
   if (!registry.ok) return { entry: null, registryError: registry.error };
   const entry = registry.projects.find((p) => p.name === name);
   if (!entry) return { entry: null };
-  if (!containmentOk(SYNC_SCAN_ROOT, entry.path)) return { entry: null }; // defense in depth
+  if (!anyContainmentOk(SYNC_SCAN_ROOTS, entry.path)) return { entry: null }; // defense in depth
   return { entry };
 }
 
@@ -268,29 +268,25 @@ async function handleApi(req, res, pathname, searchParams) {
   }
 
   // WP-D1: a real write (spawns a child process) — exec token required, same as every other
-  // write route. Order: token check first (before any conflict probe/spawn), matching the
-  // "as early as possible" placement every other write route in this file already uses.
+  // write route, now checked once in requestListener (N6 fix) before handleApi is ever called.
   if (pathname === '/api/discord/start' && req.method === 'POST') {
-    if (!execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
-    }
     const result = await startDiscordService();
     if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
     return sendJson(res, result.status, { ok: true, pid: result.pid });
   }
 
   // WP-D1: stop is idempotent (never an error when nothing is tracked) but is still a real write —
-  // same exec-token requirement as start.
+  // same exec-token requirement as start (checked once in requestListener, N6 fix).
   if (pathname === '/api/discord/stop' && req.method === 'POST') {
-    if (!execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
-    }
     const result = await stopDiscordService();
     return sendJson(res, 200, { ok: true, stopped: result.stopped });
   }
 
   if (pathname === '/api/projects') {
     if (req.method === 'POST') {
+      // N6 fix (WP-C1): this real write (scaffolds a directory and starts a detached installer) had
+      // NO exec-token check at all before this fix — the exec token is now checked once in
+      // requestListener, before handleApi is ever reached, for every non-GET request.
       let body;
       try {
         body = await readJsonBody(req);
@@ -382,10 +378,9 @@ async function handleApi(req, res, pathname, searchParams) {
 
   // feat-agent-model-edit: PATCH /api/agents/:slug/model?project=<name> — see agents-write.mjs's
   // own header for the full write-boundary exception and validation contract this delegates to.
-  // Order, deliberately (mirrors the DELETE-conversation route's own documented ordering):
-  // slug shape (400) -> body read/schema (400/413) -> exec token (403, before any project lookup
-  // or file touch) -> project resolution (502/404) -> the actual patch (agents-write.mjs owns
-  // every remaining 400/404/500/200 outcome).
+  // Order: slug shape (400) -> body read/schema (400/413) -> project resolution (502/404) -> the
+  // actual patch (agents-write.mjs owns every remaining 400/404/500/200 outcome). The exec token
+  // itself is checked once in requestListener (N6 fix), before handleApi is ever reached.
   const agentModelMatch = pathname.match(AGENT_MODEL_RE);
   if (agentModelMatch && req.method === 'PATCH') {
     let slug;
@@ -401,9 +396,6 @@ async function handleApi(req, res, pathname, searchParams) {
     if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
     if (Object.keys(body).length === 0) {
       return sendJson(res, 400, { ok: false, error: 'at least one of claudeTier/claudeEffort must be provided' });
-    }
-    if (!execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
     }
     const projectName = searchParams.get('project') || '';
     const { entry, registryError } = await resolveProjectByName(projectName);
@@ -694,21 +686,15 @@ async function handleApi(req, res, pathname, searchParams) {
     return sendJson(res, result.ok ? 200 : 404, result);
   }
 
-  // feat-delete-conversation: DELETE /api/conversations/:id — a real, irreversible write, so it
-  // requires the same per-boot exec token as every other real write route except 'plan' sends
-  // (security.mjs's EXEC_TOKEN_HEADER/execTokenOk — see the messages route above for the same
-  // pattern). Order, deliberately: id shape (400) -> exec token (403, checked before touching the
-  // store at all, same "as early as possible" placement the messages route already uses for its
-  // own token check) -> real existence (404) -> a currently-running execution for this
-  // conversation (409 — never pull a file out from under a live child process/append) -> the
-  // actual delete. conversations.mjs's own deleteConversation() re-validates id+containment again
-  // internally (defense in depth); this route never builds a path itself.
+  // feat-delete-conversation: DELETE /api/conversations/:id — a real, irreversible write. The exec
+  // token is checked once in requestListener (N6 fix), before handleApi is ever reached. Order:
+  // id shape (400) -> real existence (404) -> a currently-running execution for this conversation
+  // (409 — never pull a file out from under a live child process/append) -> the actual delete.
+  // conversations.mjs's own deleteConversation() re-validates id+containment again internally
+  // (defense in depth); this route never builds a path itself.
   if (convItemMatch && req.method === 'DELETE') {
     const convId = convItemMatch[1];
     if (!safeConvIdOk(convId)) return sendJson(res, 400, { ok: false, error: 'invalid conversation id' });
-    if (!execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
-    }
     if (!conversationExists(convId)) return sendJson(res, 404, { ok: false, error: 'conversation not found' });
     if (isConversationBusy(convId)) {
       return sendJson(res, 409, { ok: false, error: 'conversation has a pending execution — stop it before deleting' });
@@ -764,16 +750,13 @@ async function handleApi(req, res, pathname, searchParams) {
       return sendJson(res, 400, { ok: false, error: 'model must be one of: ' + EXEC_MODEL_VALUES.join(', ') });
     }
     const model = EXEC_MODEL_VALUES.includes(body.model) ? body.model : undefined;
-    // fix-sec-round #1 (HIGH): every real write mode except 'plan' requires the per-boot exec token
-    // (security.mjs's EXEC_TOKEN_HEADER/execTokenOk) — see security.mjs's own comment for the full
-    // "any local process without a browser can otherwise POST a real write with no auth at all"
-    // rationale. 'plan' is exempt because it starts no write of its own (--permission-mode plan
-    // never edits/executes anything). Checked as early as possible — before touching the
-    // conversation store at all — and independent of `EXEC_MODE_VALUES` order above so a bad mode
-    // value is still reported as a mode error, not masked by a token error.
-    if (mode !== 'plan' && !execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
-    }
+    // N6 fix (WP-C1): every mode, including 'plan', now requires the per-boot exec token — checked
+    // once in requestListener, before handleApi is ever reached (security.mjs's own
+    // EXEC_TOKEN_HEADER/execTokenOk comment has the full "any local process without a browser can
+    // otherwise POST a real write with no auth at all" rationale). The previous 'plan'-mode
+    // exemption assumed a plan send "starts no write of its own", but the user's turn is ALWAYS
+    // persisted to the conversation store first (appendUserTurn, below) regardless of mode — that
+    // is itself a real write, so there was never a mode that genuinely needed to skip this check.
     // Duplicate-send protection: reject BEFORE touching the store — a second send while one
     // turn is still pending is genuinely invalid input, not a message worth persisting.
     if (isConversationBusy(convId)) {
@@ -855,13 +838,10 @@ async function handleApi(req, res, pathname, searchParams) {
   // feat-ask-owner: POST /api/ask — called by the ask-mcp.mjs MCP subprocess (a spawned local
   // process, never a browser) to register a real question set and BLOCK (this handler simply does
   // not respond) until the owner answers via POST /api/ask/:id/answer below, or the ask-store's
-  // own timeout fires. Same exec-token requirement as every other real write route: only a process
-  // that was actually handed this boot's token (the mcp-config's own env, exec-argv.mjs) may open
-  // a new ask.
+  // own timeout fires. Same exec-token requirement as every other real write route (checked once in
+  // requestListener, N6 fix): only a process that was actually handed this boot's token (the
+  // mcp-config's own env, exec-argv.mjs) may open a new ask.
   if (pathname === '/api/ask' && req.method === 'POST') {
-    if (!execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
-    }
     let body;
     try {
       body = await readJsonBody(req);
@@ -929,13 +909,11 @@ async function handleApi(req, res, pathname, searchParams) {
   }
 
   // feat-ask-owner: POST /api/ask/:id/answer — the dashboard's real owner-answer submission. Same
-  // exec-token requirement as every other real write route. ask-store.mjs owns every remaining
-  // 400/404/409/200 outcome (strict shape check, unknown/already-resolved id).
+  // exec-token requirement as every other real write route (checked once in requestListener, N6
+  // fix). ask-store.mjs owns every remaining 400/404/409/200 outcome (strict shape check,
+  // unknown/already-resolved id).
   const askAnswerMatch = pathname.match(ASK_ANSWER_RE);
   if (askAnswerMatch && req.method === 'POST') {
-    if (!execTokenOk(req)) {
-      return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
-    }
     let askId;
     try { askId = decodeURIComponent(askAnswerMatch[1]); } catch { return sendJson(res, 400, { ok: false, error: 'invalid ask id' }); }
     if (!safeIdOk(askId)) return sendJson(res, 400, { ok: false, error: 'invalid ask id' });
@@ -1032,6 +1010,20 @@ export function requestListener(req, res) {
   ) {
     if (pathname.startsWith('/api/')) return sendJson(res, 405, { ok: false, error: 'method not allowed' });
     res.writeHead(405, STATIC_SECURITY_HEADERS); return res.end('method not allowed');
+  }
+
+  // N6 fix (WP-C1, 2026-09-26 laptop re-audit): the exec token is now checked EXACTLY ONCE, here,
+  // for every non-GET request, before any route-specific logic runs (body parsing, project lookup,
+  // conversation-existence checks). This replaces the old per-route execTokenOk() calls that used
+  // to be scattered through handleApi below — each real write route needed its OWN copy of the
+  // same check, and four of them (POST /api/conversations, POST /api/projects, POST .../stop, POST
+  // .../attachments) simply never got one (audit finding N6/C2). It also removes the previous
+  // 'plan'-mode exemption on POST .../messages: every non-GET request persists something (even a
+  // 'plan' send appends the user's turn to the conversation store — see the messages route below),
+  // so there is no write route left that legitimately needs to skip this check. GET (including the
+  // two SSE-stream GET routes) is unaffected — reads never required the token and still don't.
+  if (req.method !== 'GET' && !execTokenOk(req)) {
+    return sendJson(res, 403, { ok: false, error: 'missing or invalid execution token (' + EXEC_TOKEN_HEADER + ' header)' });
   }
 
   if (pathname === '/api/events/stream') {

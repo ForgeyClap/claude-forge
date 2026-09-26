@@ -884,6 +884,20 @@ function readVersionFile(projectDir) {
 function backupDirFor(projectDir, batchId) { return path.join(claudeDirOf(projectDir), 'forge-backups', batchId); }
 function centralBackupDir(centralRoot, batchId, pid) { return path.join(centralRoot, '.claude', 'forge-backups', batchId, pid); }
 
+/** defaultCentralBackupRoot(projectDir) — N10 fix (2026-09-26, external audit): `install`/`rollback` used
+ *  to default the central backup hub to <parent-of-project>/.forge-backup-hub — OUTSIDE the project (on the
+ *  audit's machine, literally the user's Desktop), while /forge's own promise is "only ever touches
+ *  .claude/". The per-project backup (<project>/.claude/forge-backups/<batchId>/<rel>, always taken
+ *  regardless of this setting) already covers the ordinary "undo my last sync" case; this SECOND, central
+ *  copy is only a belt-and-braces safety net. Its default now lives INSIDE the project instead of silently
+ *  reaching into whatever folder happens to be the project's parent (a folder forge-sync has no business
+ *  writing to by default) — --central-backup-root still lets a caller opt back into a real cross-project
+ *  hub outside the project when that is genuinely wanted (e.g. for `sync-all`/`rollback-batch`, which
+ *  operate over a whole multi-project root the caller already named explicitly and are unchanged here). */
+function defaultCentralBackupRoot(projectDir) {
+  return path.join(path.resolve(projectDir), '.claude', 'forge-backups-central');
+}
+
 /** takeBackup — copies every about-to-change file's CURRENT bytes to the per-project backup dir (and, when
  *  centralBackupRoot is given, mirrors the same manifest+files to a central, project-independent location)
  *  BEFORE any write happens. B2: also snapshots the CURRENT forge-sync-receipt.json (raw bytes) so rollback
@@ -2528,7 +2542,7 @@ module.exports = {
   journalPath, latestBatchId, acquireLock, releaseLock, lockPathFor,
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,
   dedicatedCanaryDir, canaryInit, runSyncAll, parseArgs, CANARY_DIR_NAME,
-  syncProjectSettings, printSettingsMergeResult,
+  syncProjectSettings, printSettingsMergeResult, defaultCentralBackupRoot,
 };
 
 // ---- CLI ----
@@ -2593,11 +2607,10 @@ if (require.main === module) {
       process.exit(2);
     }
     refuseForeignTargetOnFallback(pos[0]); // audit #23: never seed another project from this one
-    // B5: default central backup hub lives OUTSIDE the project (its parent dir), never inside it.
-    const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(path.dirname(path.resolve(pos[0])), '.forge-backup-hub'));
-    // OUTSIDE-WRITES-BY-DEFAULT (wp-f2): named explicitly in the dry-run preview — this is a real write
-    // destination OUTSIDE the project root, on by default, not something the printed plan should leave implicit.
-    if (flags.dryRun && centralBackupRoot) console.log('[dry-run] backups would be written to: ' + centralBackupRoot + ' (OUTSIDE the project — pass --no-central-backup to keep everything inside it)');
+    // N10 fix (2026-09-26): default central backup hub now lives INSIDE the project — see
+    // defaultCentralBackupRoot()'s own comment for why (was <parent-of-project>/.forge-backup-hub).
+    const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || defaultCentralBackupRoot(pos[0]));
+    if (flags.dryRun && centralBackupRoot) console.log('[dry-run] backups would also be written to: ' + centralBackupRoot + ' (inside the project — pass --no-central-backup to skip this second copy, or --central-backup-root to point it elsewhere)');
     const lock = flags.dryRun ? { ok: true, lockPath: null } : acquireLock(claudeDirOf(pos[0])); // M2
     if (!lock.ok) { console.error('forge-sync: ' + lock.reason); process.exit(1); }
     let exitCode = 1;
@@ -2703,7 +2716,9 @@ if (require.main === module) {
     process.exit(exitCode);
   } else if (cmd === 'rollback') {
     if (!pos[0]) exitUsage('usage: forge-sync rollback <projectDir> [--batch <batchId>] [--central-backup-root <dir>] [--no-central-backup] [--force-rollback-newer]');
-    const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || path.join(path.dirname(path.resolve(pos[0])), '.forge-backup-hub'));
+    // N10 fix (2026-09-26): must match install's new default exactly, or rollback would look in the old
+    // outside-the-project location for a backup install just wrote inside the project.
+    const centralBackupRoot = flags.noCentralBackup ? null : (flags.centralBackupRoot || defaultCentralBackupRoot(pos[0]));
     const centralBackupRootExplicit = !!(flags.centralBackupRoot || flags.noCentralBackup); // S3
     const lock = acquireLock(claudeDirOf(pos[0])); // S6: rollback writes to the project — must lock like install does
     if (!lock.ok) { console.error('forge-sync: ' + lock.reason); process.exit(1); }

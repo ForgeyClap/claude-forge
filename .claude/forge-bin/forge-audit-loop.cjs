@@ -487,14 +487,25 @@ function iterate(input, opts) {
   opts = opts || {};
   const root = path.resolve(input.root || opts.root || PROJECT_ROOT_DEFAULT);
   const now = opts.now instanceof Date ? opts.now : new Date();
+  // WP-S4 (v2.8.0 laptop-audit Part VI): `forge-audit-loop iterate` runs forge-doctor's FULL suite (every
+  // *.test.cjs under forge-bin) as its DOCTOR-DELTA check, which the audit measured at 45s-150s with nothing
+  // printed in the meantime — indistinguishable from a hang. opts.onProgress(stage) is called before each of
+  // the four real checks (a no-op unless the caller supplies one — every existing test keeps working exactly
+  // as before); the CLI below wires it to a stderr line so a real run shows it is still working.
+  const progress = typeof opts.onProgress === 'function' ? opts.onProgress : () => {};
 
   const findings = [];
+  progress('memory-integrity check');
   findings.push(...memoryIntegrityFindings(root));
+  progress('agent-health check');
   findings.push(...agentHealthFindings(root));
+  progress('feature-usage check');
   const usage = featureUsageFindings(root, opts);
   findings.push(...usage.findings);
+  progress('doctor check (runs the full test suite — this can take a minute or more)');
   const doctor = doctorDeltaFindings(root, opts);
   findings.push(...doctor.findings);
+  progress('briefing');
 
   const briefing = opts.skipBriefing ? { ok: false, reason: 'briefing skipped (opts.skipBriefing)', run_id: null } : maybeBriefing(root, opts);
 
@@ -568,7 +579,9 @@ if (require.main === module) {
   else if (args.cmd === 'iterate') {
     try {
       const root = args.root ? path.resolve(args.root) : PROJECT_ROOT_DEFAULT;
-      const result = iterate({ root }, { runId: args.run });
+      // WP-S4: progress goes to stderr, never stdout, so `--json` output stays exactly one clean JSON object.
+      const onProgress = args.json ? undefined : (stage) => console.error('forge-audit-loop: ' + stage + '…');
+      const result = iterate({ root }, { runId: args.run, onProgress });
       if (args.json) console.log(JSON.stringify(result));
       else console.log(formatIteration(result));
       process.exitCode = 0;

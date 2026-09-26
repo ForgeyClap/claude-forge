@@ -1,7 +1,7 @@
 ---
 name: electron-pro
 description: "Use PROACTIVELY when building or hardening an Electron desktop app — safe IPC, context isolation, no nodeIntegration in the renderer, and a real signed installer (e.g. the an accounting desktop app accounting app)."
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

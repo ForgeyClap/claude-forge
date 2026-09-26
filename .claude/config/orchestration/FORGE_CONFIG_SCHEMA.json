@@ -95,7 +95,7 @@
     },
     "dashboard": {
       "type": "bool", "default": true, "scope": "global", "group": "core",
-      "desc": { "nl": "Start het Forge Command Center (alleen op deze computer, 127.0.0.1:4100) zodat je live ziet wat de agents doen.", "en": "Starts the Forge Command Center (this machine only, 127.0.0.1:4100) so you can watch the agents live." },
+      "desc": { "nl": "Start het Forge Command Center (alleen op deze computer, 127.0.0.1:4100) zodat je live ziet wat de agents doen — als het op deze computer staat. De installer met één regel levert het niet mee (het zit in de volledige repo-kloon); zonder Command Center meldt Forge dat één keer en gaat gewoon door.", "en": "Starts the Forge Command Center (this machine only, 127.0.0.1:4100) so you can watch the agents live — when it is present on this machine. The one-line installer does not include it (it comes with the full repo clone); without it Forge says so once and simply continues." },
       "off_means": { "nl": "Geen dashboard; alles staat nog wel in de run-bestanden.", "en": "No dashboard; everything is still in the run files." },
       "consumers": [".claude/commands/forge.md (dashboard)", "command-center/gateway/supervisor.mjs"],
       "aliases": { "nl": ["dashboard", "command center"], "en": ["dashboard", "command center"] }

@@ -68,6 +68,23 @@ console.log('independent-verification (honesty-core)');
   t('1 de reviewer mag zelf geen werk hebben gedaan (zelf-goedkeuring)',
     iv(keten([werk('V'), start('V', 'r1'), klaar('V', 'r1')])).ok === false);
 
+  /** D3 fix (2026-09-26, fresh-laptop re-audit): the Lead creating a work package FOR the reviewer
+   *  (agent_work_package_created — forge.md:89 logs this with `agent` = the ASSIGNEE, not the logging
+   *  actor) must NOT count as the reviewer doing work. REPRODUCED (executed replay of a real mission
+   *  that followed forge.md literally): "de reviewer (review boss) deed in deze run zelf werk — dat is
+   *  zelf-goedkeuring", purely because the Lead had logged the reviewer's OWN dispatch announcement. */
+  t('1 D3: een agent_work_package_created die de REVIEWER als agent noemt maakt hem GEEN werker (creating a WP for an agent is not that agent doing work)',
+    iv(keten([werk('a'), { event_type: 'agent_work_package_created', agent: 'V', role: 'reviewer', mission: 'review WP1' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
+  t('1 D3 counterweight: a GENUINE execution event under that same agent name still blocks self-review (the fix narrows, never disables, self-approval detection)',
+    iv(keten([werk('a'), { event_type: 'agent_work_package_created', agent: 'V', role: 'reviewer' }, { event_type: 'subagent_completed', agent: 'V', wp_id: 'wpX' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === false);
+  t('1 D3: custom_subagent_created (het custom-rol-equivalent, forge.md:89) wordt hetzelfde behandeld',
+    iv(keten([werk('a'), { event_type: 'custom_subagent_created', agent: 'V', role: 'reviewer', custom: true }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
+  t('1 D3: een work-package-aankondiging ZONDER agent blijft onschuldig (geen "anoniem werk" fail-closed meer voor dit type)',
+    iv(keten([werk('a'), { event_type: 'agent_work_package_created', role: 'reviewer', mission: 'review WP1' }, start('V', 'r1'), klaar('V', 'r1')]), { commitSha: COMMIT, evidenceDigest: EVID }).ok === true);
+  t('1 D3: ASSIGNMENT_EVENT_TYPES bevat precies de twee aankondigingstypes, en beide blijven WERK voor staleness',
+    RC.ASSIGNMENT_EVENT_TYPES.has('agent_work_package_created') && RC.ASSIGNMENT_EVENT_TYPES.has('custom_subagent_created')
+    && RC.ASSIGNMENT_EVENT_TYPES.size === 2 && RC.isWorkEventType('agent_work_package_created') === true && RC.isWorkEventType('custom_subagent_created') === true);
+
   // F-03 subjectbinding
   t('1 subject_log_hash die afwijkt van de echte runstaat wordt geweigerd',
     iv(keten([werk('a'), start('V', 'r1'), klaar('V', 'r1')]).map(e=>e.event_type==='review_completed'?Object.assign({},e,{subject_log_hash:'c'.repeat(64)}):e)).ok === false);
@@ -532,11 +549,21 @@ function fixture(naam, evs, fopts) {
     return JSON.parse(regels[regels.length - 1]).entry_hash;
   };
   /** N-03: de review moet aan een ECHTE bewijsset binden. Deze fixture schrijft er daarom een, en de
-   *  reviewer gebruikt de canoniek herberekende digest — niet een verzonnen 64-hex waarde. */
+   *  reviewer gebruikt de canoniek herberekende digest — niet een verzonnen 64-hex waarde.
+   *  D2 fix (2026-09-26): fopts.git===false is the genuinely GIT-LESS fixture — its gate record now mirrors
+   *  exactly what forge-gate-evidence.cjs's own record() honestly produces without git (commit:null,
+   *  worktree_clean:null, no_git:true), never a hand-faked-but-well-formed commit sha a real no-git run
+   *  could never actually produce. */
   fs.mkdirSync(path.join(ROOT, '.claude', 'forge-runs', naam), { recursive: true });
+  // fopts.fakeGitEvidence forces the OLD, unsafe git-shaped record even on a git:false root — used ONLY to
+  // prove the D2 anti-fabrication guard refuses a commit-claiming evidence set a real no-git measurement
+  // could never produce.
+  const gateCode = (fopts.git === false && !fopts.fakeGitEvidence)
+    ? { commit: null, worktree_clean: null, stable: true, no_git: true }
+    : { commit: HEAD, worktree_clean: true, stable: true };
   fs.writeFileSync(path.join(ROOT, '.claude', 'forge-runs', naam, 'gate-evidence.json'), JSON.stringify({
     schema: 1, run_id: naam, all_green: true,
-    gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'c'.repeat(64), evidence_verified: true, code: { commit: HEAD, worktree_clean: true, stable: true } }],
+    gates: [{ name: 'suite', command: 'node test', output_file: 'gate-output/suite.txt', exit_code: 0, output_sha256: 'c'.repeat(64), evidence_verified: true, code: gateCode }],
   }, null, 2));
   const EVIDENCE = RC.canonicalEvidenceDigest(ROOT, naam).digest;
   const codes = [];
@@ -595,13 +622,48 @@ function fixture(naam, evs, fopts) {
   ]);
   t('2 E2E: een review van een ANDERE commit dan de echte HEAD wordt geweigerd', andereCommit.status === 3, 'exit=' + andereCommit.status + ' ' + andereCommit.out.slice(0, 160));
 
+  /** D2 fix (2026-09-26, fresh-laptop re-audit) — this test USED to assert the OLD bug's symptom as
+   *  "correct": a genuinely git-less project could never satisfy independent-verification at all, because
+   *  opts.commitSha is always null there and the old unconditional check demanded a non-null match. That is
+   *  not a real security requirement — a commit sha binds evidence to a VERSION, and a project with no
+   *  versioning concept has nothing to bind to. A git-less run whose evidence is HONESTLY no-git-bound
+   *  (forge-gate-evidence.cjs's real code.no_git:true shape — see fixture()'s gateCode above) and whose
+   *  hash-chain/evidence_digest bindings both genuinely hold now passes: git-less is not the same as
+   *  unverified. The completion event carries NO commit_sha at all — under opts.noGit it is neither
+   *  required nor checked (see valideerCompletion's D2 fix). */
   const zonderGit = fixture('e2e-review-zonder-git', [
     { event_type: 'run_started', agent: 'Build Boss', note: 's' },
     werkbewijs,
     { event_type: 'review_started', agent: 'Review Boss', review_id: 'rev-1', note: 'review geopend' },
-    (staat, HEAD, EVIDENCE) => ({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rev-1', subject_log_hash: staat(), commit_sha: HEAD, evidence_digest: EVIDENCE, review_verdict: 'pass', note: 'akkoord' }),
+    (staat, HEAD, EVIDENCE) => ({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rev-1', subject_log_hash: staat(), evidence_digest: EVIDENCE, review_verdict: 'pass', note: 'akkoord' }),
   ], { git: false });
-  t('2 E2E: zonder git kan de commitbinding niet worden getoetst => fail-closed, NIET groen', zonderGit.status === 3, 'exit=' + zonderGit.status + ' ' + zonderGit.out.slice(0, 200));
+  t('2 E2E D2: zonder git EN een eerlijke no-git-bewijsset geeft CONTRACT OK (git-less is niet ongeverifieerd)', zonderGit.status === 0 && /CONTRACT OK/.test(zonderGit.out), 'exit=' + zonderGit.status + ' ' + zonderGit.out.slice(0, 200) + zonderGit.err.slice(0, 200));
+  t('2 E2E D2: en de writer accepteerde elk van die events', zonderGit.codes.every((c) => c.status === 0), JSON.stringify(zonderGit.codes.filter((c) => c.status !== 0)));
+
+  // ... en werk NA de review haalt een git-less run ook onderuit — de staleness-regel is git-onafhankelijk
+  const zonderGitStale = fixture('e2e-review-zonder-git-stale', [
+    { event_type: 'run_started', agent: 'Build Boss', note: 's' },
+    werkbewijs,
+    { event_type: 'review_started', agent: 'Review Boss', review_id: 'rev-1', note: 'review geopend' },
+    (staat, HEAD, EVIDENCE) => ({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rev-1', subject_log_hash: staat(), evidence_digest: EVIDENCE, review_verdict: 'pass', note: 'akkoord' }),
+    { event_type: 'file_changed', agent: 'Build Boss', path: 'src/iets.js', note: 'toch nog even iets aangepast' },
+  ], { git: false });
+  t('2 E2E D2: werk NA de review maakt ook een git-less run weer NIET DONE', zonderGitStale.status === 3 && /independent-verification/.test(zonderGitStale.out), 'exit=' + zonderGitStale.status);
+
+  /** D2 anti-fabrication guard: a git-less root whose gate-evidence.json still claims a real, well-formed
+   *  commit (never no_git:true — the exact shape a real no-git measurement could never produce) must be
+   *  REFUSED, even when the completion event's own commit_sha happens to match that same fake value. This
+   *  is precisely the gap the OLD (pre-D2) test above accidentally exercised and read as "fail-closed" for
+   *  the wrong reason (a null HEAD, not this guard) — pinned here explicitly so it can never regress silently. */
+  const zonderGitMaarNepCommit = fixture('e2e-review-zonder-git-nep-commit', [
+    { event_type: 'run_started', agent: 'Build Boss', note: 's' },
+    werkbewijs,
+    { event_type: 'review_started', agent: 'Review Boss', review_id: 'rev-1', note: 'review geopend' },
+    (staat, HEAD, EVIDENCE) => ({ event_type: 'review_completed', agent: 'Review Boss', review_id: 'rev-1', subject_log_hash: staat(), commit_sha: HEAD, evidence_digest: EVIDENCE, review_verdict: 'pass', note: 'akkoord' }),
+  ], { git: false, fakeGitEvidence: true });
+  t('2 E2E D2 anti-fabrication: een git-loze root met een NEP git-gebonden bewijsset wordt geweigerd, nooit vertrouwd',
+    zonderGitMaarNepCommit.status === 3 && /geen git-repository, maar de bewijsset claimt toch een commit/.test(zonderGitMaarNepCommit.out),
+    'exit=' + zonderGitMaarNepCommit.status + ' ' + zonderGitMaarNepCommit.out.slice(0, 300));
 
   /** N-01 (writer-kant): een reviewer die niet in de registry staat moet door de ECHTE writer worden
    *  geweigerd. Deze test ving mijn eigen fout: alle fixtures hierboven gebruikten "Verify Boss", een

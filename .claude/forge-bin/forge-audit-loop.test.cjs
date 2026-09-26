@@ -343,6 +343,30 @@ t('opts.skipBriefing is honored by iterate() (briefing.ok:false with the skip re
   return result.summary.briefing.ok === false && /skipped/.test(result.summary.briefing.reason);
 })());
 
+// WP-S4 (v2.8.0 laptop-audit Part VI): `forge-audit-loop iterate` runs forge-doctor's FULL suite as its
+// DOCTOR-DELTA check, measured by the audit at 45s-150s with nothing printed — indistinguishable from a hang.
+// opts.onProgress(stage) must fire once before each of the four real checks, in order, and never fire when
+// absent (every prior test above calls iterate() without it and must keep passing unchanged).
+t('opts.onProgress(stage) fires once before each of the four checks plus the briefing step, in order', (() => {
+  const root = freshRoot('progress-order');
+  seedCleanMemory(root);
+  const stages = [];
+  A.iterate({ root }, {
+    doctorReport: GREEN_DOCTOR_REPORT, capabilitiesOpts: ZERO_GATES_OPTS(root), skipBriefing: true,
+    onProgress: (stage) => stages.push(stage),
+  });
+  return stages.length === 5
+    && /memory-integrity/.test(stages[0]) && /agent-health/.test(stages[1])
+    && /feature-usage/.test(stages[2]) && /doctor/.test(stages[3]) && /briefing/.test(stages[4]);
+})());
+
+t('iterate() without opts.onProgress behaves exactly as before (no throw, no progress calls to account for)', (() => {
+  const root = freshRoot('progress-absent');
+  seedCleanMemory(root);
+  const result = A.iterate({ root }, { doctorReport: GREEN_DOCTOR_REPORT, capabilitiesOpts: ZERO_GATES_OPTS(root), skipBriefing: true });
+  return typeof result.iteration === 'number' && Array.isArray(result.findings);
+})());
+
 t('an explicit briefingRunId with a real events.jsonl produces a real briefing (ok:true, markdown mentions the run)', (() => {
   const root = freshRoot('brief-real');
   const runDir = path.join(root, '.claude', 'forge-runs', 'brief-run-1');

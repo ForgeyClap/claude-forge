@@ -996,7 +996,9 @@ test('LIVE STREAM: a normal turn with no tool_use blocks emits none of the new l
 // ── feat-live-stream gap #2: a timed-out turn still carries whatever activity was real before it ──
 
 test('TIMEOUT + LIVE ACTIVITY: a wedged child that already reported real Edit/Write/TodoWrite/Bash activity before the timeout fires has that real activity carried onto the honest timed_out turn', async () => {
-  _setExecTimeoutMsForTests(300); // real headroom for the child to write+flush 3 lines before the timeout fires
+  // v2.8.0: 300 ms was too little on a loaded Windows machine (spawning the mock child alone can exceed it, so
+  // the timeout fired before any activity existed). The child hangs after reporting, so the timeout still fires.
+  _setExecTimeoutMsForTests(2500); // real headroom for the child to start, write and flush 3 lines first
   const conv = createConversation({ project: 'demo-project' });
   const start = startExecution({
     convId: conv.id,
@@ -1007,7 +1009,7 @@ test('TIMEOUT + LIVE ACTIVITY: a wedged child that already reported real Edit/Wr
   });
   assert.equal(start.started, true);
 
-  const freed = await waitUntil(() => !isConversationBusy(conv.id), { timeoutMs: 3000 });
+  const freed = await waitUntil(() => !isConversationBusy(conv.id), { timeoutMs: 12000 });
   assert.ok(freed, 'the timeout must still free the busy slot on its own');
 
   const full = readConversation(conv.id);

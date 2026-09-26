@@ -15,6 +15,7 @@ import {
   _setDiscordPathsForTests,
   _setSpawnFnForTests,
   _setFetchFnForTests,
+  _setExtraEnvOverridesForTests,
   _resetDiscordServiceForTests,
 } from '../src/discord-service.mjs';
 
@@ -99,7 +100,15 @@ test('POST /api/discord/start without the exec token is rejected with 403, never
   assert.equal(spawnCalls, 0);
 });
 
+// N6/C2 fix (WP-C1, 2026-09-26 laptop re-audit): this route also gates on startDiscordService's own
+// fail-closed CLI-broker check — without a real `claude` CLI resolvable on PATH (true on a fresh
+// laptop, per the audit) it honestly answers 503, not 202, which has nothing to do with what this
+// test verifies (the HTTP route wiring for a successful start). RUNNER=fake is the same escape
+// hatch discord-service.test.mjs's own dedicated CLI-broker tests already use, so this stays
+// deterministic on every machine, CI included, without weakening the broker gate itself (that gate
+// has its own coverage in discord-service.test.mjs).
 test('POST /api/discord/start with a valid exec token really spawns and returns 202+pid', async () => {
+  _setExtraEnvOverridesForTests({ RUNNER: 'fake' });
   _setSpawnFnForTests(() => makeFakeChild(2222));
   const res = await requestWithBody(port, '/api/discord/start', { method: 'POST' });
   assert.equal(res.statusCode, 202);

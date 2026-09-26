@@ -10,14 +10,26 @@
  * Usage:
  *   node forge-bench.cjs               # run, print score
  *   node forge-bench.cjs --json        # machine-readable
- *   node forge-bench.cjs --baseline    # write current score as the release baseline
+ *   node forge-bench.cjs --baseline    # write current score as the baseline (USER_BASELINE — see below)
  *   node forge-bench.cjs --gate        # exit 1 if score regressed below baseline (use before forge-sync)
+ *
+ * BASELINE SPLIT (2026-09-26, external audit N4/Part V-G): `--baseline` used to overwrite BASELINE itself —
+ * a file forge-sync.cjs ships/syncs as SHIPPED product state (config/forge-bench/baseline.json is in its
+ * SYSTEM list). That meant running `--baseline` on ANY project silently rewrote a file the next template
+ * sync would then either clobber again or diff against as "drifted", neither of which is what a project
+ * regenerating ITS OWN regression baseline wants. Fix: `--baseline` now writes to USER_BASELINE
+ * (config/forge-bench/baseline.user.json) — never in forge-sync.cjs's SYSTEM/SYSTEM_GLOB list, never
+ * shipped, never overwritten/deleted by a template sync. readBaseline() prefers USER_BASELINE when present
+ * and falls back to the shipped BASELINE otherwise, so `--gate` keeps working unchanged for a project that
+ * has never run `--baseline` itself.
  */
 const fs = require('fs');
 const path = require('path');
 
 const PROJECT_ROOT = process.env.FORGE_PROJECT_ROOT ? path.resolve(process.env.FORGE_PROJECT_ROOT) : path.resolve(__dirname, '..', '..');
 const BASELINE = path.join(PROJECT_ROOT, '.claude', 'config', 'forge-bench', 'baseline.json');
+// USER_BASELINE — project-local, never shipped/synced. See the file header's BASELINE SPLIT note.
+const USER_BASELINE = path.join(PROJECT_ROOT, '.claude', 'config', 'forge-bench', 'baseline.user.json');
 
 const otel = require('./forge-otel.cjs');
 const mcp = require('./forge-mcp.cjs');
@@ -92,17 +104,31 @@ function run() {
   const passed = results.filter((r) => r.pass).length;
   return { total: results.length, passed, score: Number((passed / results.length).toFixed(4)), results };
 }
-function readBaseline() { try { return JSON.parse(fs.readFileSync(BASELINE, 'utf8')); } catch { return null; } }
+/** readBaseline() -> the USER baseline if one has ever been written (--baseline), else the shipped
+ *  baseline, else null. Never reads the raw file path directly from more than one caller — this is the
+ *  single place that decides which baseline is authoritative for --gate. */
+function readBaseline() {
+  try { return JSON.parse(fs.readFileSync(USER_BASELINE, 'utf8')); } catch {}
+  try { return JSON.parse(fs.readFileSync(BASELINE, 'utf8')); } catch { return null; }
+}
 
-module.exports = { run, CASES, readBaseline, BASELINE };
+module.exports = { run, CASES, readBaseline, BASELINE, USER_BASELINE };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
+  // v2.8.0 (WP-S4 CLI sweep): `--help` used to fall through to a full benchmark run (minutes). Answer first.
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: node forge-bench.cjs [--baseline] [--json]');
+    console.log('  (no flag)   run the capability benchmark and compare with the baseline (advisory gate)');
+    console.log('  --baseline  store the current score as this project\'s own baseline (never shipped, never synced)');
+    console.log('  --json      print the report as JSON');
+    process.exit(0);
+  }
   const rep = run();
   if (args.includes('--baseline')) {
-    fs.mkdirSync(path.dirname(BASELINE), { recursive: true });
-    fs.writeFileSync(BASELINE, JSON.stringify({ score: rep.score, passed: rep.passed, total: rep.total, cases: rep.results.map((r) => r.id), note: 'ForgeBench capability baseline — regenerate with --baseline after intentional capability changes' }, null, 2) + '\n', 'utf8');
-    console.log('baseline written: ' + rep.passed + '/' + rep.total + ' (score ' + rep.score + ') -> ' + path.relative(PROJECT_ROOT, BASELINE));
+    fs.mkdirSync(path.dirname(USER_BASELINE), { recursive: true });
+    fs.writeFileSync(USER_BASELINE, JSON.stringify({ score: rep.score, passed: rep.passed, total: rep.total, cases: rep.results.map((r) => r.id), note: 'ForgeBench capability baseline (project-local — never shipped, never synced) — regenerate with --baseline after intentional capability changes' }, null, 2) + '\n', 'utf8');
+    console.log('baseline written: ' + rep.passed + '/' + rep.total + ' (score ' + rep.score + ') -> ' + path.relative(PROJECT_ROOT, USER_BASELINE) + ' (project-local; the shipped ' + path.relative(PROJECT_ROOT, BASELINE) + ' is never rewritten by this command)');
     process.exit(0);
   }
   if (args.includes('--json')) { console.log(JSON.stringify(rep, null, 2)); }

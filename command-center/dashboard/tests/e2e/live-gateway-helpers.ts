@@ -12,8 +12,14 @@
  * lets these run against an already-live gateway instead of a freshly-spawned one.
  *
  * SANDBOX PROJECT: every spec here runs against a small, disposable Forge self-test project
- * (`SANDBOX_PROJECT`) that already exists on this machine (`.claude` + `CLAUDE.md` only) — never a
- * project with real client work. Because the gateway scans the SAME real `Documents/` tree regardless
+ * (`SANDBOX_PROJECT`). C1 fix (WP-C1, 2026-09-26 laptop re-audit): this used to assume the project
+ * already existed on disk — true only on the machine that happened to have created it by hand once,
+ * false on any fresh checkout/laptop/CI runner, which failed loudly with "sandbox project
+ * 'selftest-full' did not appear in the sidebar project search" (13 fails, all the same cause).
+ * `ensureSandboxProject` below now creates it itself, through the real, already-reviewed
+ * `POST /api/projects` route (the exact route the app's own "New project" button drives) — never a
+ * placeholder or a fixture written straight to disk, so this suite still only ever exercises real,
+ * documented HTTP/UI contracts. Because the gateway scans the SAME real `Documents/` tree regardless
  * of which config spawned it (see `gateway/src/paths.mjs`), that project can carry OTHER real
  * conversations at any time (its own past runs, or a concurrently working agent) — every helper below
  * therefore only ever creates/reads/deletes conversations by the EXACT id it itself just created, never
@@ -45,13 +51,36 @@ export async function readExecToken(page: Page): Promise<string> {
 }
 
 /**
+ * C1 fix (WP-C1): creates `projectName` through the real `POST /api/projects` route when it does
+ * not already exist — the same route/mechanism the app's own "New project" button drives (see
+ * `gateway/src/projects-create.mjs`). Idempotent: a 409 ("already exists") is the expected, correct
+ * outcome on a repeat run or a shared machine that already has this project, and is treated as
+ * success, never an error. The route's own scaffold (`.claude/forge-dashboard` marker + CLAUDE.md)
+ * happens synchronously before the response — the detached, multi-minute real installer that may
+ * run afterwards is never awaited here, since the specs in this suite only need the project to be
+ * DISCOVERABLE in the sidebar search, not fully installed.
+ */
+export async function ensureSandboxProject(page: Page, projectName: string = SANDBOX_PROJECT): Promise<void> {
+  const token = await readExecToken(page);
+  const response = await page.request.post('/api/projects', {
+    headers: { [EXEC_TOKEN_HEADER]: token },
+    data: { name: projectName },
+  });
+  if (response.status() === 201 || response.status() === 409) return;
+  throw new Error(`could not ensure the sandbox project "${projectName}" exists: HTTP ${response.status()} ${await response.text()}`);
+}
+
+/**
  * Opens `projectName` through the REAL sidebar search + project row — the same path a person takes,
  * never a direct state injection. Navigates home first so the search field is always reachable
- * regardless of which route the page was previously on.
+ * regardless of which route the page was previously on. C1 fix (WP-C1): ensures the project exists
+ * first (see `ensureSandboxProject`'s own header) rather than assuming it was created by hand once
+ * on one specific machine — the "did not appear" failure this used to hit on every OTHER machine.
  */
 export async function openSandboxProject(page: Page, projectName: string = SANDBOX_PROJECT): Promise<void> {
   await page.goto('/#/');
   await page.waitForLoadState('domcontentloaded');
+  await ensureSandboxProject(page, projectName);
   const search = page.locator('#fw-sidebar-search');
   await search.fill(projectName);
   const row = page.locator('.fw-prow__main', { hasText: projectName }).first();

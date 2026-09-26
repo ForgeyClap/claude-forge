@@ -1,7 +1,7 @@
 ---
 name: mcp-developer
 description: "Use PROACTIVELY when building or debugging Model Context Protocol servers/clients and tool integrations — JSON-RPC 2.0 compliance, schema-validated inputs, minimal scopes, and secure config for skill/integration authoring."
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

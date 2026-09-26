@@ -836,7 +836,7 @@ console.log('\n26b) B4 (CLI): rollback-batch prints "X of Y" honestly and exits 
   t('CLI summary says "1 of 2 project(s) rolled back" (never conflates a failure into the count)', /1 of 2 project\(s\) rolled back/.test(cliResult.stdout));
 }
 
-console.log('\n27) B5: a default central backup hub is used automatically when --central-backup-root is not given');
+console.log('\n27) N10 fix (2026-09-26, external audit): a default central backup hub is used automatically when --central-backup-root is not given, and it now lives INSIDE the project (never outside it)');
 {
   const tpl = freshDir('t27-tpl');
   fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
@@ -845,8 +845,11 @@ console.log('\n27) B5: a default central backup hub is used automatically when -
   const p = makeProject(projectsRoot, 'proj', 0); makeRealProjectMarker(p);
   const cliResult = runCLIWithTemplate(['install', p, '--batch-id', 'b27'], tpl);
   t('install CLI succeeds', cliResult.status === 0);
-  const expectedHub = path.join(path.dirname(path.resolve(p)), '.forge-backup-hub');
-  t('a default central backup hub was created OUTSIDE the project, next to it (<parent>/.forge-backup-hub)', fs.existsSync(expectedHub));
+  const oldOutsideHub = path.join(path.dirname(path.resolve(p)), '.forge-backup-hub');
+  t('the OLD outside-the-project default location is never used (N10 fix)', !fs.existsSync(oldOutsideHub));
+  const expectedHub = sync.defaultCentralBackupRoot(p);
+  t('defaultCentralBackupRoot(p) resolves inside the project (.claude/forge-backups-central)', expectedHub === path.join(path.resolve(p), '.claude', 'forge-backups-central'));
+  t('a default central backup hub was created INSIDE the project', fs.existsSync(expectedHub));
   const centralManifestPath = path.join(expectedHub, '.claude', 'forge-backups', 'b27', sync.projectId(p), 'manifest.json');
   t('the default hub actually contains this batch\'s manifest', fs.existsSync(centralManifestPath));
 
@@ -854,6 +857,15 @@ console.log('\n27) B5: a default central backup hub is used automatically when -
   const cliResult2 = runCLIWithTemplate(['install', p2, '--batch-id', 'b27b', '--no-central-backup'], tpl);
   t('install with --no-central-backup succeeds', cliResult2.status === 0);
   t('--no-central-backup did not create a central hub entry for THIS batch', !fs.existsSync(path.join(expectedHub, '.claude', 'forge-backups', 'b27b')));
+
+  const p3 = makeProject(projectsRoot, 'proj3', 0); makeRealProjectMarker(p3);
+  const cliResult3 = runCLIWithTemplate(['install', p3, '--batch-id', 'b27c'], tpl);
+  t('a SECOND project also gets its OWN inside-the-project hub, not the first project\'s', cliResult3.status === 0);
+  const hub3 = sync.defaultCentralBackupRoot(p3);
+  t('the second project\'s hub lives under ITS OWN .claude, not the first project\'s', fs.existsSync(path.join(hub3, '.claude', 'forge-backups', 'b27c', sync.projectId(p3), 'manifest.json')));
+
+  const rbResult = runCLIWithTemplate(['rollback', p, '--batch', 'b27'], tpl);
+  t('rollback finds the same inside-the-project hub install just wrote (symmetric default)', rbResult.status === 0);
 }
 
 console.log('\n28) B6: sync-all / list / canary-init / rollback-batch refuse a missing root (no ~/Documents default)');
@@ -2998,6 +3010,52 @@ console.log('\n77) sync-all dry-run includes the settings.json preview');
   const result = sync.runSyncAll(tpl, root, { dryRun: true, projects: [p], batchId: 't77', nowIso: '2026-01-01T00:00:00.000Z' });
   t('77a dry-run reports ok:true and writes nothing', result.ok === true && !fs.existsSync(path.join(p, '.claude', 'settings.json')));
   t('77b the settings.json preview (would-create) is present on the plan entry, not discarded', !!result.projects[0].settingsMerge && result.projects[0].settingsMerge.status === 'would-create');
+}
+
+// 78) N4 (2026-09-26, external audit) — the new template/user split state files must NEVER be template-owned:
+// not in the synced SYSTEM list, never planned, and byte-for-byte untouched by a real sync even when they
+// carry real owner content. Same payload-pairing discipline as section 70's FORGE_CONFIG.json test.
+console.log('\n78) N4 fix — new user-state files are never template-owned (not synced, not planned, never overwritten)');
+{
+  const tplDir = path.resolve(__dirname, '..');
+  const files = sync.listSystemFiles(tplDir);
+  const userStateFiles = [
+    'config/orchestration/FORGE_STANDING_RULES.user.json',
+    'config/orchestration/FORGE_SCOUT_VETTING.user.json',
+    'config/forge-bench/baseline.user.json',
+  ];
+  for (const f of userStateFiles) {
+    t('78a ' + f + ' is NOT in the synced SYSTEM file list', !files.includes(f));
+  }
+  // config/orchestration/ and config/forge-bench/ are not SYSTEM_GLOB dirs (only forge-bin/forge-dashboard/
+  // agents are globbed) — confirm that directly so a future SYSTEM_GLOB widening cannot silently start
+  // sweeping these dirs without this test going red first.
+  const src = fs.readFileSync(path.join(__dirname, 'forge-sync.cjs'), 'utf8');
+  const glob = src.match(/const SYSTEM_GLOB = \[([\s\S]*?)\];/);
+  t('78b SYSTEM_GLOB does not cover config/orchestration or config/forge-bench', !!glob && !/dir:\s*'config/.test(glob[1]));
+
+  // behavioural: a project carrying real content in all three user files is never touched by a real sync,
+  // even though the template itself is genuinely changing other files.
+  const tpl = freshDir('t78-tpl');
+  fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+  fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'v2');
+  const p78 = makeProject(freshDir('t78-root'), 'proj', null);
+  const userFiles = {};
+  for (const f of userStateFiles) {
+    const abs = path.join(p78, '.claude', f);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    const content = JSON.stringify({ version: 1, rules: [{ id: 'owner-real-rule-' + path.basename(f) }] }, null, 2) + '\n';
+    fs.writeFileSync(abs, content);
+    userFiles[f] = { abs, content };
+  }
+  const plan78 = sync.buildPlan(tpl, p78, {});
+  t('78c the dry-run plan is real (it does plan the template tool change)', plan78.toChange.some((x) => x.rel === 'forge-bin/tool.cjs'));
+  t('78d the plan never mentions any of the three user-state files', !userStateFiles.some((f) => JSON.stringify(plan78).includes(f)));
+  const r78 = sync.safeSyncProject(tpl, p78, { batchId: 'b78', nowIso: '2026-01-01T00:00:00.000Z', forceOverwrite: true, allowDegraded: true });
+  t('78e the sync itself ran (ok or a reported, non-crashing outcome)', typeof r78.ok === 'boolean');
+  for (const f of userStateFiles) {
+    t('78f ' + f + ' bytes are byte-for-byte untouched after a real sync', fs.readFileSync(userFiles[f].abs, 'utf8') === userFiles[f].content);
+  }
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

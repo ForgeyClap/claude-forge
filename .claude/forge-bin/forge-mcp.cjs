@@ -107,6 +107,17 @@ function handle(req) {
 module.exports = { handle, callTool, listResources, readResource, TOOLS, PROJECT_ROOT };
 
 if (require.main === module) {
+  // WP-S4 (v2.8.0 laptop-audit Part V-G): this is a long-running stdio server, not a flag-driven CLI — a bare
+  // `--help` used to fall straight into the stdin read loop below (harmless when stdin is already closed, as
+  // it is under a test spawn, but it left a real interactive terminal user waiting on a server they only
+  // meant to inspect). Answered immediately instead, without ever starting the loop.
+  if (process.argv.slice(2).includes('--help') || process.argv.slice(2).includes('-h')) {
+    console.log('forge-mcp.cjs is a read-only MCP (Model Context Protocol) server over stdio, not a flag-driven CLI.');
+    console.log('Register it in an MCP host as:');
+    console.log('  { "command": "node", "args": ["<abs>/.claude/forge-bin/forge-mcp.cjs"], "env": { "FORGE_PROJECT_ROOT": "<abs project root>" } }');
+    console.log('Run with no arguments to start the server (reads newline-delimited JSON-RPC 2.0 from stdin, writes JSON-RPC to stdout, logs to stderr).');
+    process.exit(0);
+  }
   let buf = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (c) => {

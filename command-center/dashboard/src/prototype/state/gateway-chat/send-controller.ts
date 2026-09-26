@@ -148,9 +148,17 @@ export function useGatewayChatSendController(params: GatewayChatSendParams): Cha
 
       setSending(true);
       try {
+        // N6 fix (WP-C1, 2026-09-26 laptop re-audit): the gateway now checks the exec token for
+        // EVERY non-GET request, including 'plan' mode and the conversation-create call below
+        // (both used to be exempt/omitted) — computed once up front and reused for both real
+        // writes this branch can make. `null` (no meta tag found — see `readExecToken`'s own doc
+        // comment) means the header is simply omitted; the gateway then answers with an honest 403.
+        const token = readExecToken();
+        const execHeaders: Record<string, string> = token !== null ? { [EXEC_TOKEN_HEADER]: token } : {};
+
         let conversationId = activeConversationId;
         if (!knownConversation) {
-          const created = await gwPost('/api/conversations', { project: activeProjectId, title: null });
+          const created = await gwPost('/api/conversations', { project: activeProjectId, title: null }, execHeaders);
           if (!created.ok) return { ok: false, error: created.error };
           const conversation = pickRecord(created.data, ['conversation']);
           const newId = conversation !== null ? pickString(conversation, ['id']) : null;
@@ -172,13 +180,6 @@ export function useGatewayChatSendController(params: GatewayChatSendParams): Cha
           ...effortField,
           ...modelField,
         };
-        // fix-sec-round #1 (HIGH): every real write mode except 'plan' requires this token
-        // server-side (gateway/src/server.mjs) — sent here for every mode (harmless for 'plan'
-        // too) so a mode switch never depends on this client re-deriving which modes are exempt.
-        // `null` (no meta tag found — see `readExecToken`'s own doc comment) means the header is
-        // simply omitted; the gateway then answers with an honest 403 for a non-'plan' send.
-        const token = readExecToken();
-        const execHeaders: Record<string, string> = token !== null ? { [EXEC_TOKEN_HEADER]: token } : {};
         const sent = await gwPost(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, body, execHeaders);
         if (!sent.ok) return { ok: false, error: sent.error };
         const started = pickBool(sent.data, ['execution_started']) ?? false;
@@ -206,7 +207,11 @@ export function useGatewayChatSendController(params: GatewayChatSendParams): Cha
     }
     setStopping(true);
     try {
-      const result = await gwPost(`/api/conversations/${encodeURIComponent(activeConversationId)}/stop`, {});
+      // N6 fix (WP-C1): POST .../stop is a real write too (the gateway now checks the exec token
+      // for every non-GET request) — this route never sent it at all before this fix.
+      const token = readExecToken();
+      const execHeaders: Record<string, string> = token !== null ? { [EXEC_TOKEN_HEADER]: token } : {};
+      const result = await gwPost(`/api/conversations/${encodeURIComponent(activeConversationId)}/stop`, {}, execHeaders);
       if (!result.ok) return { ok: false, error: result.error };
       setPendingTurnId(null);
       pendingConversationRef.current = null;

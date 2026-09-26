@@ -1,7 +1,7 @@
 ---
 name: integration-boss
 description: APIs, automation, and external-systems Boss for Forge. Handles n8n, webhooks, Gmail, calendars, databases, payments, and NVIDIA-as-tool wiring with retries, timeouts, clear errors, and fallbacks. Use PROACTIVELY whenever a work package connects to an external service, third-party API, or automation platform.
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

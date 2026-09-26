@@ -1,5 +1,5 @@
 {
-  "_doc": "Forge V2 WAVE B / B2 (2026-07-18) — project-local, enforceable OWNER standing rules. Read only via .claude/forge-bin/forge-standing.cjs::match()/listActive() — no other file may re-implement scope/trigger matching (same 'single source of truth, no parallel regex/logic' discipline forge-actiongate.cjs::classify established for hard-gates.json). Advisory, not a hook — matches this project's light-security governance (CLAUDE.md: 'no mandatory security gates'). A rule becomes 'active' ONLY from real evidence: either a verbatim owner quote, or a verbatim quote from a governing policy file this project/owner is already bound by (CLAUDE.md, FABLE5_SAFE_GLOBAL_POLICY.md, the Bash tool's own Git Safety Protocol). NOTHING here is fabricated or inferred-as-fact; any inferred operationalization (e.g. attaching a concrete glob to a general policy sentence) is marked confidence:'medium' and explained in that rule's 'notes'. This file is NEVER auto-written by reflection/distillation — B3's forge-reflect may only stage 'proposed' candidates elsewhere; a rule here only reaches status:'active' via an explicit owner '/forge remember' (wired in a later piece) or this hand-seeded set. The 'honesty-core-untouchable' rule carries cannot_override_core:true and can never be shadowed or disabled by any other rule, including a higher-precedence scope/trigger match — forge-standing.cjs::match() enforces this mechanically, not just by convention.",
+  "_doc": "Forge V2 WAVE B / B2 (2026-07-18) — SHIPPED, product-owned standing rules (2026-09-26: split from owner-added state per external audit N4/P1 — see forge-standing.cjs's file header for the full split/migration contract). Read only via .claude/forge-bin/forge-standing.cjs::match()/listActive() — no other file may re-implement scope/trigger matching (same 'single source of truth, no parallel regex/logic' discipline forge-actiongate.cjs::classify established for hard-gates.json). Advisory, not a hook — matches this project's light-security governance (CLAUDE.md: 'no mandatory security gates'). Every rule here is grounded in evidence that SHIPS WITH THE PRODUCT (this project's own root CLAUDE.md, a shipped skill/command file, or the Bash tool's own Git Safety Protocol) — never a citation to a file absent on a fresh install. NOTHING here is fabricated or inferred-as-fact; any inferred operationalization (e.g. attaching a concrete glob to a general policy sentence, or generalizing a domain-specific shipped doctrine line) is marked confidence:'medium' and explained in that rule's 'notes'. This file is NEVER auto-written by reflection/distillation — B3's forge-reflect may only stage 'proposed' candidates elsewhere. OWNER-added rules (an explicit '/forge remember') live in the SEPARATE, never-shipped FORGE_STANDING_RULES.user.json — forge-standing.cjs::load() merges both transparently; remember() writes ONLY to the user file; a rule with source 'owner /forge remember' ever found HERE is migrated (moved, not copied) into the user file on the next load(). The 'honesty-core-untouchable' rule carries cannot_override_core:true and can never be shadowed or disabled by any other rule, including a higher-precedence scope/trigger match — forge-standing.cjs::match() enforces this mechanically, not just by convention.",
   "version": 1,
   "rules": [
     {
@@ -52,11 +52,11 @@
       "domain": null,
       "glob": null,
       "topic": "outreach",
-      "source": "FABLE5_SAFE_GLOBAL_POLICY.md, per-domain working principles — 'Telegram / bots / API integrations' bullet, verbatim: \"outreach drafted-only / no auto-send\"; and 'AI Voice Agent application' section, verbatim: \"no SMS unless explicitly approved\", \"no outbound calls unless explicitly approved\".",
-      "confidence": "high",
+      "source": "commands/forge.md (this project's shipped BEGINNER PROMISE section) — verbatim: \"It stops for the hard gates — deploy, push, spend, DNS, production, credentials, activating a live workflow, sending anything out, killing processes by name, ... — ... and for a real usage-limit pause.\"",
+      "confidence": "medium",
       "status": "active",
       "cannot_override_core": false,
-      "notes": "Kept as the GLOBAL fallback for this topic; the more specific scraping-domain wording below is expected to shadow this one whenever type=scraping (same topic, higher-precedence trigger)."
+      "notes": "confidence:medium reflects the operationalization only (forge.md's 'sending anything out' hard gate generalized to a standing-rule sentence) — kept as the GLOBAL fallback for this topic; the more specific scraping-domain wording below (a direct verbatim quote from a shipped skill) is expected to shadow this one whenever type=scraping (same topic, higher-precedence trigger)."
     },
     {
       "id": "draft-only-outreach-scraping",
@@ -66,7 +66,7 @@
       "domain": "scraping",
       "glob": null,
       "topic": "outreach",
-      "source": "FABLE5_SAFE_GLOBAL_POLICY.md, per-domain working principles — 'Scraping / data' bullet, verbatim: \"outreach is drafted-only unless the owner explicitly approves sending\".",
+      "source": "skills/forge-scraping/SKILL.md (this project's shipped scraping playbook), line 12 — verbatim: \"Outreach is DRAFTED ONLY. No automatic sending and no bulk outreach without explicit user confirmation and a compliance check.\"",
       "confidence": "high",
       "status": "active",
       "cannot_override_core": false,
@@ -80,11 +80,11 @@
       "domain": "website",
       "glob": null,
       "topic": "ui-quality",
-      "source": "FABLE5_SAFE_GLOBAL_POLICY.md, per-domain working principles — 'Websites / landing / SPAs' bullet, verbatim.",
-      "confidence": "high",
+      "source": "skills/forge-website/SKILL.md (this project's shipped website playbook), lines 11-12 — verbatim: \"Mobile and desktop layout verified by screenshot before claiming done.\" / \"No placeholder/Lorem/test/mock content in anything headed for prod.\"",
+      "confidence": "medium",
       "status": "active",
       "cannot_override_core": false,
-      "notes": null
+      "notes": "confidence:medium reflects the operationalization only — the rule text broadens the two shipped skill lines (screenshot check + no placeholder content) into the fuller website-quality checklist this project already applies; the two quoted lines are the direct, high-confidence shipped evidence."
     },
     {
       "id": "no-secrets-in-env-files",
@@ -122,25 +122,11 @@
       "domain": null,
       "glob": null,
       "topic": "autonomy",
-      "source": "owner /goal 2026-09-24 (_scratch/owner-goal-2026-09-24.txt) — verbatim: \"ik heb hier ook meegemaakt dat claude zegt dat ik handmatig een code of een bestand moet runnen bij mij zelf maar ik weet dus niet helemaal hoe dat moet en wil het liefst aan jou overlaten dat jij dan al die dingen doet zonder het te vragen dat geldt ook bij de fases dus stel er zijn er 10 fases en dat die dan steeds vraagt moet ik verder of moet ik dit...\"",
+      "source": "commands/forge.md (this project's shipped BEGINNER PROMISE section) — verbatim: \"Forge does it for you. It runs every command, script, install and build itself and never asks the user to run a file or code ... It never asks 'shall I continue?' / 'moet ik verder?' between phases (autonomy continue-within-mission, start-gate off, standing rule does-it-for-you).\"",
       "confidence": "high",
       "status": "active",
       "cannot_override_core": false,
-      "notes": "owner directive 2026-09-24; reinforces autonomy_default"
-    },
-    {
-      "id": "owner-remember-mufjpi9a-vyc8vq",
-      "text": "Owner-directive 2026-09-24 (verbatim, /forge): 'als codex usage opraakt en bij 1% is mag je de reset token gebruiken'. Lead-lezing (veilig): wanneer de Codex-usage tijdens een missie op of onder 1% komt of Codex een usage-limiet-fout geeft, stopt de missie NIET; de Lead mag de reset van de owner gebruiken. De codex-cli (0.156.1) kent geen reset-commando, dus de reset is een owner-handeling in de Codex-app; de Lead meldt de limiet één keer, zet 'Codex-reset toepassen' in de owner-actielijst en probeert Codex daarna precies één keer opnieuw. Nooit zelf credits kopen of een andere sleutel/account gebruiken.",
-      "scope": "codex",
-      "trigger": "always",
-      "domain": null,
-      "glob": null,
-      "topic": null,
-      "source": "owner /forge remember",
-      "confidence": "high",
-      "status": "active",
-      "cannot_override_core": false,
-      "notes": null
+      "notes": "Originates in an owner /goal directive (2026-09-24); re-sourced 2026-09-26 to the shipped commands/forge.md wording (which already names this exact standing rule) after an external audit found the old citation pointed at an unshipped scratch transcript no fresh install carries."
     }
   ]
 }

@@ -24,6 +24,35 @@ export const APP_DIST_DIR = path.join(COMMAND_CENTER_DIR, 'dashboard', 'dist');
 // never taken from a request — satisfies "no user input in args ever" for the spawned CLI.
 export const SYNC_SCAN_ROOT = path.dirname(PROJECT_ROOT);
 
+// C1 fix (WP-C1, 2026-09-26 laptop re-audit): SYNC_SCAN_ROOT alone only ever finds a project that
+// happens to be a SIBLING of wherever this repo was cloned — on a fresh machine where the clone
+// lives somewhere else than the user's real projects (e.g. a scratch folder, while a real project
+// sits on the Desktop), that missed it entirely (audit finding C1: "the dashboard only finds
+// projects next to the repo clone ... never the Desktop project"). SYNC_SCAN_ROOTS scans every
+// well-known Forge project location plus one optional operator-set extra root, deduplicated by
+// resolved path so the same folder is never scanned twice:
+//   1. SYNC_SCAN_ROOT     - kept for backward compatibility (a "Forge fleet" checked out together
+//                           under one folder still works exactly as before).
+//   2. <home>/Documents   - Forge's own established default project root (matches
+//                           forge-registry.cjs's own defaultRoot(), and most /forge docs).
+//   3. <home>/Desktop     - the other common beginner location — exactly what C1 found missing.
+//   4. process.env.CC_PROJECTS_EXTRA_ROOT, when set — one operator-configurable extra root for a
+//      non-default location. Read once at startup from the environment, never from request input.
+// A root that does not exist on this machine is never an error: forge-sync.cjs's own
+// findForgeProjects() already treats a missing/unreadable root as "0 projects found" (see
+// projects.mjs's computeProjectsAsync(), which scans every root here in parallel and merges the
+// results). Every real project entry is still re-validated against SYNC_SCAN_ROOTS via
+// anyContainmentOk() (security.mjs) before its path is ever used — the extra roots widen WHERE a
+// project can be discovered, never what the containment check accepts.
+const EXTRA_SCAN_ROOT_ENV_NAME = 'CC_PROJECTS_EXTRA_ROOT';
+const extraScanRootRaw = process.env[EXTRA_SCAN_ROOT_ENV_NAME];
+const EXTRA_SCAN_ROOT = extraScanRootRaw && extraScanRootRaw.trim() !== '' ? path.resolve(extraScanRootRaw.trim()) : null;
+export const SYNC_SCAN_ROOTS = Array.from(new Set(
+  [SYNC_SCAN_ROOT, path.join(os.homedir(), 'Documents'), path.join(os.homedir(), 'Desktop'), EXTRA_SCAN_ROOT]
+    .filter((p) => typeof p === 'string' && p.length > 0)
+    .map((p) => path.resolve(p)),
+));
+
 // WP3 additions. These three are genuinely GLOBAL to *this gateway's own* install (not scoped by
 // a `?project=` query) — matching the literal T3.6/T3.9 endpoint shapes, which carry no project
 // param: the model-capability matrix + NVIDIA provider CLI live under THIS project's own

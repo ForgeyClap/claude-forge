@@ -3,8 +3,8 @@
 // (defense in depth) rather than trusting that upstream check alone.
 import fs from 'node:fs';
 import path from 'node:path';
-import { containmentOk } from './security.mjs';
-import { SYNC_SCAN_ROOT } from './paths.mjs';
+import { containmentOk, anyContainmentOk } from './security.mjs';
+import { SYNC_SCAN_ROOTS } from './paths.mjs';
 
 // cc-fix-adapter T6c: one pass over events.jsonl now does double duty — the pre-existing line
 // count (unchanged external behavior) PLUS a real run duration, derived from the first and last
@@ -122,7 +122,7 @@ export function listRuns(projectPath) {
   // Defense in depth: the resolved project path must genuinely sit under the fixed scan root —
   // this catches a caller bug upstream even though the /api/runs route itself only ever passes
   // a path taken from the allowlisted registry, never a raw query value.
-  if (!containmentOk(SYNC_SCAN_ROOT, projectPath)) {
+  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const runsDir = path.join(projectPath, '.claude', 'forge-runs');

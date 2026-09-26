@@ -285,14 +285,194 @@ const { hasLiveCArg } = POSITION;
  *  removing an entry here can only ever narrow a gate's coverage back toward the regex alone. */
 const COMMAND_EXTRA_FIRE = { 'opaque-exec': hasLiveCArg };
 
-/** testCommandGate(gate, text) -> boolean — true when gate.match.pattern_line matches the WHOLE text, or when
- *  the gate's own extra predicate (see COMMAND_EXTRA_FIRE) fires on the FULL text, or when ANY single command
- *  segment of `text` matches gate.match.pattern and is NOT excused by gate.match.except (see the COMMAND gate
- *  note in the header). The except valve is consulted ONLY for a segment the splitter marked `intact`. An
- *  amputated segment — one the split cut mid-argument — is judged on its pattern match alone, because the
- *  string it appears to be is not the command that will run. That guard is what stops `rm -rf
- *  node_modules$(echo /../.claude)` from being excused on the strength of its stump, and it is the ONLY thing
- *  besides exact equality that the valve depends on.
+/** patternLineFires(patternLine, flags, full, mask) -> boolean — WP-S8 root-cause fix (2026-09-26). A
+ *  `pattern_line` command gate is meant to catch a REAL shell construct (a pipe into an interpreter, a
+ *  `Get-Process | Stop-Process`, …) sitting ANYWHERE in the whole command line — that is genuinely why it
+ *  is tested against the FULL text and not one split segment (see this file's own header). But testing it
+ *  with a bare `.test(full)` is quote-BLIND: a harmless, common shape like a search/filter tool's own quoted
+ *  pattern argument — `grep -nE "a|Bash|b" f | head`, `Select-String -Pattern "a|Bash" f | Select-Object`,
+ *  `sed -E 's/a|sh/x/' f | sort`, `awk '/a|bash/' f | sort` — MENTIONS an interpreter name inside its own
+ *  quoted DATA, right next to a `|` character that is not a shell pipe at all; the old `.test(full)` matched
+ *  that quoted `|Bash`/`|sh` exactly like a real `| bash` pipe and blocked a command that never runs
+ *  anything. Fix: walk every match of `pattern_line` with a shared, ONE-TIME quote mask (the same
+ *  forge-gate-quotes.cjs::scanQuotes() mask this file already computes for the segment loop below) and only
+ *  count a match as real when its own start position is NOT inside a quoted span — exactly the same
+ *  "`mask.inside(pos)` means quoted DATA, not a real token" rule this file already applies to a `-c` flag
+ *  and forge-actiongate-position.cjs already applies to a later else/catch keyword. When the mask itself
+ *  cannot be resolved (`mask.unterminated` — an unclosed quote somewhere in the text), every match still
+ *  counts: this project's own stated rule is "any doubt -> stay stricter" (forge-gate-data.cjs's header),
+ *  so an ambiguous command still fires rather than silently passing through unexamined. A quoted string that
+ *  CLOSES before a real trailing `| bash` (`echo "a|b" | bash`) is unaffected: that real pipe's own position
+ *  sits AFTER the closing quote, so the mask reports it as not-inside and the match still fires.
+ *
+ *  WP-S9 follow-up (2026-09-26). WP-S8's own start-position check is enough for opaque-exec, whose every
+ *  pattern_line alternative BEGINS with the dangerous token itself (the `|` of a real pipe). It is not enough
+ *  for kill-by-name's/destructive-delete's pattern_line alternatives: their match commonly STARTS on a real,
+ *  unquoted CONTEXT token — a search tool's own name — while the token that actually makes the match
+ *  dangerous sits LATER in the very same match, inside quoted data that context token's own argument carries.
+ *  Reproduced live (Lead, real hook, this session): `grep -nE "a|xargs|kill" file.txt` (kill-by-name) and
+ *  `ls -R docs | grep "rm"` (destructive-delete) both fired on a search tool's own quoted pattern argument —
+ *  "grep"/"ls" truly sit outside any quote, so WP-S8's check alone waved the match through, even though
+ *  "kill"/"rm" never do. Optional 5th argument `trigger` (a RegExp, see DANGER_TRIGGER below): when given, a
+ *  match counts only when triggerClearsQuotes() (below) says the trigger itself clears — i.e. it has at
+ *  least one occurrence, inside the matched text, that the mask reports as NOT inside a quoted span. A gate
+ *  with no trigger (the `trigger` argument omitted) is completely unchanged from the WP-S8 behaviour above —
+ *  every existing caller that does not pass a 5th argument keeps its exact prior result. */
+function patternLineFires(patternLine, flags, full, mask, trigger) {
+  const gFlags = flags.includes('g') ? flags : flags + 'g';
+  const re = new RegExp(patternLine, gFlags);
+  let m;
+  while ((m = re.exec(full)) !== null) {
+    if (mask.unterminated) return true;
+    if (!mask.inside(m.index) && triggerClearsQuotes(trigger, m[0], m.index, mask)) return true;
+    if (m[0].length === 0) re.lastIndex++; // defensive: never spin on a zero-width match
+  }
+  return false;
+}
+
+/** triggerClearsQuotes(trigger, text, baseOffset, mask) -> boolean — WP-S9 (2026-09-26), the shared check
+ *  patternLineFires() and testCommandGate()/testCommandGateRaw()'s segment loop both consult once a
+ *  `pattern`/`pattern_line` match has already been found. `trigger` names the SPECIFIC dangerous verb(s) that
+ *  match can never be dangerous without (see DANGER_TRIGGER below) — deliberately NOT "re-test the whole
+ *  pattern against a masked copy of the text": a gate's own pattern can legitimately expect a quote as
+ *  ORDINARY syntax this function must never second-guess (kill-by-name's own wmic arm matches a real
+ *  `name="node.exe"` WQL-style query — genuine syntax, not a search tool's inert argument), so only the named
+ *  trigger is ever checked against the mask, never the pattern's other context.
+ *
+ *  Returns true (the trigger "clears", i.e. this match still counts) when: `trigger` is falsy — the gate
+ *  named no trigger at all, so this is a pure no-op and the caller's own prior check decides alone; the mask
+ *  itself could not be resolved (`mask.unterminated` — this project's existing "any doubt -> stay stricter"
+ *  rule, forge-gate-data.cjs's header); the trigger never occurs anywhere in `text` at all (a config/pattern
+ *  mismatch that should not happen for a real match, since every trigger is a subset of what its own gate's
+ *  pattern already required — failing toward blocking rather than guessing); or the trigger has at least one
+ *  occurrence whose ABSOLUTE position (`baseOffset` + that occurrence's own relative index) the mask reports
+ *  as NOT inside a quoted span. Returns false ONLY when the trigger truly occurs at least once and every
+ *  occurrence sits inside quoted data. Pure, never throws. */
+function triggerClearsQuotes(trigger, text, baseOffset, mask) {
+  if (!trigger) return true;
+  if (mask.unterminated) return true;
+  const tFlags = trigger.flags.includes('g') ? trigger.flags : trigger.flags + 'g';
+  const tRe = new RegExp(trigger.source, tFlags);
+  let tm;
+  let found = false;
+  while ((tm = tRe.exec(text)) !== null) {
+    found = true;
+    if (!mask.inside(baseOffset + tm.index)) return true;
+    if (tm[0].length === 0) tRe.lastIndex++; // defensive: never spin on a zero-width match
+  }
+  return !found;
+}
+
+/** BARE_ASSIGNMENT_RE / onlyQuotedAssignmentAtRest(entry) — WP-S9 (2026-09-26). A live probe against the
+ *  shipped forge-gate-hook.test.cjs found that suppressing a `pattern` match whenever its trigger sits
+ *  inside a quote — unconditionally — is TOO WIDE: `bash -c "rm -rf x"` (the quote IS a real interpreter
+ *  argument), `echo 'rm -rf ./src' > run.sh && bash run.sh` and `git commit -m "rm -rf ./src" && node x.cjs`
+ *  (a later command follows in the SAME text), `X='rm -rf ./src'; $X` (the assigned variable is invoked in
+ *  a later segment) and `node -e '...rm -rf...'` (a real interpreter `-e` argument) are all PINNED to still
+ *  block, and every one of them relies on exactly the quote-blind catch this file is otherwise removing —
+ *  forge-gate-data.cjs's own stripInertData() deliberately leaves each of these un-stripped (a later
+ *  interpreter/command follows, or the quote is itself live code), so the classifier's own catch is the last
+ *  line of defence for them, by design.
+ *
+ *  The one shape narrow enough to allow is the exact live repro: a BARE assignment (`$name = value` /
+ *  `name=value`) that is the WHOLE of the command text — no separator before or after it anywhere (so
+ *  nothing else in the text could ever invoke, read or re-run what was just assigned) — reproduced live:
+ *  `$j = '{"tool_input":{"command":"Remove-Item -Recurse -Force .\\src"}}'`, never invoked anywhere. Only a
+ *  gate whose DANGER_TRIGGER entry sets `patternBareAssignmentOnly: true` is ever gated by this at all — see
+ *  testCommandGate()'s own use of it below. */
+const BARE_ASSIGNMENT_RE = /^\s*\$?[A-Za-z_][\w:.]*\s*=(?!=)\s*\S/;
+function onlyQuotedAssignmentAtRest(entry) {
+  return entry.sepBefore === null && entry.sepAfter === null && BARE_ASSIGNMENT_RE.test(entry.segment);
+}
+
+/** segmentTriggerClears(trig, entry, mask) -> boolean — the ONE gate testCommandGate()/testCommandGateRaw()'s
+ *  segment loop consults for a `pattern` (not `pattern_line`) match, wrapping triggerClearsQuotes() with the
+ *  `patternBareAssignmentOnly` guard (see DANGER_TRIGGER/onlyQuotedAssignmentAtRest above). True ("this match
+ *  still counts") whenever there is no `pattern` trigger for this gate at all, or the trigger is gated to
+ *  bare-assignment-only shapes and this segment is not one — in both cases the caller's existing quote-blind
+ *  behaviour applies UNCHANGED. Only when the trigger genuinely applies here does it defer to
+ *  triggerClearsQuotes()'s own verdict. */
+function segmentTriggerClears(trig, entry, mask) {
+  const trigger = trig && trig.pattern;
+  if (!trigger) return true;
+  if (trig.patternBareAssignmentOnly && !onlyQuotedAssignmentAtRest(entry)) return true;
+  // v2.8.0 (independent gate review, HIGH): a quoted verb is only inert when nothing will EXECUTE that quoted
+  // text. `powershell -Command "Stop-Process -Name x"`, `cmd /c "taskkill /IM x.exe"`, `sh -c "pkill x"` all
+  // run it — and opaque-exec deliberately stays silent on a STATIC -c/-Command argument, so this gate is the
+  // only thing that can see them. So for a gate flagged patternInertToolOnly the quoted-trigger exemption
+  // applies ONLY to a bare assignment at rest or to a segment led by a known pure search tool; every other
+  // shape keeps the old quote-blind catch (over-blocking is the documented safe direction).
+  if (trig.patternInertToolOnly && !onlyQuotedAssignmentAtRest(entry) && !leadsWithInertSearchTool(entry.segment)) return true;
+  return triggerClearsQuotes(trigger, entry.segment, entry.offset, mask);
+}
+
+/** leadsWithInertSearchTool(segment) -> boolean — true only when the segment's FIRST word is a tool that
+ *  merely searches/filters text and can never execute its pattern argument: grep/egrep/fgrep/rg/ag/ack/
+ *  findstr/Select-String/sls, or `git grep` / `git log` (whose --grep/-S/-G arguments are data). A leading
+ *  path and a .exe suffix are allowed (`C:\\...\\rg.exe`, `/usr/bin/grep`). Deliberately NOT inert: awk
+ *  (system()), sed (GNU `e`), xargs/find -exec, every shell/interpreter, and every wrapper (sudo, env, time,
+ *  timeout, nohup, nice, doas, watch) — a wrapper in front means the first word is the wrapper, so this
+ *  returns false and the match keeps counting. */
+const INERT_SEARCH_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'findstr', 'select-string', 'sls']);
+function leadsWithInertSearchTool(segment) {
+  const words = String(segment || '').trim().split(/\s+/);
+  if (!words.length || !words[0]) return false;
+  const first = words[0].replace(/^["']|["']$/g, '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+  if (INERT_SEARCH_TOOLS.has(first)) return true;
+  if (first === 'git') {
+    const sub = (words[1] || '').toLowerCase();
+    return sub === 'grep' || sub === 'log';
+  }
+  return false;
+}
+
+/** DANGER_TRIGGER — per-gate-id, per-match-kind ("pattern"/"pattern_line") trigger sub-pattern for
+ *  triggerClearsQuotes() above (WP-S9, 2026-09-26). Only the two gates the live repro named need one — every
+ *  other command gate (opaque-exec, git-destructive) is completely unaffected (its own entry, or the whole
+ *  map lookup, is undefined, and triggerClearsQuotes() treats an undefined trigger as an immediate no-op).
+ *
+ *  kill-by-name's `pattern` trigger names its leading verb (taskkill/Stop-Process/spps/kill/pkill/killall/
+ *  wmic) rather than the wmic arm's own `delete`/`terminate` tail — every one of the config's own match
+ *  examples leads with that verb UNQUOTED (a search tool's quoted pattern argument, by construction, never
+ *  gets to be the command's own leading word), so this alone is enough to keep a quoted mention (`grep -rn
+ *  "Stop-Process -Name" docs`, `Select-String -Pattern "taskkill /IM" -Path *.md`) silent without having to
+ *  tell apart wmic's own real `name="node.exe"` WQL-style query syntax from a search tool's inert argument —
+ *  a distinction this trigger never has to make, because it never looks at `name=`/`delete`/`terminate` at
+ *  all. It carries `patternInertToolOnly` (v2.8.0, independent review HIGH): the earlier claim that the suite
+ *  "proved it safe unconditionally" was only a missing fixture — a kill verb inside a static interpreter
+ *  argument (`sh -c "pkill x"`, `powershell -Command "Stop-Process -Name x"`, `cmd /c "taskkill /IM x.exe"`)
+ *  executes, so the quoted-verb exemption now applies only to a known pure search tool or a bare assignment.
+ *
+ *  destructive-delete's `pattern` trigger DOES carry `patternBareAssignmentOnly: true` — see
+ *  onlyQuotedAssignmentAtRest()'s own doc above for exactly why a plain "trigger outside quotes" rule is not
+ *  safe enough for this one gate's `pattern` field on its own. */
+const DANGER_TRIGGER = {
+  'kill-by-name': {
+    pattern: /\b(?:taskkill|Stop-Process|spps|kill|pkill|killall|wmic)\b/i,
+    // v2.8.0 (independent gate review, HIGH): without this, a kill verb inside a STATIC interpreter argument
+    // (`powershell -Command "Stop-Process -Name x"`, `cmd /c "taskkill /IM x.exe"`, `sh -c "pkill x"`) was
+    // suppressed — and opaque-exec intentionally ignores static -c args — so it ran unblocked. The quoted-verb
+    // exemption now only applies to a bare assignment at rest or a known pure search tool (grep/rg/findstr/
+    // Select-String…), which keeps `grep -rn "Stop-Process -Name" docs` silent.
+    patternInertToolOnly: true,
+    pattern_line: /\b(?:Stop-Process|spps|kill|pkill|killall)\b|\.Kill\s*\(\s*\)/i,
+  },
+  'destructive-delete': {
+    pattern: /\b(?:Remove-Item|ri|rm|del|erase|rd|rmdir|rimraf)\b/i,
+    patternBareAssignmentOnly: true,
+    pattern_line: /\b(?:Remove-Item|ri|rm|del|erase|rd|rmdir)\b|\.Delete\s*\(\s*\)/i,
+  },
+};
+
+/** testCommandGate(gate, text) -> boolean — true when gate.match.pattern_line matches the WHOLE text (outside
+ *  any quoted span — see patternLineFires() above), or when the gate's own extra predicate (see
+ *  COMMAND_EXTRA_FIRE) fires on the FULL text, or when ANY single command segment of `text` matches
+ *  gate.match.pattern and is NOT excused by gate.match.except (see the COMMAND gate note in the header). The
+ *  except valve is consulted ONLY for a segment the splitter marked `intact`. An amputated segment — one the
+ *  split cut mid-argument — is judged on its pattern match alone, because the string it appears to be is not
+ *  the command that will run. That guard is what stops `rm -rf node_modules$(echo /../.claude)` from being
+ *  excused on the strength of its stump, and it is the ONLY thing besides exact equality that the valve
+ *  depends on.
  *
  *  2026-09-24 (N02/N04 root-cause fix, wp-j1): `extra` (today: opaque-exec's `-c`-argument liveness check) is
  *  now evaluated ONCE against the FULL original text rather than per split candidate — a `-c` argument can
@@ -301,23 +481,39 @@ const COMMAND_EXTRA_FIRE = { 'opaque-exec': hasLiveCArg };
  *  away. A single shared quote mask (forge-gate-quotes.cjs::scanQuotes(), computed ONCE over `text`) is passed
  *  to commandPositionCandidates() for every segment so later-branch keyword detection is judged against where
  *  a match REALLY sits in the original text, never a mask restarted at a segment boundary (see
- *  forge-actiongate-position.cjs's header for the exact bug this fixes). */
+ *  forge-actiongate-position.cjs's header for the exact bug this fixes). 2026-09-26 (WP-S8): that same shared
+ *  mask is now built BEFORE the pattern_line check too, so pattern_line reuses it instead of computing a
+ *  second one.
+ *
+ *  2026-09-26 (WP-S9): the per-segment `pattern` loop below is quote-blind on its own — `cands.some((c) =>
+ *  re.test(c))` is a plain boolean test with no positional check at all, so a gate's dangerous verb sitting
+ *  inside a segment's own quoted data (a PowerShell variable assigned a JSON string that happens to CONTAIN
+ *  `"Remove-Item -Recurse -Force ..."` as inert text, reproduced live: `$j =
+ *  '{"tool_input":{"command":"Remove-Item -Recurse -Force .\\src"}}'`) fired exactly like a real command.
+ *  `entry.segment` is, by splitCommandsDetailed()'s own pinned contract, an exact substring of `full` at
+ *  `entry.offset` — so triggerClearsQuotes() (see its own doc, and DANGER_TRIGGER above) is consulted against
+ *  `entry.segment` itself (never a derived `cands` candidate, which may drop leading text but never adds any,
+ *  so a trigger present in any candidate is always present in entry.segment too) with that exact offset. A
+ *  gate with no `pattern` trigger (DANGER_TRIGGER[gate.id].pattern undefined) is unaffected — this is a pure
+ *  no-op there, identical to before. */
 function testCommandGate(gate, text) {
   if (!text) return false;
   const m = gate.match;
   if (m.kind !== 'command') return false;
   const flags = m.flags || 'i';
   const full = String(text);
-  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(full)) return true;
+  const mask = QUOTES.scanQuotes(full);
+  const trig = DANGER_TRIGGER[gate.id];
+  if (m.pattern_line && patternLineFires(m.pattern_line, flags, full, mask, trig && trig.pattern_line)) return true;
   const extra = COMMAND_EXTRA_FIRE[gate.id];
   if (extra && extra(full)) return true;
   if (!m.pattern) return false;
   const re = new RegExp(m.pattern, flags);
-  const mask = QUOTES.scanQuotes(full);
   for (const entry of splitCommandsDetailed(full)) {
     const cands = commandPositionCandidates(entry, mask);
     if (!cands.some((c) => re.test(c))) continue;
     if (entry.intact && isExcusedSegment(m, entry.segment)) continue;
+    if (!segmentTriggerClears(trig, entry, mask)) continue;
     return true;
   }
   return false;
@@ -329,22 +525,29 @@ function testCommandGate(gate, text) {
  *  shortcut for the PreToolUse hook. forge-gate-hook.cjs uses this to decide whether a command has the SHAPE
  *  of a recursive delete at all — regardless of whether the valve would excuse it — so that every such shape
  *  is still routed through the hook's own scratchPassThrough() containment proof, never let through merely
- *  because it happened to be byte-identical to one of the 16 excused literals. Pure, never throws. */
+ *  because it happened to be byte-identical to one of the 16 excused literals. Pure, never throws.
+ *  2026-09-26 (WP-S8): pattern_line goes through the same quote-aware patternLineFires() as testCommandGate().
+ *  2026-09-26 (WP-S9): the per-segment `pattern` loop also goes through the same triggerClearsQuotes() check
+ *  as testCommandGate() (see that function's own doc) — a quoted, never-executing "shape" is not a real
+ *  recursive-delete shape either, so the raw check must not disagree with the classifier's own verdict. */
 function testCommandGateRaw(gate, text) {
   if (!text) return false;
   const m = gate.match;
   if (m.kind !== 'command') return false;
   const flags = m.flags || 'i';
   const full = String(text);
-  if (m.pattern_line && new RegExp(m.pattern_line, flags).test(full)) return true;
+  const mask = QUOTES.scanQuotes(full);
+  const trig = DANGER_TRIGGER[gate.id];
+  if (m.pattern_line && patternLineFires(m.pattern_line, flags, full, mask, trig && trig.pattern_line)) return true;
   const extra = COMMAND_EXTRA_FIRE[gate.id];
   if (extra && extra(full)) return true;
   if (!m.pattern) return false;
   const re = new RegExp(m.pattern, flags);
-  const mask = QUOTES.scanQuotes(full);
   for (const entry of splitCommandsDetailed(full)) {
     const cands = commandPositionCandidates(entry, mask);
-    if (cands.some((c) => re.test(c))) return true;
+    if (!cands.some((c) => re.test(c))) continue;
+    if (!segmentTriggerClears(trig, entry, mask)) continue;
+    return true;
   }
   return false;
 }
@@ -431,6 +634,11 @@ const KNOWN_GATES = ['deploy', 'git-push', 'spend', 'dns-change', 'prod-activate
 
 module.exports = {
   classify, listGates, loadGates, isPathEscape, testTextGate, testCommandGate, testCommandGateRaw, splitCommands, normalizeInput,
+  // WP-S8 (2026-09-26) — the quote-aware pattern_line matcher, exported for direct unit testing
+  patternLineFires,
+  // WP-S9 (2026-09-26) — the trigger-vs-quote-mask check and its per-gate table, exported for direct unit
+  // testing (see both functions' own doc comments above for the "why").
+  triggerClearsQuotes, DANGER_TRIGGER, onlyQuotedAssignmentAtRest, segmentTriggerClears, leadsWithInertSearchTool,
   // N02 (codex-recheck 2026-09-24, third pass) — the -c argument's genuine two-layer escape read (re-exported
   // from forge-actiongate-position.cjs, see hasLiveCArg above); COMMAND_EXTRA_FIRE exported so a caller/test
   // can see exactly which gate ids have an extra JS predicate beyond their JSON regex.

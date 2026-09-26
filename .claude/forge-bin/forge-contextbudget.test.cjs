@@ -7,7 +7,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 const cb = require('./forge-contextbudget.cjs');
+
+const CLI = path.join(__dirname, 'forge-contextbudget.cjs');
+function runCLI(argv) { return spawnSync(process.execPath, [CLI, ...argv], { encoding: 'utf8', timeout: 10000 }); }
 
 let passed = 0, failed = 0, skipped = 0;
 function t(name, fn) {
@@ -30,10 +34,23 @@ try {
  *  runner, and every new user have an empty or minimal ~/.claude, and there the assertion has nothing to
  *  measure. It used to run anyway and fail (external audit II-B, 2026-09-23: 3 of the 9 fresh-install
  *  failures were exactly these). Now the precondition is checked first and a miss is a VISIBLE skip with
- *  the reason — never a silent green, never a red for something the user does not have. */
+ *  the reason — never a silent green, never a red for something the user does not have.
+ *
+ *  N8/N3 (2026-09-26 laptop re-audit): a bare `fs.existsSync(.../plugins)` is NOT the same fact as "there is
+ *  a real catalog here" — Claude Code itself creates an empty ~/.claude/plugins scaffold on a fresh install
+ *  (the laptop shape: installed, but otherwise empty). That folder-existence check let the real-machine
+ *  tests run on a machine with an EMPTY catalog and fail with "the plugin catalog looks implausibly small
+ *  (0)". The precondition now asks the meter itself how many skills actually sit on disk. */
 const HOME_CLAUDE = path.join(require('os').homedir(), '.claude');
 const HAS_GLOBAL_CHAIN = fs.existsSync(path.join(HOME_CLAUDE, 'CLAUDE.md'));
-const HAS_PLUGIN_CATALOG = fs.existsSync(path.join(HOME_CLAUDE, 'plugins'));
+function realCatalogSkillsOnDisk(id) {
+  try {
+    const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
+    const p = rep.skill_sources.find((s) => s.id === id);
+    return p ? p.skills_on_disk : 0;
+  } catch { return 0; }
+}
+const HAS_PLUGIN_CATALOG = realCatalogSkillsOnDisk('skill_catalog_plugins') > 0;
 function realMachine(name, precondition, reason, fn) {
   if (precondition) { t(name, fn); return; }
   skipped++;
@@ -515,11 +532,16 @@ pinned('on the REAL project the project catalog carries this installation\'s ful
   const project = rep.skill_sources.find((s) => s.id === 'skill_catalog_project');
   assert.ok(project.skills >= 57, 'this project has 57 skills of its own; got ' + project.skills);
 });
-realMachine('the REAL always-loaded surface is now measured well above the project-only figure it used to report', HAS_GLOBAL_CHAIN && HAS_PLUGIN_CATALOG, 'this machine has no ~/.claude/CLAUDE.md chain and/or no ~/.claude/plugins — the widened surface being compared against does not exist here', () => {
+realMachine('the REAL always-loaded surface is now measured well above the project-only figure it used to report', HAS_GLOBAL_CHAIN && HAS_PLUGIN_CATALOG, 'this machine has no ~/.claude/CLAUDE.md chain and/or no non-trivial plugin catalog (0 plugin skills on disk — a fresh/empty install is the truth here, not a broken walk) — the widened surface being compared against does not exist here', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
-  // 24.809 est. tokens was the ENTIRE reported chain while only 57 of 278 skills were counted (2026-08-01).
-  assert.ok(rep.total_approx_tokens > 24809,
-    'the widened measurement must exceed the old project-only total; got ' + rep.total_approx_tokens);
+  // N3 (2026-09-26 re-audit): this used to compare against a fixed historical figure (24.809 est. tokens,
+  // 2026-08-01 — the ENTIRE chain's total on the author's machine at that one point in time). That is a
+  // real-machine-state snapshot, not a property of the meter, so it drifts stale as any real catalog grows
+  // or a fresh contributor's own catalog is simply a different size. Compared instead against a LIVE
+  // project-only total computed from this SAME measurement — portable to any machine's own catalog size.
+  const projectOnlyTotal = post(rep, 'project_claude_md').approx_tokens + post(rep, 'skill_catalog_project').approx_tokens;
+  assert.ok(rep.total_approx_tokens > projectOnlyTotal,
+    'the widened measurement must exceed the project-only total; got total=' + rep.total_approx_tokens + ' project-only=' + projectOnlyTotal);
   assert.strictEqual(rep.total_chars, rep.posts.reduce((n, p) => n + p.chars, 0), 'and it is still exactly the sum of its posts');
 });
 
@@ -703,7 +725,7 @@ t('a baseline recorded on the OLD (everything-counted) figure does not read as a
 });
 
 // --- the real machine ------------------------------------------------------------------------------------
-realMachine('on the REAL machine the plugin catalog reports FEWER loaded skills than sit on disk', HAS_PLUGIN_CATALOG, 'no ~/.claude/plugins on this machine — a plugin count of 0 is the truth here, not a broken walk', () => {
+realMachine('on the REAL machine the plugin catalog reports FEWER loaded skills than sit on disk', HAS_PLUGIN_CATALOG, 'no non-trivial ~/.claude/plugins catalog on this machine (0 skills on disk — an absent OR an empty/scaffold-only plugins folder is the truth here, not a broken walk)', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
   const pl = post(rep, 'skill_catalog_plugins');
   // The exact count is machine state, not a property of this code: it legitimately moves whenever a
@@ -726,10 +748,92 @@ realMachine('on the REAL machine the plugin catalog reports FEWER loaded skills 
 
 realMachine('the REAL total no longer includes the weight of switched-off plugins', HAS_GLOBAL_CHAIN && HAS_PLUGIN_CATALOG, 'the before/after figures this compares were measured on a machine with a global chain and a plugin catalog; neither exists here', () => {
   const rep = cb.measure(path.resolve(__dirname, '..', '..'), {});
-  // 38.251 est. tokens was the figure while all 112 plugin skills were counted as loaded (2026-08-01).
-  assert.ok(rep.total_approx_tokens < 38251,
-    'the total did not come down at all; got ' + rep.total_approx_tokens);
-  assert.ok(rep.total_approx_tokens > 24809, 'but it must still exceed the old project-only figure; got ' + rep.total_approx_tokens);
+  // N3 (2026-09-26 re-audit): this used to compare against fixed historical figures (38.251 / 24.809 est.
+  // tokens, recorded 2026-08-01) from the author's own machine at one point in time — exactly the kind of
+  // absolute, real-machine-state-dependent number this audit exists to remove. A real global/plugin catalog
+  // legitimately grows between runs (a marketplace sync, a newly installed plugin), so the fixed bar went
+  // stale and started failing on ordinary machine drift, not a regression. Both checks below are
+  // self-relative — they hold no matter how large the real catalog happens to be right now.
+  const naiveTotal = rep.total_approx_tokens + rep.potential_approx_tokens;
+  assert.ok(rep.potential_approx_tokens > 0, 'nothing is reported as switched-off on this real machine — the comparison below would be vacuous');
+  assert.ok(rep.total_approx_tokens < naiveTotal,
+    'the reported total must be strictly less than total+potential — the disabled weight is leaking into the total; got total=' + rep.total_approx_tokens + ' potential=' + rep.potential_approx_tokens);
+  const projectOnly = post(rep, 'skill_catalog_project').approx_tokens;
+  assert.ok(rep.total_approx_tokens > projectOnly,
+    'the widened total must still exceed the project-only catalog by itself; got total=' + rep.total_approx_tokens + ' project-only=' + projectOnly);
+});
+
+// ============================================================================================================
+// LAPTOP + CI SHAPES (2026-09-26 re-audit): the realMachine tests above depend on whatever THIS developer's
+// own ~/.claude happens to contain right now. These two are deterministic on every machine that runs this
+// suite — they point HOME/USERPROFILE at a throwaway dir so the exact two shapes the audit found (Claude
+// Code installed but ~/.claude otherwise empty; no ~/.claude at all) are proven directly, not just skipped.
+// ============================================================================================================
+function withHome(fakeHome, fn) {
+  const prevHome = process.env.HOME, prevProfile = process.env.USERPROFILE;
+  process.env.HOME = fakeHome;
+  process.env.USERPROFILE = fakeHome;
+  try { return fn(); }
+  finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+  }
+}
+
+t('laptop shape: ~/.claude exists but is completely empty (no skills, no plugins, no CLAUDE.md) never throws and reports honest zeros', () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cbx-laptop-home-'));
+  fs.mkdirSync(path.join(fakeHome, '.claude'), { recursive: true });
+  const rep = withHome(fakeHome, () => cb.measure(path.resolve(__dirname, '..', '..'), {}));
+  const g = post(rep, 'skill_catalog_global');
+  const pl = post(rep, 'skill_catalog_plugins');
+  assert.strictEqual(g.skills_on_disk, 0, 'global skills_on_disk must be an honest 0 on this shape, got ' + g.skills_on_disk);
+  assert.strictEqual(pl.skills_on_disk, 0, 'plugin skills_on_disk must be an honest 0 on this shape, got ' + pl.skills_on_disk);
+  assert.strictEqual(g.skills, 0);
+  assert.strictEqual(pl.skills, 0);
+  assert.ok(!rep.findings.some((f) => f.kind === 'depth_capped'), 'an empty catalog must never report a depth cap');
+  assert.strictEqual(post(rep, 'global_claude_md').exists, false);
+  assert.strictEqual(rep.skill_sources.length, 3, 'the structural three-sources breakdown stays even when two of them are empty');
+});
+
+t('CI shape: no ~/.claude at all (not even the folder) never throws either, and reports the same honest zeros', () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cbx-noclaude-home-'));
+  // deliberately do NOT create .claude here — this is the "no ~/.claude at all" CI shape
+  const rep = withHome(fakeHome, () => cb.measure(path.resolve(__dirname, '..', '..'), {}));
+  const g = post(rep, 'skill_catalog_global');
+  const pl = post(rep, 'skill_catalog_plugins');
+  assert.strictEqual(g.skills_on_disk, 0);
+  assert.strictEqual(pl.skills_on_disk, 0);
+  assert.strictEqual(post(rep, 'global_claude_md').exists, false);
+});
+
+// ============================================================================================================
+// CLI --help / -h (2026-09-26 re-audit, WP-S4 CLI sweep): used to be silently ignored — the CLI fell through
+// to a full measure() run instead of printing usage. Not a hang, but not usage either. Both spellings, and a
+// counterfactual proving it does NOT run a real measurement in the process.
+// ============================================================================================================
+t('CLI --help prints usage and exits 0, without running a real measurement', () => {
+  const r = runCLI(['--help']);
+  assert.strictEqual(r.status, 0, 'exit was ' + r.status + ' stderr=' + r.stderr);
+  assert.ok(/^Usage: node forge-contextbudget\.cjs/.test(r.stdout), 'no usage line: ' + JSON.stringify(r.stdout));
+  assert.ok(!/TOTAL LOADED/.test(r.stdout), 'a real measurement ran instead of printing usage: ' + r.stdout);
+});
+t('CLI -h is the same short spelling and behaves identically', () => {
+  const r = runCLI(['-h']);
+  assert.strictEqual(r.status, 0, 'exit was ' + r.status + ' stderr=' + r.stderr);
+  assert.ok(/^Usage: node forge-contextbudget\.cjs/.test(r.stdout));
+});
+t('CLI --help wins even alongside other flags (checked first, before any argument is otherwise parsed)', () => {
+  const r = runCLI(['--json', '--write-baseline', '--help']);
+  assert.strictEqual(r.status, 0, 'exit was ' + r.status + ' stderr=' + r.stderr);
+  assert.ok(/^Usage: node forge-contextbudget\.cjs/.test(r.stdout));
+  assert.ok(!/baseline written/.test(r.stdout), '--write-baseline must not have run: ' + r.stdout);
+});
+t('CLI counterfactual: without --help, the CLI still runs its real report (--json included, for a fast/cheap real check)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbx-cli-real-'));
+  const r = runCLI(['--root', dir, '--json']);
+  assert.strictEqual(r.status, 0, 'exit was ' + r.status + ' stderr=' + r.stderr);
+  const rep = JSON.parse(r.stdout);
+  assert.ok(typeof rep.total_approx_tokens === 'number', 'a real report was not produced: ' + r.stdout.slice(0, 200));
 });
 
 console.log('');

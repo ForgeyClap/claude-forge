@@ -9,6 +9,9 @@
  *                          All three at once → split the work package across Bosses.
  *   • mcpAllowlistCheck()— detect unknown or drifted (rug-pulled) MCP servers vs a pinned allow-list.
  * No side effects, no I/O — the Lead/Head Chef call these at dispatch time; forge-core documents the rules.
+ *
+ * CLI: node forge-policy.cjs — no arguments; prints a one-line description and a worked example of each
+ *      helper above. Everything here is a pure-function library, imported by the Lead's own dispatch logic.
  */
 
 const HARD_OPUS = /auth|jwt|hmac|credential|secret|migrat|delete|payment|charge|refund|deploy|production|security|final[_-]?verdict/i;

@@ -53,10 +53,15 @@
  *   loadHardRules({ projectDir }, opts) -> { rules:[{id,text}], source:'default-only'|'default+project-file', path }
  *     `rules` always starts from DEFAULT_HARD_RULES (this Forge system's universal non-negotiables — project
  *     isolation, honesty core, secrets-in-env, no-auto-push, input validation, file-size discipline). If
- *     `<projectDir>/.claude/FORGE_HARD_RULES.json` (or opts.hardRulesPath) exists, it is parsed as either a
- *     plain array or `{rules:[...]}` of `{id,text}` entries and MERGED in (a project-supplied id can extend
- *     the list but never silently overrides/removes a universal default id) — this is the "machine-checkable
- *     non-negotiables" file a future doctor pass can read. Malformed config THROWS (fail-closed, same
+ *     `<projectDir>/.claude/FORGE_PROJECT_HARD_RULES.json` (or opts.hardRulesPath) exists, it is parsed as
+ *     either a plain array or `{rules:[...]}` of `{id,text}` entries and MERGED in (a project-supplied id can
+ *     extend the list but never silently overrides/removes a universal default id) — this is the
+ *     "machine-checkable non-negotiables" file a future doctor pass can read. Deliberately NOT named
+ *     `FORGE_HARD_RULES.json`: that basename is already Forge's OWN internal run-contract single-source-of-truth
+ *     at `.claude/config/orchestration/FORGE_HARD_RULES.json` (read only by forge-runcontract.cjs, a different
+ *     `{id,rule,trigger,check,severity,...}` shape describing how a Forge RUN must behave, not this project's
+ *     own code conventions) — laptop re-audit 2026-09-26 (N9) found the two colliding on name, which is why this
+ *     project-local extension file now has its own, unambiguous name. Malformed config THROWS (fail-closed, same
  *     discipline forge-evidence.cjs/forge-actiongate.cjs use for their own config files) rather than silently
  *     falling back — a broken hard-rules file should never look like "no extra rules".
  *
@@ -279,7 +284,10 @@ function detectStack(params, opts) {
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// loadHardRules — universal defaults + optional project-local FORGE_HARD_RULES.json
+// loadHardRules — universal defaults + optional project-local FORGE_PROJECT_HARD_RULES.json
+// (renamed from FORGE_HARD_RULES.json 2026-09-26 — see the MODEL section above for why: that basename is
+// Forge's own internal run-contract file at .claude/config/orchestration/FORGE_HARD_RULES.json, a different
+// shape and a different purpose. N9 laptop re-audit.)
 // ---------------------------------------------------------------------------------------------------------
 const DEFAULT_HARD_RULES = [
   { id: 'project-isolation', text: 'Work only inside this project folder. Never edit unrelated projects or global Claude/ECC config without explicit owner approval.' },
@@ -297,7 +305,7 @@ function loadHardRules(params, opts) {
   const rules = DEFAULT_HARD_RULES.slice();
   let source = 'default-only';
   const rulesPath = opts.hardRulesPath
-    || (params.projectDir ? path.join(path.resolve(params.projectDir), '.claude', 'FORGE_HARD_RULES.json') : null);
+    || (params.projectDir ? path.join(path.resolve(params.projectDir), '.claude', 'FORGE_PROJECT_HARD_RULES.json') : null);
 
   if (rulesPath && fs.existsSync(rulesPath)) {
     let raw;
@@ -507,8 +515,8 @@ function renderHardRulesSection(hardRulesResult) {
       : '- ' + tag + ' ' + r.text;
   }).join('\n');
   const sourceNote = hardRulesResult.source === 'default+project-file'
-    ? 'Merged from Forge\'s universal defaults plus this project\'s own `.claude/FORGE_HARD_RULES.json`.'
-    : 'Forge\'s universal defaults — this project has no `.claude/FORGE_HARD_RULES.json` yet, so no project-specific non-negotiables are added. Add that file to extend this list; it is machine-checkable.';
+    ? 'Merged from Forge\'s universal defaults plus this project\'s own `.claude/FORGE_PROJECT_HARD_RULES.json`.'
+    : 'Forge\'s universal defaults — this project has no `.claude/FORGE_PROJECT_HARD_RULES.json` yet, so no project-specific non-negotiables are added. Add that file to extend this list; it is machine-checkable.';
   return '## Hard Rules\n' + sourceNote + '\n\n' + lines;
 }
 

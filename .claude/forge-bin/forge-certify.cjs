@@ -316,12 +316,52 @@ function registryCheck(root, dispatchHits) {
   return { ok: uniqueUnknown.length === 0, skipped: false, unknown: uniqueUnknown, project_agents: Array.from(new Set(projectAgentHits)) };
 }
 
+// ---- D6 fix (2026-09-26, fresh-laptop re-audit): certify must not say CERTIFIED over a red run contract --
+// forge-runcontract.cjs judges a DIFFERENT, stricter question (did this run satisfy every APPLICABLE
+// FORGE_HARD_RULES.json obligation) than the five criteria above (is this log internally consistent and not
+// fabricated). REPRODUCED (executed replay of a real mission): certify reported CERTIFIED while the same
+// run's own contract reported 4 missing rules — a reader sees "CERTIFIED" and reasonably reads that as "this
+// run is done", which the contract already disproves. The existing CAVEAT text ("does NOT require that any
+// check actually ran") already NAMES this gap in prose; this makes the LABEL agree with it: a contract this
+// tool can genuinely COMPUTE and that comes back red pulls the label down to NOT CERTIFIED too.
+// Lazy require (same single-source-of-truth discipline every sibling *-gate tool in this project already
+// follows — never re-implement the contract's own rule logic here) — an unavailable module degrades to
+// "not evaluated", never a fabricated pass NOR a fabricated fail.
+let _runcontractCache; // undefined = not yet attempted, null = load failed, object = loaded module
+function loadRuncontractTool() {
+  if (_runcontractCache !== undefined) return _runcontractCache;
+  try { _runcontractCache = require('./forge-runcontract.cjs'); } catch { _runcontractCache = null; }
+  return _runcontractCache;
+}
+/** contractState(runId, root) -> {evaluated, ok, missing, reason}. `evaluated:false` covers EVERY
+ * infrastructure reason the contract could not be computed at all (module unavailable, no
+ * FORGE_HARD_RULES.json at this root, an unreadable/corrupt events log, an invalid run_id, …) — this NEVER
+ * counts against `certified` below, exactly like registryCheck()'s own honest "skipped" discipline. Only a
+ * contract the tool genuinely computed and that reports `ok:false` (real, applicable, unmet block-rules) can
+ * pull CERTIFIED down; a contract this tool could not compute at all says nothing either way. */
+function contractState(runId, root) {
+  const mod = loadRuncontractTool();
+  if (!mod || typeof mod.check !== 'function') {
+    return { evaluated: false, ok: null, missing: [], reason: 'forge-runcontract.cjs unavailable — contract not consulted' };
+  }
+  try {
+    const r = mod.check({ run_id: runId }, { root });
+    return {
+      evaluated: true, ok: r.ok === true, missing: Array.isArray(r.missing) ? r.missing : [],
+      reason: r.ok === true ? '' : 'the run contract reports ' + (Array.isArray(r.missing) ? r.missing.length : 0) + ' unmet rule(s): ' + (Array.isArray(r.missing) ? r.missing.join(', ') : ''),
+    };
+  } catch (e) {
+    return { evaluated: false, ok: null, missing: [], reason: 'the run contract could not be evaluated (' + (e && e.message ? e.message : String(e)) + ') — not held against this certificate' };
+  }
+}
+
 // ---- the certificate ----
 function notCertified(runId, root, reason, extra) {
   return Object.assign({
     run_id: runId, root, certified: false, event_count: 0, malformed_lines: (extra && extra.malformed) || 0,
     reason,
     checks_verified: 0, unverified_completion: false, free_text_pass_claims: [], label: 'NOT CERTIFIED',
+    contract: { evaluated: false, ok: null, missing: [], reason: 'not evaluated — ' + reason },
     criteria: [1, 2, 3, 4, 5].map((id) => ({ id, ok: false, reason: 'not evaluated — ' + reason })),
     generated_at: new Date().toISOString(),
   }, extra && extra.fields ? extra.fields : {});
@@ -382,19 +422,28 @@ function certifyRun(runId, root) {
   };
 
   const criteria = [c1, c2, c3, c4, c5];
-  const certified = criteria.every((c) => c.ok);
+  const criteriaOk = criteria.every((c) => c.ok);
+
+  // D6 fix: a contract this tool genuinely computed and that reports ok:false is the ONE thing that can
+  // pull an otherwise-CERTIFIED run down — an infrastructure-only "not evaluated" contract never does.
+  const contract = contractState(runId, root);
+  const contractRed = contract.evaluated && contract.ok === false;
+  const certified = criteriaOk && !contractRed;
 
   // checks_verified / CERTIFIED (UNVERIFIED) gate — see header CAVEAT/WP4 note. certified stays exactly
-  // what the 5 criteria say (unchanged exit-code semantics); this only decides the human-facing LABEL.
+  // what the 5 criteria (and, per D6, the run contract) say (unchanged exit-code semantics); this only
+  // decides the human-facing LABEL.
   const completionClaimExists = anyCompletionClaimPresent(events, runDir);
   const unverifiedCompletion = certified && checksVerified === 0 && completionClaimExists;
   const freeTextClaims = freeTextPassClaims(events);
-  const label = !certified ? 'NOT CERTIFIED' : (unverifiedCompletion ? 'CERTIFIED (UNVERIFIED — no standardized checks; completion rests on free-text claims)' : 'CERTIFIED');
+  const label = !certified
+    ? (contractRed && criteriaOk ? 'NOT CERTIFIED — run contract is red (' + contract.reason + ')' : 'NOT CERTIFIED')
+    : (unverifiedCompletion ? 'CERTIFIED (UNVERIFIED — no standardized checks; completion rests on free-text claims)' : 'CERTIFIED');
 
   return {
     run_id: runId, root, certified, event_count: events.length, malformed_lines: malformed,
     checks_verified: checksVerified, unverified_completion: unverifiedCompletion,
-    free_text_pass_claims: freeTextClaims, label,
+    free_text_pass_claims: freeTextClaims, label, contract,
     criteria, generated_at: new Date().toISOString(),
   };
 }
@@ -407,6 +456,9 @@ function printSummary(cert) {
     lines.push((c.ok ? '  ✓ ' : '  ✗ ') + c.id + '. ' + (names[c.id] || c.name) + (c.reason ? ' — ' + c.reason : ''));
   }
   lines.push('  checks_verified: ' + (cert.checks_verified != null ? cert.checks_verified : 0));
+  if (cert.contract) {
+    lines.push('  run contract: ' + (cert.contract.evaluated ? (cert.contract.ok ? 'satisfied' : 'RED — ' + cert.contract.reason) : 'not evaluated (' + cert.contract.reason + ')'));
+  }
   if (cert.free_text_pass_claims && cert.free_text_pass_claims.length) {
     lines.push('  ! free-text pass-claim(s) found with ZERO standardized evidence behind them (informational, not blocking):');
     for (const h of cert.free_text_pass_claims) lines.push('    - event ' + h.evIdx + ' (' + (h.agent || '?') + '): "' + h.note + '"');
@@ -421,6 +473,9 @@ module.exports = {
   completionClaimCoverage, anyCompletionClaimPresent, freeTextPassClaims, timestampsInOrder, registryCheck,
   loadRegistryNames, loadProjectAgentNames, readEventsJsonl,
   GENERIC_AGENTS, DISPATCH_EVENT_TYPES, PROOF_NEED, EXIT_CODE_ASSERTION_EVENTS, FREE_TEXT_PASS_PATTERNS, printSummary,
+  // D6 fix (2026-09-26): exported so a test can force a specific contract outcome without a real
+  // FORGE_HARD_RULES.json fixture, and so a caller can inspect the lazy-loaded module directly.
+  contractState, loadRuncontractTool,
 };
 
 // ---- CLI ----

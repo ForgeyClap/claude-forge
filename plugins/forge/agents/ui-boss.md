@@ -1,7 +1,7 @@
 ---
 name: ui-boss
 description: Use PROACTIVELY for UI/UX and frontend quality on any work touching the visible interface — builds premium, responsive, modern interfaces with purposeful animation, verifies mobile/tablet/desktop with real screenshot loops, and fixes weak layout, spacing, contrast, and oversized text before Review Boss sees it.
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

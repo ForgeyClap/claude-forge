@@ -331,11 +331,12 @@ test('E2E: an ordinary run whose stream reports no usage writes NO cost_sampled 
 });
 
 test('E2E TIMEOUT: a wedged child that already reported real usage still gets its one honest cost_sampled event', async () => {
-  _setExecTimeoutMsForTests(400); // real headroom for the child to write+flush its lines first
+  // v2.8.0: 400 ms was too little on a loaded Windows machine (the mock child could not even start in time).
+  _setExecTimeoutMsForTests(2500); // real headroom for the child to start, write and flush its lines first
   const conv = createConversation({ project: 'demo-project' });
   startExecution({ convId: conv.id, turnId: 't-cost-3', requestId: 'req-cost-3', text: '__MOCK_USAGE_HANG__ report then hang', cwd: os.tmpdir() });
 
-  const done = await waitUntil(() => readConversation(conv.id).turns.some((t) => t.role === 'assistant' && t.stop_reason === 'timed_out'));
+  const done = await waitUntil(() => readConversation(conv.id).turns.some((t) => t.role === 'assistant' && t.stop_reason === 'timed_out'), { timeoutMs: 12000 });
   _setExecTimeoutMsForTests(null);
   assert.ok(done, 'the wall-clock timeout must reap the wedged child');
 

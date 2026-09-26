@@ -71,11 +71,25 @@ function fallbackSelfDisableNormalize(seen) {
     .replace(/["'\\]/g, '');
 }
 const FALLBACK_SELFDISABLE_SCRIPT_RE = /forge-config(?:-cli)?\.cjs/i;
+// WP-S4 (v2.8.0 laptop-audit Part V-F): this fallback only ever fires when forge-gate-selfdisable.cjs itself
+// cannot load — but it must stay just as capable of catching a wrapper self-disable call as the precise
+// parser (see that file's own WRAPPER_BASENAME_RE). A plain substring/`\b` test would also match "forge"
+// inside an UNRELATED wrapper like "forge-status.cmd" (word boundaries do not require the whole word), so
+// this checks each WHITESPACE-SPLIT word for an EXACT forge(.cmd|.ps1|.sh) basename instead — same convention
+// forge-gate-selfdisable.cjs's own looksLikeAmbiguousConfigMutation() already uses.
+const FALLBACK_SELFDISABLE_WRAPPER_BASENAME_RE = /^forge(?:\.(?:cmd|ps1|sh))?$/i;
+const FALLBACK_SELFDISABLE_CONFIG_WORD_RE = /\bconfig\b/i;
 const FALLBACK_SELFDISABLE_VERB_RE = /\b(?:set|unset)\b/i;
 const FALLBACK_SELFDISABLE_KEY_RE = /\bgate-hook\b/i;
+function fallbackHasScriptOrWrapper(norm) {
+  if (FALLBACK_SELFDISABLE_SCRIPT_RE.test(norm)) return true;
+  const words = norm.split(/\s+/).filter(Boolean);
+  const hasWrapperWord = words.some((w) => FALLBACK_SELFDISABLE_WRAPPER_BASENAME_RE.test(String(w).split(/[\\/]/).pop()));
+  return hasWrapperWord && FALLBACK_SELFDISABLE_CONFIG_WORD_RE.test(norm);
+}
 function fallbackSelfDisableTest(seen) {
   const norm = fallbackSelfDisableNormalize(seen);
-  return FALLBACK_SELFDISABLE_SCRIPT_RE.test(norm) && FALLBACK_SELFDISABLE_VERB_RE.test(norm)
+  return fallbackHasScriptOrWrapper(norm) && FALLBACK_SELFDISABLE_VERB_RE.test(norm)
     && FALLBACK_SELFDISABLE_KEY_RE.test(norm);
 }
 const selfDisableFn = SELFDISABLE ? SELFDISABLE.selfDisable : (seen) => fallbackSelfDisableTest(seen);

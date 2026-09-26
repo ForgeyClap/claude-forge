@@ -413,6 +413,76 @@ t('the real project ledger (if present) is well-formed; if absent, list() degrad
   assert.ok(Array.isArray(r.entries));
 });
 
+// ---------------------------------------------------------------------------
+// 8) TEMPLATE/USER SPLIT (2026-09-26, external audit N4) — record() in DEFAULT mode (no vettingPath, no
+//    FORGE_SCOUT_VETTING_PATH) writes ONLY to the never-shipped USER_CONFIG_PATH; list()/isVetted() merge
+//    it with the shipped CONFIG_PATH baseline. These tests touch the REAL default files ONCE each and
+//    restore them to their exact prior state afterward (snapshot/restore), so the suite stays hermetic
+//    overall even though it proves the real default write path, not just a fixture stand-in.
+// ---------------------------------------------------------------------------
+console.log('\n8) template/user split (default mode touches the real files once, then restores them)');
+
+t('CONFIG_PATH (shipped baseline) and USER_CONFIG_PATH (accumulated ledger) are two distinct files', () => {
+  assert.notStrictEqual(scout.CONFIG_PATH, scout.USER_CONFIG_PATH);
+});
+
+function withRealUserLedgerRestored(fn) {
+  const existed = fs.existsSync(scout.USER_CONFIG_PATH);
+  const before = existed ? fs.readFileSync(scout.USER_CONFIG_PATH, 'utf8') : null;
+  try { fn(); }
+  finally {
+    if (existed) fs.writeFileSync(scout.USER_CONFIG_PATH, before, 'utf8');
+    else { try { fs.rmSync(scout.USER_CONFIG_PATH); } catch {} }
+  }
+}
+
+t('record() in DEFAULT mode (no override at all) writes ONLY to USER_CONFIG_PATH — the shipped CONFIG_PATH baseline is byte-for-byte untouched', () => {
+  withRealUserLedgerRestored(() => {
+    const templateBefore = fs.readFileSync(scout.CONFIG_PATH, 'utf8');
+    const cap = 'split-fix-probe-' + Date.now();
+    const entry = scout.record({ capability: cap, verdict: 'approve', reason: 'default-mode write-target probe' }, {});
+    assert.strictEqual(fs.readFileSync(scout.CONFIG_PATH, 'utf8'), templateBefore, 'record() in default mode must never touch the shipped template');
+    assert.ok(fs.existsSync(scout.USER_CONFIG_PATH), 'record() in default mode must create/use the user ledger file');
+    const userOnDisk = JSON.parse(fs.readFileSync(scout.USER_CONFIG_PATH, 'utf8'));
+    assert.ok(userOnDisk.entries.some((e) => e.capability === cap), 'the new entry must land in the user ledger');
+    assert.strictEqual(entry.capability, cap);
+  });
+});
+
+t('list()/isVetted() in DEFAULT mode merge the shipped baseline with the accumulated user ledger', () => {
+  withRealUserLedgerRestored(() => {
+    const cap = 'split-fix-merge-probe-' + Date.now();
+    scout.record({ capability: cap, verdict: 'hard-pass', reason: 'merge probe' }, {});
+    const merged = scout.list({});
+    assert.ok(merged.entries.some((e) => e.capability === cap), 'a user-ledger-only entry must be visible through the merged list()');
+    // every entry that is really in the shipped template must also be visible through the merge
+    const templateEntries = scout.loadLedgerFile(scout.CONFIG_PATH).entries;
+    assert.ok(templateEntries.length > 0, 'sanity: the shipped baseline is not empty');
+    for (const te of templateEntries.slice(0, 3)) {
+      assert.ok(merged.entries.some((e) => e.capability === te.capability && e.ts === te.ts), 'shipped baseline entry missing from the merge: ' + te.capability);
+    }
+    const vetted = scout.isVetted(cap, {});
+    assert.ok(vetted && vetted.verdict === 'hard-pass', 'isVetted() in default mode must see the just-recorded entry through the merge');
+  });
+});
+
+t('the hard-pass-persists rule still holds end-to-end in DEFAULT mode across two record() calls for the same capability', () => {
+  withRealUserLedgerRestored(() => {
+    const cap = 'split-fix-persist-probe-' + Date.now();
+    scout.record({ capability: cap, verdict: 'hard-pass', reason: 'first verdict' }, {});
+    scout.record({ capability: cap, verdict: 'approve', reason: 'later attempt' }, {});
+    const vetted = scout.isVetted(cap, {});
+    assert.strictEqual(vetted.verdict, 'hard-pass', 'a later approve in default mode must never override a persisted hard-pass');
+  });
+});
+
+t('N4 fix: the shipped baseline\'s frontend-design entry is corrected to approve — a curated baseline must not permanently hard-pass a skill the product itself vendors', () => {
+  const templateEntries = scout.loadLedgerFile(scout.CONFIG_PATH).entries;
+  const original = templateEntries.find((e) => e.capability === 'frontend-design (anthropics/skills)');
+  assert.ok(original, 'the original frontend-design entry must still exist (audit trail kept, not deleted)');
+  assert.strictEqual(original.verdict, 'approve', 'the stale hard-pass must be corrected now that frontend-design is vendored into the product');
+});
+
 console.log('');
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

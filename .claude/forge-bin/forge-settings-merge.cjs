@@ -32,9 +32,19 @@
  *   - Pre-existing duplicate matcher entries for the same event (however they got there) are DETECTED and
  *     reported via `duplicate_matchers` — never silently auto-repaired (a second run "repairs nothing
  *     silently — it says what it found").
+ *   - HOOK-COMMAND-UPGRADE (v2.8.0, fresh-laptop re-audit): when a source hook for a matcher that ALREADY
+ *     exists in the target names the SAME `forge-bin/forge-<name>.cjs` script as an existing hook under that
+ *     same matcher, but with a DIFFERENT command string (e.g. an install upgrading a cwd-relative
+ *     `node .claude/forge-bin/forge-x.cjs` to `node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-x.cjs"`),
+ *     that existing hook's `command` is REPLACED with the source's value IN PLACE — every other field (type,
+ *     timeout, subject to the ms-as-seconds fix above) is left alone — instead of being appended as a second,
+ *     duplicate hook that would fire twice. Never touches a non-Forge hook. A hook whose command already
+ *     equals the source's exactly is "already present" (see `hasHook` above), not reported as an upgrade.
+ *     Reported via the returned `upgraded` array; `checkSettingsMerge` surfaces the same array so a pending
+ *     upgrade is reported honestly instead of only ever "missing" or "up to date".
  *   - permissions.deny is a UNION: every source rule not already present is appended, in source order,
  *     after the user's own rules. permissions.allow/ask and every other key are untouched.
- *   - IDEMPOTENT: re-running against an already-merged file adds/adjusts nothing.
+ *   - IDEMPOTENT: re-running against an already-merged/-upgraded file adds/adjusts/upgrades nothing.
  *   - Source AND existing target are both schema-validated (root shape + every hook entry's inner shape)
  *     before anything is written; an invalid source is a usage error, an invalid target is a safe refusal.
  *   - Only a VERIFIED MISSING regular file enters the create path (UNREADABLE-MEANS-ABSENT): a directory, a
@@ -66,6 +76,8 @@
  *   node forge-settings-merge.cjs apply --target <settings.json> --source <settings.json>
  *     [--dry-run] [--json] [--backup-dir <dir>] [--project-root <dir>]
  *   node forge-settings-merge.cjs check --target <settings.json> --source <settings.json> [--json]
+ *   node forge-settings-merge.cjs unmerge --target <settings.json> --source <settings.json>
+ *     [--dry-run] [--json] [--backup-dir <dir>] [--project-root <dir>]
  *
  * apply exit codes: 0 = created / merged / already up to date (no-op). 1 = refused-safe (target exists but
  *   is not valid JSON/shape/content-safe, is not a plain regular file, changed concurrently, or a write
@@ -73,9 +85,18 @@
  *   `settings.forge-recommended-<stamp>-<rand>.json` copy of the source is written next to it instead).
  *   2 = usage error (bad arguments, or the SOURCE itself is unreadable/invalid/malformed).
  * check exit codes: 0 = nothing to merge (already up to date). 1 = the source has entries/rules the target
- *   is missing, the target does not exist yet, or the target has unsafe content. 2 = usage error (source
- *   unreadable/invalid, or the target is unreadable for a reason other than "missing" — check never writes
- *   anything, in any case).
+ *   is missing (including a pending hook-command upgrade), the target does not exist yet, or the target has
+ *   unsafe content. 2 = usage error (source unreadable/invalid, or the target is unreadable for a reason
+ *   other than "missing" — check never writes anything, in any case).
+ * unmerge (the uninstaller's counterpart to apply): removes every Forge hook (`isForgeHookCommand`) from the
+ *   target, drops any hooks.<event>[] entry/event left empty by that, and removes exactly the
+ *   permissions.deny rules that also appear in the SOURCE template — a user's own hooks/rules are never
+ *   touched. Exit codes mirror apply exactly: 0 = removed / nothing to do (no-op). 1 = refused-safe (same
+ *   conditions as apply: not a plain regular file, unreadable, unparsable/unsafe JSON, changed concurrently,
+ *   or a write destination fails containment). 2 = usage error (bad arguments, or the SOURCE template is
+ *   unreadable/invalid/malformed). unmerge keeps every apply safety guarantee (backup before writing,
+ *   BOM/line-ending/indent/trailing-newline and file-mode preservation, PROJECT-DIRECTORY-ESCAPE containment)
+ *   except the `settings.forge-recommended-*.json` recovery copy, which does not apply to an uninstall.
  */
 const fs = require('fs');
 const path = require('path');
@@ -102,6 +123,29 @@ function hasHook(eHooks, h) {
   return eHooks.some((eh) => eh && eh.command === h.command && eh.type === h.type);
 }
 
+/** forgeScriptName(command) — the exact `forge-<name>.cjs` leaf a Forge hook command invokes (via
+ *  forge-bin/), or null when `command` is not a recognizable Forge hook command at all. Used ONLY to decide
+ *  whether two DIFFERENT command strings still refer to the same underlying script (HOOK-COMMAND-UPGRADE) —
+ *  it never changes what `isForgeHookCommand` itself accepts. */
+function forgeScriptName(command) {
+  const m = typeof command === 'string' && command.match(/forge-bin[\\/](forge-[\w.-]+\.cjs)/);
+  return m ? m[1] : null;
+}
+
+/** findUpgradeCandidate(hooksArray, srcHook) — HOOK-COMMAND-UPGRADE: an existing hook in `hooksArray` that
+ *  invokes the SAME forge-bin script as `srcHook` (same `forgeScriptName`), has the SAME `type`, but a
+ *  DIFFERENT `command` string — i.e. a stale command form of the very hook `srcHook` represents, not a
+ *  brand-new hook. Returns null (never an upgrade) when `srcHook` itself is not a recognizable Forge hook
+ *  command, when no such existing hook is found, or when an existing hook's command is byte-identical to
+ *  `srcHook`'s (that case is "already present" per `hasHook`, not an upgrade). */
+function findUpgradeCandidate(hooksArray, srcHook) {
+  if (!Array.isArray(hooksArray) || !srcHook || !isForgeHookCommand(srcHook.command)) return null;
+  const srcScript = forgeScriptName(srcHook.command);
+  if (!srcScript) return null;
+  return hooksArray.find((h) => h && typeof h === 'object' && h.type === srcHook.type
+    && isForgeHookCommand(h.command) && forgeScriptName(h.command) === srcScript && h.command !== srcHook.command) || null;
+}
+
 /** computeDuplicateMatchers — DUPLICATE-HOOKS: report (never repair) any event whose FINAL array has 2+
  *  entries sharing the same matcher value — a condition this tool's own merge logic no longer creates, but
  *  one an already-affected project (or a hand-edit) may already carry. "say what it found", nothing more. */
@@ -121,10 +165,10 @@ function computeDuplicateMatchers(hooksObj) {
   return out;
 }
 
-/** mergeForgeSettings(existing, source) -> { settings, added, adjusted, deny_added, duplicate_matchers }. See
- *  file header SAFETY MODEL. Never mutates `existing` or `source`. `existing` may be null/undefined (treated
- *  as `{}`). Assumes both have already passed validShape()+deepValidateHooksShape() — this function itself
- *  does not re-validate. */
+/** mergeForgeSettings(existing, source) -> { settings, added, adjusted, upgraded, deny_added,
+ *  duplicate_matchers }. See file header SAFETY MODEL. Never mutates `existing` or `source`. `existing` may
+ *  be null/undefined (treated as `{}`). Assumes both have already passed
+ *  validShape()+deepValidateHooksShape() — this function itself does not re-validate. */
 function mergeForgeSettings(existing, source) {
   const out = existing && typeof existing === 'object' && !Array.isArray(existing)
     ? JSON.parse(JSON.stringify(existing))
@@ -133,6 +177,7 @@ function mergeForgeSettings(existing, source) {
 
   const added = [];
   const adjusted = [];
+  const upgraded = [];
   const deny_added = [];
 
   out.hooks = out.hooks && typeof out.hooks === 'object' && !Array.isArray(out.hooks) ? out.hooks : {};
@@ -161,7 +206,15 @@ function mergeForgeSettings(existing, source) {
       targetEntry.hooks = Array.isArray(targetEntry.hooks) ? targetEntry.hooks : [];
       for (const srcHook of srcHookList) {
         if (!srcHook || typeof srcHook !== 'object') continue;
-        if (!hasHook(targetEntry.hooks, srcHook)) {
+        if (hasHook(targetEntry.hooks, srcHook)) continue;
+        // HOOK-COMMAND-UPGRADE: a stale command form of this SAME script (see file header) is replaced in
+        // place instead of appended as a second, duplicate-firing hook.
+        const upgradeCandidate = findUpgradeCandidate(targetEntry.hooks, srcHook);
+        if (upgradeCandidate) {
+          const from = upgradeCandidate.command;
+          upgradeCandidate.command = srcHook.command;
+          upgraded.push({ event, matcher: matcher === undefined ? null : matcher, from, to: srcHook.command });
+        } else {
           targetEntry.hooks = targetEntry.hooks.concat([JSON.parse(JSON.stringify(srcHook))]);
           added.push(event + '[' + (matcher === undefined ? '' : matcher) + ']: +' + srcHook.command);
         }
@@ -197,7 +250,64 @@ function mergeForgeSettings(existing, source) {
   }
 
   const duplicate_matchers = computeDuplicateMatchers(out.hooks);
-  return { settings: out, added, adjusted, deny_added, duplicate_matchers };
+  return { settings: out, added, adjusted, upgraded, deny_added, duplicate_matchers };
+}
+
+/** unmergeForgeSettings(existing, source) -> { settings, removed_hooks, removed_events, deny_removed } — the
+ *  uninstaller's counterpart to mergeForgeSettings. Never mutates `existing` or `source`; never introduces a
+ *  `hooks`/`permissions` key that was not already present in `existing` (there is nothing to unmerge from a
+ *  target that never had one). For every hooks.<event>[] entry, every hook whose command is a recognized
+ *  Forge hook command (`isForgeHookCommand`) is removed; an entry left with zero hooks is dropped entirely,
+ *  and an event left with zero entries is dropped from `hooks`. permissions.deny loses exactly the rules that
+ *  also appear in `source`'s own permissions.deny — a rule the user added themselves (not present in
+ *  `source`) is never removed, even if its text happens to look similar. */
+function unmergeForgeSettings(existing, source) {
+  const out = existing && typeof existing === 'object' && !Array.isArray(existing)
+    ? JSON.parse(JSON.stringify(existing))
+    : {};
+  const src = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+
+  const removed_hooks = [];
+  const removed_events = [];
+
+  if (out.hooks && typeof out.hooks === 'object' && !Array.isArray(out.hooks)) {
+    for (const event of Object.keys(out.hooks)) {
+      const list = Array.isArray(out.hooks[event]) ? out.hooks[event] : null;
+      if (!list) continue; // not our shape — leave completely untouched (should not occur past validation)
+      const nextList = [];
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { nextList.push(entry); continue; }
+        const hooksArr = Array.isArray(entry.hooks) ? entry.hooks : null;
+        if (!hooksArr) { nextList.push(entry); continue; }
+        const kept = [];
+        for (const h of hooksArr) {
+          if (h && typeof h === 'object' && h.type === 'command' && isForgeHookCommand(h.command)) {
+            removed_hooks.push({ event, matcher: entry.matcher === undefined ? null : entry.matcher, command: h.command });
+          } else {
+            kept.push(h);
+          }
+        }
+        entry.hooks = kept;
+        if (kept.length > 0) nextList.push(entry);
+      }
+      if (nextList.length > 0) out.hooks[event] = nextList;
+      else { delete out.hooks[event]; removed_events.push(event); }
+    }
+  }
+
+  const deny_removed = [];
+  if (out.permissions && typeof out.permissions === 'object' && !Array.isArray(out.permissions) && Array.isArray(out.permissions.deny)) {
+    const srcPerms = src.permissions && typeof src.permissions === 'object' && !Array.isArray(src.permissions) ? src.permissions : {};
+    const srcDenySet = new Set(Array.isArray(srcPerms.deny) ? srcPerms.deny : []);
+    const kept = [];
+    for (const rule of out.permissions.deny) {
+      if (srcDenySet.has(rule)) deny_removed.push(rule);
+      else kept.push(rule);
+    }
+    out.permissions.deny = kept;
+  }
+
+  return { settings: out, removed_hooks, removed_events, deny_removed };
 }
 
 /** validShape — refuses (never silently "repairs") a root whose hooks/permissions are not the expected
@@ -368,15 +478,15 @@ function applySettingsMerge(opts) {
     };
   }
 
-  const { settings, added, adjusted, deny_added, duplicate_matchers } = mergeForgeSettings(targetJson, sourceJson);
-  const changed = added.length > 0 || adjusted.length > 0 || deny_added.length > 0;
+  const { settings, added, adjusted, upgraded, deny_added, duplicate_matchers } = mergeForgeSettings(targetJson, sourceJson);
+  const changed = added.length > 0 || adjusted.length > 0 || upgraded.length > 0 || deny_added.length > 0;
   if (!changed) {
-    const res = { ok: true, status: 'noop', target, added, adjusted, deny_added };
+    const res = { ok: true, status: 'noop', target, added, adjusted, upgraded, deny_added };
     if (duplicate_matchers.length) res.duplicate_matchers = duplicate_matchers;
     return res;
   }
   if (opts.dryRun) {
-    const res = { ok: true, dryRun: true, status: 'would-merge', target, added, adjusted, deny_added };
+    const res = { ok: true, dryRun: true, status: 'would-merge', target, added, adjusted, upgraded, deny_added };
     if (duplicate_matchers.length) res.duplicate_matchers = duplicate_matchers;
     return res;
   }
@@ -407,14 +517,16 @@ function applySettingsMerge(opts) {
       message: 'settings.json changed on disk between read and write (' + w.reason + ') — refusing to overwrite a concurrent edit; a backup of what Forge read is at ' + backupRes.path + '.',
     };
   }
-  const res = { ok: true, status: 'merged', target, added, adjusted, deny_added, backupPath: backupRes.path };
+  const res = { ok: true, status: 'merged', target, added, adjusted, upgraded, deny_added, backupPath: backupRes.path };
   if (duplicate_matchers.length) res.duplicate_matchers = duplicate_matchers;
   return res;
 }
 
 /** checkSettingsMerge({target, source}) — read-only preview (for a future doctor advisory — NOT wired into
  *  forge-doctor.cjs here). Never writes. Mirrors applySettingsMerge's UNREADABLE-MEANS-ABSENT/SCHEMA-
- *  ACCEPTANCE/LOSSY-ROUNDTRIP classification so a preview never promises a merge that would actually refuse. */
+ *  ACCEPTANCE/LOSSY-ROUNDTRIP classification so a preview never promises a merge that would actually refuse.
+ *  A pending HOOK-COMMAND-UPGRADE (a stale command form of an already-installed hook) is reported via
+ *  `upgraded` and counts as "not up to date", same as a genuinely missing entry. */
 function checkSettingsMerge(opts) {
   opts = opts || {};
   let sourceJson;
@@ -434,16 +546,123 @@ function checkSettingsMerge(opts) {
   if (risks.duplicateKeys.length || risks.unsafeNumbers.length) {
     return { ok: false, status: 'unsafe-content', duplicateKeys: risks.duplicateKeys, unsafeNumbers: risks.unsafeNumbers, message: 'existing target has content a merge cannot safely preserve' };
   }
-  const { added, adjusted, deny_added, duplicate_matchers } = mergeForgeSettings(targetJson, sourceJson);
-  const upToDate = added.length === 0 && adjusted.length === 0 && deny_added.length === 0;
-  const res = { ok: upToDate, status: upToDate ? 'up-to-date' : 'missing-entries', added, adjusted, deny_added };
+  const { added, adjusted, upgraded, deny_added, duplicate_matchers } = mergeForgeSettings(targetJson, sourceJson);
+  const upToDate = added.length === 0 && adjusted.length === 0 && upgraded.length === 0 && deny_added.length === 0;
+  const res = { ok: upToDate, status: upToDate ? 'up-to-date' : 'missing-entries', added, adjusted, upgraded, deny_added };
   if (duplicate_matchers.length) res.duplicate_matchers = duplicate_matchers;
   return res;
 }
 
+/** applySettingsUnmerge({target, source, dryRun, backupDir, projectRoot, now}) — the uninstaller's
+ *  counterpart to applySettingsMerge: removes every Forge hook and every source-template deny rule from
+ *  `target`, keeping every foreign hook/rule/key exactly as-is. Shares applySettingsMerge's refuse-safe
+ *  classification (UNREADABLE-MEANS-ABSENT, SCHEMA-ACCEPTANCE, LOSSY-ROUNDTRIP, CONCURRENT-EDIT-LOSS,
+ *  PROJECT-DIRECTORY-ESCAPE) and its backup/format/mode preservation — it does NOT write a
+ *  `settings.forge-recommended-*.json` recovery copy on refusal (AUXILIARY-FILE-CLOBBER's recovery file is
+ *  specific to "here is what you should install", which does not apply to an uninstall). A missing target is
+ *  a plain no-op (there is nothing to unmerge), never a refusal. */
+function applySettingsUnmerge(opts) {
+  opts = opts || {};
+  const target = opts.target;
+  const source = opts.source;
+  if (!target || !source) return { ok: false, status: 'usage-error', message: 'target and source are required' };
+
+  const backupDir = opts.backupDir || path.dirname(target);
+  if (opts.projectRoot) {
+    if (guards.isSymlinkPath(opts.projectRoot)) {
+      return { ok: false, status: 'refused', target, message: 'refusing: the project root (' + opts.projectRoot + ') is a symlink/junction, not a real directory — never touching settings.json across that boundary' };
+    }
+    for (const p of [target, backupDir]) {
+      if (!guards.containedWithin(opts.projectRoot, p)) {
+        return { ok: false, status: 'refused', target, message: 'refusing: ' + p + ' resolves outside the project root (' + opts.projectRoot + ')' };
+      }
+    }
+  }
+
+  let sourceRaw;
+  try { sourceRaw = fs.readFileSync(source, 'utf8'); }
+  catch (e) { return { ok: false, status: 'usage-error', message: 'cannot read source ' + source + ': ' + e.message }; }
+  let sourceJson;
+  try { sourceJson = JSON.parse(stripBom(sourceRaw)); }
+  catch (e) { return { ok: false, status: 'usage-error', message: 'source ' + source + ' is not valid JSON: ' + e.message }; }
+  if (!fullyValidShape(sourceJson)) {
+    return { ok: false, status: 'usage-error', message: 'source ' + source + ' has an unexpected hooks/permissions shape (SCHEMA-ACCEPTANCE)' };
+  }
+
+  const t = readTargetKind(target);
+
+  if (t.kind === 'missing') {
+    return { ok: true, status: 'noop', target, removed_hooks: [], removed_events: [], deny_removed: [], message: target + ' does not exist — nothing to unmerge' };
+  }
+  if (t.kind === 'unreadable') {
+    if (opts.dryRun) return { ok: false, dryRun: true, status: 'would-refuse', target, message: 'existing ' + target + ' cannot be safely read (' + t.error + ') — would leave untouched' };
+    return {
+      ok: false, status: 'refused', target,
+      message: 'settings.json exists but cannot be safely read (' + t.error + ') — left untouched (UNREADABLE-MEANS-ABSENT: never treated as missing).',
+    };
+  }
+
+  const targetRaw = t.raw;
+  let targetJson;
+  try { targetJson = JSON.parse(stripBom(targetRaw)); }
+  catch (e) {
+    if (opts.dryRun) return { ok: false, dryRun: true, status: 'would-refuse', target, message: 'existing ' + target + ' is not valid JSON (' + e.message + ') — would leave untouched' };
+    return { ok: false, status: 'refused', target, message: 'settings.json exists but is not valid JSON (' + e.message + ') — left untouched.' };
+  }
+  if (!validShape(targetJson) || !guards.deepValidateHooksShape(targetJson)) {
+    if (opts.dryRun) return { ok: false, dryRun: true, status: 'would-refuse', target, message: 'existing ' + target + ' has an unexpected hooks/permissions shape — would leave untouched' };
+    return { ok: false, status: 'refused', target, message: 'settings.json exists but its hooks/permissions are not shaped as expected — left untouched.' };
+  }
+  const risks = guards.scanJsonRisks(stripBom(targetRaw));
+  if (risks.duplicateKeys.length || risks.unsafeNumbers.length) {
+    const detail = (risks.duplicateKeys.length ? 'duplicate key(s): ' + risks.duplicateKeys.join(', ') + '. ' : '')
+      + (risks.unsafeNumbers.length ? 'number(s) that would change on reserialize: ' + risks.unsafeNumbers.join(', ') + '.' : '');
+    if (opts.dryRun) return { ok: false, dryRun: true, status: 'would-refuse', target, duplicateKeys: risks.duplicateKeys, unsafeNumbers: risks.unsafeNumbers, message: 'existing ' + target + ' has content that cannot be safely preserved (' + detail + ') — would leave untouched' };
+    return {
+      ok: false, status: 'refused', target, duplicateKeys: risks.duplicateKeys, unsafeNumbers: risks.unsafeNumbers,
+      message: 'settings.json has content that a JSON parse+reserialize cannot preserve faithfully (' + detail + ') — left untouched (LOSSY-ROUNDTRIP).',
+    };
+  }
+
+  const { settings, removed_hooks, removed_events, deny_removed } = unmergeForgeSettings(targetJson, sourceJson);
+  const changed = removed_hooks.length > 0 || removed_events.length > 0 || deny_removed.length > 0;
+  if (!changed) {
+    return { ok: true, status: 'noop', target, removed_hooks, removed_events, deny_removed };
+  }
+  if (opts.dryRun) {
+    return { ok: true, dryRun: true, status: 'would-unmerge', target, removed_hooks, removed_events, deny_removed };
+  }
+
+  const backupRes = guards.writeExclusiveUnique(backupDir, path.basename(target) + '.forge-unmerge-bak', '', targetRaw, { now: opts.now, mode: t.mode });
+  if (!backupRes.ok) {
+    return { ok: false, status: 'refused', target, message: 'refusing to unmerge: could not take a backup first (' + backupRes.reason + ') — settings.json left untouched' };
+  }
+
+  const fmt = guards.detectFormatting(targetRaw);
+  const finalContents = guards.renderWithFormatting(settings, fmt);
+  const verify = () => {
+    let curStat;
+    try { curStat = fs.lstatSync(target); } catch { return { ok: false, reason: 'target no longer exists' }; }
+    if (curStat.isSymbolicLink()) return { ok: false, reason: 'target became a symlink' };
+    if (curStat.mtimeMs !== t.mtimeMs || curStat.size !== t.size) return { ok: false, reason: 'target changed on disk (mtime/size) since it was read' };
+    let curRaw;
+    try { curRaw = fs.readFileSync(target, 'utf8'); } catch (e) { return { ok: false, reason: 'target became unreadable: ' + e.message }; }
+    if (curRaw !== targetRaw) return { ok: false, reason: 'target content changed on disk since it was read' };
+    return { ok: true };
+  };
+  const w = writeAtomicChecked(target, finalContents, verify, t.mode);
+  if (!w.ok) {
+    return {
+      ok: false, status: 'refused', target, backupPath: backupRes.path,
+      message: 'settings.json changed on disk between read and write (' + w.reason + ') — refusing to overwrite a concurrent edit; a backup of what Forge read is at ' + backupRes.path + '.',
+    };
+  }
+  return { ok: true, status: 'unmerged', target, removed_hooks, removed_events, deny_removed, backupPath: backupRes.path };
+}
+
 module.exports = {
-  mergeForgeSettings, entryPresent, isForgeHookCommand, validShape, fullyValidShape,
-  applySettingsMerge, checkSettingsMerge, readTargetKind, computeDuplicateMatchers,
+  mergeForgeSettings, unmergeForgeSettings, entryPresent, isForgeHookCommand, forgeScriptName, validShape, fullyValidShape,
+  applySettingsMerge, applySettingsUnmerge, checkSettingsMerge, readTargetKind, computeDuplicateMatchers,
   timestampStamp: guards.defaultTimestampStamp,
 };
 
@@ -467,11 +686,12 @@ function parseArgs(argv) {
 function printUsage() {
   console.error('Usage: node forge-settings-merge.cjs apply --target <settings.json> --source <settings.json> [--dry-run] [--json] [--backup-dir <dir>] [--project-root <dir>]');
   console.error('       node forge-settings-merge.cjs check --target <settings.json> --source <settings.json> [--json]');
+  console.error('       node forge-settings-merge.cjs unmerge --target <settings.json> --source <settings.json> [--dry-run] [--json] [--backup-dir <dir>] [--project-root <dir>]');
 }
 
 if (require.main === module) {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
-  if ((cmd !== 'apply' && cmd !== 'check') || opts.usageError || !opts.target || !opts.source) {
+  if ((cmd !== 'apply' && cmd !== 'check' && cmd !== 'unmerge') || opts.usageError || !opts.target || !opts.source) {
     if (opts.usageError) console.error('forge-settings-merge: ' + opts.usageError);
     printUsage();
     process.exitCode = 2;
@@ -483,8 +703,18 @@ if (require.main === module) {
     else if (r.status === 'unsafe-content') console.error('forge-settings-merge check: ' + r.message);
     else if (r.status === 'missing') console.log('forge-settings-merge check: ' + r.message);
     else if (r.ok) console.log('forge-settings-merge check: already merged — nothing to do' + (r.duplicate_matchers && r.duplicate_matchers.length ? (' (NOTE: ' + r.duplicate_matchers.length + ' pre-existing duplicate matcher group(s) found — not auto-repaired)') : ''));
-    else console.log('forge-settings-merge check: missing ' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), ' + r.deny_added.length + ' deny rule(s)');
+    else console.log('forge-settings-merge check: missing ' + r.added.length + ' hook entry/entries, ' + r.adjusted.length + ' timeout fix(es), ' + (r.upgraded ? r.upgraded.length : 0) + ' hook command upgrade(s) pending, ' + r.deny_added.length + ' deny rule(s)');
     process.exitCode = (r.status === 'usage-error' || r.status === 'unreadable') ? 2 : (r.ok ? 0 : 1);
+  } else if (cmd === 'unmerge') {
+    const r = applySettingsUnmerge(opts);
+    if (opts.json) console.log(JSON.stringify(r));
+    else if (r.status === 'usage-error') console.error('forge-settings-merge unmerge: ' + r.message);
+    else if (r.status === 'refused') console.error('forge-settings-merge unmerge: ' + r.message);
+    else if (r.status === 'would-refuse') console.log('forge-settings-merge unmerge (dry-run): ' + r.message);
+    else if (r.status === 'would-unmerge') console.log('forge-settings-merge unmerge (dry-run): would remove ' + r.removed_hooks.length + ' Forge hook(s), drop ' + r.removed_events.length + ' now-empty event(s), remove ' + r.deny_removed.length + ' deny rule(s) from ' + r.target);
+    else if (r.status === 'noop') console.log('forge-settings-merge unmerge: ' + r.target + ' has no Forge content to remove — nothing to do');
+    else if (r.status === 'unmerged') console.log('forge-settings-merge unmerge: removed ' + r.removed_hooks.length + ' Forge hook(s), dropped ' + r.removed_events.length + ' now-empty event(s), removed ' + r.deny_removed.length + ' deny rule(s) from ' + r.target + '; your own entries kept; backup: ' + r.backupPath);
+    process.exitCode = (r.status === 'usage-error') ? 2 : (r.ok ? 0 : 1);
   } else {
     const r = applySettingsMerge(opts);
     if (opts.json) console.log(JSON.stringify(r));
@@ -492,10 +722,10 @@ if (require.main === module) {
     else if (r.status === 'refused') console.error('forge-settings-merge: ' + r.message);
     else if (r.status === 'would-refuse') console.log('forge-settings-merge (dry-run): ' + r.message);
     else if (r.status === 'would-create') console.log('forge-settings-merge (dry-run): would create ' + r.target);
-    else if (r.status === 'would-merge') console.log('forge-settings-merge (dry-run): would add ' + r.added.length + ' hook entry/entries, fix ' + r.adjusted.length + ' timeout(s), add ' + r.deny_added.length + ' deny rule(s) to ' + r.target);
+    else if (r.status === 'would-merge') console.log('forge-settings-merge (dry-run): would add ' + r.added.length + ' hook entry/entries, fix ' + r.adjusted.length + ' timeout(s), upgrade ' + r.upgraded.length + ' hook command(s), add ' + r.deny_added.length + ' deny rule(s) to ' + r.target);
     else if (r.status === 'created') console.log('forge-settings-merge: created ' + r.target);
     else if (r.status === 'noop') console.log('forge-settings-merge: ' + r.target + ' already merged — nothing to do' + (r.duplicate_matchers && r.duplicate_matchers.length ? (' (NOTE: ' + r.duplicate_matchers.length + ' pre-existing duplicate matcher group(s) found — not auto-repaired)') : ''));
-    else if (r.status === 'merged') console.log('forge-settings-merge: merged ' + r.target + ' — added ' + r.added.length + ' hook entry/entries, fixed ' + r.adjusted.length + ' timeout(s), added ' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath + (r.duplicate_matchers && r.duplicate_matchers.length ? (' (NOTE: ' + r.duplicate_matchers.length + ' pre-existing duplicate matcher group(s) found — not auto-repaired)') : ''));
+    else if (r.status === 'merged') console.log('forge-settings-merge: merged ' + r.target + ' — added ' + r.added.length + ' hook entry/entries, fixed ' + r.adjusted.length + ' timeout(s), upgraded ' + r.upgraded.length + ' hook command(s), added ' + r.deny_added.length + ' deny rule(s); your own entries kept; backup: ' + r.backupPath + (r.duplicate_matchers && r.duplicate_matchers.length ? (' (NOTE: ' + r.duplicate_matchers.length + ' pre-existing duplicate matcher group(s) found — not auto-repaired)') : ''));
     process.exitCode = (r.status === 'usage-error') ? 2 : (r.ok ? 0 : 1);
   }
 }

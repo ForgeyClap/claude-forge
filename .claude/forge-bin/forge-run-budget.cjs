@@ -55,13 +55,25 @@
  *          that cannot read a cap must not start an unattended run.
  *   node forge-run-budget.cjs args [--wrapper <name>] [--level <L>]      -> prints `--max-budget-usd <n>`
  *   node forge-run-budget.cjs classify --run <runDir> --wrapper <name> --cap <n> [--exit <code>]
- *                                      [--envelope <file>] [--log <file>]
+ *                                      [--envelope <file>] [--log <file>] [--root <dir>]
  *       -> classifies a finished unattended run and APPENDS the verdict line to <runDir>. Prints the
  *          status. Exit 0 only when the verdict is a real completion.
- *   node forge-run-budget.cjs stops --run <runDir>    -> prints the budget-stop count for that run.
+ *   node forge-run-budget.cjs stops --run <runDir> [--root <dir>]   -> prints the budget-stop count.
+ *
+ * --run CONTAINMENT (2026-09-26, external audit N4/Part V-G): `classify --run x` used to accept ANY
+ * string and hand it straight to fs.mkdirSync — a bare token with no path separator (e.g. `x`, exactly the
+ * audit's repro) silently created `<cwd>/x/` in the PROJECT ROOT instead of a real run directory. The CLI
+ * layer (not recordVerdict() itself, which keeps taking a pre-resolved dir for direct/unit use) now
+ * resolves --run through resolveRunDir(): a bare token (no `/`/`\`) is treated as a run id and joined under
+ * `<root>/.claude/forge-runs/<id>`; a path-shaped value is resolved against <root> as before (unchanged for
+ * the one real caller, maand-sweep.cmd, which always passes a real `.claude/forge-runs/<id>` path). Either
+ * way the FINAL resolved path must land inside `<root>/.claude/forge-runs/` — anything that resolves
+ * outside it (a bare id is safe by construction; a path-shaped value containing `..` is not) is refused
+ * with a clear message and NOTHING is created.
  *
  * Module API: { CONFIG_REL, DEFAULTS, STATUS, VERDICT_FILE, BUDGET_MARKER, loadConfig, resolveCap,
  *               budgetArgs, classifyOutcome, isCompletion, countsAsStop, recordVerdict, readVerdicts,
+ *               resolveRunDir,
  *               budgetStops, configOn, configRead }
  */
 const fs = require('fs');
@@ -337,6 +349,29 @@ function countsAsStop(v) {
   return v.status === STATUS.STOPPED || v.status === STATUS.UNKNOWN;
 }
 
+/** resolveRunDir(raw, {root}) -> {ok:true, dir} | {ok:false, reason}. CLI-layer containment guard for
+ *  --run (see the file header's "--run CONTAINMENT" note) — never called by recordVerdict()/readVerdicts()
+ *  themselves, which keep accepting a pre-resolved dir for direct/unit use exactly as before. A bare token
+ *  (no path separator) is treated as a run id and resolved under `<root>/.claude/forge-runs/<id>`; a
+ *  path-shaped value is resolved against <root> as before. Either way the result must land INSIDE
+ *  `<root>/.claude/forge-runs/` — refuses (never creates anything) otherwise. */
+function resolveRunDir(raw, opts) {
+  const o = opts || {};
+  const root = path.resolve(o.root || process.cwd());
+  const forgeRunsRoot = path.join(root, '.claude', 'forge-runs');
+  if (!raw || !String(raw).trim()) return { ok: false, reason: '--run is required' };
+  const hasSep = /[\\/]/.test(raw);
+  const candidate = hasSep ? path.resolve(root, raw) : path.join(forgeRunsRoot, raw);
+  const rel = path.relative(forgeRunsRoot, candidate);
+  if (rel === '' || rel === '.') {
+    return { ok: false, reason: '--run "' + raw + '" resolves to .claude/forge-runs itself, not a run directory inside it' };
+  }
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    return { ok: false, reason: '--run "' + raw + '" resolves outside .claude/forge-runs (' + candidate + ') — refusing to create anything there' };
+  }
+  return { ok: true, dir: candidate };
+}
+
 /** recordVerdict(verdict, {runDir}) -> {ok, file, reason}. Appends one JSON line; never throws. */
 function recordVerdict(verdict, opts) {
   const o = opts || {};
@@ -380,7 +415,7 @@ module.exports = {
   CONFIG_REL, DEFAULTS, STATUS, VERDICT_FILE, BUDGET_MARKER, ENV_KEY,
   loadConfig, resolveCap, budgetArgs, configOn, configRead,
   classifyOutcome, isCompletion, countsAsStop,
-  recordVerdict, readVerdicts, budgetStops,
+  recordVerdict, readVerdicts, budgetStops, resolveRunDir,
 };
 
 // ---- CLI ---------------------------------------------------------------------------------------------
@@ -412,8 +447,11 @@ if (require.main === module) {
     }
 
     if (cmd === 'classify') {
-      const dir = arg('run', null);
-      if (!dir) { console.error('forge-run-budget classify: --run <runDir> is required'); process.exit(1); }
+      const rawRun = arg('run', null);
+      if (!rawRun) { console.error('forge-run-budget classify: --run <runDir> is required'); process.exit(1); }
+      const resolved = resolveRunDir(rawRun, { root: arg('root', undefined) });
+      if (!resolved.ok) { console.error('forge-run-budget classify: ' + resolved.reason); process.exit(1); }
+      const dir = resolved.dir;
       const envFile = arg('envelope', null);
       const logFile = arg('log', null);
       const exitRaw = arg('exit', null);
@@ -432,8 +470,11 @@ if (require.main === module) {
     }
 
     if (cmd === 'stops') {
-      const dir = arg('run', null);
-      if (!dir) { console.error('forge-run-budget stops: --run <runDir> is required'); process.exit(1); }
+      const rawRun = arg('run', null);
+      if (!rawRun) { console.error('forge-run-budget stops: --run <runDir> is required'); process.exit(1); }
+      const resolvedStops = resolveRunDir(rawRun, { root: arg('root', undefined) });
+      if (!resolvedStops.ok) { console.error('forge-run-budget stops: ' + resolvedStops.reason); process.exit(1); }
+      const dir = resolvedStops.dir;
       const s = budgetStops(dir);
       console.log(s.count + ' budget stop(s) in ' + s.verdicts.length + ' verdict(s)');
       for (const st of s.stops) console.log('  ' + (st.parse_error ? 'UNREADABLE: ' + st.raw : st.status + ' — ' + (st.reason || '')));

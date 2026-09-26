@@ -35,7 +35,7 @@ node .claude/forge-bin/nvidia-provider.test.cjs              # offline tests (46
 ## Rules
 - **Fit first:** never assign a model outside its caps (vision task ⇒ vision model; implementation ⇒ coding model). `route <agent>` warns on violations; `prohibited` lists per agent block obvious misfits.
 - **Fallback chain:** NVIDIA role model → NVIDIA fallback role → the agent just does the work on its Claude runtime model (labeled `nvidia-skipped`). NVIDIA down ≠ blocked work; mocks are never presented as real output.
-- **Premium rule:** Boss decides when Opus 4.8/Sonnet 5 outweighs cost (security/architecture/final QA are ALWAYS premium per FORGE_MODEL_ROUTING.json).
+- **Premium rule:** Boss decides when Opus 5.5/Sonnet 5 outweighs cost (security/architecture/final QA are ALWAYS premium per FORGE_MODEL_ROUTING.json).
 - **No live calls without key**; with key, live verification only via the explicit commands above.
 
 ## Function fit (WP-NVIDIA-FIT, 2026-07-26 — LAW for bulk offload, not advisory)

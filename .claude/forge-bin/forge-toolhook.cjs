@@ -628,6 +628,14 @@ module.exports = {
 // are retained; the rest is drained and dropped so a multi-megabyte tool_response can neither blow up
 // memory nor stall the pipe. The failsafe timer guarantees an exit even if stdin never ends. ----
 if (require.main === module) {
+  // v2.8.0 (WP-S4 CLI sweep): a person running the tool by hand gets a usage line instead of a silent wait on
+  // stdin. Claude Code invokes this hook with NO arguments, so the hook path below is unchanged.
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    console.log('Usage: node forge-toolhook.cjs < <PostToolUse hook JSON on stdin>');
+    console.log('  Claude Code runs this as a PostToolUse hook; it appends one line per file-changing tool call to');
+    console.log('  .claude/forge-runs/_toollog/ (never blocks, always exits 0). There is nothing to run by hand.');
+    process.exit(0);
+  }
   let finished = false;
   const finish = () => { if (finished) return; finished = true; process.exit(0); };
   const failsafe = setTimeout(finish, FAILSAFE_MS);

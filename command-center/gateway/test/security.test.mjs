@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { hostOk, crossSiteOk, containmentOk, safeIdOk, getExecToken, execTokenOk, EXEC_TOKEN_HEADER } from '../src/security.mjs';
+import { hostOk, crossSiteOk, containmentOk, anyContainmentOk, safeIdOk, getExecToken, execTokenOk, EXEC_TOKEN_HEADER } from '../src/security.mjs';
 
 test('hostOk accepts localhost/127.0.0.1/no-host, rejects an attacker host', () => {
   assert.equal(hostOk({ headers: { host: 'localhost:4100' } }), true);
@@ -27,6 +27,18 @@ test('containmentOk allows the base dir and real descendants, rejects escapes', 
   assert.equal(containmentOk(base, path.resolve(base, '..', '..')), false);
   // a sibling directory that merely SHARES a string prefix must not pass (naive startsWith bug)
   assert.equal(containmentOk(base, path.resolve(base + '-evil')), false);
+});
+
+// C1 fix (WP-C1): project discovery now checks containment against SEVERAL roots at once
+// (paths.mjs's SYNC_SCAN_ROOTS) — anyContainmentOk() is the matching multi-root guard.
+test('anyContainmentOk allows a path under ANY of several base dirs, rejects a path under none of them', () => {
+  const baseA = path.resolve('C:/fake/base/dir-a');
+  const baseB = path.resolve('C:/fake/base/dir-b');
+  assert.equal(anyContainmentOk([baseA, baseB], baseA), true, 'exactly the first base dir itself');
+  assert.equal(anyContainmentOk([baseA, baseB], path.join(baseA, 'child')), true, 'a descendant of the first base dir');
+  assert.equal(anyContainmentOk([baseA, baseB], path.join(baseB, 'child')), true, 'a descendant of the second base dir');
+  assert.equal(anyContainmentOk([baseA, baseB], path.resolve(baseA, '..', 'sibling')), false, 'under neither base dir');
+  assert.equal(anyContainmentOk([], path.join(baseA, 'child')), false, 'an empty root list never passes anything');
 });
 
 test('safeIdOk rejects traversal-shaped ids and accepts real run-id shapes', () => {

@@ -1,7 +1,7 @@
 ---
 name: data-scientist
 description: "Use PROACTIVELY for exploratory data analysis, statistical modeling, and prediction work — EDA to model with rigorous validation and honest uncertainty/confidence labels. Never fabricates metrics or claims certainty."
-tools: Read, Write, Edit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, PowerShell, Grep, Glob
 model: sonnet
 memory: project
 ---

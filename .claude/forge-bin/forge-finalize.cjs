@@ -99,6 +99,23 @@ function evidenceDigestOf(root, runId) {
   } catch { return null; }
 }
 
+/** headProbeOf(root) — WP-S10 (D2, 2026-09-26): an INDEPENDENT, LIVE probe of THIS root's git state,
+ *  reusing forge-runcontract.cjs's own `resolveHeadCommit` (the same helper the run contract itself uses
+ *  for its `noGitAtRoot`). A receipt's `code_commit` is allowed to be `null` only when a real check of
+ *  the CURRENT root, run right now, confirms there genuinely is no git repository here — never merely
+ *  because `gate-evidence.json` (the run's OWN, possibly stale/hand-edited/cross-machine output) says
+ *  `code.no_git:true`. Distinguishes "confirmed no git" (`commit: null`) from "could not determine"
+ *  (`ok: false`) so an undetermined probe is never silently treated as a confirmed no-git claim
+ *  (fail-closed, same discipline as the rest of this file). */
+function headProbeOf(root) {
+  let RC;
+  try { RC = require(path.join(__dirname, 'forge-runcontract.cjs')); }
+  catch (e) { return { ok: false, reason: 'forge-runcontract.cjs niet laadbaar: ' + (e && e.message ? e.message : String(e)) }; }
+  if (typeof RC.resolveHeadCommit !== 'function') return { ok: false, reason: 'resolveHeadCommit niet beschikbaar in forge-runcontract.cjs' };
+  try { return { ok: true, commit: RC.resolveHeadCommit(root) }; }
+  catch (e) { return { ok: false, reason: 'git-probe faalde: ' + (e && e.message ? e.message : String(e)) }; }
+}
+
 /** independentVerificationStatus — de gesaneerde onafhankelijkheidsstand die in de receipt hoort.
  *  Draagt ALTIJD `label_only` mee (de owner-gated grens uit F-02) en, wanneer de regel op dit niveau niet
  *  geldt, expliciet `applicable:false` — zodat NOT_APPLICABLE nooit als "geverifieerd" leest. */
@@ -373,6 +390,25 @@ function finalizeLocked(root, runId) {
   if (!evidencePre) {
     return { ok: false, verdict: 'refused', reason: 'geen geldige bewijsset (gate-evidence.json) voor deze run — een eindverdict dat aan geen bewijs gebonden is, is geen eindverdict' };
   }
+  /** D2 anti-fabrication guard (WP-S10, 2026-09-26, fresh-laptop re-audit) — mirrors
+   *  forge-runcontract.cjs's own `opts.noGit` guard (independentVerification): a no-git evidence claim is
+   *  only trusted when an INDEPENDENT probe of the CURRENT root, run right now, confirms there really is
+   *  no git repository here. Scoped deliberately to the no_git branch only — a project that genuinely has
+   *  git keeps writing/reading a real 40-hex commit exactly as before; this never touches that path. */
+  if (evidenceSetPre.no_git === true) {
+    const probePre = headProbeOf(root);
+    if (!probePre.ok) {
+      return { ok: false, verdict: 'refused', reason: 'de bewijsset claimt no-git, maar de git-staat van deze root kon niet onafhankelijk worden vastgesteld (' + probePre.reason + ') — zonder die controle wordt een no-git-claim niet vertrouwd' };
+    }
+    if (probePre.commit !== null) {
+      return { ok: false, verdict: 'refused', reason: 'de bewijsset claimt no-git, maar deze root heeft wél een git-repository (HEAD ' + probePre.commit.slice(0, 12) + '…) — dat kan uit een eerlijke no-git-meting nooit komen, dus geweigerd in plaats van vertrouwd' };
+    }
+    if (evidenceSetPre.commit != null) {
+      // canonicalEvidenceDigest() itself already refuses a mixed no_git+commit record, so this can only
+      // fire if that invariant is ever weakened — kept here as a second, independent line of defense.
+      return { ok: false, verdict: 'refused', reason: 'de bewijsset claimt no-git maar draagt toch een commit (' + String(evidenceSetPre.commit).slice(0, 12) + '…) — een no-git-record met commit is vervalst, geen bewijs' };
+    }
+  }
   /** FINALIZE-FAILED-GATE (2026-09-24, out-p5.md) — finalize eiste een BINDBARE bewijsset (evidencePre
    *  hierboven), maar niet dat die bewijsset ZELF groen was: dat werd alleen getoetst BINNEN de L2+
    *  independent-review-regel (opts.evidenceAllGreen), dus een L1-run met een gefaalde poort (exit_code:1)
@@ -540,7 +576,21 @@ function receiptState(root, runId) {
   /** R9-04 (negende herreview): code_commit werd wel GESCHREVEN maar door niets geeist of vergeleken —
    *  receiptState liet hem weg, de idempotente herbevestiging keek er niet naar. Een pin die geen enkele
    *  ingang controleert, bindt niets; dat is exact hetzelfde patroon als R8-03 een laag hoger. */
-  if (typeof r.code_commit !== 'string' || !/^[0-9a-f]{40}$/i.test(r.code_commit)) return { state: 'invalid', reason: 'receipt mist een welgevormde code_commit — onbekend op welke code het bewijs draaide' };
+  /** D2 fix (WP-S10, 2026-09-26, fresh-laptop re-audit) — a genuinely git-less project could never
+   *  finalize at all: `code_commit` was required to be a well-formed 40-hex sha UNCONDITIONALLY, even
+   *  though a project with no versioning concept has nothing to bind to (see canonicalEvidenceDigest's own
+   *  D2 fix in forge-runcontract.cjs). `code_commit: null` is now accepted, but ONLY when an INDEPENDENT,
+   *  LIVE probe of the CURRENT root (headProbeOf — never a flag the receipt or the run itself wrote)
+   *  confirms there really is no git repository here right now. A receipt claiming `code_commit: null` on
+   *  a root that DOES have git is refused as invalid, never trusted at face value. Every other project
+   *  keeps the exact 40-hex requirement, unchanged. */
+  if (r.code_commit === null) {
+    const probe = headProbeOf(root);
+    if (!probe.ok) return { state: 'invalid', reason: 'receipt claimt code_commit:null (no-git), maar de git-staat van deze root kon niet onafhankelijk worden vastgesteld (' + probe.reason + ') — zonder die controle wordt een no-git-claim niet vertrouwd' };
+    if (probe.commit !== null) return { state: 'invalid', reason: 'receipt claimt code_commit:null (no-git), maar deze root heeft wél een git-repository (HEAD ' + probe.commit.slice(0, 12) + '…) — dat kan uit een eerlijke no-git-meting nooit komen' };
+  } else if (typeof r.code_commit !== 'string' || !/^[0-9a-f]{40}$/i.test(r.code_commit)) {
+    return { state: 'invalid', reason: 'receipt mist een welgevormde code_commit — onbekend op welke code het bewijs draaide' };
+  }
   return { state: 'valid', receipt: r };
 }
 

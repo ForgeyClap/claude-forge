@@ -24,6 +24,16 @@
  * TEST ISOLATION: set FORGE_RESUME_STATE to an absolute file path to redirect the state file entirely
  * (takes priority over the homedir-based path). This is a TEST-ONLY escape hatch (used by
  * forge-resume.test.cjs) — never point it at a real project's state file.
+ *
+ * GLOBAL, NOT PROJECT-LOCAL — BY DESIGN, DOCUMENTED HONESTLY (2026-09-26, external audit Part V-G /
+ * 2.7.1 #matrix side effects). This is the one file in this tool pack that DELIBERATELY writes outside any
+ * single project's .claude/ — it exists precisely because the reminder has to survive switching projects
+ * and surviving a fresh session where no project has been opened yet (usage-guard's own auto-resume reads
+ * it right after resuming a paused session). A per-project resume file cannot do that job. Every write
+ * command below (set/todo-add/todo-status/retry) prints the exact GLOBAL path it just wrote, every time —
+ * so this is a visible, named side effect, never a silent one, and the owner can always see the real path.
+ * If this is ever exercised as part of a broader tool sweep, redirect it first (FORGE_RESUME_STATE / HOME /
+ * USERPROFILE) so it does not touch the real machine's real reminder.
  */
 const fs = require('fs');
 const os = require('os');
@@ -73,7 +83,7 @@ function cmdSet() {
   if (last !== undefined) s.last_done = last;
   if (next !== undefined) s.next = next;
   writeState(s);
-  console.log('forge-resume: state updated (' + stateFile() + ')');
+  console.log('forge-resume: state updated (global state: ' + stateFile() + ')');
 }
 function cmdTodoAdd() {
   const title = args.slice(1).join(' ').trim();
@@ -82,7 +92,7 @@ function cmdTodoAdd() {
   const nextId = s.todo.reduce((m, t) => Math.max(m, Number(t && t.id) || 0), 0) + 1;
   s.todo.push({ id: nextId, title, status: 'pending' });
   writeState(s);
-  console.log('forge-resume: todo #' + nextId + ' added — ' + title);
+  console.log('forge-resume: todo #' + nextId + ' added — ' + title + ' (global state: ' + stateFile() + ')');
 }
 function cmdTodoStatus() {
   const id = Number(args[1]);
@@ -97,7 +107,7 @@ function cmdTodoStatus() {
   if (!t) { console.error('forge-resume todo-status: no todo #' + id); process.exitCode = 1; return; }
   t.status = status;
   writeState(s);
-  console.log('forge-resume: todo #' + id + ' -> ' + status);
+  console.log('forge-resume: todo #' + id + ' -> ' + status + ' (global state: ' + stateFile() + ')');
 }
 // Bounded narrowed-scope retry. Research finding: blind same-scope re-dispatch mostly reproduces the
 // same failure. Forge governance already says "max 2 loops (3 for high-end)" but nothing enforced it —
@@ -139,7 +149,7 @@ function cmdRetry() {
   if (!Array.isArray(t.retries)) t.retries = [];
   t.retries.push({ ts: new Date().toISOString(), reason, narrowed: narrowed || '' });
   writeState(s);
-  console.log('forge-resume: todo #' + id + ' retry ' + nextCount + ' recorded — ' + reason);
+  console.log('forge-resume: todo #' + id + ' retry ' + nextCount + ' recorded — ' + reason + ' (global state: ' + stateFile() + ')');
 }
 function cmdShow() {
   const s = readState();

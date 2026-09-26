@@ -23,6 +23,15 @@
 
 import { EXEC_TOKEN_HEADER, gwDelete, gwGet, gwPost, pickRecord, pickString, readExecToken } from '@/prototype/state/gateway-client';
 
+// N6 fix (WP-C1, 2026-09-26 laptop re-audit): the gateway now checks the exec token for EVERY
+// non-GET route (server.mjs's requestListener), not just the routes that used to remember to add
+// their own check — POST /api/conversations and POST /api/projects below never sent it at all
+// before this fix. Same per-file `execHeaders()` helper convention gateway-discord.ts already uses.
+function execHeaders(): Record<string, string> {
+  const token = readExecToken();
+  return token !== null ? { [EXEC_TOKEN_HEADER]: token } : {};
+}
+
 export interface NewConversationResult {
   readonly ok: boolean;
   readonly id: string | null;
@@ -42,7 +51,7 @@ export async function requestNewConversation(projectId: string): Promise<NewConv
   if (projectId === '') {
     return { ok: false, id: null, error: 'Select or create a project before starting a chat.' };
   }
-  const result = await gwPost('/api/conversations', { project: projectId });
+  const result = await gwPost('/api/conversations', { project: projectId }, execHeaders());
   if (!result.ok) return { ok: false, id: null, error: result.error };
   const conversation = pickRecord(result.data, ['conversation']);
   const id = conversation !== null ? pickString(conversation, ['id']) : null;
@@ -60,15 +69,14 @@ export interface DeleteConversationResult {
 /**
  * Deletes a real conversation via `DELETE /api/conversations/:id` (feat-delete-conversation).
  * Mirrors `requestNewConversation`'s own shape: never throws, passes the gateway's real error text
- * straight through. The gateway requires the same per-boot exec token every other real write route
- * needs (except a 'plan'-mode send) — `readExecToken()` degrades to an omitted header when the meta
- * tag is absent (e.g. a test render), which the gateway then honestly answers with a real 403,
- * exactly like every other write route's own documented degrade path.
+ * straight through. The gateway requires the same per-boot exec token every real write route needs
+ * (N6 fix, WP-C1: checked once for every non-GET request, no exceptions) — `readExecToken()`
+ * degrades to an omitted header when the meta tag is absent (e.g. a test render), which the gateway
+ * then honestly answers with a real 403, exactly like every other write route's own documented
+ * degrade path.
  */
 export async function requestDeleteConversation(conversationId: string): Promise<DeleteConversationResult> {
-  const token = readExecToken();
-  const headers: Record<string, string> = token !== null ? { [EXEC_TOKEN_HEADER]: token } : {};
-  const result = await gwDelete(`/api/conversations/${encodeURIComponent(conversationId)}`, headers);
+  const result = await gwDelete(`/api/conversations/${encodeURIComponent(conversationId)}`, execHeaders());
   if (!result.ok) return { ok: false, error: result.error };
   return { ok: true, error: null };
 }
@@ -96,7 +104,7 @@ export async function requestNewProject(name: string): Promise<NewProjectResult>
   if (trimmed === '') {
     return { ok: false, id: null, error: 'Enter a project name.' };
   }
-  const result = await gwPost('/api/projects', { name: trimmed });
+  const result = await gwPost('/api/projects', { name: trimmed }, execHeaders());
   if (!result.ok) return { ok: false, id: null, error: result.error };
   const project = pickRecord(result.data, ['project']);
   const id = project !== null ? pickString(project, ['name']) : null;

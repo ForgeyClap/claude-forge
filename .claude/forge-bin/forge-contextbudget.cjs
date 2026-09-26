@@ -848,6 +848,21 @@ module.exports = {
 // ---- CLI ----
 if (require.main === module) {
   const argv = process.argv.slice(2);
+  // N3 (2026-09-26 laptop re-audit, WP-S4 CLI sweep): --help/-h used to be silently ignored and fell through
+  // to a full measure() run instead of printing usage — not a hang, but not usage either. Handled FIRST, and
+  // exits before anything else runs.
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log('Usage: node forge-contextbudget.cjs [--root DIR] [--json] [--write-baseline] [--help|-h]');
+    console.log('');
+    console.log('Measures the ALWAYS-LOADED instruction surface (global/workspace/project CLAUDE.md, the ECC');
+    console.log('rules, and the three skill catalogs) and compares it to a recorded baseline. ' + ESTIMATE_NOTE);
+    console.log('');
+    console.log('  --root DIR        project root to measure (default: this project)');
+    console.log('  --json            print the full report as JSON instead of the human summary');
+    console.log('  --write-baseline  record the CURRENT measurement as the new baseline and exit');
+    console.log('  --help, -h        show this usage line and exit');
+    process.exit(0);
+  }
   let root = path.resolve(__dirname, '..', '..'), wantJson = false, wantBaseline = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--root') root = argv[++i];

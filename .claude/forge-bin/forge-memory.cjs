@@ -116,7 +116,9 @@ module.exports = { addLesson, listLessons, recall, scanMemory, memDir, scrub, co
 
 if (require.main === module) {
   const [boss, cmd, ...rest] = process.argv.slice(2);
-  if (!boss || !cmd) { console.log('usage: forge-memory.cjs <boss> add "<text>" [tag,tag] [type] | recall "<query>" | list | scan'); process.exit(1); }
+  // WP-S4 (v2.8.0 laptop-audit Part V-G): already printed on any malformed call (including a bare `--help`,
+  // since that alone leaves `cmd` unset) — reworded to the project's own "Usage: node <tool>.cjs ..." convention.
+  if (!boss || !cmd) { console.log('Usage: node forge-memory.cjs <boss> add "<text>" [tag,tag] [type] | recall "<query>" | list | scan'); process.exit(1); }
   if (cmd === 'add') {
     const rec = addLesson(boss, { text: rest[0], tags: (rest[1] || '').split(',').filter(Boolean), type: rest[2] });
     if (rec.config_note) console.error('NOTE (settings): ' + rec.config_note);

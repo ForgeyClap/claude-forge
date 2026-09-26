@@ -1,6 +1,13 @@
-// Project registry: spawns the existing, already-reviewed `forge-sync.cjs list <root>` CLI with
-// a FIXED argument list (SYNC_SCAN_ROOT, computed in paths.mjs — never from request input),
-// parses its plain-text output, and enriches each entry with whether it has a live dashboard.
+// Project registry: spawns the existing, already-reviewed `forge-sync.cjs list <root>` CLI once
+// per FIXED root in SYNC_SCAN_ROOTS (computed in paths.mjs — never from request input), parses
+// each call's plain-text output, merges the discovered project paths (deduplicated by resolved
+// path — the same real project directory is never listed twice, even when two scan roots overlap
+// or a project sits exactly at a root boundary), and enriches each entry with whether it has a
+// live dashboard.
+//
+// C1 fix (WP-C1): this used to spawn exactly one call against SYNC_SCAN_ROOT (the parent of
+// wherever this repo happens to be cloned) — see paths.mjs's own SYNC_SCAN_ROOTS comment for why
+// that missed a real project living somewhere else on a fresh machine (e.g. the Desktop).
 //
 // R2 fix (WP3 T3.1-T3.10, architecture-review risk): the previous version used execFileSync,
 // blocking the gateway's single thread on every cache-miss/expiry. Now async (execFile,
@@ -15,9 +22,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { FORGE_SYNC_CJS, SYNC_SCAN_ROOT } from './paths.mjs';
+import { FORGE_SYNC_CJS, SYNC_SCAN_ROOTS } from './paths.mjs';
 
 const execFileAsync = promisify(execFile);
+
+// Test-only override seams (same `_set*ForTests` convention this file's siblings already use —
+// e.g. projects-create.mjs's `_setProjectsRootForTests`/`_setInstallRunnerForTests`). Production
+// code never calls either; a real gateway process always uses the real FORGE_SYNC_CJS tool and the
+// real SYNC_SCAN_ROOTS from paths.mjs. Added for WP-C1's C1 fix so the multi-root merge/dedup logic
+// in computeProjectsAsync() below can be exercised against isolated temp fixtures + a real (but
+// test-local) forge-sync.cjs-shaped stub, independent of wherever this gateway's own checkout
+// happens to be nested on disk.
+let forgeSyncCjsOverride = null;
+let scanRootsOverride = null;
+export function _setForgeSyncCjsForTests(cjsPath) { forgeSyncCjsOverride = cjsPath; }
+export function _resetForgeSyncCjsForTests() { forgeSyncCjsOverride = null; }
+export function _setScanRootsForTests(roots) { scanRootsOverride = roots; }
+export function _resetScanRootsForTests() { scanRootsOverride = null; }
+function activeForgeSyncCjs() { return forgeSyncCjsOverride || FORGE_SYNC_CJS; }
+function activeScanRoots() { return scanRootsOverride || SYNC_SCAN_ROOTS; }
 // D2 fix (cc-fix-gateway-perf, forge-2026-07-29-cc-finish): a newly-registered project used to take
 // up to ~45s to become visible (30s TTL + one client poll interval, per the E2E realiteitstest's
 // Fase A/B measurement: 14.1s clean, up to ~45s worst-case). The 30s TTL was chosen on the ASSUMPTION
@@ -84,16 +107,45 @@ function buildProjectEntry(projectPath) {
   };
 }
 
-async function computeProjectsAsync() {
+// One real `forge-sync.cjs list <root>` spawn — never throws, always resolves to a tagged
+// success/failure so the caller can merge several roots without one bad root aborting the rest.
+async function scanOneRoot(root) {
   try {
-    const { stdout } = await execFileAsync(process.execPath, [FORGE_SYNC_CJS, 'list', SYNC_SCAN_ROOT], {
+    const { stdout } = await execFileAsync(process.execPath, [activeForgeSyncCjs(), 'list', root], {
       encoding: 'utf8', timeout: 20_000, windowsHide: true,
     });
-    const projectPaths = parseListOutput(stdout);
-    return { ok: true, projects: projectPaths.map(buildProjectEntry) };
+    return { ok: true, root, paths: parseListOutput(stdout) };
   } catch (err) {
-    return { ok: false, error: 'forge-sync list failed: ' + (err && err.message ? err.message : String(err)), projects: [] };
+    return { ok: false, root, error: err && err.message ? err.message : String(err) };
   }
+}
+
+// C1 fix (WP-C1): scans every SYNC_SCAN_ROOTS entry in parallel (one spawn per root — cheap, see
+// this file's own header for the real measured cost of a single spawn) and merges the discovered
+// project paths, deduplicated by resolved absolute path. A root whose OWN spawn fails (e.g. a
+// permissions error) is skipped rather than failing the whole discovery — as long as at least one
+// root's scan succeeded, this returns that honest partial union (never silently empty when only
+// SOME roots are unreachable). Only when EVERY root's spawn fails does this report ok:false, with
+// every root's own error folded into one message.
+async function computeProjectsAsync() {
+  const results = await Promise.all(activeScanRoots().map(scanOneRoot));
+  const succeeded = results.filter((r) => r.ok);
+  if (succeeded.length === 0) {
+    const detail = results.map((r) => r.root + ': ' + r.error).join(' | ');
+    return { ok: false, error: 'forge-sync list failed for every scan root: ' + detail, projects: [] };
+  }
+
+  const seenResolvedPaths = new Set();
+  const projectPaths = [];
+  for (const r of succeeded) {
+    for (const p of r.paths) {
+      const resolved = path.resolve(p);
+      if (seenResolvedPaths.has(resolved)) continue;
+      seenResolvedPaths.add(resolved);
+      projectPaths.push(p);
+    }
+  }
+  return { ok: true, projects: projectPaths.map(buildProjectEntry) };
 }
 
 function buildDataObject(result, capturedAtMs) {

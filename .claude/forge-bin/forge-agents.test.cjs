@@ -19,12 +19,27 @@ t('real template: 12 Boss names expected', real.expected === 12);
 t('real template: no missing Boss files' + (real.missing.length ? ' (' + real.missing.join(',') + ')' : ''), real.missing.length === 0);
 t('real template: no bad frontmatter' + (real.badFrontmatter.length ? ' (' + real.badFrontmatter.join(',') + ')' : ''), real.badFrontmatter.length === 0);
 t('real template: no injection patterns' + (real.injection.length ? ' (' + JSON.stringify(real.injection) + ')' : ''), real.injection.length === 0);
-// every Boss file: name matches filename + memory: project + description + tools + model
+// every Boss file: name matches filename + description + tools + model, and `memory` follows the tool policy.
+// v2.8.0 (fresh-laptop audit N5): Claude Code grants Write+Edit to any agent whose frontmatter has
+// `memory: project`, so an agent whose policy class forbids Write (read-only-audit / exec-reviewer) must NOT
+// carry it — the class decides, not a blanket rule.
+const POLICY = JSON.parse(fs.readFileSync(path.join(TEMPLATE_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), 'utf8'));
+const memoryAllowed = (name) => {
+  const cls = POLICY.agents && POLICY.agents[name] && POLICY.agents[name].class;
+  const forbidden = (cls && POLICY.classes[cls] && POLICY.classes[cls].forbidden) || [];
+  return !forbidden.includes('Write');
+};
 for (const name of D.BOSS_NAMES) {
   const file = path.join(TEMPLATE_ROOT, '.claude', 'agents', name + '.md');
   let fm = null; try { fm = D.parseFrontmatter(fs.readFileSync(file, 'utf8')); } catch { /* missing */ }
-  t(name + ': frontmatter parses + name matches + memory:project', !!fm && fm.name === name && fm.memory === 'project' && !!fm.description && !!fm.tools && !!fm.model);
+  const allowed = memoryAllowed(name);
+  const memoryOk = !!fm && (allowed ? fm.memory === 'project' : fm.memory === undefined);
+  t(name + ': frontmatter parses + name matches + memory ' + (allowed ? 'is project' : 'is ABSENT (read-only class)'),
+    !!fm && fm.name === name && memoryOk && !!fm.description && !!fm.tools && !!fm.model);
 }
+t('policy: the four read-only-audit Bosses may not carry memory (review/security/search/seo)',
+  ['review-boss', 'security-boss', 'search-boss', 'seo-boss'].every((n) => memoryAllowed(n) === false));
+t('policy: writing Bosses keep memory (build-boss, docs-boss, boss)', ['build-boss', 'docs-boss', 'boss'].every((n) => memoryAllowed(n) === true));
 
 // ---- parseFrontmatter unit ----
 const fmA = D.parseFrontmatter('---\nname: build-boss\ndescription: "Use PROACTIVELY when: coding"\ntools: Read, Write, Edit, Bash, Grep, Glob\nmodel: sonnet\nmemory: project\n---\n\nbody');
@@ -73,7 +88,8 @@ t('real template: codex-reviewer is classified exec-reviewer, NOT read-only (it 
 // --- HERMETIC: build a full 18-agent fixture directly from the REAL policy, prove it's clean, then
 //     mutate ONE agent's granted tools at a time and prove the exact violation the WP demands is caught ---
 function agentMdContent(name, tools, model) {
-  return '---\nname: ' + name + '\ndescription: test fixture for ' + name + '\ntools: ' + tools.join(', ') + '\nmodel: ' + (model || 'sonnet') + '\nmemory: project\n---\n\nbody\n';
+  // v2.8.0 (N5): only agents whose policy class may write carry `memory: project` (see memoryAllowed above).
+  return '---\nname: ' + name + '\ndescription: test fixture for ' + name + '\ntools: ' + tools.join(', ') + '\nmodel: ' + (model || 'sonnet') + (memoryAllowed(name) ? '\nmemory: project' : '') + '\n---\n\nbody\n';
 }
 // mutateFn(name, tools) -> returns the tools array to actually write for that agent (mutated or unchanged).
 // policyMutateFn(policyCopy) -> mutates the policy object itself before it's written to the fixture.
@@ -218,6 +234,36 @@ fs.writeFileSync(path.join(NO_AGENTS_DIR_AT_ALL, '.claude', 'config', 'agents', 
 const noDirCheck = D.agentsCheck(NO_AGENTS_DIR_AT_ALL);
 t('M6b: a completely MISSING agents dir (not just empty) fails CLOSED the same way', noDirCheck.toolPolicy.ok === false && noDirCheck.toolPolicy.missingAgentFile.length === REAL_POLICY_AGENT_COUNT);
 cleanup(NO_AGENTS_DIR_AT_ALL);
+
+// ---- v2.8.0 (N5) MUTATION: a read-only Boss that regains `memory: project` is caught ----
+// Copy the REAL 12 Boss files + the real tool policy into a temp root, then plant `memory: project` into
+// review-boss (class read-only-audit). The doctor's agentsCheck must flag it as bad frontmatter — otherwise a
+// future edit could silently hand a "read-only" reviewer Write/Edit again.
+{
+  const MUT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-agents-n5-'));
+  try {
+    const mAgents = path.join(MUT, '.claude', 'agents');
+    const mPolicyDir = path.join(MUT, '.claude', 'config', 'agents');
+    fs.mkdirSync(mAgents, { recursive: true });
+    fs.mkdirSync(mPolicyDir, { recursive: true });
+    for (const name of D.BOSS_NAMES) {
+      fs.copyFileSync(path.join(TEMPLATE_ROOT, '.claude', 'agents', name + '.md'), path.join(mAgents, name + '.md'));
+    }
+    fs.copyFileSync(path.join(TEMPLATE_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(mPolicyDir, 'agent-tool-policy.json'));
+    const clean = D.agentsCheck(MUT);
+    t('N5 mutation baseline: the copied real Boss set is clean', clean.badFrontmatter.length === 0);
+    const rb = path.join(mAgents, 'review-boss.md');
+    const src = fs.readFileSync(rb, 'utf8');
+    // insert before the CLOSING fence, keeping the file's own line ending (the agent files are CRLF on Windows)
+    const mutatedSrc = src.replace(/(\r?\n)---(\r?\n)/, '$1memory: project$1---$2');
+    t('N5 mutation setup: the memory line was actually inserted', mutatedSrc !== src && /memory:\s*project/.test(mutatedSrc));
+    fs.writeFileSync(rb, mutatedSrc);
+    const mutated = D.agentsCheck(MUT);
+    t('N5 mutation: review-boss with memory: project is flagged as bad frontmatter', mutated.badFrontmatter.includes('review-boss'));
+  } finally {
+    try { fs.rmSync(MUT, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
 
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

@@ -147,6 +147,9 @@ module.exports = { run, resolveProjectRoot, mapReason, configOn, configRead };
 // pattern already proven safe on Windows by forge-hook-hotspot-lock.cjs/forge-hook-secret-scrub.cjs (a
 // synchronous fd-0 read is avoided deliberately). A hard 4s failsafe timer guarantees this hook still exits
 // even if stdin never ends, keeping the <5s PreCompact budget regardless of the platform's pipe behavior. ----
+// CLI: node forge-snapshot-marker.cjs — a hook target, not a discretionary CLI; it never reads argv (no
+// --help/flags), only PreCompact's own JSON on stdin, and always exits 0 within ~4s regardless of input
+// (see the file header's DUAL DEPLOYMENT note and the block comment just above for the full contract).
 if (require.main === module) {
   let done = false;
   const finish = () => { if (done) return; done = true; process.exit(0); };

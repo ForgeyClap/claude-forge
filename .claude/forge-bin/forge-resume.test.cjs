@@ -96,5 +96,12 @@ t('legacy state todo-status still works', legacyStatusRes.status === 0 && readSt
 const legacyRetry = run('retry', '1', '--reason', 'first retry on a legacy todo');
 t('retry on a legacy todo (no prior retry_count) starts at retry_count 1', legacyRetry.status === 0 && readState().todo[0].retry_count === 1);
 
+// 6) N4/Part V-G (2026-09-26, external audit) — the GLOBAL (not project-local) state file is a documented,
+// visible side effect, never a silent one: every write command names the exact path it just wrote.
+t('set names the exact (redirected) state file path it wrote, labelled "global state"', /global state: .*FORGE_RESUME_STATE\.json/.test(setRes.stdout));
+t('todo-add names the exact state file path it wrote', addRes.stdout.includes(STATE_FILE));
+t('todo-status names the exact state file path it wrote', statusRes.stdout.includes(STATE_FILE));
+t('retry names the exact state file path it wrote', retry1.stdout.includes(STATE_FILE));
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

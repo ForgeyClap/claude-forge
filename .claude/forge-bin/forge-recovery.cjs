@@ -389,7 +389,8 @@ if (require.main === module) {
       out({ selftest: ok ? 'PASS' : 'FAIL', classify401: c, meetsMin: g.meetsMin, blockWithoutLedger: b.ok });
       process.exit(ok ? 0 : 1);
     } else {
-      out('usage: forge-recovery.cjs <classify|queries|paths|alternatives|redact|identity|check-block|policy|selftest> [args]');
+      // WP-S4 (v2.8.0 laptop-audit Part V-G): reworded to the project's own "Usage: node <tool>.cjs ..." convention.
+      out('Usage: node forge-recovery.cjs <classify|queries|paths|alternatives|redact|identity|check-block|policy|selftest> [args]');
       process.exit(2);
     }
   } catch (e) { console.error('forge-recovery error: ' + e.message); process.exit(1); }

@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const assert = require('assert');
 const D = require('./forge-doctor.cjs');
 
 let pass = 0, fail = 0, skipped = 0;
@@ -274,6 +275,32 @@ t('backfillContinuity: own report is honest — ok=false with exactly the 2 real
 // plus one backfill-inconsistent run, then assert runDoctor's ok stays true while the advisory itself is
 // honestly ok=false.
 const REAL_ROOT = path.resolve(__dirname, '..', '..'); // this actual project (two levels up from forge-bin)
+
+/** sanitizeReadOnlyAgentMemory(agentsDir) — TRANSITIONAL fixture shim (2026-09-26 laptop re-audit, N5).
+ *  agentsCheck() now requires `memory: project` to be ABSENT on any agent whose policy class forbids Write
+ *  (memoryAllowedForClass()) — the class-aware fix for N5 (Claude Code grants Write+Edit to any agent
+ *  carrying `memory: project`, regardless of its `tools:` line). The N5 REMOVAL of that line from the real
+ *  read-only agent-md files lands in a separate, parallel work package and is not merged into THIS worktree
+ *  yet, so every fixture below that copies the real .claude/agents/ wholesale would otherwise fail on a
+ *  defect this very check exists to catch. This helper makes those fixtures simulate the POST-MERGE state —
+ *  the one both packages will actually ship together — by stripping a `memory:` frontmatter line from any
+ *  copied agent-md whose class forbids Write. Once the real files no longer carry that line, every strip
+ *  below is a no-op (nothing left to remove) and this function stops doing anything at all. */
+function sanitizeReadOnlyAgentMemory(agentsDir) {
+  let policyFile;
+  try { policyFile = JSON.parse(fs.readFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), 'utf8')); }
+  catch { return; }
+  let files; try { files = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md')); } catch { return; }
+  for (const f of files) {
+    const name = f.replace(/\.md$/, '');
+    if (D.memoryAllowedForClass(policyFile, name) !== false) continue; // only strip where memory is FORBIDDEN
+    const p = path.join(agentsDir, f);
+    const text = fs.readFileSync(p, 'utf8');
+    const stripped = text.replace(/^memory:\s*.*\r?\n/m, '');
+    if (stripped !== text) fs.writeFileSync(p, stripped, 'utf8');
+  }
+}
+
 const GREEN_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-green-'));
 fs.mkdirSync(path.join(GREEN_ROOT, '.claude', 'forge-bin'), { recursive: true });
 fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-bin', 'good.cjs'), "'use strict';\nmodule.exports = {};\n");
@@ -285,6 +312,7 @@ fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'log-event.cj
 fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'server.cjs'), path.join(GREEN_ROOT, '.claude', 'forge-dashboard', 'server.cjs'));
 for (const f of ['index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css']) fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-dashboard', f), '// stub ' + f);
 fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(GREEN_ROOT, '.claude', 'agents'), { recursive: true });
+sanitizeReadOnlyAgentMemory(path.join(GREEN_ROOT, '.claude', 'agents'));
 fs.mkdirSync(path.join(GREEN_ROOT, '.claude', 'config', 'agents'), { recursive: true });
 fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(GREEN_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'));
 bfWriteRun(GREEN_ROOT, 'green-bf-warning', [
@@ -296,6 +324,61 @@ t('runDoctor GREEN fixture: all 8 real checks pass (setup sanity check)', greenR
 if (greenRep.ok !== true) console.error('    GREEN fixture check failures: ' + JSON.stringify(Object.entries(greenRep.checks).filter(([, c]) => !c.ok).map(([k, c]) => [k, c.reason || c])));
 t('runDoctor GREEN fixture: advisory DOES surface the real backfill warning', greenRep.advisory.backfill_continuity.warnings.length === 1 && greenRep.advisory.backfill_continuity.ok === false);
 t('runDoctor GREEN fixture: an advisory warning does NOT flip doctor.ok to false', greenRep.ok === true);
+
+// =====================================================================================================
+// N5 (2026-09-26 laptop re-audit, WP-S6a) — agentsCheck()'s `memory:` requirement is now CLASS-AWARE:
+// Claude Code grants Write+Edit to any agent-md carrying `memory: project`, regardless of its `tools:`
+// line, so a class whose policy forbids Write (read-only-audit, exec-reviewer) must never carry that line,
+// and every other class must. Both directions are proven against a real GREEN_ROOT-style agents/ copy —
+// never invented fixture text — so a genuine drift in the real agent-md files is what this test protects.
+// =====================================================================================================
+const AGENTSCHK_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-agentscheck-'));
+fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(AGENTSCHK_ROOT, '.claude', 'agents'), { recursive: true });
+sanitizeReadOnlyAgentMemory(path.join(AGENTSCHK_ROOT, '.claude', 'agents'));
+fs.mkdirSync(path.join(AGENTSCHK_ROOT, '.claude', 'config', 'agents'), { recursive: true });
+fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(AGENTSCHK_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'));
+const agentsCleanRep = D.agentsCheck(AGENTSCHK_ROOT);
+t('agentsCheck: with every read-only agent correctly missing `memory:`, badFrontmatter is empty and the check is green', agentsCleanRep.badFrontmatter.length === 0 && agentsCleanRep.ok === true, JSON.stringify(agentsCleanRep.badFrontmatter));
+
+// the REGRESSION this whole fix exists to catch: a read-only-audit agent (review-boss) REGAINS `memory:
+// project` in its frontmatter — agentsCheck() must flag it, exactly the way N5 was originally found.
+const REGROW_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-agentscheck-regrow-'));
+fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(REGROW_ROOT, '.claude', 'agents'), { recursive: true });
+sanitizeReadOnlyAgentMemory(path.join(REGROW_ROOT, '.claude', 'agents'));
+fs.mkdirSync(path.join(REGROW_ROOT, '.claude', 'config', 'agents'), { recursive: true });
+fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(REGROW_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'));
+const reviewBossPath = path.join(REGROW_ROOT, '.claude', 'agents', 'review-boss.md');
+const reviewBossText = fs.readFileSync(reviewBossPath, 'utf8');
+assert.ok(/^---\r?\n/.test(reviewBossText), 'fixture assumption: review-boss.md starts with a frontmatter block');
+fs.writeFileSync(reviewBossPath, reviewBossText.replace(/^---\r?\n/, '---\nmemory: project\n'), 'utf8');
+const agentsRegrowRep = D.agentsCheck(REGROW_ROOT);
+t('agentsCheck: a read-only-audit agent (review-boss) regaining `memory: project` is caught in badFrontmatter', agentsRegrowRep.badFrontmatter.includes('review-boss') && agentsRegrowRep.ok === false, JSON.stringify(agentsRegrowRep.badFrontmatter));
+t('agentsCheck: the regression is isolated to review-boss — every other Boss stays clean', agentsRegrowRep.badFrontmatter.length === 1, JSON.stringify(agentsRegrowRep.badFrontmatter));
+
+// the mirror case: a full-build agent (build-boss) LOSING its required `memory: project` is caught too —
+// class-awareness cuts both ways, it is not a one-directional relaxation of the old blanket requirement.
+const LOSE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-agentscheck-lose-'));
+fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(LOSE_ROOT, '.claude', 'agents'), { recursive: true });
+sanitizeReadOnlyAgentMemory(path.join(LOSE_ROOT, '.claude', 'agents'));
+fs.mkdirSync(path.join(LOSE_ROOT, '.claude', 'config', 'agents'), { recursive: true });
+fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(LOSE_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'));
+const buildBossPath = path.join(LOSE_ROOT, '.claude', 'agents', 'build-boss.md');
+const buildBossText = fs.readFileSync(buildBossPath, 'utf8');
+assert.ok(/^memory:\s*project\r?\n/m.test(buildBossText), 'fixture assumption: build-boss.md currently carries memory: project');
+fs.writeFileSync(buildBossPath, buildBossText.replace(/^memory:\s*.*\r?\n/m, ''), 'utf8');
+const agentsLoseRep = D.agentsCheck(LOSE_ROOT);
+t('agentsCheck: a full-build agent (build-boss) LOSING its required `memory: project` is also caught', agentsLoseRep.badFrontmatter.includes('build-boss') && agentsLoseRep.ok === false, JSON.stringify(agentsLoseRep.badFrontmatter));
+
+t('memoryAllowedForClass: returns false for read-only-audit and exec-reviewer, true for write-no-exec and full-build, null when unresolvable', (() => {
+  const pf = JSON.parse(fs.readFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), 'utf8'));
+  return D.memoryAllowedForClass(pf, 'review-boss') === false
+    && D.memoryAllowedForClass(pf, 'security-boss') === false
+    && D.memoryAllowedForClass(pf, 'verify-boss') === false
+    && D.memoryAllowedForClass(pf, 'boss') === true
+    && D.memoryAllowedForClass(pf, 'build-boss') === true
+    && D.memoryAllowedForClass(null, 'boss') === null
+    && D.memoryAllowedForClass(pf, 'totally-unknown-agent') === null;
+})());
 
 // =====================================================================================================
 // 2026-07-15 KRITIEKE FIX-RONDE — 3 bugs found by an adversarial break-swarm, each reproduced twice
@@ -1181,6 +1264,7 @@ function makeCompletenessBase(dirName) {
   fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'server.cjs'), path.join(root, '.claude', 'forge-dashboard', 'server.cjs'));
   for (const f of ['index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css']) fs.writeFileSync(path.join(root, '.claude', 'forge-dashboard', f), '// stub ' + f);
   fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(root, '.claude', 'agents'), { recursive: true });
+  sanitizeReadOnlyAgentMemory(path.join(root, '.claude', 'agents'));
   fs.mkdirSync(path.join(root, '.claude', 'config', 'agents'), { recursive: true });
   fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'config', 'agents', 'agent-tool-policy.json'), path.join(root, '.claude', 'config', 'agents', 'agent-tool-policy.json'));
   return root;
@@ -1759,11 +1843,19 @@ t('context_budget: the REAL project has no dead @-include in its global chain', 
 // The structural half (three sources, reported separately) stays strict everywhere; the non-zero half
 // only where a global catalog actually exists (external audit II-B, 2026-09-23).
 t('context_budget: the REAL measurement reports all three skill sources separately', cbudReal.skill_sources.length === 3, JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
-if (fs.existsSync(path.join(require('os').homedir(), '.claude', 'skills')) && fs.existsSync(path.join(require('os').homedir(), '.claude', 'plugins'))) {
-  t('context_budget: on a machine WITH a global skills dir and a plugin catalog, none of the three sources is zero', cbudReal.skill_sources.every((s) => s.skills > 0), JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
+// N3/N8 (2026-09-26 laptop re-audit): a bare existsSync() on ~/.claude/skills and ~/.claude/plugins is NOT
+// the same fact as "there is a real catalog here" — Claude Code itself creates an empty ~/.claude/plugins
+// scaffold on a fresh install (the laptop shape: installed, but otherwise empty), so the folder can exist
+// with zero skills inside it. That let this precondition run on an empty catalog and fail with "none of the
+// three sources is zero". The precondition now asks the meter's own on-disk count, not the folder's mere
+// existence.
+const cbudGlobalOnDisk = (cbudReal.skill_sources.find((s) => s.id === 'skill_catalog_global') || {}).skills_on_disk || 0;
+const cbudPluginOnDisk = (cbudReal.skill_sources.find((s) => s.id === 'skill_catalog_plugins') || {}).skills_on_disk || 0;
+if (cbudGlobalOnDisk > 0 && cbudPluginOnDisk > 0) {
+  t('context_budget: on a machine WITH a non-trivial global skills catalog and a non-trivial plugin catalog, none of the three sources is zero', cbudReal.skill_sources.every((s) => s.skills > 0), JSON.stringify((cbudReal.skill_sources || []).map((s) => s.id + '=' + s.skills)));
 } else {
   skipped++;
-  console.log('  SKIP context_budget non-zero-sources — this machine has no ~/.claude/skills and/or ~/.claude/plugins; a zero count is the truth here, not a defect');
+  console.log('  SKIP context_budget non-zero-sources — this machine has no non-trivial ~/.claude/skills and/or ~/.claude/plugins catalog (0 skills on disk); a zero count is the truth here, not a defect');
 }
 t('context_budget: the two out-of-project catalogs are flagged read-only, never write-touched', cbudReal.skill_sources.filter((s) => !s.in_project).length === 2 && cbudReal.skill_sources.filter((s) => !s.in_project).every((s) => s.access === 'read-only'), JSON.stringify(cbudReal.skill_sources.map((s) => s.id + ':' + s.access)));
 t('context_budget: no skill walk hit its depth cap on the real machine (a capped walk would be a finding, not a smaller number)', !cbudReal.findings.some((f) => f.kind === 'depth_capped'), JSON.stringify(cbudReal.findings.filter((f) => f.kind === 'depth_capped')));
@@ -1777,6 +1869,37 @@ t('context_budget: no skill walk hit its depth cap on the real machine (a capped
 // empty catalog. A source that is missing and a source that is empty are different facts.
 t('printSummary: the context-budget line shows the per-source skill breakdown, not one project-only number', /skills: project \d+( \(absent\))? \+ global \d+( \(absent\))? \+ plugins \d+/.test(cbudSummary), (cbudSummary.split('\n').find((l) => /context budget/.test(l)) || 'no context-budget line'));
 t('printSummary: a skill source that is absent rather than empty is marked as such in the line', /project 0 \(absent\)/.test(cbudSummary), (cbudSummary.split('\n').find((l) => /context budget/.test(l)) || 'no context-budget line'));
+
+// ============================================================================================================
+// LAPTOP + CI SHAPES (2026-09-26 re-audit): deterministic on every machine, unlike the REAL-project checks
+// above which depend on whatever THIS developer's own ~/.claude happens to contain. HOME/USERPROFILE point at
+// a throwaway dir so the doctor's context_budget advisory is proven honest on the exact two shapes the
+// audit found. Both run on a FIXTURE root (never REAL_PROJECT_ROOT) — runDoctor() on the real project spawns
+// all 105+ suites and blows the 120s per-suite budget (see the comment above cbudGrown).
+function cbHomeOverride(fakeHome, fn) {
+  const prevHome = process.env.HOME, prevProfile = process.env.USERPROFILE;
+  process.env.HOME = fakeHome;
+  process.env.USERPROFILE = fakeHome;
+  try { return fn(); }
+  finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+  }
+}
+const LAPTOP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-laptop-home-'));
+fs.mkdirSync(path.join(LAPTOP_HOME, '.claude'), { recursive: true }); // present but EMPTY: no skills/, no plugins/, no CLAUDE.md
+const LAPTOP_ROOT = makeCompletenessBase('forge-doctor-laptop-project-');
+const laptopRep = cbHomeOverride(LAPTOP_HOME, () => D.runDoctor(LAPTOP_ROOT));
+t('laptop shape: ~/.claude present but completely empty never flips doctor.ok', laptopRep.ok === true, JSON.stringify(Object.entries(laptopRep.checks).filter(([, c]) => !c.ok).map(([k]) => k)));
+t('laptop shape: context-budget reports the three skill sources without crashing, global+plugins an honest zero', laptopRep.advisory.context_budget.skill_sources.length === 3
+  && laptopRep.advisory.context_budget.skill_sources.filter((s) => s.id !== 'skill_catalog_project').every((s) => s.skills_on_disk === 0),
+  JSON.stringify(laptopRep.advisory.context_budget.skill_sources));
+
+const NOCLAUDE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-noclaude-home-'));
+// deliberately do NOT create .claude at all here — the CI shape (no ~/.claude whatsoever)
+const NOCLAUDE_ROOT = makeCompletenessBase('forge-doctor-noclaude-project-');
+const noClaudeRep = cbHomeOverride(NOCLAUDE_HOME, () => D.runDoctor(NOCLAUDE_ROOT));
+t('CI shape: no ~/.claude at all never flips doctor.ok either', noClaudeRep.ok === true, JSON.stringify(Object.entries(noClaudeRep.checks).filter(([, c]) => !c.ok).map(([k]) => k)));
 
 // real-project regression guard: this project's OWN real skills are evaluated (no drift), and the KNOWN,
 // already-real, non-blocking findings are named exactly — a genuine NEW regression elsewhere would show up
@@ -2234,14 +2357,30 @@ function swWriteTemplate(dir, settings) {
   fs.writeFileSync(p, JSON.stringify(settings, null, 2) + '\n', 'utf8');
   return p;
 }
+// swWithHome — every settings-wired assertion about "no template available" must not depend on whether
+// THIS machine happens to have a real canonical template at ~/.claude/forge/template/.claude (it does on
+// the author's own machine — that is precisely the installer-written path settingsTemplatePath() now also
+// checks). Point HOME/USERPROFILE at a throwaway empty dir first, so "no template" means it here too.
+function swWithHome(fakeHome, fn) {
+  const prevHome = process.env.HOME, prevProfile = process.env.USERPROFILE;
+  process.env.HOME = fakeHome;
+  process.env.USERPROFILE = fakeHome;
+  try { return fn(); }
+  finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+  }
+}
+
 const BS_SW_NOFILE = bsTmp('sw-nofile');
 t('settings-wired: no .claude/settings.json at all -> note, ok:true (nothing to compare)', D.settingsWired(BS_SW_NOFILE, {}).level === 'note' && D.settingsWired(BS_SW_NOFILE, {}).ok === true, JSON.stringify(D.settingsWired(BS_SW_NOFILE, {})));
 
 const BS_SW_NOTEMPLATE = bsTmp('sw-notemplate');
 fs.mkdirSync(path.join(BS_SW_NOTEMPLATE, '.claude'), { recursive: true });
 fs.writeFileSync(path.join(BS_SW_NOTEMPLATE, '.claude', 'settings.json'), JSON.stringify(SW_TEMPLATE_SETTINGS, null, 2) + '\n', 'utf8');
-const swNoTemplate = D.settingsWired(BS_SW_NOTEMPLATE, {});
-t('settings-wired: settings.json exists but no template given -> note, ok:true (cannot judge)', swNoTemplate.level === 'note' && swNoTemplate.ok === true && /no template settings\.json found/.test(swNoTemplate.detail), JSON.stringify(swNoTemplate));
+const swNoTemplateHome = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-sw-notemplate-home-'));
+const swNoTemplate = swWithHome(swNoTemplateHome, () => D.settingsWired(BS_SW_NOTEMPLATE, {}));
+t('settings-wired: settings.json exists but no template given anywhere (env var or canonical install path) -> note, ok:true (cannot judge)', swNoTemplate.level === 'note' && swNoTemplate.ok === true && /no template settings\.json found/.test(swNoTemplate.detail), JSON.stringify(swNoTemplate));
 
 const BS_SW_PRESENT = bsTmp('sw-present');
 fs.mkdirSync(path.join(BS_SW_PRESENT, '.claude'), { recursive: true });
@@ -2264,7 +2403,25 @@ t('settings-wired: settingsTemplatePath honors FORGE_SYNC_TEMPLATE_DIR when opts
   try { return D.settingsTemplatePath({}) === swTemplatePath; }
   finally { if (prev === undefined) delete process.env.FORGE_SYNC_TEMPLATE_DIR; else process.env.FORGE_SYNC_TEMPLATE_DIR = prev; }
 })());
-t('settings-wired: never reads the real home directory (no os.homedir() fallback)', D.settingsTemplatePath.toString().indexOf('homedir') === -1);
+// N8 (2026-09-26 laptop re-audit): on an installer install there is no opts.source and no
+// FORGE_SYNC_TEMPLATE_DIR, yet install.ps1/install.sh both copy the shipped .claude tree to
+// `<home>/.claude/forge/template/.claude` — the exact same canonical path forge-sync.cjs already falls
+// back to. settingsTemplatePath() must find it there (read-only — it never writes), or settings-wired can
+// never run on an installer install and is stuck at "note" forever.
+t('settings-wired: settingsTemplatePath falls back to the canonical installer template under the home directory', (() => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-sw-home-'));
+  const templateSettings = swWriteTemplate(path.join(fakeHome, '.claude', 'forge', 'template', '.claude'), SW_TEMPLATE_SETTINGS);
+  return swWithHome(fakeHome, () => D.settingsTemplatePath({}) === templateSettings);
+})());
+t('settings-wired: an injected opts.source still wins over the canonical installer template', (() => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-sw-home2-'));
+  swWriteTemplate(path.join(fakeHome, '.claude', 'forge', 'template', '.claude'), SW_TEMPLATE_SETTINGS);
+  return swWithHome(fakeHome, () => D.settingsTemplatePath({ source: swTemplatePath }) === swTemplatePath);
+})());
+t('settings-wired: with no injected source, no env var and no canonical template on this fake home, it honestly finds nothing', (() => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-sw-home3-'));
+  return swWithHome(fakeHome, () => D.settingsTemplatePath({}) === null);
+})());
 
 // wired into beginnerSetup(): the source is threaded through via opts.settingsSource
 const bsWithSettings = D.beginnerSetup(BS_SW_PRESENT, { env: bsEnv(BS_SW_PRESENT), settingsSource: swTemplatePath });
@@ -2317,7 +2474,17 @@ const bsStart = DOCTOR_SRC_TEXT.indexOf('// BEGINNER SETUP (wp17, 2026-09-24) �
 const bsEnd = DOCTOR_SRC_TEXT.indexOf('function runDoctor(');
 const bsSection = bsStart > 0 && bsEnd > bsStart ? DOCTOR_SRC_TEXT.slice(bsStart, bsEnd) : '';
 t('beginner setup static: the section was located in the doctor source (guards below are not vacuous)', bsSection.length > 2000, 'length=' + bsSection.length);
-t('beginner setup static: no new code touches os.homedir() or a HOME/USERPROFILE variable', !/homedir|USERPROFILE|env\.HOME\b/.test(bsSection) && !/homedir/.test(D.installationProfile.toString()) && !/homedir/.test(D.readDevTreeMarker.toString()));
+// N8 (2026-09-26 laptop re-audit): settingsTemplatePath() is now a DELIBERATE, reviewed exception — it
+// reads os.homedir() to find the installer's own canonical template (`<home>/.claude/forge/template/.claude`,
+// the exact path install.ps1/install.sh write), read-only, so settings-wired can run at all on an installer
+// install (without it, settings-wired could never leave "note" on a real install — see its own header
+// comment). The blanket guard below now carves OUT that one named function's own text and proves two things
+// separately: (1) settingsTemplatePath() itself never writes anything, only checks existence/reads a path;
+// (2) nothing ELSE in the beginner-setup section touches the home directory.
+const settingsTemplatePathText = D.settingsTemplatePath.toString();
+t('beginner setup static: settingsTemplatePath() is the one named exception, and it is read-only (existence checks only, never a write)', /homedir/.test(settingsTemplatePathText) && !/writeFile|mkdirSync|appendFile|rmSync|unlinkSync|rmdirSync/.test(settingsTemplatePathText), settingsTemplatePathText);
+const bsSectionWithoutException = bsSection.split(settingsTemplatePathText).join('');
+t('beginner setup static: no OTHER new code touches os.homedir() or a HOME/USERPROFILE variable', !/homedir|USERPROFILE|env\.HOME\b/.test(bsSectionWithoutException) && !/homedir/.test(D.installationProfile.toString()) && !/homedir/.test(D.readDevTreeMarker.toString()), 'exception text ' + (bsSection.includes(settingsTemplatePathText) ? 'found and removed' : 'NOT FOUND in bsSection — carve-out did not match'));
 t('beginner setup static: every spawned tool gets stdin closed (ignore) — nothing can wait for a keypress', /stdio: \['ignore', 'pipe', 'pipe'\]/.test(bsSection) && (bsSection.match(/spawnSync\(/g) || []).length === 2);
 t('beginner setup static: no shell:true anywhere in the section', !/shell:\s*true/.test(bsSection));
 t('beginner setup static: the forge-doctor CLI is the caller that opts in to the claude doctor probe', /runDoctor\(root, \{ probeClaudeDoctor: true \}\)/.test(DOCTOR_SRC_TEXT));

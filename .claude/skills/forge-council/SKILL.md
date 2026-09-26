@@ -1,49 +1,49 @@
 ---
 name: forge-council
-description: LLM Council (FULL) — 5 onafhankelijke adviseurs via de Agent-tool, anonieme peer review, chairman-synthese met minority report, gevalideerd record. Alleen via councilTrigger; nooit bewijs.
+description: LLM Council (FULL) — 5 independent advisors via the Agent tool, anonymous peer review, chairman synthesis with minority report, validated record. Only via councilTrigger; never proof.
 ---
 
-# forge-council — LLM Council (FULL-protocol)
+# forge-council — LLM Council (FULL protocol)
 
-Gebruik ALLEEN wanneer `councilTrigger()` (forge-quality.cjs) FULL zegt: expliciete owner-vraag om
-tegenspraak, of hoge impact + hoge onzekerheid. Nooit standaard, nooit op simpele taken — de
-verwachte informatiewinst moet latency, kosten en contextbelasting overstijgen. LIGHT bestaat als
-uitkomst van de trigger maar heeft hier bewust GEEN protocol: eerst een benchmark die waarde
-aantoont (anti-overengineering), tot die tijd valt LIGHT terug op één gerichte second opinion.
+Use ONLY when `councilTrigger()` (forge-quality.cjs) says FULL: an explicit owner request for
+pushback, or high impact + high uncertainty. Never by default, never on simple tasks — the
+expected information gain must outweigh latency, cost and context load. LIGHT exists as an outcome
+of the trigger but deliberately has NO protocol here yet: first a benchmark that proves its value
+(anti-overengineering); until then LIGHT falls back to one targeted second opinion.
 
 ## Protocol (FULL)
 
-**Stap 0 — neutrale framing.** Schrijf de beslisvraag NEUTRAAL op (geen voorkeursrichting, geen
-"we neigen naar X"): context, opties, criteria, harde grenzen. Bereken `context_hash` =
-sha256 van die framingtekst (forge-quality.cjs::sha256). De framing is een run-artefact.
+**Step 0 — neutral framing.** Write the decision question NEUTRALLY (no preferred direction, no
+"we lean towards X"): context, options, criteria, hard limits. Compute `context_hash` =
+sha256 of that framing text (forge-quality.cjs::sha256). The framing is a run artifact.
 
-**Stap 1 — 5 verse, onafhankelijke adviseurs, parallel.** Dispatch via de Agent-tool (echte
-subagents, één bericht met 5 parallelle calls; GEEN gesimuleerde agents). Elke adviseur krijgt
-ALLEEN de neutrale framing — geen zicht op elkaar. De vijf vaste lenzen:
-- **Contrarian** — valt de populairste optie aan; zoekt wat iedereen mist.
-- **First Principles** — herleidt naar grondbeginselen; negeert conventie.
-- **Expansionist** — verbreedt de optieruimte; wat als de vraag zelf te smal is?
-- **Outsider** — kijkt als buitenstaander/eindgebruiker; jargonvrij.
-- **Executor** — beoordeelt uitvoerbaarheid, kosten, risico, rollback.
+**Step 1 — 5 fresh, independent advisors, in parallel.** Dispatch via the Agent tool (real
+subagents, one message with 5 parallel calls; NO simulated agents). Each advisor gets ONLY the
+neutral framing — no visibility of the others. The five fixed lenses:
+- **Contrarian** — attacks the most popular option; looks for what everyone is missing.
+- **First Principles** — reduces to fundamentals; ignores convention.
+- **Expansionist** — widens the option space; what if the question itself is too narrow?
+- **Outsider** — looks at it as an outsider/end user would; jargon-free.
+- **Executor** — judges feasibility, cost, risk, rollback.
 
-**Stap 2 — anonieme peer review.** Anonimiseer de vijf adviezen als A-E en stuur ze naar elke
-adviseur terug (tweede dispatchronde): rangschik de andere vier en benoem de sterkste kritiek per
-advies. Anonimiteit voorkomt autoriteits- en zelfvoorkeur.
+**Step 2 — anonymous peer review.** Anonymize the five pieces of advice as A-E and send them back
+to each advisor (a second dispatch round): rank the other four and name the strongest critique of
+each. Anonymity prevents authority bias and self-preference.
 
-**Stap 3 — chairman-synthese.** De orchestrator (of een aparte chairman-dispatch) weegt adviezen +
-peer-rankings en schrijft het besluit MET expliciet **minority report**: afwijkende meningen
-verdwijnen niet, ze staan erbij met reden.
+**Step 3 — chairman synthesis.** The orchestrator (or a separate chairman dispatch) weighs the
+advice + peer rankings and writes the decision WITH an explicit **minority report**: dissenting
+opinions don't disappear, they're recorded alongside the reason.
 
-**Record.** Vul een CouncilDecisionRecord: council_id, context_hash, participants (role + runtime +
-dispatch_id uit de ECHTE Agent-dispatches + response_ref), responses, quorum, verdict,
-minority_report, status. Valideer met `validateCouncilRecord` en persisteer via
-`node .claude/forge-bin/forge-quality.cjs council-save <run_id> <record.json>` — een ongeldig
-record wordt NIET geschreven (de weigering met reden is het eerlijke resultaat), en een council_id
-wordt nooit overschreven.
+**Record.** Fill in a CouncilDecisionRecord: council_id, context_hash, participants (role + runtime +
+dispatch_id from the REAL Agent dispatches + response_ref), responses, quorum, verdict,
+minority_report, status. Validate with `validateCouncilRecord` and persist via
+`node .claude/forge-bin/forge-quality.cjs council-save <run_id> <record.json>` — an invalid
+record is NOT written (the refusal with a reason is the honest result), and a council_id is
+never overwritten.
 
-## Grenzen (permanent)
-- Validatie is **shape_only**: runtime/dispatch_id zijn niet cryptografisch gebonden; echte
-  provenance vereist het owner-gated gateway-dispatchreceipt (OWNER-GATED.md).
-- **Consensus is nooit bewijs.** Elk council-besluit dat code raakt, eist daarna gewone
-  tests/metingen; het record verwijst ernaar, nooit andersom.
-- Een INCOMPLETE quorum wordt eerlijk INCOMPLETE gemarkeerd — nooit opgevuld.
+## Limits (permanent)
+- Validation is **shape_only**: runtime/dispatch_id are not cryptographically bound; real
+  provenance requires the owner-gated gateway dispatch receipt (OWNER-GATED.md).
+- **Consensus is never proof.** Every council decision that touches code still requires ordinary
+  tests/measurements afterward; the record points to them, never the other way round.
+- An INCOMPLETE quorum is honestly marked INCOMPLETE — never padded out.

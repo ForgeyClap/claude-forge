@@ -23,13 +23,34 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { GATEWAY_ORIGIN, GATEWAY_START_COMMAND } from '@/prototype/state/gateway-client';
 
-/** vitest's root is `command-center/dashboard`; the project root is two levels up. */
-const PROJECT_ROOT = resolve(process.cwd(), '..', '..');
+// C1 fix (WP-C1, 2026-09-26 laptop re-audit): the old `resolve(process.cwd(), '..', '..')` assumed
+// vitest is ALWAYS invoked with `command-center/dashboard` as cwd — true only for one specific
+// invocation habit (the author's own `cd command-center/dashboard && npm test`), false for any other
+// caller (a CI runner, `npm --prefix`, a worktree-based checkout, a different launcher script) —
+// exactly the "only passes on the author's machine" class of defect. Walking upward from THIS
+// file's own real, fixed on-disk location (never affected by cwd) for the nearest ancestor that
+// contains the one stable marker every real checkout of this project ships
+// (`command-center/gateway/bin.mjs`) is invocation-independent. Falls back to the original
+// cwd-based guess only if that marker is genuinely never found (never worse than before).
+function findProjectRoot(): string {
+  const thisFileDir = dirname(fileURLToPath(import.meta.url));
+  let dir = thisFileDir;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, 'command-center', 'gateway', 'bin.mjs'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return resolve(process.cwd(), '..', '..');
+}
+
+const PROJECT_ROOT = findProjectRoot();
 
 /** The documents that describe how to run this project. */
 const DOCS = ['CLAUDE.md', join('.claude', 'commands', 'forge.md')];

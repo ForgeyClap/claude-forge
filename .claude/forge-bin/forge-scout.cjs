@@ -10,15 +10,22 @@
  *      list from per-domain seed templates — deliberately NOT a generic "claude skill" search. Distinct
  *      domains produce distinct, domain-flavored terms (see SEED_TEMPLATES); an uncurated domain still gets
  *      a domain-tailored (not generic) fallback built from the domain word itself.
- *   2. record()/list()/isVetted() — an append-only ledger at config/orchestration/FORGE_SCOUT_VETTING.json.
- *      A HARD-PASS verdict for a capability PERSISTS: once recorded, isVetted() always surfaces the
- *      HARD-PASS ahead of any later attempt to (re-)APPROVE the same capability, so junk is never
- *      re-evaluated on a future Scout pass. The ledger file itself is never overwritten wholesale — every
- *      record() call reads the existing file, appends one new entry, and writes the file back whole (same
- *      read-modify-write discipline as forge-store.cjs's per-entity writes); no prior entry is ever deleted
- *      or mutated in place.
+ *   2. record()/list()/isVetted() — an append-only ledger split (2026-09-26, external audit N4) across TWO
+ *      files: config/orchestration/FORGE_SCOUT_VETTING.json (SHIPPED, curated baseline — ships with the
+ *      template, product-decided) and config/orchestration/FORGE_SCOUT_VETTING.user.json (NEVER shipped,
+ *      never in forge-sync.cjs's SYSTEM/SYSTEM_GLOB list — real Scout research accumulated by USING this
+ *      project). record() writes new verdicts to the user ledger by default; list()/isVetted() transparently
+ *      merge both so every existing caller keeps seeing the full picture. A HARD-PASS verdict for a
+ *      capability PERSISTS: once recorded, isVetted() always surfaces the HARD-PASS ahead of any later
+ *      attempt to (re-)APPROVE the same capability, so junk is never re-evaluated on a future Scout pass —
+ *      which is exactly why a STALE hard-pass (one covering a capability the product has since vendored/
+ *      shipped, e.g. frontend-design) is corrected IN PLACE in the shipped baseline rather than "fixed" by
+ *      appending a same-key approve that the persistence rule would then bury anyway. Neither ledger file is
+ *      ever overwritten wholesale by record() — every call reads the existing target file, appends one new
+ *      entry, and writes that one file back whole (same read-modify-write discipline as forge-store.cjs's
+ *      per-entity writes); no prior entry is ever deleted or mutated in place by record() itself.
  *
- * LEDGER SHAPE (config/orchestration/FORGE_SCOUT_VETTING.json):
+ * LEDGER SHAPE (both files, identical shape):
  *   { "_doc": <string>, "version": 1, "entries": [ { capability, verdict, reason, source, ts }, ... ] }
  *   verdict is one of 'approve' | 'hard-pass'. A malformed ledger (invalid JSON, wrong top-level shape, an
  *   entry missing a required field) THROWS on read — same fail-closed posture forge-actiongate.cjs and
@@ -34,11 +41,12 @@
  *   list(opts) -> { entries: [...] }
  *   isVetted(capability, opts) -> null (never vetted) | the prevailing entry (a HARD-PASS, if one exists
  *     for this capability, ALWAYS wins over a later approve; otherwise the most recent entry)
- *   opts.vettingPath overrides the default config/orchestration/FORGE_SCOUT_VETTING.json location (test
- *   hermeticity, same seam every sibling Wave tool uses). process.env.FORGE_SCOUT_VETTING_PATH is the same
- *   override applied when no opts.vettingPath is given — this is what lets the CLI be exercised hermetically
- *   from a spawned subprocess (mirrors forge-store.cjs's FORGE_STORE_ROOT env-var test seam) without ever
- *   writing to this repo's real ledger file.
+ *   opts.vettingPath — the ORIGINAL, still-fully-supported single-file test seam: when given (or when
+ *     process.env.FORGE_SCOUT_VETTING_PATH is set), EVERY function (record/list/isVetted) reads/writes
+ *     EXACTLY that one file, unmerged — this is what every existing hermetic test in forge-scout.test.cjs
+ *     already relies on, and it is unchanged by the 2026-09-26 split. Only the DEFAULT (no override at all)
+ *     changes: list()/isVetted() then merge CONFIG_PATH (shipped baseline) + USER_CONFIG_PATH (accumulated
+ *     user ledger), and record() writes ONLY to USER_CONFIG_PATH — never to the shipped template.
  *
  * CLI:
  *   node forge-scout.cjs terms --domain <d> [--keywords <k1,k2,...>] [--json]
@@ -51,6 +59,10 @@ const fs = require('fs');
 const path = require('path');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_SCOUT_VETTING.json');
+// USER_CONFIG_PATH — real Scout research accumulated by USING this project. NEVER add this filename to
+// forge-sync.cjs's SYSTEM/SYSTEM_GLOB list: it must never be synced from, or overwritten/deleted by, the
+// product template. See forge-sync.cjs's own comment next to SYSTEM for the matching note.
+const USER_CONFIG_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_SCOUT_VETTING.user.json');
 const VALID_VERDICTS = new Set(['approve', 'hard-pass']);
 
 // ---------------------------------------------------------------------------------------------------------
@@ -218,16 +230,23 @@ function defaultLedger() {
   };
 }
 
-/** loadLedger(vettingPath) -> {_doc, version, entries}. Missing file degrades to an honest empty ledger
- *  (normal for a fresh project — Scout hasn't recorded anything yet). A PRESENT-but-malformed file (invalid
- *  JSON, wrong top-level shape, or an entry missing a required field) THROWS — fail closed, same rule every
- *  sibling config/ledger reader in this project already applies. */
+/** resolveExplicitPath(vettingPath) -> the ORIGINAL single-file test seam, unchanged since 2026-07-22: an
+ *  explicit opts.vettingPath, or process.env.FORGE_SCOUT_VETTING_PATH, or null when neither is given (the
+ *  caller then falls through to the 2026-09-26 default template+user split — see loadLedger()/record()). */
+function resolveExplicitPath(vettingPath) {
+  return vettingPath || process.env.FORGE_SCOUT_VETTING_PATH || null;
+}
+// Back-compat alias — same behavior as before the split when a caller passes an explicit path (which every
+// existing hermetic test does); kept exported under its original name.
 function resolvePath(vettingPath) {
-  return vettingPath || process.env.FORGE_SCOUT_VETTING_PATH || CONFIG_PATH;
+  return resolveExplicitPath(vettingPath) || CONFIG_PATH;
 }
 
-function loadLedger(vettingPath) {
-  const p = resolvePath(vettingPath);
+/** loadLedgerFile(p) -> {_doc, version, entries} for EXACTLY the given file. Missing file degrades to an
+ *  honest empty ledger (normal for a fresh project — Scout hasn't recorded anything yet there). A
+ *  PRESENT-but-malformed file (invalid JSON, wrong top-level shape, or an entry missing a required field)
+ *  THROWS — fail closed, same rule every sibling config/ledger reader in this project already applies. */
+function loadLedgerFile(p) {
   let raw;
   try {
     raw = fs.readFileSync(p, 'utf8');
@@ -258,8 +277,19 @@ function loadLedger(vettingPath) {
   return data;
 }
 
-function saveLedger(vettingPath, ledger) {
-  const p = resolvePath(vettingPath);
+/** loadLedger(vettingPath) -> {_doc, version, entries}. With an explicit vettingPath (or
+ *  FORGE_SCOUT_VETTING_PATH) — the pre-2026-09-26 behavior, unchanged: exactly that one file, unmerged. With
+ *  NO override at all — the 2026-09-26 default: the SHIPPED curated baseline (CONFIG_PATH) merged with the
+ *  never-shipped, accumulated USER_CONFIG_PATH ledger, template entries first. */
+function loadLedger(vettingPath) {
+  const explicit = resolveExplicitPath(vettingPath);
+  if (explicit) return loadLedgerFile(explicit);
+  const tpl = loadLedgerFile(CONFIG_PATH);
+  const usr = loadLedgerFile(USER_CONFIG_PATH);
+  return { _doc: tpl._doc, version: tpl.version, entries: tpl.entries.concat(usr.entries) };
+}
+
+function saveLedgerFile(p, ledger) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(ledger, null, 2) + '\n', 'utf8');
 }
@@ -267,7 +297,10 @@ function saveLedger(vettingPath, ledger) {
 /** record({capability, verdict, reason, source}, opts) -> appends ONE new entry (never rewrites/removes an
  *  existing one) and returns it. Validates capability/verdict/reason are present and well-formed; source is
  *  optional. Throws (fail closed) on invalid input OR a malformed pre-existing ledger — never silently
- *  drops a verdict or silently "fixes" a corrupt file. */
+ *  drops a verdict or silently "fixes" a corrupt file. With an explicit opts.vettingPath (or
+ *  FORGE_SCOUT_VETTING_PATH) it appends to exactly that one file (unchanged legacy/hermetic behavior). With
+ *  NO override at all (the real default) it appends to USER_CONFIG_PATH ONLY — the shipped curated baseline
+ *  is never written by record(). */
 function record(params, opts) {
   params = params || {};
   opts = opts || {};
@@ -279,8 +312,9 @@ function record(params, opts) {
   const reason = typeof params.reason === 'string' ? params.reason.trim() : '';
   if (!reason) throw new Error('forge-scout: record() requires a non-empty "reason" string');
 
-  const vettingPath = resolvePath(opts.vettingPath); // honors opts.vettingPath, then FORGE_SCOUT_VETTING_PATH, then CONFIG_PATH
-  const ledger = loadLedger(vettingPath); // throws on a pre-existing malformed ledger — fail closed
+  const explicit = resolveExplicitPath(opts.vettingPath);
+  const writePath = explicit || USER_CONFIG_PATH; // default mode: user ledger only, never the shipped template
+  const ledger = loadLedgerFile(writePath); // throws on a pre-existing malformed ledger — fail closed
 
   const entry = {
     capability,
@@ -290,14 +324,14 @@ function record(params, opts) {
     ts: nowIso(),
   };
   ledger.entries = [...ledger.entries, entry]; // append — never mutate/remove a prior entry
-  saveLedger(vettingPath, ledger);
+  saveLedgerFile(writePath, ledger);
   return entry;
 }
 
 /** list(opts) -> {entries}. Throws on a malformed ledger (same fail-closed rule as loadLedger). */
 function list(opts) {
   opts = opts || {};
-  const ledger = loadLedger(resolvePath(opts.vettingPath));
+  const ledger = loadLedger(opts.vettingPath);
   return { entries: ledger.entries };
 }
 
@@ -319,8 +353,8 @@ function isVetted(capability, opts) {
 
 module.exports = {
   terms, record, list, isVetted,
-  loadLedger, saveLedger, defaultLedger, resolvePath,
-  SEED_TEMPLATES, VALID_VERDICTS, CONFIG_PATH, MAX_TERMS, DISCOVERY_SOURCES,
+  loadLedger, loadLedgerFile, saveLedgerFile, defaultLedger, resolvePath, resolveExplicitPath,
+  SEED_TEMPLATES, VALID_VERDICTS, CONFIG_PATH, USER_CONFIG_PATH, MAX_TERMS, DISCOVERY_SOURCES,
 };
 
 // ---- CLI ----

@@ -668,9 +668,11 @@ const NON_WORK_EVENT_TYPES = new Set([
    *  bookkeeping (.claude/forge-runs/<run>/manifest.json) — the same family as `gate_evaluated`: it records
    *  that a Forge tool ran, produces nothing of the reviewed product, and cannot make a review stale (the
    *  reviewed subject is code + gates, never the run's own bookkeeping). The plan CONTENT lives in
-   *  `agent_work_package_created`, which stays work. Found because forge-manifest.cjs logged this proof
-   *  without an agent, which N-01 read as anonymous work and blocked finalize; the tool now stamps the
-   *  orchestrator as well, so both the classification and the attribution are right. */
+   *  `agent_work_package_created`, which stays work (for STALENESS — see isStalingEvent) but, per the D3
+   *  fix below, is no longer attributed to its `agent` field as that agent doing work — see
+   *  ASSIGNMENT_EVENT_TYPES. Found because forge-manifest.cjs logged this proof without an agent, which
+   *  N-01 read as anonymous work and blocked finalize; the tool now stamps the orchestrator as well, so
+   *  both the classification and the attribution are right. */
   'manifest_armed',
   /** R4-02 (vierde herreview): hier stonden ook `agent_output`, `decision_logged`, `rework_assigned` en
    *  `rejected_approach`. Dat was fout, en precies de valkuil van de omkering: de uitzonderingslijst mag
@@ -679,6 +681,12 @@ const NON_WORK_EVENT_TYPES = new Set([
    *  zelf produceerde viel daardoor buiten de werkersverzameling, en zulk werk ná een review maakte hem
    *  niet stale. Ze zijn nu gewoon werk — wie iets oplevert, is een uitvoerder. */
 ]);
+/** ASSIGNMENT_EVENT_TYPES (D3 fix, 2026-09-26 fresh-laptop re-audit) — an event that only ANNOUNCES who a
+ *  work package is assigned to, logged by the Lead ABOUT another agent (forge.md:89), never by that agent
+ *  about itself. It stays a work-type event for isWorkEvent/isStalingEvent (new planned work still makes a
+ *  prior "everything reviewed" verdict stale), but its `agent` field must never be read as that agent doing
+ *  work in independentVerification's worker-attribution loop — see the call site below. */
+const ASSIGNMENT_EVENT_TYPES = new Set(['agent_work_package_created', 'custom_subagent_created']);
 /** IV_DISPATCH_TYPES — `agent_started`/`subagent_started` worden door de Lead gelogd OVER een agent.
  *
  *  R6-02 (zesde herreview) weerlegde mijn eerdere aanname dat ze daarom categorisch geen werk zijn: een
@@ -811,6 +819,10 @@ const SHA1_RE = /^[0-9a-f]{40}$/i;
 const SHA256_RE = /^[0-9a-f]{64}$/i;
 
 /** independentVerification(events, opts) -> {ok, route, workers, reviewer, reason, review}
+ *  opts.noGit (D2 fix, 2026-09-26) — true only when check()'s own independent probe of the current root
+ *  found NO git repository at all (never merely "caller omitted commitSha" — see check()'s noGitAtRoot).
+ *  When true, the completion event's commit_sha is neither required nor format-checked (there is no HEAD
+ *  to bind to); the hash-chain and evidence_digest bindings below still apply in full.
  *
  *  HERBOUWD 2026-08-09 na een onafhankelijke Codex-review (VERDICT CHANGES_REQUIRED, F-01..F-10). De
  *  eerste versie accepteerde drie routes die alle drie door de gecontroleerde partij zelf te vullen waren:
@@ -878,7 +890,19 @@ function independentVerification(events, opts) {
      *  Dat is de gevaarlijkste variant: de uitvoerder logt zijn werk anoniem, verdwijnt uit `workers`, en
      *  keurt het daarna onder een naam goed. Anoniem werk maakt de onafhankelijkheid dus ONBEPAALBAAR —
      *  fail-closed, niet onzichtbaar. */
-    if (isWorkEvent(e)) {
+    /** D3 fix (2026-09-26, fresh-laptop re-audit) — `agent_work_package_created`/`custom_subagent_created`
+     *  is the LEAD announcing who a work package is ASSIGNED to (forge.md:89: "agent, role, runtime,
+     *  mission, ... status:'previewing'"), logged BY the Lead, naming the intended executor in `agent`.
+     *  Crediting that name as a WORKER let a reviewer's own work-package assignment count as the reviewer
+     *  doing work in this run — REPRODUCED (executed replay of a real mission): "de reviewer (review boss)
+     *  deed in deze run zelf werk — dat is zelf-goedkeuring", purely because the Lead had logged the review
+     *  Boss's OWN dispatch announcement. Creating a work package FOR an agent is not that agent DOING
+     *  anything — only a genuine execution event (agent_started/subagent_started/subagent_completed/etc.)
+     *  proves the named agent actually worked. These two event types stay counted for STALENESS
+     *  (isStalingEvent below still calls isWorkEvent — new planned work still makes a prior "everything is
+     *  done" review stale), and stay OUT of `anoniemWerk` too (an assignment with no named assignee is not
+     *  the dangerous "who did this?" case N-01 exists for — nobody DID anything here at all). */
+    if (isWorkEvent(e) && !ASSIGNMENT_EVENT_TYPES.has(type)) {
       if (agent) workers.add(agent);
       else anoniemWerk.push(type);
     }
@@ -993,13 +1017,33 @@ function independentVerification(events, opts) {
     const vorigeHash = vorige && typeof vorige === 'object' && typeof vorige.entry_hash === 'string' ? vorige.entry_hash.trim() : '';
     if (!SHA256_RE.test(vorigeHash)) { return { ok: false, reden: 'de directe voorganger draagt geen welgevormde entry_hash — de keten is hier onderbroken, dus subject_log_hash is door de aanroeper zelf te verzinnen' }; }
     if (vorigeHash !== prev) { return { ok: false, reden: 'prev_hash sluit niet aan op de directe voorganger (verwacht ' + vorigeHash.slice(0, 12) + '…) — het event is losgekoppeld van de runstaat' }; }
-    if (!SHA1_RE.test(commitSha)) { return { ok: false, reden: 'commit_sha ontbreekt of is niet welgevormd — onbekend welke code beoordeeld is' }; }
-    /** N-02 (post-fix herreview): een vormcontrole zonder vergelijking is geen binding — élke geldige
-     *  40-hex waarde kwam erdoor. Nu FAIL-CLOSED: is de actuele HEAD niet vast te stellen, dan kan de
-     *  commitbinding niet worden getoetst en telt de review niet. Liever geen verificatie dan een
-     *  verificatie waarvan niemand weet waarop hij sloeg. */
-    if (!opts.commitSha) { return { ok: false, reden: 'de actuele HEAD kon niet worden vastgesteld, dus commit_sha is niet te toetsen — fail-closed' }; }
-    if (norm(commitSha) !== norm(opts.commitSha)) { return { ok: false, reden: 'beoordeelde commit ' + commitSha.slice(0, 12) + '… is niet de actuele commit ' + String(opts.commitSha).slice(0, 12) + '…' }; }
+    /** D2 fix (2026-09-26, fresh-laptop re-audit) — a genuinely git-less project has no commit to bind to
+     *  at all: `opts.commitSha` is always null (resolveHeadCommit honestly returns null), so the unconditional
+     *  version of this check made independent-verification, and therefore the whole run contract, permanently
+     *  unsatisfiable on such a project. `opts.noGit` is a real, independent probe of the CURRENT root (see
+     *  check()'s `noGitAtRoot`) — never true just because a caller omitted commit_sha on a project that DOES
+     *  have git, so a real project keeps the exact fail-closed behaviour below, unchanged. Binding still
+     *  rests on subject_log_hash/prev_hash (the hash chain, checked above) and evidence_digest (checked
+     *  below, itself now bound to a real file digest instead of a commit — see canonicalEvidenceDigest's D2
+     *  fix) — a git-less review is not an UNVERIFIED review, only an unversioned one. */
+    if (!opts.noGit) {
+      if (!SHA1_RE.test(commitSha)) { return { ok: false, reden: 'commit_sha ontbreekt of is niet welgevormd — onbekend welke code beoordeeld is' }; }
+      /** N-02 (post-fix herreview): een vormcontrole zonder vergelijking is geen binding — élke geldige
+       *  40-hex waarde kwam erdoor. Nu FAIL-CLOSED: is de actuele HEAD niet vast te stellen, dan kan de
+       *  commitbinding niet worden getoetst en telt de review niet. Liever geen verificatie dan een
+       *  verificatie waarvan niemand weet waarop hij sloeg. */
+      if (!opts.commitSha) { return { ok: false, reden: 'de actuele HEAD kon niet worden vastgesteld, dus commit_sha is niet te toetsen — fail-closed' }; }
+      if (norm(commitSha) !== norm(opts.commitSha)) { return { ok: false, reden: 'beoordeelde commit ' + commitSha.slice(0, 12) + '… is niet de actuele commit ' + String(opts.commitSha).slice(0, 12) + '…' }; }
+    } else if (opts.evidenceCommit) {
+      /** D2 anti-fabrication guard — skipping the commit_sha check above must NEVER become a way to sneak a
+       *  FAKE commit through. If this root genuinely has no git (opts.noGit) but the evidence set still
+       *  claims a real commit (canonicalEvidenceDigest's git-bound branch, not its D2 no_git branch), that
+       *  is a contradiction a real no-git measurement could never produce — either a stale evidence set from
+       *  a different (git-having) root, or a hand-tampered gate-evidence.json. Refused, never trusted, even
+       *  if the completion event's own commit_sha happens to match it (the exact shape that made this gap
+       *  reproducible before this guard existed). */
+      return { ok: false, reden: 'deze root heeft geen git-repository, maar de bewijsset claimt toch een commit (' + String(opts.evidenceCommit).slice(0, 12) + '…) — dat kan uit een eerlijke no-git-meting nooit komen, dus geweigerd in plaats van vertrouwd' };
+    }
     if (!SHA256_RE.test(evidenceDigest)) { return { ok: false, reden: 'evidence_digest ontbreekt of is niet welgevormd — onbekend welke bewijsset beoordeeld is' }; }
     /** N-03: vorm is geen binding. Zonder herberekening voldeed élke 64-hex waarde en sloeg het oordeel
      *  nergens op. De digest wordt nu tegen de CANONIEKE bewijsset van deze run gelegd; ontbreekt die set,
@@ -1145,10 +1189,32 @@ function canonicalEvidenceDigest(root, runId) {
     const code = g.code;
     if (!code || typeof code !== 'object') return null;
     if (code.stable !== true) return null;
-    const commit = typeof code.commit === 'string' ? code.commit.trim().toLowerCase() : '';
-    if (!/^[0-9a-f]{40}$/.test(commit)) return null;
-    if (code.worktree_clean !== true) return null;
-    canon.push({ name, exit_code: g.exit_code, output_sha256: sha, commit });
+    /** D2 fix (2026-09-26, fresh-laptop re-audit) — a project with NO git repository could never produce a
+     *  usable evidence digest at all: forge-gate-evidence.cjs's gitState() honestly returns
+     *  {available:false} for every gate, so `code.commit` was never a well-formed sha and this whole
+     *  function returned null forever, which meant independent-verification (and therefore the run
+     *  contract) could never pass for a genuinely git-less project. That is not a real security
+     *  requirement — a commit sha binds evidence to a VERSION, and a project with no versioning concept has
+     *  nothing to bind to. forge-gate-evidence.cjs's own `record()` now marks such a gate `code.no_git:true`
+     *  with `commit:null` (never a fabricated commit) — this file accepts that shape as an ALTERNATE, honest
+     *  binding: the gate's evidence rests on its own real output_sha256 (already required above) instead of
+     *  a commit. A no-git gate must not ALSO claim a commit or a worktree state it cannot measure — either
+     *  one present is a malformed record, not evidence. KNOWN, NAMED LIMITATION (never silently smoothed
+     *  over): without git there is no way to detect that two gates in the same evidence set ran against
+     *  DIFFERENT source states (the whole reason R8-03 below exists) — every no-git gate is tagged with the
+     *  same opaque marker, so that specific cross-gate drift protection simply does not exist for a
+     *  git-less project. */
+    let codeRef;
+    if (code.no_git === true) {
+      if (code.commit != null || code.worktree_clean != null) return null; // a no-git record claiming a commit/worktree state is malformed, not evidence
+      codeRef = 'no-git';
+    } else {
+      const commit = typeof code.commit === 'string' ? code.commit.trim().toLowerCase() : '';
+      if (!/^[0-9a-f]{40}$/.test(commit)) return null;
+      if (code.worktree_clean !== true) return null;
+      codeRef = 'git:' + commit;
+    }
+    canon.push({ name, exit_code: g.exit_code, output_sha256: sha, commit: codeRef });
   }
   canon.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   /** R5-03 (vijfde herreview): de digest vatte ook een RODE bewijsset samen, en de evaluator keek alleen
@@ -1156,10 +1222,20 @@ function canonicalEvidenceDigest(root, runId) {
    *  finaliseren. De digest blijft bewust over ALLE poorten gaan (anders is hij geen eerlijke
    *  samenvatting van wat er gedraaid heeft), maar een completion eist daarnaast dat elke poort groen is. */
   const rood = canon.filter((g) => g.exit_code !== 0).map((g) => g.name);
-  /** R8-03: poorten die op VERSCHILLENDE commits draaiden vormen samen geen bewijs over één staat. */
-  const commits = [...new Set(canon.map((g) => g.commit))];
-  if (commits.length > 1) return null;
-  return { digest: crypto.createHash('sha256').update(JSON.stringify(canon)).digest('hex'), gates: canon.length, allGreen: rood.length === 0, failed: rood, commit: commits[0] || null };
+  /** R8-03: poorten die op VERSCHILLENDE commits (of een mix van git- en no-git-bewijs) draaiden vormen
+   *  samen geen bewijs over één staat. */
+  const refs = [...new Set(canon.map((g) => g.commit))];
+  if (refs.length > 1) return null;
+  const ref = refs[0] || null;
+  const noGit = ref === 'no-git';
+  return {
+    digest: crypto.createHash('sha256').update(JSON.stringify(canon)).digest('hex'), gates: canon.length,
+    allGreen: rood.length === 0, failed: rood,
+    // D2: a no-git evidence set never reports a commit — null, never fabricated. A git-bound set strips
+    // the internal 'git:' tag back off so callers keep seeing a bare 40-hex sha, exactly as before.
+    commit: noGit ? null : (ref ? ref.slice('git:'.length) : null),
+    no_git: noGit,
+  };
 }
 
 /** knownAgentNames(root) -> Set van gecanonicaliseerde, BEKENDE agentnamen (registry + .claude/agents/*.md
@@ -1205,7 +1281,7 @@ function checkSatisfied(rule, ctx) {
   let satisfied = false;
   if (c.type === 'event-present') satisfied = hasEvent(ctx.events, c.key);
   else if (c.type === 'independent-verification') {
-    const iv = independentVerification(ctx.events, { commitSha: ctx.commitSha, evidenceDigest: ctx.evidenceDigest, evidenceAllGreen: ctx.evidenceAllGreen, evidenceFailed: ctx.evidenceFailed, evidenceCommit: ctx.evidenceCommit, knownAgents: ctx.knownAgents });
+    const iv = independentVerification(ctx.events, { commitSha: ctx.commitSha, noGit: ctx.noGit, evidenceDigest: ctx.evidenceDigest, evidenceAllGreen: ctx.evidenceAllGreen, evidenceFailed: ctx.evidenceFailed, evidenceCommit: ctx.evidenceCommit, knownAgents: ctx.knownAgents });
     satisfied = iv.ok;
     ctx._independentVerification = iv; // reden meegeven aan de rapportage (F-12)
   }
@@ -1421,7 +1497,15 @@ function check(params, opts) {
   /** R9-09/R9-06 (gehesen, R10): één HEAD-resolutie en één bewijsset-lezing voor de HELE check — niet
    *  per regel opnieuw. De velden gaan ook mee in het resultaat (ruleset_sha256_used e.d.), dus ze
    *  moeten buiten de lus leven. */
-  const effectieveCommit = params.commit_sha !== undefined ? params.commit_sha : resolveHeadCommit(root);
+  /** D2 fix (2026-09-26, fresh-laptop re-audit) — `noGitAtRoot` is a REAL, INDEPENDENT probe of THIS root
+   *  (never affected by a caller-supplied params.commit_sha override), so a caller who simply omitted
+   *  commit_sha on a project that DOES have git can never be confused with a project that genuinely has
+   *  none. Only a genuinely git-less root relaxes the completion event's commit_sha requirement below
+   *  (see independentVerification's opts.noGit) — a project with real git keeps the exact same fail-closed
+   *  behaviour as before this fix. */
+  const headCommitProbe = resolveHeadCommit(root);
+  const noGitAtRoot = headCommitProbe === null;
+  const effectieveCommit = params.commit_sha !== undefined ? params.commit_sha : headCommitProbe;
   const evidenceSet = canonicalEvidenceDigest(root, params.run_id);
   for (const rule of rules) {
     if (unknownTriggerIds.has(rule.id)) continue;
@@ -1450,7 +1534,7 @@ function check(params, opts) {
     // V25: the candidates this SPECIFIC rule's trigger genuinely matches (never a domain the rule would not
     // even apply under on its own) — see the doc above candidateDomainPool.
     const domainCandidatesForRule = candidateDomainPool.filter((d) => d && ruleApplies(rule, d, cx.level));
-    const ruleCtx = { events, artifacts, domain, domainCandidates: domainCandidatesForRule, runDir: artifactsDir, commitSha: effectieveCommit || null, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
+    const ruleCtx = { events, artifacts, domain, domainCandidates: domainCandidatesForRule, runDir: artifactsDir, commitSha: effectieveCommit || null, noGit: noGitAtRoot, evidenceDigest: (evidenceSet || {}).digest || null, evidenceAllGreen: (evidenceSet || {}).allGreen === true, evidenceFailed: (evidenceSet || {}).failed || [], evidenceCommit: (evidenceSet || {}).commit || null, knownAgents: knownAgentNames(root) || new Set() };
     if (checkSatisfied(rule, ruleCtx)) {
       if (ruleCtx._independentVerification) ruleDetails['independent-verification'] = sanitizeIv(ruleCtx._independentVerification);
       satisfied.push(rule.id); continue;
@@ -1593,7 +1677,7 @@ module.exports = {
   independentVerification,
   // geëxporteerd zodat tests kunnen AFDWINGEN dat elk gebruikt eventtype echt bij de writer geregistreerd
   // staat (F-08) — een magic string die niemand kan loggen is een route die alleen op papier bestaat.
-  NON_WORK_EVENT_TYPES, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
+  NON_WORK_EVENT_TYPES, ASSIGNMENT_EVENT_TYPES, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
   check, listRules, loadRules, loadRulesMeta, ruleApplies, checkSatisfied, findOwnerOverride, isMeaningfulReason, loadOwnerAllowlist,
   readEventsJsonl, listRunArtifacts, hasEvent, hasArtifact, logGateEvaluated, eventIsDisproven,
   // RC-MANIFEST-STALE (2026-09-24) — exported so a test can exercise the manifest-completeness gate and the

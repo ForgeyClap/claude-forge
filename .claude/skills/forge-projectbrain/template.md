@@ -152,7 +152,7 @@ unlike a progressive-disclosure Skill):
 
 ## Hard Rules
 [Merged from Forge's universal defaults (DEFAULT_HARD_RULES) plus this project's own
-`.claude/FORGE_HARD_RULES.json` if present — each line tagged `` `[<rule-id>]` `` so it is individually
+`.claude/FORGE_PROJECT_HARD_RULES.json` if present — each line tagged `` `[<rule-id>]` `` so it is individually
 machine-checkable. Emphasis (`**IMPORTANT:**`) is reserved for EXACTLY the 2 truly critical ids below —
 every other rule is a plain, still-imperative bullet, e.g.:]
 - **IMPORTANT:** `[project-isolation]` Work only inside this project folder. Never edit unrelated projects or
@@ -165,7 +165,7 @@ every other rule is a plain, still-imperative bullet, e.g.:]
   owner approval.
 - `[input-validation]` Validate input at every system boundary — never trust external data.
 - `[file-size]` Keep files focused and reasonably sized; extract modules instead of letting one file sprawl.
-- [any project-specific rules from FORGE_HARD_RULES.json appended here, same `[id]` format, plain bullets]
+- [any project-specific rules from FORGE_PROJECT_HARD_RULES.json appended here, same `[id]` format, plain bullets]
 
 ---
 

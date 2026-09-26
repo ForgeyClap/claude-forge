@@ -207,11 +207,24 @@ function record(runId, gates, opts) {
      *  van alle vuile bronbestanden), niet alleen over HEAD + een boolean. Daarmee wordt elke wijziging
      *  gezien die niet exact is teruggedraaid — de A→B→A-restklasse blijft, en staat gedocumenteerd in
      *  het manifest zelf via `stable_limitation`. */
-    const stabiel = !!codeVoor && !!codeNa && codeVoor.available === true && codeNa.available === true
+    const gitStabiel = !!codeVoor && !!codeNa && codeVoor.available === true && codeNa.available === true
       && codeVoor.commit === codeNa.commit && codeVoor.source_fingerprint === codeNa.source_fingerprint;
-    res._code = stabiel
-      ? { commit: codeNa.commit, worktree_clean: codeNa.worktree_clean, stable: true, source_fingerprint: codeNa.source_fingerprint }
-      : { stable: false, reason: 'de codestaat veranderde TIJDENS deze poort — de uitslag hoort bij geen enkele vaste commit', before: codeVoor && codeVoor.commit, after: codeNa && codeNa.commit };
+    /** D2 fix (2026-09-26, fresh-laptop re-audit) — a project with NO git repository could never produce a
+     *  single `stable:true` gate record: `codeVoor.available`/`codeNa.available` are both `false` by
+     *  construction, so EVERY gate looked exactly like "the code changed during this gate" — indistinguishable
+     *  from a real tamper, and it silently poisoned forge-runcontract.cjs's canonicalEvidenceDigest() forever
+     *  (a required code.stable===true never held). There is nothing to destabilize without a versioning
+     *  concept: a gate whose BEFORE and AFTER measurement both honestly agree "no git repository here" is
+     *  bound instead to its own real output_sha256 (a genuine file digest, computed above and re-verified on
+     *  read-back below) — never a fabricated commit, and never a false "unstable" claim either. */
+    const noGitStabiel = !!codeVoor && !!codeNa && codeVoor.available === false && codeNa.available === false;
+    if (gitStabiel) {
+      res._code = { commit: codeNa.commit, worktree_clean: codeNa.worktree_clean, stable: true, no_git: false, source_fingerprint: codeNa.source_fingerprint };
+    } else if (noGitStabiel) {
+      res._code = { commit: null, worktree_clean: null, stable: true, no_git: true, reason: (codeNa && codeNa.reason) || (codeVoor && codeVoor.reason) || 'geen git-repository — bewijs gebonden aan de eigen output_sha256 van deze poort, niet aan een commit' };
+    } else {
+      res._code = { stable: false, no_git: false, reason: 'de codestaat veranderde TIJDENS deze poort — de uitslag hoort bij geen enkele vaste commit', before: codeVoor && codeVoor.commit, after: codeNa && codeNa.commit };
+    }
     // ruwe output op schijf (lokaal bewijs; de sha in het manifest maakt hem verifieerbaar)
     // r6b #8: twee poortnamen mogen NOOIT op hetzelfde outputpad landen — na sanitizing kunnen
     // "a/b" en "a:b" hetzelfde worden en zou de een de bewijsuitvoer van de ander overschrijven.

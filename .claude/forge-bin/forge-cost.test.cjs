@@ -77,11 +77,11 @@ t('realistic envelope: models lists every modelUsage key', Array.isArray(u1.mode
 const MULTI_MODEL_ENVELOPE = JSON.stringify({
   total_cost_usd: 0.09,
   usage: { input_tokens: 2000, output_tokens: 600 },
-  modelUsage: { 'claude-opus-4-8': { costUSD: 0.07 }, 'claude-haiku-4-5': { costUSD: 0.02 } },
+  modelUsage: { 'claude-opus-5-5': { costUSD: 0.07 }, 'claude-haiku-4-5': { costUSD: 0.02 } },
 });
 const u1b = parseClaudeUsage(MULTI_MODEL_ENVELOPE);
 t('multi-model envelope: models lists both keys', Array.isArray(u1b.models) && u1b.models.length === 2);
-t('multi-model envelope: model is the first key (primary)', u1b.model === 'claude-opus-4-8');
+t('multi-model envelope: model is the first key (primary)', u1b.model === 'claude-opus-5-5');
 
 // 10) envelope MISSING total_cost_usd -> cost_usd null, no throw, other fields still extracted
 const NO_COST_ENVELOPE = JSON.stringify({

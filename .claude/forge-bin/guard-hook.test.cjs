@@ -6,8 +6,8 @@ const fs = require('fs'), os = require('os'), path = require('path'), cp = requi
 const HOOK = path.join(os.homedir(), '.claude', 'hooks', 'forge-usage-guard-hook.cjs');
 const SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
 /** FRESH-INSTALL GUARD (2026-09-23, external audit II-B): this suite exercises a GLOBAL hook that the
- *  installer deliberately never ships (forge-core: "Do NOT install: any hooks, .claude/settings.json
- *  security config"). On any machine without that hand-installed hook — every new user, every CI
+ *  installer deliberately never ships (it wires five PROJECT hooks into .claude/settings.json, but never
+ *  this GLOBAL ~/.claude/hooks usage-guard hook). On any machine without that hand-installed hook — every new user, every CI
  *  runner — the require() below threw ENOENT and the suite died with "0 passed, 0 failed", which
  *  runTests() rightly counts as a FAILED suite. The doctor of every fresh install was red because of
  *  a test for something the product does not install. Now: absent hook => one honest, explicit

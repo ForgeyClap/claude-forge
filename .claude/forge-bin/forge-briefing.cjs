@@ -52,9 +52,10 @@
  * toMarkdown(result) -> the rendered morning-briefing markdown (also returned inline as result.markdown).
  *
  * CLI:
- *   node forge-briefing.cjs --run <id> [--json]
+ *   node forge-briefing.cjs <run_id> [--json]        (positional form — matches commands/forge.md:22)
+ *   node forge-briefing.cjs --run <id> [--json]       (equivalent flag form)
  * Exit codes: 0 = briefing generated (an honestly-empty briefing is still success) · 2 = usage error
- * (missing/invalid --run).
+ * (missing/invalid run id).
  */
 const manifestMod = require('./forge-manifest.cjs');
 
@@ -251,18 +252,31 @@ module.exports = {
 };
 
 // ---- CLI ----
+// N9 laptop re-audit 2026-09-26: forge.md:22 documents the call as `forge-briefing.cjs <run_id>` (a plain
+// positional argument), but this parser only ever accepted `--run <id>` — every documented call would have
+// hit the "unknown argument" usage error. Both forms are accepted now; `--run` still works unchanged.
 function parseArgs(argv) {
   const opts = { run: null, json: false, help: false, usageError: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--run') { opts.run = argv[++i]; if ((!opts.run || opts.run.startsWith('--')) && !opts.usageError) opts.usageError = '--run requires an <id>'; }
+    if (a === '--run') {
+      const v = argv[++i];
+      if (!v || v.startsWith('--')) { if (!opts.usageError) opts.usageError = '--run requires an <id>'; }
+      else if (opts.run && opts.run !== v) { if (!opts.usageError) opts.usageError = 'a run id was given twice (positional and --run) with different values'; }
+      else opts.run = v;
+    }
     else if (a === '--json') opts.json = true;
     else if (a === '--help' || a === '-h') opts.help = true;
+    else if (!a.startsWith('--')) {
+      // positional <run_id>, e.g. `node forge-briefing.cjs <run_id>` (forge.md:22)
+      if (opts.run && opts.run !== a) { if (!opts.usageError) opts.usageError = 'a run id was given twice (positional and --run) with different values'; }
+      else opts.run = a;
+    }
     else if (!opts.usageError) opts.usageError = 'unknown argument: ' + a;
   }
   return opts;
 }
-function printUsage() { console.error('Usage: node forge-briefing.cjs --run <id> [--json]'); }
+function printUsage() { console.error('Usage: node forge-briefing.cjs <run_id> [--json]  (or: node forge-briefing.cjs --run <id> [--json])'); }
 
 if (require.main === module) {
   const opts = parseArgs(process.argv.slice(2));

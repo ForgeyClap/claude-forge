@@ -84,10 +84,10 @@ repeatable METHOD for producing that shape for any Forge project; `forge-bin/for
    own `.claude/` when it genuinely exists), and `## Detail docs` (real `@path` imports of the docs found in
    step 1, or an honest "none found yet" note — never a fabricated pointer to a file that doesn't exist).
 
-5. **Emit a real `## Hard Rules` section wired to `FORGE_HARD_RULES.json`, then `## Governance`, and
+5. **Emit a real `## Hard Rules` section wired to `FORGE_PROJECT_HARD_RULES.json`, then `## Governance`, and
    SAFE-MERGE the write.** Start from Forge's universal non-negotiables (project isolation, honesty core,
    secrets-in-env, no-auto-push, input validation, file-size discipline — `DEFAULT_HARD_RULES` in
-   `forge-projectbrain.cjs`). If `<project>/.claude/FORGE_HARD_RULES.json` exists, merge its `{id,text}`
+   `forge-projectbrain.cjs`). If `<project>/.claude/FORGE_PROJECT_HARD_RULES.json` exists, merge its `{id,text}`
    entries in (a project can EXTEND the list, never silently override a universal id) — this file is the
    machine-checkable source a future `forge-doctor` pass can read to verify the rules are actually being
    followed, not just documented. Reserve IMPORTANT-style emphasis for exactly `honesty-core` and

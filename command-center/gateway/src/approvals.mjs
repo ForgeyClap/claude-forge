@@ -8,8 +8,8 @@
 // forbids editing — importing its existing export is not an edit.
 import fs from 'node:fs';
 import path from 'node:path';
-import { containmentOk, safeIdOk } from './security.mjs';
-import { SYNC_SCAN_ROOT } from './paths.mjs';
+import { anyContainmentOk, safeIdOk } from './security.mjs';
+import { SYNC_SCAN_ROOTS } from './paths.mjs';
 import { readEvents } from './events.mjs';
 
 // The real event_type vocabulary a gate check can emit, per this project's own governance
@@ -41,7 +41,7 @@ function readGateDefinitions(projectPath) {
 }
 
 export function buildApprovals(projectPath, runId) {
-  if (!containmentOk(SYNC_SCAN_ROOT, projectPath)) {
+  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const capturedAt = new Date();

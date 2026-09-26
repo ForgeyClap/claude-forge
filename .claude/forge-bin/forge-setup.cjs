@@ -11,8 +11,10 @@
  *   guard       -> STEP 0 hard invariant. Ensure .gitignore protects secrets (creates the file if
  *                  missing; append-once/grep-before-append for: .env, .env.local, .env.*.local,
  *                  .env.forge-setup; keeps !.env.example). If .env is already TRACKED by git
- *                  (`git ls-files --error-unmatch .env` exits 0), this is a hard stop: exit code 3 +
- *                  a loud warning to run `git rm --cached .env` and rotate keys. Idempotent.
+ *                  (`git ls-files --error-unmatch .env` exits 0), this is a hard stop: exit code 3.
+ *                  CLI `guard --fix` has Forge itself run `git rm --cached -- .env` (untracks the file only —
+ *                  its real content on disk is never touched) instead of handing the owner a command to type;
+ *                  key rotation is still an owner-only follow-up this never attempts. Idempotent.
  *   gitignore   -> the /forge git-checkpoint pre-step (review-boss M5): append-only, makes .gitignore keep every
  *                  secret-shaped name out of git (the guard lines plus .env.*, *.pem, *.key, id_rsa*,
  *                  credentials*.json, secrets/) with !.env.example after the last .env.* line. No git call, no
@@ -98,12 +100,13 @@
  *
  * CLI:
  *   node .claude/forge-bin/forge-setup.cjs <command> [--project <dir>] [--json] [--quiet]
- *     status | guard | gitignore | checkpoint-scan | init-keys [--type <t>] [--tmp <file>] | place-keys [--tmp <file>]
+ *     status | guard [--fix] | gitignore | checkpoint-scan | init-keys [--type <t>] [--tmp <file>] | place-keys [--tmp <file>]
  *     mark --name <n> --lang <code> [--goal <g>] [--type <t>] | self-heal | doctor | lang
+ *   guard --fix: only when .env is tracked — has Forge run `git rm --cached -- .env` itself (see guard() above).
  *   --project defaults to two levels up from this file (i.e. the project this forge-bin/ ships in).
  *
  * Module API: require(...) ->
- *   { status, guard, checkEnvTracked, initKeys, placeKeys, mark, selfHeal, doctor, getLang,
+ *   { status, guard, checkEnvTracked, unstageTrackedEnv, initKeys, placeKeys, mark, selfHeal, doctor, getLang,
  *     detectKeysForType, classifyValue, looksLikePlaceholder, parseKeyValueLines, upsertEnvFile,
  *     upsertEnvExampleNames, resolveGlobalDir, readForgeVersion, validateProjectDir, resolveTmpPath,
  *     isManagedDefaultTmp, refusesAsEnvTarget, detectLineEnding, sanitizeLang, pathsEqualForFs,
@@ -497,6 +500,29 @@ function guard(projectDir) {
     scratchIgnoreVerified: scratchVerify.verified,
     scratchIgnoreConfirmed: scratchVerify.verified && scratchVerify.ignored,
   };
+}
+
+// N9 laptop re-audit 2026-09-26: guard()'s hard stop used to hand the OWNER a command to type themselves
+// ("run \"git rm --cached .env\""). `git rm --cached` only removes .env from git's INDEX — the file and its
+// real content on disk are never touched, and it is not one of the gate hook's git-destructive shapes (reset
+// --hard/clean -f/checkout -f/restore/switch -f/stash drop) — so Forge (the agent invoking this tool) can run
+// it directly instead of asking a human to open a terminal. Opt-in only (never automatic on a plain `guard`
+// call): re-verifies the file is STILL tracked right before acting (principle A, verify-don't-assume), then
+// scopes the git call to exactly that one relative path — never a wildcard, never anything guard() itself did
+// not just confirm. Key rotation is a separate, owner-only follow-up this function never attempts.
+function unstageTrackedEnv(projectDir) {
+  const relPath = '.env'; // the only path guard()/checkEnvTracked() ever checks — never parameterized/widened
+  const invalidDir = validateProjectDir(projectDir);
+  if (invalidDir) return { ok: false, reason: invalidDir.reason };
+  const before = checkEnvTracked(projectDir);
+  if (!before.gitAvailable) return { ok: false, reason: 'git is not available — cannot untrack ' + relPath };
+  if (!before.tracked) return { ok: true, alreadyUntracked: true, path: relPath };
+  const r = spawnSync('git', ['rm', '--cached', '--', relPath], { cwd: projectDir, encoding: 'utf8' });
+  if (r.error || r.status !== 0) {
+    return { ok: false, reason: 'git rm --cached failed for ' + relPath + ': ' + (r.stderr || (r.error && r.error.message) || 'unknown error') };
+  }
+  const after = checkEnvTracked(projectDir);
+  return { ok: !after.tracked, unstaged: true, path: relPath, stillTracked: after.tracked };
 }
 
 // ---- key catalog ------------------------------------------------------------------------------------
@@ -922,7 +948,7 @@ function initKeys(projectDir, opts) {
   if (invalidDir) return { ok: false, reason: invalidDir.reason };
   const g = guard(projectDir);
   if (g.tracked) {
-    return { ok: false, blocked: true, reason: '.env is already tracked by git — run "git rm --cached .env" and rotate any exposed keys before continuing.', guard: g };
+    return { ok: false, blocked: true, reason: '.env is already tracked by git — run `node .claude/forge-bin/forge-setup.cjs guard --fix` to have Forge untrack it (the file and its content on disk stay untouched), then rotate any exposed keys.', guard: g };
   }
   if (g.envUnignorable) {
     return { ok: false, blocked: true, reason: '.env could not be confirmed as git-ignored even after reinforcement (a `!` negation or similar rule in .gitignore is overriding the exclusion) — fix your .gitignore before continuing, or your secrets could be committed.', guard: g };
@@ -987,7 +1013,7 @@ function placeKeys(projectDir, opts) {
   if (invalidDir) return { ok: false, reason: invalidDir.reason };
   const g = guard(projectDir);
   if (g.tracked) {
-    return { ok: false, blocked: true, reason: '.env is already tracked by git — run "git rm --cached .env" and rotate any exposed keys before continuing.', guard: g };
+    return { ok: false, blocked: true, reason: '.env is already tracked by git — run `node .claude/forge-bin/forge-setup.cjs guard --fix` to have Forge untrack it (the file and its content on disk stay untouched), then rotate any exposed keys.', guard: g };
   }
   if (g.envUnignorable) {
     return { ok: false, blocked: true, reason: '.env could not be confirmed as git-ignored even after reinforcement (a `!` negation or similar rule in .gitignore is overriding the exclusion) — fix your .gitignore before continuing, or your secrets could be committed.', guard: g };
@@ -1136,7 +1162,17 @@ function placeKeys(projectDir, opts) {
 
 // ---- markers ------------------------------------------------------------------------------------------
 function readJsonSafe(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } }
+// N9 laptop re-audit 2026-09-26: on a REAL installer install this always recorded "unknown", because the
+// installer never places a plain <projectDir>/VERSION file inside the target project — install.ps1/install.sh
+// read VERSION from the downloaded dist archive (to log it, and to stamp the marker it writes), then write the
+// actual per-project version record to `.claude/FORGE_VERSION.json` (`forge_version`; see install.ps1 ~L458,
+// ~L821-830, "forge_version is the release this installer wrote"). Read that real marker first; a bare
+// <projectDir>/VERSION file (e.g. a source checkout) is still honored as a fallback; only 'unknown' when
+// neither exists.
 function readForgeVersion(projectDir) {
+  const markerPath = path.join(projectDir, '.claude', 'FORGE_VERSION.json');
+  const marker = readJsonSafe(markerPath);
+  if (marker && typeof marker.forge_version === 'string' && marker.forge_version.trim()) return marker.forge_version.trim();
   try { const v = fs.readFileSync(path.join(projectDir, 'VERSION'), 'utf8').trim(); return v || 'unknown'; } catch { return 'unknown'; }
 }
 // TEST-ONLY escape hatch (checked fresh every call, never cached): set FORGE_SETUP_GLOBAL_ROOT to
@@ -1262,7 +1298,7 @@ function doctor(projectDir) {
   checks.envNotTracked = {
     ok: !trackedInfo.tracked,
     reason: trackedInfo.tracked
-      ? '.env is tracked by git — run "git rm --cached .env" and rotate any exposed keys'
+      ? '.env is tracked by git — run "guard --fix" to have Forge untrack it, then rotate any exposed keys'
       : (trackedInfo.gitAvailable ? '' : 'git not available — could not verify, treated as pass'),
   };
 
@@ -1282,7 +1318,7 @@ function doctor(projectDir) {
 }
 
 module.exports = {
-  status, guard, checkEnvTracked, initKeys, placeKeys, mark, selfHeal, doctor, getLang,
+  status, guard, checkEnvTracked, unstageTrackedEnv, initKeys, placeKeys, mark, selfHeal, doctor, getLang,
   detectKeysForType, classifyValue, looksLikePlaceholder, parseKeyValueLines, upsertEnvFile,
   upsertEnvExampleNames, resolveGlobalDir, readForgeVersion,
   validateProjectDir, resolveTmpPath, isManagedDefaultTmp, refusesAsEnvTarget, detectLineEnding, sanitizeLang,
@@ -1300,6 +1336,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
+    else if (a === '--fix') out.fix = true;
     else if (a === '--project') out.project = argv[++i];
     else if (a === '--type') out.type = argv[++i];
     else if (a === '--tmp') out.tmp = argv[++i];
@@ -1330,8 +1367,17 @@ if (require.main === module) {
       case 'guard': {
         const g = guard(projectDir);
         if (g.tracked) {
+          if (opts.fix) {
+            const u = unstageTrackedEnv(projectDir);
+            if (u.ok) {
+              console.log('.env was tracked by git — Forge ran "git rm --cached -- .env" (the file and its content on disk are untouched). Rotate any exposed keys now.');
+              process.exitCode = 0; return;
+            }
+            console.error('!!! WARNING: .env is TRACKED by git in this repo, and the automatic fix failed: ' + u.reason);
+            process.exitCode = 3; return;
+          }
           console.error('!!! WARNING: .env is TRACKED by git in this repo. STOP.');
-          console.error('!!! Run: git rm --cached .env  — then rotate any exposed keys before continuing.');
+          console.error('!!! Run this same command with --fix and Forge will untrack it for you (the file and its content on disk stay untouched) — you still need to rotate any exposed keys afterward.');
           process.exitCode = 3; return;
         }
         if (g.envUnignorable) {
@@ -1382,7 +1428,7 @@ if (require.main === module) {
         if (r.skipped) { console.log('temp key file already has content, left untouched: ' + r.path); return; }
         console.log('Created a fill-in file: ' + r.path);
         if (!opts.quiet) {
-          console.log('Open it, paste each key after the "=", save, then run: node .claude/forge-bin/forge-setup.cjs place-keys');
+          console.log('Open it, paste each key after the "=", and save it — that part only you can do. Once you have, say so and Forge will run place-keys itself to move the real values into .env.');
           // PRINCIPLE B (honest degradation): only make the "never committed to git" promise when git
           // POSITIVELY CONFIRMED it — never assume from mere line-presence. A --tmp OUTSIDE the project
           // cannot be protected by this project's own .gitignore at all; a path we could not verify (git
@@ -1393,7 +1439,7 @@ if (require.main === module) {
           } else if (r.gitignoreVerified) {
             console.log('Leave any key blank if you do not have it yet — you can add it later. Nothing here is ever committed to git.');
           } else {
-            console.log('Leave any key blank if you do not have it yet — you can add it later. ⚠ I could NOT verify this file is actually git-ignored (run `git check-ignore ' + r.path + '` to check) — make sure it is excluded before you commit.');
+            console.log('Leave any key blank if you do not have it yet — you can add it later. ⚠ I could NOT confirm this file is actually git-ignored — make sure it is excluded before anything is committed.');
           }
         }
         return;
@@ -1409,7 +1455,7 @@ if (require.main === module) {
           console.log('Stored ' + r.stored.length + ' key(s) to .env (git-ignored, never committed): ' + (r.stored.join(', ') || '(none)'));
         } else {
           console.log('Stored ' + r.stored.length + ' key(s) to .env: ' + (r.stored.join(', ') || '(none)'));
-          console.log('⚠ I could NOT verify .env is actually git-ignored (run `git check-ignore .env` to check, and look for a `!` negation in .gitignore) — check it is excluded before you commit.');
+          console.log('⚠ I could NOT confirm .env is actually git-ignored (look for a `!` negation in .gitignore overriding it) — make sure it is excluded before anything is committed.');
         }
         if (r.skipped.length) console.log('Skipped (looked invalid, not stored): ' + r.skipped.map((s) => s.key).join(', '));
         if (r.missing.length) console.log('Missing (left blank, add later): ' + r.missing.join(', '));
@@ -1445,7 +1491,7 @@ if (require.main === module) {
         return;
       }
       default:
-        console.error('Usage: node forge-setup.cjs <status|guard|gitignore|checkpoint-scan|init-keys|place-keys|mark|self-heal|doctor|lang> [--project <dir>] [--json] [--quiet]');
+        console.error('Usage: node forge-setup.cjs <status|guard|gitignore|checkpoint-scan|init-keys|place-keys|mark|self-heal|doctor|lang> [--project <dir>] [--json] [--quiet] [--fix (guard only)]');
         process.exitCode = 1;
     }
   };

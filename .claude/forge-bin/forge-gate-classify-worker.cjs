@@ -19,7 +19,7 @@
  * the main thread's watchdog-timeout/no-result fallback fires for real) rather than only a slow-but-alive
  * worker. Never set outside a test.
  */
-const { workerData } = require('worker_threads');
+const { workerData, isMainThread } = require('worker_threads');
 
 const HEADER_INT32S = 2; // [0] = status (0 pending, 1 done), [1] = payload byte length
 const HEADER_BYTES = HEADER_INT32S * 4;
@@ -90,4 +90,14 @@ function run() {
   }
 }
 
-run();
+// WP-S4 (v2.8.0 laptop-audit Part VI): running this file directly (`node forge-gate-classify-worker.cjs`)
+// printed a raw stack trace — `workerData` is `null` outside a real Worker context, so `run()`'s own
+// destructure (`const { command, ctx, ... } = workerData`) threw uncaught. `require.main === module` cannot
+// tell the two apart (a `new Worker(filename)` also makes that file its OWN main module) — `isMainThread` is
+// the correct discriminator: false inside any real Worker, true only on the actual process entry thread.
+if (isMainThread) {
+  console.error('forge-gate-classify-worker.cjs is a worker_threads entry point spawned by forge-gate-watchdog.cjs — it is a library, not a CLI. Run node forge-gate-hook.cjs instead.');
+  process.exit(1);
+} else {
+  run();
+}

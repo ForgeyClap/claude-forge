@@ -13,9 +13,11 @@ work package rather than a full standalone design doc.
 - **No implementation before a written pick + rationale.** Even a "simple" task benefits from naming the
   2-3 real alternatives and why one was chosen — unexamined assumptions on "simple" work cause the most
   rework.
-- If the request is genuinely ambiguous in a way that changes the answer, ask 1-3 targeted questions
-  before diverging; otherwise pick the sensible default, state it, and proceed — never silently guess on
-  something consequential.
+- If the request is genuinely ambiguous in a way that changes the answer, ask the ONE most
+  decision-changing question before diverging (superseded 2026-09: the owner's `intake` config default
+  is `silent`, capping the whole build at **at most one** owner question total — this skill does not get
+  its own separate question budget); otherwise pick the sensible default, state it, and proceed — never
+  silently guess on something consequential.
 - Constraints are gathered from real project evidence (existing architecture, stack, `CLAUDE.md`,
   `FORGE_PROJECT_PROFILE.md`) — not invented defaults that ignore the actual codebase.
 - Do not over-invest: this is a short loop, not a multi-day design-doc process. Match the depth to the

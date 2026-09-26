@@ -131,8 +131,16 @@ test('start() refuses 409 without ever spawning when the conflict probe finds so
   assert.equal(spawnCalls, 0, 'a detected conflict must never spawn a second process');
 });
 
+// N6/C2 fix (WP-C1, 2026-09-26 laptop re-audit): this test used to rely on the REAL `claude` CLI
+// being resolvable on PATH (isolatedPaths() with no RUNNER — see startDiscordService's own
+// fail-closed CLI-broker gate) to reach 202 at all; on a fresh laptop without `claude` on PATH it
+// got an honest 503 instead, unrelated to what this test actually verifies (spawn/pid tracking,
+// not the CLI-broker gate — that gate has its OWN dedicated tests just below, "FAIL-CLOSED GRENS
+// VAN DE CLI-BROKER"). RUNNER=fake is the same, already-established escape hatch those dedicated
+// tests use ("RUNNER=fake uit het .env-bestand van het KIND telt mee") — it makes this test
+// deterministic on every machine, CI included, without weakening the broker gate itself.
 test('start() spawns exactly once and tracks pid/started_at; a second start() refuses 409 without spawning again', async () => {
-  _setDiscordPathsForTests(isolatedPaths());
+  _setDiscordPathsForTests(isolatedPaths({ envContent: 'RUNNER=fake\n' }));
   let spawnCalls = 0;
   _setSpawnFnForTests(() => { spawnCalls += 1; return makeFakeChild(4242); });
   _setFetchFnForTests(async () => { throw new Error('nothing reachable — clear to start'); });
@@ -167,8 +175,11 @@ test('stop() is idempotent and never calls the kill function when nothing is tra
   assert.equal(killCalls, 0);
 });
 
+// N6/C2 fix (WP-C1): same RUNNER=fake reasoning as the test above — this test needs start() to
+// really reach 202 so it can prove stop() kills the tracked pid; it must not depend on whether the
+// real `claude` CLI happens to be on this machine's PATH.
 test('stop() kills exactly the tracked pid via the injected kill function, then clears tracked state', async () => {
-  _setDiscordPathsForTests(isolatedPaths());
+  _setDiscordPathsForTests(isolatedPaths({ envContent: 'RUNNER=fake\n' }));
   _setSpawnFnForTests(() => makeFakeChild(7777));
   _setFetchFnForTests(async () => { throw new Error('unreachable — both the pre-start probe and the graceful shutdown POST fail, forcing the kill path'); });
 

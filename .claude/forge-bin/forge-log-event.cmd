@@ -6,3 +6,5 @@ REM call re-expands any percent-variable-looking text found inside a forwarded %
 REM does not keep the caller pinned to a fixed three-argument shape the way %1 %2 %3 does - both
 REM matter here because forge.cmd's log-event route now requires its 4th token to be a .json path.
 call "%~dp0forge.cmd" log-event %1 %2 %3
+REM WP-S4: propagate the real exit code - see forge-status.cmd's own note on "call" and a bare script end.
+exit /b %ERRORLEVEL%

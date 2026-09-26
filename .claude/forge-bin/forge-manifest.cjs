@@ -115,8 +115,20 @@ let beadsMod = null;
 try { beadsMod = require('./forge-beads.cjs'); } catch { beadsMod = null; }
 
 const RUN_ID_RE = /^[A-Za-z0-9_-]+$/;
-const DONE_EVENT_TYPES = new Set(['wp_completed', 'check_passed']);
-const FAILED_EVENT_TYPES = new Set(['wp_failed', 'check_failed']);
+/** N2 fix (2026-09-26, fresh-laptop re-audit) — forge.md's ACTUAL dispatch step (:103) never tells the Lead
+ *  to log `wp_completed`/`wp_failed` at all; the documented pair is `subagent_completed`/`agent_failed`
+ *  (":89, :96, :103"), and log-event.cjs's own WP23 note already anticipates a `wp_id` on
+ *  `subagent_completed`/`subagent_failed` ("lets the completion close that heartbeat"). REPRODUCED
+ *  (replaying a real mission that followed forge.md literally through the 2.7.2 contract): every armed
+ *  work package read as an unfinished RC-MANIFEST-STALE gap, because only `wp_completed`/`check_passed`
+ *  ever counted as done — a run whose Lead did exactly what forge.md says could never satisfy its own
+ *  manifest. `subagent_completed`/`subagent_failed` (each still matched on `wp_id`, same as before — see
+ *  projectManifest() below) now qualify too, so a run that follows forge.md's documented sequence AND
+ *  attaches `wp_id` to those events passes without inventing a second, undocumented event vocabulary.
+ *  `wp_completed`/`wp_failed`/`check_passed`/`check_failed` stay exactly as they were (WP-S5a separately
+ *  adds an explicit forge.md instruction to log those too — this is a parallel, not a replacement, fix). */
+const DONE_EVENT_TYPES = new Set(['wp_completed', 'check_passed', 'subagent_completed']);
+const FAILED_EVENT_TYPES = new Set(['wp_failed', 'check_failed', 'subagent_failed']);
 const WP_DONE_STATUS = 'done';
 
 // ---- root / path resolution (mirrors forge-run-state.cjs / forge-checkpoint.cjs conventions) ----

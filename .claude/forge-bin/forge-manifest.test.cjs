@@ -318,5 +318,50 @@ console.log('12) arm --log-event: the manifest and its manifest_armed proof are 
   t('CLI usage text advertises the --log-event flag', /--log-event/.test(runCLI([], env).stderr));
 }
 
+console.log('13) N2 fix (2026-09-26, fresh-laptop re-audit) — subagent_completed/subagent_failed with a wp_id '
+  + 'now qualify as a real completion/failure, matching forge.md\'s ACTUAL documented dispatch step (:103: '
+  + '"subagent_completed"/"agent_failed"), not just the wp_completed/wp_failed vocabulary forge.md never told '
+  + 'the Lead to log at all. RED-before proof: DONE_EVENT_TYPES/FAILED_EVENT_TYPES are asserted directly so a '
+  + 'future accidental revert is caught even if the higher-level reconcile() proof below is ever weakened.');
+{
+  t('DONE_EVENT_TYPES now includes subagent_completed (alongside the unchanged wp_completed/check_passed)',
+    mf.DONE_EVENT_TYPES.has('subagent_completed') && mf.DONE_EVENT_TYPES.has('wp_completed') && mf.DONE_EVENT_TYPES.has('check_passed'));
+  t('FAILED_EVENT_TYPES now includes subagent_failed (alongside the unchanged wp_failed/check_failed)',
+    mf.FAILED_EVENT_TYPES.has('subagent_failed') && mf.FAILED_EVENT_TYPES.has('wp_failed') && mf.FAILED_EVENT_TYPES.has('check_failed'));
+
+  const root = freshDir('mf-n2');
+  mf.arm({ run_id: 'run-n2', wps: fourWps() }, { root });
+  writeEvents(root, 'run-n2', [
+    // forge.md's ACTUAL documented sequence for a work package: dispatch, real work, then completion —
+    // never wp_completed/wp_failed at all (see forge.md:89,96,103).
+    { event_type: 'subagent_started', agent: 'Build Boss', wp_id: 'wp1', timestamp: '2026-09-26T10:00:00Z' },
+    { event_type: 'subagent_completed', agent: 'Build Boss', wp_id: 'wp1', role: 'builder', status: 'completed', timestamp: '2026-09-26T10:05:00Z' },
+    { event_type: 'subagent_started', agent: 'Test Boss', wp_id: 'wp2', timestamp: '2026-09-26T10:01:00Z' },
+    { event_type: 'subagent_failed', agent: 'Test Boss', wp_id: 'wp2', reason: 'flaky fixture, needs a fresh dispatch', timestamp: '2026-09-26T10:06:00Z' },
+  ]);
+  const r = mf.reconcile({ run_id: 'run-n2' }, { root });
+  const byId = Object.fromEntries(r.manifest.map((w) => [w.wp_id, w]));
+  t('N2: a wp_id-carrying subagent_completed flips its WP to done (forge.md\'s real documented event)', byId.wp1.status === 'done');
+  t('N2: a wp_id-carrying subagent_failed flips its WP to failed', byId.wp2.status === 'failed');
+  t('N2: wp3/wp4 (no matching event) still stay armed — never fabricated', byId.wp3.status === 'armed' && byId.wp4.status === 'armed');
+  t('N2: last_proof on wp1 records the real subagent_completed event, not a synthesized one', byId.wp1.last_proof && byId.wp1.last_proof.event_type === 'subagent_completed');
+
+  // honesty guard must still apply to the NEW event types too — a disproven subagent_completed is not proof
+  const rootD = freshDir('mf-n2-disproven');
+  mf.arm({ run_id: 'run-n2d', wps: [{ wp_id: 'wpX', agent: 'Build Boss', narrowed_prompt: 'x' }] }, { root: rootD });
+  writeEvents(rootD, 'run-n2d', [
+    { event_type: 'subagent_completed', agent: 'Build Boss', wp_id: 'wpX', timestamp: '2026-09-26T10:00:00Z', _forge_verify: { proof_verified: false, proof_reason: 'claim not corroborated' } },
+  ]);
+  const rd = mf.reconcile({ run_id: 'run-n2d' }, { root: rootD });
+  t('N2: a DISPROVEN subagent_completed does NOT flip status to done (content-oracle guard extends to the new type)', rd.manifest[0].status === 'armed');
+
+  // a subagent_completed WITHOUT a wp_id must not flip anything (unchanged "no qualifying event" rule)
+  const rootU = freshDir('mf-n2-unlinked');
+  mf.arm({ run_id: 'run-n2u', wps: [{ wp_id: 'wpY', agent: 'Build Boss', narrowed_prompt: 'y' }] }, { root: rootU });
+  writeEvents(rootU, 'run-n2u', [{ event_type: 'subagent_completed', agent: 'Build Boss', timestamp: '2026-09-26T10:00:00Z' }]);
+  const ru = mf.reconcile({ run_id: 'run-n2u' }, { root: rootU });
+  t('N2: a subagent_completed with NO wp_id at all flips no work package (matching is still purely on wp_id)', ru.manifest[0].status === 'armed');
+}
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

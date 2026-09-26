@@ -78,8 +78,11 @@ reported as already-vetted rather than re-run from scratch.
   templated reason field — `forge-scout.cjs record()` requires a non-empty reason.
 
 ## Skills / commands / MCP
-`forge-bin/forge-scout.cjs` (`terms`, `record`, `list`, `isVetted` — the persistent ledger at
-`config/orchestration/FORGE_SCOUT_VETTING.json`), `watch` skill (mandatory video verification), `forge-mcp-clients`
+`forge-bin/forge-scout.cjs` (`terms`, `record`, `list`, `isVetted` — the persistent ledger is split
+template/user (2026-09-26 external audit N4/WP-S6b): the SHIPPED, curated baseline at
+`config/orchestration/FORGE_SCOUT_VETTING.json` plus the separate, never-shipped
+`config/orchestration/FORGE_SCOUT_VETTING.user.json` that `record()` actually writes new verdicts to —
+`list()`/`isVetted()` transparently merge both, so read either name as "the ledger"), `watch` skill (mandatory video verification), `forge-mcp-clients`
 skill (what an APPROVE still has to clear before anything is wired live), `FORGE_SKILL_REGISTRY.md` +
 `config/orchestration/mcp-registry.json` (check first — never HARD-PASS as "overlap" without actually
 checking these).

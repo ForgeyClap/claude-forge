@@ -23,6 +23,9 @@
  *     ok:true + no use  — honest "nothing to check", NOT "the gate is working".
  *
  * Read-only, zero-dependency, never throws. Advisory by design: it reports, it does not block.
+ *
+ * CLI: node forge-mcp-usage.cjs [--root <dir>] [--json]
+ *      Exit codes: 0 = ok (gated or nothing to check) · 3 = MCP tools were used but never gated.
  */
 const fs = require('fs');
 const path = require('path');

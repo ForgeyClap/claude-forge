@@ -5,6 +5,10 @@
  * forge-graph.json (Boss loop as nodes + pass/fail/rework edges) and provides deterministic, resumable
  * control: given the current node + gate outcome, which node(s) run next; validate the graph; find the
  * resume node from a set of completed nodes. Pure logic — the Lead executes the actual Boss dispatches.
+ *
+ * CLI: node forge-graph.cjs — no arguments; loads and validates forge-graph.json, prints a one-line
+ *      node/edge/validity summary, and exits 0 (valid) or 1 (invalid). Everything else here is a library
+ *      of pure helpers (loadGraph/validateGraph/nextNodes/resumeNode) for the Lead's own dispatch loop.
  */
 const fs = require('fs');
 const path = require('path');

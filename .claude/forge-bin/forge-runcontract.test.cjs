@@ -876,6 +876,69 @@ t('5q: CLI on a stale rules file with an unevaluated BLOCKING rule exits 3 and P
 }
 
 // ================================================================================================
+// N2 END-TO-END FIXTURE (2026-09-26, fresh-laptop re-audit) — a run whose events follow forge.md's
+// OWN documented dispatch sequence must pass the REAL production run contract. forge.md's dispatch
+// step (:89, :96, :103) tells the Lead to arm the manifest, log `agent_work_package_created` (agent =
+// the assignee), `subagent_started`, real work, then `subagent_completed` — it NEVER once says to log
+// `wp_completed`/`check_passed` with a wp_id. REPRODUCED (executed replay of a real mission that
+// followed forge.md literally): RC-MANIFEST-STALE read the armed-but-never-"wp_completed" package as
+// unfinished and revoked evidence-satisfied + verify-checked even though the run had genuinely done
+// and evidenced the work. This fixture is the RED-before/GREEN-after proof for forge-manifest.cjs's
+// DONE_EVENT_TYPES/FAILED_EVENT_TYPES fix (N2): commenting that fix out reproduces exactly the missing
+// evidence-satisfied/verify-checked pair this replay reported.
+// ================================================================================================
+{
+  const MANIFEST = require('./forge-manifest.cjs');
+  const runId = 'run-forgemd-e2e';
+  const wpId = 'wp-e2e-1';
+  // forge.md:27 — arm-manifest happens BEFORE dispatch (advisory step between "route" and "dispatch").
+  const armed = MANIFEST.arm({ run_id: runId, wps: [{ wp_id: wpId, agent: 'Build Boss', narrowed_prompt: 'implement the thing' }] }, { root: TMP });
+  t('N2 E2E setup: arm() really wrote a manifest for this run', armed.ok === true);
+
+  const forgeMdEvents = [
+    ev({ event_type: 'run_started', agent: 'orchestrator' }),
+    ev({ event_type: 'memory_loaded', agent: 'orchestrator' }),
+    ev({ event_type: 'owner_prefs_loaded', agent: 'orchestrator' }),
+    ev({ event_type: 'research_done', agent: 'orchestrator', note: 'searched existing implementations first' }),
+    // forge.md:89 — the Lead announces the work package; `agent` is the ASSIGNEE (Build Boss), not the
+    // logging Lead — this is also the D3 fixture shape, satisfies plan-or-prd-present too.
+    ev({ event_type: 'agent_work_package_created', agent: 'Build Boss', role: 'builder', mission: 'implement the thing', status: 'previewing' }),
+    // forge.md:96 — the real dispatch.
+    ev({ event_type: 'subagent_started', agent: 'Build Boss', wp_id: wpId }),
+    ev({ event_type: 'file_changed', agent: 'Build Boss', path: 'src/thing.js' }),
+    ev({ event_type: 'zero_console_errors_noted', agent: 'Build Boss' }),
+    ev({ event_type: 'check_passed', agent: 'Build Boss', task: 'suite', command: 'node test', output: '1 passed, 0 failed', exit_code: 0 }),
+    // forge.md:103 — the ACTUAL documented completion event for a work package. Never wp_completed/
+    // check_passed-with-wp_id — this is the exact vocabulary gap N2 closes (carries wp_id per log-event.cjs's
+    // own WP23 note: "lets the completion close that heartbeat").
+    ev({ event_type: 'subagent_completed', agent: 'Build Boss', wp_id: wpId, role: 'builder', status: 'completed' }),
+  ];
+  writeRun(runId, forgeMdEvents, { 'final-report.md': '# Report\n' });
+  const forgeMdResult = RC.check({ run_id: runId }, { root: TMP });
+  t('N2 E2E: a run following forge.md\'s DOCUMENTED sequence passes the REAL production contract (ok:true)',
+    forgeMdResult.ok === true, JSON.stringify({ missing: forgeMdResult.missing, rule_details: forgeMdResult.rule_details }));
+  t('N2 E2E: every applicable always-rule is genuinely satisfied — including evidence-satisfied/verify-checked, the two RC-MANIFEST-STALE used to revoke',
+    forgeMdResult.satisfied.includes('evidence-satisfied') && forgeMdResult.satisfied.includes('verify-checked') && forgeMdResult.missing.length === 0);
+  t('N2 E2E: manifest-complete itself is reported ok:true (the armed package really closed via subagent_completed)',
+    forgeMdResult.rule_details['manifest-complete'] && forgeMdResult.rule_details['manifest-complete'].ok === true);
+  t('N2 E2E: independent-verification correctly does not apply at this run\'s real L1 size (this fixture never claims a review happened)',
+    !forgeMdResult.satisfied.includes('independent-verification') && !forgeMdResult.missing.includes('independent-verification'));
+
+  // counterweight: the SAME fixture but the completion event carries no wp_id at all must still be caught —
+  // proves this test is not accidentally green for an unrelated reason.
+  const noWpIdEvents = forgeMdEvents.map((line) => {
+    const o = JSON.parse(line);
+    if (o.event_type === 'subagent_completed') delete o.wp_id;
+    return ev(o);
+  });
+  writeRun('run-forgemd-e2e-nowpid', noWpIdEvents, { 'final-report.md': '# Report\n' });
+  MANIFEST.arm({ run_id: 'run-forgemd-e2e-nowpid', wps: [{ wp_id: wpId, agent: 'Build Boss', narrowed_prompt: 'implement the thing' }] }, { root: TMP });
+  const noWpIdResult = RC.check({ run_id: 'run-forgemd-e2e-nowpid' }, { root: TMP });
+  t('N2 E2E counterweight: a subagent_completed with NO wp_id does NOT close the armed package — RC-MANIFEST-STALE still fires correctly',
+    noWpIdResult.ok === false && noWpIdResult.missing.includes('evidence-satisfied') && noWpIdResult.missing.includes('verify-checked'));
+}
+
+// ================================================================================================
 // V21/V25 (2026-09-24 second Codex recheck, out-p7.md)
 // ================================================================================================
 

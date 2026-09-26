@@ -5,6 +5,8 @@
 // PROJECT_ROOT resolves to the template (forge-mcp.cjs __dirname/../..), which has real forge-runs.
 // Convention: prints "<N> passed, <M> failed"; exit non-zero on any failure.
 const assert = require('assert');
+const path = require('path');
+const { spawnSync } = require('child_process');
 const mcp = require('./forge-mcp.cjs');
 
 let passed = 0, failed = 0;
@@ -71,6 +73,25 @@ t('every listed resource actually reads back (no dangling uris)', () => {
 t('unknown method returns method-not-found', () => {
   const r = cap(() => mcp.handle({ jsonrpc: '2.0', id: 6, method: 'no/such/method' }));
   assert.ok(r.error && r.error.code === -32601);
+});
+
+// WP-S4 (v2.8.0 laptop-audit Part V-G): this is a stdio server, not a flag-driven CLI — a bare `--help` used
+// to fall straight into the stdin read loop (harmless once stdin is already closed, as it always is under a
+// real spawn with no `input`, but left a real interactive terminal user waiting on a server they only meant
+// to inspect). A real spawned process with a short timeout proves it now answers immediately and never logs
+// the "server ready" startup line.
+t('CLI --help (real spawn): exits 0 immediately with a registration snippet, never starts the stdio server', () => {
+  const CLI = path.join(__dirname, 'forge-mcp.cjs');
+  const r = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8', timeout: 5000 });
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ' stderr ' + r.stderr);
+  assert.ok(r.stdout.includes('read-only MCP'), 'stdout: ' + r.stdout.slice(0, 120));
+  assert.ok(!/server ready/.test(r.stderr || ''), 'must never start the real stdio server for --help');
+});
+t('CLI -h is the same shorthand for --help', () => {
+  const CLI = path.join(__dirname, 'forge-mcp.cjs');
+  const r = spawnSync(process.execPath, [CLI, '-h'], { encoding: 'utf8', timeout: 5000 });
+  assert.strictEqual(r.status, 0, 'exit ' + r.status);
+  assert.ok(r.stdout.includes('read-only MCP'));
 });
 
 console.log(passed + ' passed, ' + failed + ' failed');

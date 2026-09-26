@@ -33,6 +33,21 @@ function t(name, fn) {
   try { fn(); passed++; console.log('  ok   ' + name); }
   catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); }
 }
+
+/** timingAssert — N3 (2026-09-26 CI + laptop re-audit): see the identical helper's full reasoning in
+ *  forge-gate-hook.test.cjs. targetMs is a fast-hardware design line (advisory only); hardMs is the real
+ *  guarantee that can fail the suite. FORGE_STRICT_TIMING=1 enforces targetMs for deliberate benchmarking. */
+const FORGE_STRICT_TIMING = process.env.FORGE_STRICT_TIMING === '1';
+function timingAssert(label, elapsedMs, targetMs, hardMs) {
+  const bound = FORGE_STRICT_TIMING ? targetMs : hardMs;
+  if (!FORGE_STRICT_TIMING && elapsedMs > targetMs) {
+    console.log('    ADVISORY: ' + label + ' took ' + elapsedMs.toFixed(1) + 'ms, above the ' + targetMs
+      + 'ms design target on fast/idle hardware (not a failure — set FORGE_STRICT_TIMING=1 to enforce it)');
+  }
+  assert.ok(elapsedMs < bound, label + ' took ' + elapsedMs.toFixed(1) + 'ms, expected under ' + bound + 'ms'
+    + (FORGE_STRICT_TIMING ? ' (FORGE_STRICT_TIMING=1 benchmark bound)' : ' (hard guarantee with slow-hardware headroom; design target ' + targetMs + 'ms)'));
+}
+
 function tmpRoot(label) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-toolhook-' + label + '-'));
   fs.mkdirSync(path.join(d, '.claude', 'forge-runs'), { recursive: true });
@@ -288,7 +303,7 @@ console.log('\nF) CLI robustness — never blocks a tool call (real subprocesses
 
 function runCli(input, cwd, env) {
   return spawnSync(process.execPath, [HOOK], {
-    input, cwd: cwd || process.cwd(), encoding: 'utf8', timeout: 20000,
+    input, cwd: cwd || process.cwd(), encoding: 'utf8', timeout: 25000,
     env: Object.assign({}, process.env, env || {}),
   });
 }
@@ -324,7 +339,10 @@ t('F4 a multi-megabyte payload -> exit 0, no stdout, still recorded', () => {
   const elapsed = Date.now() - started;
   assert.strictEqual(r.status, 0, 'exit was ' + r.status + ' stderr=' + r.stderr);
   assert.strictEqual(r.stdout, '');
-  assert.ok(elapsed < 15000, 'took ' + elapsed + 'ms — too slow for a per-tool-call hook');
+  // N3 (2026-09-26 re-audit): the real PostToolUse hook timeout in settings.json is 10s; this 2MB-payload
+  // stress case is deliberately far above a normal per-tool-call size, so the hard bound below stays a
+  // generous margin under runCli()'s own 25000ms external kill, not a claim that 10s always holds for 2MB.
+  timingAssert('2MB payload through the real toolhook CLI', elapsed, 15000, 22000);
   assert.ok(fs.existsSync(logFile(root, 'sess1')), 'huge call left no trace at all');
 });
 
@@ -567,7 +585,13 @@ t('I5 configOn ignores a wrong-typed value and honours a real boolean', () => {
   assert.strictEqual(hook.configOn('tool-log', true, { configModule: { get: () => ({ value: false }) } }), false);
 });
 
-const OFF_BUDGET_MS = Number(process.env.FORGE_HOOK_OFF_BUDGET_MS) || 500;
+// N3 (2026-09-26 re-audit): 500ms was tight enough to flake on ordinary hardware even without CI load — a
+// real run on an idle dev machine measured 831ms for the FASTEST of 3 real node.exe spawns (Windows process
+// creation is not free). The explicit env override still wins for a deliberately slow runner; otherwise the
+// default is a generous hard bound, with FORGE_STRICT_TIMING=1 restoring the tight 500ms design target for
+// benchmarking.
+const OFF_BUDGET_DESIGN_MS = 500;
+const OFF_BUDGET_MS = Number(process.env.FORGE_HOOK_OFF_BUDGET_MS) || (FORGE_STRICT_TIMING ? OFF_BUDGET_DESIGN_MS : 2500);
 t('I6 CLI OFF path (FORGE_PROJECT_ROOT fixture): exit 0, empty stdout/stderr, no ledger, best of 3 under ' + OFF_BUDGET_MS + ' ms', () => {
   const fixture = tmpRoot('i6-fixture');
   writeConfig(fixture, { 'tool-log': { value: false } });
@@ -584,7 +608,10 @@ t('I6 CLI OFF path (FORGE_PROJECT_ROOT fixture): exit 0, empty stdout/stderr, no
   assert.ok(!fs.existsSync(toollogDir(acting)) && !fs.existsSync(toollogDir(fixture)), 'a ledger was written on the OFF path');
   times.sort((a, b) => a - b);
   console.log('       OFF-path timings ms: ' + times.map((x) => x.toFixed(0)).join(', '));
-  assert.ok(times[0] < OFF_BUDGET_MS, 'fastest OFF run took ' + times[0].toFixed(0) + ' ms (budget ' + OFF_BUDGET_MS + ' ms; override FORGE_HOOK_OFF_BUDGET_MS on a slow runner)');
+  if (times[0] > OFF_BUDGET_DESIGN_MS) {
+    console.log('    ADVISORY: fastest OFF run took ' + times[0].toFixed(0) + ' ms, above the ' + OFF_BUDGET_DESIGN_MS + 'ms design target (not a failure)');
+  }
+  assert.ok(times[0] < OFF_BUDGET_MS, 'fastest OFF run took ' + times[0].toFixed(0) + ' ms (budget ' + OFF_BUDGET_MS + ' ms; override FORGE_HOOK_OFF_BUDGET_MS on a slow runner, or set FORGE_STRICT_TIMING=1 for the ' + OFF_BUDGET_DESIGN_MS + 'ms benchmark bound)');
 });
 
 try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ }

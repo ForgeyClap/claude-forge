@@ -18,8 +18,8 @@
 //     never fabricated when absent (which is every run in this project today).
 import fs from 'node:fs';
 import path from 'node:path';
-import { containmentOk } from './security.mjs';
-import { SYNC_SCAN_ROOT } from './paths.mjs';
+import { containmentOk, anyContainmentOk } from './security.mjs';
+import { SYNC_SCAN_ROOTS } from './paths.mjs';
 // sec-delta F1: this module was the ONE reader that never imported the redaction control.
 //
 // Every sibling reader (events, conversations, exec-bridge, models, capabilities) runs its output
@@ -66,7 +66,7 @@ function readJsonSafe(filePath) {
 }
 
 export function buildRecovery(projectPath) {
-  if (!containmentOk(SYNC_SCAN_ROOT, projectPath)) {
+  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const capturedAt = new Date();
@@ -127,7 +127,7 @@ export function buildRecovery(projectPath) {
 }
 
 export function buildCheckpoints(projectPath) {
-  if (!containmentOk(SYNC_SCAN_ROOT, projectPath)) {
+  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const capturedAt = new Date();

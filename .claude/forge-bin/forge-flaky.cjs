@@ -72,6 +72,17 @@ module.exports = { runOnce, runSuiteN, classify, detect, listSuites, DEFAULT_RUN
 
 if (require.main === module) {
   const args = process.argv.slice(2);
+  // WP-S4 (v2.8.0 laptop-audit Part VI/V-G): `--help` was never recognised, so it fell through to the default
+  // behaviour — running EVERY forge-bin/*.test.cjs suite 3x each with a 120s timeout per run, which the audit
+  // measured as an indefinite hang. Handled first, before anything else runs.
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: node forge-flaky.cjs [--runs N] [--timeout-ms MS] [--exclude <substr>] [file ...] [--json]');
+    console.log('  Runs each test suite N times (default 3) and reports any suite whose pass/fail outcome is not');
+    console.log('  identical across every run. Default suite set: every forge-bin/*.test.cjs; pass one or more');
+    console.log('  file paths to check only those instead.');
+    console.log('  Exit codes: 0 = every checked suite was stable · 1 = a flaky suite was found · 2 = usage error / no suites to check.');
+    process.exit(0);
+  }
   const json = args.includes('--json');
   const flag = (name, def) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
   const runs = parseInt(flag('--runs', String(DEFAULT_RUNS)), 10);

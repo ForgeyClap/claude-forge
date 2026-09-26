@@ -1,5 +1,18 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+
+// C1 fix (WP-C1, 2026-09-26 laptop re-audit — coordinator flag): the old default hard-coded the
+// maintainer's own username (`C:\Users\YOU\Documents\ForgeProjects`), which does not exist on any
+// other machine. Derived from the current user's real home directory instead, keeping the exact
+// same "ForgeProjects" folder NAME the gateway's own project-creation route already uses
+// (`gateway/src/paths.mjs`'s `FORGE_PROJECTS_ROOT = path.join(SYNC_SCAN_ROOT, 'ForgeProjects')`) —
+// one shared convention, not two different guesses at where a beginner's projects live.
+// `<home>/Documents` is also one of the roots the gateway's own multi-root project-discovery fix
+// (paths.mjs's `SYNC_SCAN_ROOTS`) scans by default, so a project created under this default is
+// discoverable by both the gateway and this bot without the owner ever typing a path.
+// `FORGE_PROJECTS_DIR` (env or `.env`) still overrides this for anyone who keeps projects elsewhere.
+const DEFAULT_PROJECTS_DIR = path.join(os.homedir(), 'Documents', 'ForgeProjects');
 
 function parseEnvFile(filePath) {
   let raw;
@@ -36,7 +49,7 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), envFile = '
     maxQueuedPerThread: Number.parseInt(get('MAX_QUEUED_PER_THREAD', '10'), 10) || 10,
     globalMaxActiveRuns: Number.parseInt(get('GLOBAL_MAX_ACTIVE_RUNS', '2'), 10) || 2,
     stateDir: path.resolve(cwd, get('STATE_DIR', './state')),
-    projectsDir: get('FORGE_PROJECTS_DIR', 'C:\\Users\\YOU\\Documents\\ForgeProjects'),
+    projectsDir: get('FORGE_PROJECTS_DIR', DEFAULT_PROJECTS_DIR),
     botHttpPort: Number.parseInt(get('BOT_HTTP_PORT', '3979'), 10) || 3979,
     managerPort: Number.parseInt(get('MANAGER_PORT', '3987'), 10) || 3987,
     runner: get('RUNNER', 'fake'),

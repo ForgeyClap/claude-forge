@@ -1,48 +1,48 @@
 {
-  "_doc": "Global skill registry + project-type bundles (mission 2026-07-05). Skills auto-attach: every agent gets its CORE skills (agent-skill-map.json) + the bundle matching the detected project type — no manual reconnection per project. Names reference skills available in this environment (global ~/.claude/skills, forge-* playbooks, ECC skills, built-in Claude Code skills); 'kind' says where it lives. If a required skill is missing at runtime → Skill Boss reports it + assigns a safe labeled fallback (never silently skip).",
+  "_doc": "Global skill registry + project-type bundles (mission 2026-07-05). Skills auto-attach: every agent gets its CORE skills (agent-skill-map.json) + the bundle matching the detected project type — no manual reconnection per project. 'kind' says where a skill actually lives, so a fresh machine (no ~/.claude/skills, no ECC, no plugins — see the perspective rule) never expects one that is not there. Kind values: 'vendored' = ships inside this project's .claude/skills/<name> (see .claude/skills/VENDORED-SKILLS.md), always present; 'forge-playbook' = ships inside this project's .claude/skills/forge-*; 'method' = a documented procedure inside a playbook/agent, not a standalone SKILL.md; 'ecc/plugin' and 'ecc-agent' = optional, from the owner's separately-installed ECC toolkit/plugins (may be absent); 'external/optional' = a genuinely global (~/.claude/skills) skill this project does not ship — a fresh machine will not have it, so a 'fallback' field names what Forge does instead. Codex-recheck 2026-09-26 (N9/D — laptop re-audit): 11 entries were tagged 'global' while only 3 of them (test-driven-development, systematic-debugging, brainstorming) actually ship vendored in this project; the other 11 unique names never ship and are now 'external/optional' with an honest fallback. If a required skill is still missing at runtime → Skill Boss reports it + uses the labeled fallback (never silently skip, never claim a skill loaded that did not).",
   "bundles": {
     "website": [
-      { "skill": "frontend-design",        "kind": "ecc/plugin" },
-      { "skill": "design-is",              "kind": "global" },
+      { "skill": "frontend-design",        "kind": "ecc/plugin", "fallback": "also vendored at .claude/skills/frontend-design — used directly when the ECC/plugin copy is absent" },
+      { "skill": "design-is",              "kind": "external/optional", "fallback": "not shipped; forge-website's own design guidance + the vendored frontend-design skill cover this" },
       { "skill": "forge-website",          "kind": "forge-playbook" },
-      { "skill": "dataviz",                "kind": "global" },
-      { "skill": "browser",                "kind": "global" },
+      { "skill": "dataviz",                "kind": "external/optional", "fallback": "not shipped; UI Boss applies data-visualization judgement directly, no dedicated skill needed" },
+      { "skill": "browser",                "kind": "external/optional", "fallback": "not shipped; the screenshot-loop method (Playwright/Chrome headless) in this same bundle covers browser automation" },
       { "skill": "screenshot-loop",        "kind": "method (Playwright/Chrome headless capture cycle)" },
       { "skill": "seo-performance",        "kind": "method (SEO Boss audit checklist in forge-website)" },
       { "skill": "playwright-testing",     "kind": "method (Test Boss via e2e-runner agent)" },
       { "skill": "security-review",        "kind": "ecc-agent (security-reviewer)" }
     ],
     "n8n": [
-      { "skill": "n8n-mcp-tools-expert",   "kind": "global" },
-      { "skill": "n8n-node-configuration", "kind": "global" },
-      { "skill": "n8n-validation-expert",  "kind": "global" },
-      { "skill": "n8n-expression-syntax",  "kind": "global" },
-      { "skill": "n8n-workflow-patterns",  "kind": "global" },
+      { "skill": "n8n-mcp-tools-expert",   "kind": "external/optional", "fallback": "not shipped; the vendored forge-n8n playbook covers node/tool guidance directly" },
+      { "skill": "n8n-node-configuration", "kind": "external/optional", "fallback": "not shipped; the vendored forge-n8n playbook covers node configuration directly" },
+      { "skill": "n8n-validation-expert",  "kind": "external/optional", "fallback": "not shipped; the vendored forge-n8n playbook + n8n's own validate_workflow cover validation" },
+      { "skill": "n8n-expression-syntax",  "kind": "external/optional", "fallback": "not shipped; the vendored forge-n8n playbook covers expression syntax directly" },
+      { "skill": "n8n-workflow-patterns",  "kind": "external/optional", "fallback": "not shipped; the vendored forge-n8n playbook covers workflow patterns directly" },
       { "skill": "forge-n8n",              "kind": "forge-playbook" },
       { "skill": "webhook-security",       "kind": "method (Security Boss checklist in forge-n8n)" },
       { "skill": "workflow-testing",       "kind": "method (n8n validate_workflow + Test Boss)" }
     ],
     "app-backend": [
       { "skill": "forge-fullstack",        "kind": "forge-playbook" },
-      { "skill": "code-review-excellence", "kind": "global" },
-      { "skill": "test-driven-development","kind": "global" },
-      { "skill": "systematic-debugging",   "kind": "global" },
+      { "skill": "code-review-excellence", "kind": "external/optional", "fallback": "not shipped; the vendored forge-code-review playbook (and requesting/receiving-code-review) cover this" },
+      { "skill": "test-driven-development","kind": "vendored" },
+      { "skill": "systematic-debugging",   "kind": "vendored" },
       { "skill": "security-review",        "kind": "ecc-agent (security-reviewer)" },
       { "skill": "docs-handoff",           "kind": "method (Docs Boss final-report format via forge-report)" }
     ],
     "research-planning": [
-      { "skill": "deep-research",          "kind": "global" },
-      { "skill": "brainstorming",          "kind": "global" },
-      { "skill": "make-plan",              "kind": "global" },
+      { "skill": "deep-research",          "kind": "external/optional", "fallback": "not shipped; Search Boss uses WebSearch/WebFetch directly per forge-router, no dedicated skill needed" },
+      { "skill": "brainstorming",          "kind": "vendored" },
+      { "skill": "make-plan",              "kind": "external/optional", "fallback": "not shipped; the vendored writing-plans skill + forge-prd playbook cover planning" },
       { "skill": "forge-report",           "kind": "forge-playbook" },
       { "skill": "risk-review",            "kind": "method (Review Boss risk checklist)" }
     ],
     "automation-integration": [
       { "skill": "forge-integration",      "kind": "forge-playbook" },
-      { "skill": "n8n-workflow-patterns",  "kind": "global" },
+      { "skill": "n8n-workflow-patterns",  "kind": "external/optional", "fallback": "not shipped; the vendored forge-n8n playbook covers workflow patterns directly" },
       { "skill": "security-review",        "kind": "ecc-agent (security-reviewer)" }
     ]
   },
   "projectTypeDetection": "Boss detects the project type in the Mission Blueprint (website/n8n/app-backend/research-planning/automation-integration/custom). Custom types get the closest bundle + gaps reported by Skill Boss.",
-  "honesty": "kind='method' entries are documented procedures (not standalone SKILL.md files) — they live inside the named playbook/agent and are executed as such. Never claim a skill file exists when it is a method."
+  "honesty": "kind='method' entries are documented procedures (not standalone SKILL.md files) — they live inside the named playbook/agent and are executed as such. kind='external/optional' entries are real global skills this project does not ship — never claim one loaded on a fresh machine; use the listed 'fallback' instead. Never claim a skill file exists when it does not."
 }

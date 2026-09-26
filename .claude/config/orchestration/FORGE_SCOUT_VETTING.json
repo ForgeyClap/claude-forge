@@ -1,5 +1,5 @@
 {
-  "_doc": "Forge V2 PIECE P5 (2026-07-22) — persistent Scout vetting ledger. Append-only: a HARD-PASS verdict for a capability PERSISTS and is never silently overwritten by a later approve attempt. Written/read by forge-bin/forge-scout.cjs only.",
+  "_doc": "Forge V2 PIECE P5 (2026-07-22) — SHIPPED, curated Scout vetting baseline (2026-09-26: split from owner/project-accumulated verdicts per external audit N4 — see forge-scout.cjs's file header for the full split contract). This file ships with the product template; forge-scout.cjs record() no longer writes here by default — new verdicts recorded by a real Scout research pass land in the separate, never-shipped FORGE_SCOUT_VETTING.user.json, and list()/isVetted() transparently merge both. Append-only within this file too: a HARD-PASS verdict for a capability PERSISTS and is never silently overwritten by a later approve attempt — a stale hard-pass is corrected in place (with the correction recorded in its own reason, audit trail kept) rather than deleted, exactly as done for the frontend-design entry below.",
   "version": 1,
   "entries": [
     {
@@ -25,8 +25,8 @@
     },
     {
       "capability": "frontend-design (anthropics/skills)",
-      "verdict": "hard-pass",
-      "reason": "Overlaps this project's existing frontend-design skill / FRONTEND_WEBSITE_RULES anti-generic guardrails (owner's own global ruleset already covers the same AI-slop aesthetic guardrails) — duplication of an existing Forge capability, not adopted as a second parallel skill.",
+      "verdict": "approve",
+      "reason": "CORRECTED 2026-09-26 (external audit N4): this hard-pass assumed the owner's global copy was the only place this skill could live and that vendoring it into Forge would be pure duplication. That assumption is now stale — the skill IS vendored into the Forge distribution (@34040c9, see the 2026-09-24 entry below and skills/VENDORED-SKILLS.md), so a fresh install has and uses it. A curated shipped baseline must never permanently hard-pass a capability the product itself ships; the original reasoning is kept here for the audit trail, not deleted.",
       "source": "https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md",
       "ts": "2026-07-22T11:15:31.472Z"
     },

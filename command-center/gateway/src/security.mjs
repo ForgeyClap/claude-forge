@@ -47,6 +47,14 @@ export function containmentOk(baseDir, targetPath) {
   return resolved === base || resolved.startsWith(base + path.sep);
 }
 
+// C1 fix (WP-C1): project discovery now scans several well-known roots at once (paths.mjs's
+// SYNC_SCAN_ROOTS), not just one — this is the matching defense-in-depth containment check: true
+// when targetPath is a real descendant of (or equal to) ANY of the given base directories, never
+// a looser check than containmentOk() run once per candidate root.
+export function anyContainmentOk(baseDirs, targetPath) {
+  return baseDirs.some((baseDir) => containmentOk(baseDir, targetPath));
+}
+
 // Allowlist regex for anything that becomes part of a filesystem path derived from request
 // input (run ids). No '.', no '/', no '\\' — traversal sequences cannot match this pattern.
 export const SAFE_ID_RE = /^[A-Za-z0-9_-]+$/;

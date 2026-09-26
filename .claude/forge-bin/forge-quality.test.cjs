@@ -581,9 +581,11 @@ if (!Q) { console.log('\n' + pass + ' passed, ' + (fail + 30) + ' failed (module
   if (fs.existsSync(councilSkillPad)) {
     const sk = fs.readFileSync(councilSkillPad, 'utf8');
     t('11 de SKILL beschrijft de vijf vaste lenzen', ['Contrarian', 'First Principles', 'Expansionist', 'Outsider', 'Executor'].every((rol) => sk.includes(rol)));
-    t('11 de SKILL eist anonieme peer review en een minority report', /anoni/i.test(sk) && /minority report/i.test(sk));
-    t('11 de SKILL benoemt de shape_only-grens en dat consensus nooit bewijs is', /shape_only/.test(sk) && /nooit bewijs/i.test(sk));
-    const fm = sk.match(/^---\n[\s\S]*?description:\s*([^\n]+)/);
+    // v2.8.0: the skill is now English (fresh-laptop audit: Dutch text on the mandatory path) — the checks test
+    // the CONCEPTS in either language, and accept CRLF as well as LF (git autocrlf on Windows checkouts).
+    t('11 de SKILL eist anonieme peer review en een minority report', /anoni|anonym/i.test(sk) && /minority report/i.test(sk));
+    t('11 de SKILL benoemt de shape_only-grens en dat consensus nooit bewijs is', /shape_only/.test(sk) && /nooit bewijs|never proof|never (?:counts as )?evidence/i.test(sk));
+    const fm = sk.match(/^---\r?\n[\s\S]*?description:\s*([^\r\n]+)/);
     t('11 de SKILL-description blijft onder het hygienebudget (200 tekens)', !!fm && fm[1].trim().length <= 200, fm ? String(fm[1].trim().length) : 'geen frontmatter');
   } else { for (let i = 0; i < 4; i++) t('11 SKILL-inhoudstest ' + (i + 1) + ' (SKILL ontbreekt)', false); }
   const cat11 = Q.loadCatalog(ROOT);

@@ -54,13 +54,25 @@ be followed by an independent `codex-reviewer` pass (`/codex:review` read-only, 
 `/codex:adversarial-review` for the required-review areas in `CODEX_GLOBAL_POLICY.md` (an owner-level policy in `~/.claude` when present; on an install without it, the defaults stated in this skill apply — read-only, never a blocker)). If Codex is
 unavailable, report that honestly — the review above still stands on its own.
 
-**The model is pinned, and it is NOT a detail you restate from memory.** Read
-`.claude/config/orchestration/codex-review.json` — it holds the engine, model, reasoning effort,
-sandbox and the exact command, and it is the ONLY place any of those are defined. Owner directive
-2026-08-04: the independent review runs on **`gpt-6-astra` at `model_reasoning_effort=xhigh`** (owner directive 2026-09-24; long thinking = xhigh; history: gpt-5.6-sol 2026-08-04 → 2026-09-24). Before
-that file existed the model was pinned nowhere, so `/codex:review` silently used whatever default the
-plugin happened to carry — and reaching gpt-5.6-sol at all needed a Codex CLI ≥ 0.146.0 (0.142.3 got
-an HTTP 400 telling it to upgrade, measured 2026-08-03).
+**The model comes from the EFFECTIVE config, and it is NOT a detail you restate from memory.** Read
+`.claude/config/orchestration/codex-review.json` — the SHIPPED, template-owned default (engine, model,
+reasoning effort, sandbox) — merged with the optional, NEVER-shipped
+`.claude/config/orchestration/codex-review.user.json` (one account's own override, same shape, only the
+overridden fields win). `.claude/forge-bin/forge-codexreview-config.cjs::effectiveConfig()` does that
+merge; its `buildCommand()` derives the real command from the result — never a hardcoded string.
+
+**Portable default (no user file, or one that leaves `review.model` unset):** no model/effort pin at
+all — the review runs on the codex CLI's own current default, and is reported honestly as
+**"Codex default model"**, never a fabricated name. **Pinned:** an account's `codex-review.user.json` sets
+`review.model`/`review.reasoning_effort`, and the command passes exactly those as `-m <model>` /
+`-c model_reasoning_effort=<effort>`. This repo's own maintainer account currently pins `gpt-6-astra` at
+`model_reasoning_effort=xhigh` in its own user file (owner directive 2026-09-24; long thinking = xhigh;
+history: gpt-5.6-sol 2026-08-04 → HTTP 400 on that account 2026-09-24) — that pin lives in the
+never-shipped user file, never in this shipped skill text, so a different account never inherits it.
+Before the shipped config existed at all the model was pinned nowhere, so `/codex:review` silently used
+whatever default the plugin happened to carry; reaching a specific pinned model can still need a newer
+Codex CLI (gpt-5.6-sol needed ≥ 0.146.0 — 0.142.3 got an HTTP 400 telling it to upgrade, measured
+2026-08-03).
 
 **Name the step for what it is.** The planned work package is the **Codex code-review**, not an "ECC
 code-review". ECC `code-reviewer`/`security-reviewer` is the *fallback* you use when Codex genuinely

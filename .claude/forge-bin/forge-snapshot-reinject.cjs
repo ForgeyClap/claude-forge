@@ -153,6 +153,9 @@ function run(opts) {
 
 module.exports = { run, resolveProjectRoot, extractSection, truncate, configOn, configRead, MAX_CHARS };
 
+// CLI: node forge-snapshot-reinject.cjs — a hook target, not a discretionary CLI; it never reads argv (no
+// --help/flags — command-line arguments are ignored entirely), only SessionStart's own JSON on stdin
+// (validated but otherwise unused), and always exits 0 within ~4s regardless of input.
 // ---- CLI (SessionStart hook target — ALWAYS exits 0, never blocks; stdout IS re-injected into context) ----
 if (require.main === module) {
   let done = false;

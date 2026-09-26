@@ -668,6 +668,19 @@ module.exports = {
 
 // ---- CLI ----
 if (require.main === module) {
+  // WP-S4 (v2.8.0 laptop-audit Part V-G/VI): `--help`/`-h` was never recognised by parseArgs() (it only ever
+  // matches --json/--only/--keep-tmp), so it silently fell through to a REAL run of every failure-injection
+  // scenario — several of which genuinely wait out provider timeouts/retries — observed as an indefinite hang.
+  // Handled first, before runAll() ever starts.
+  if (process.argv.slice(2).includes('--help') || process.argv.slice(2).includes('-h')) {
+    console.log('Usage: node forge-chaos.cjs [--json] [--only <scenario-id>] [--keep-tmp]');
+    console.log('  Runs the failure-injection harness (see file header for the full scenario list) against');
+    console.log('  disposable os.tmpdir() fixtures — never this project\'s real .claude/ or forge-runs/.');
+    console.log('  --only <scenario-id> runs a single scenario; --keep-tmp skips cleanup for inspection.');
+    console.log('  Exit codes: 0 = every scenario genuinely held its invariant · 1 = a real failure ·');
+    console.log('              2 = usage error (0 scenarios ran, e.g. an unknown --only id) · 3 = some scenario(s) skipped (not a full green).');
+    process.exit(0);
+  }
   const args = parseArgs(process.argv.slice(2));
   const results = runAll(args.only);
   const tl = tally(results);

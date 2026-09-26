@@ -7,6 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const flaky = require('./forge-flaky.cjs');
 
 let passed = 0, failed = 0;
@@ -56,6 +57,22 @@ t('a deterministic suite is classified stable across N real runs', () => {
 t('listSuites finds *.test.cjs in a dir (finds this very test in forge-bin)', () => {
   const suites = flaky.listSuites();
   assert.ok(suites.some((s) => s.endsWith('forge-flaky.test.cjs')), 'should list itself');
+});
+
+// WP-S4 (v2.8.0 laptop-audit Part VI): `forge-flaky --help` was never recognised by the CLI's argument
+// parser, so it fell through to the default behaviour — running EVERY forge-bin/*.test.cjs suite 3x each
+// with a 120s timeout per run, observed as an indefinite hang. A real spawned CLI call with a short timeout
+// proves --help returns almost immediately instead of falling into that path.
+const CLI = path.join(__dirname, 'forge-flaky.cjs');
+t('CLI --help returns quickly (exit 0, prints Usage) instead of running the full suite set', () => {
+  const r = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8', timeout: 5000 });
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ' (a timeout/null status means it fell through to the hang path again)');
+  assert.ok(/^Usage: node forge-flaky\.cjs/.test(r.stdout), 'stdout must open with the usage line: ' + r.stdout.slice(0, 120));
+});
+t('CLI -h is the same shorthand for --help', () => {
+  const r = spawnSync(process.execPath, [CLI, '-h'], { encoding: 'utf8', timeout: 5000 });
+  assert.strictEqual(r.status, 0, 'exit ' + r.status);
+  assert.ok(/^Usage: node forge-flaky\.cjs/.test(r.stdout));
 });
 
 try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}

@@ -642,5 +642,88 @@ t('certifyRun BUG3: an internal blank line in events.jsonl does not affect certi
   assert.strictEqual(cert.certified, true, JSON.stringify(cert.criteria, null, 2));
 });
 
+// =====================================================================================================
+// D6 fix (2026-09-26, fresh-laptop re-audit) — certify must not say CERTIFIED over a red run contract.
+// REPRODUCED (executed replay of a real mission): certify reported CERTIFIED while the SAME run's own
+// forge-runcontract.cjs reported 4 missing rules — the existing CAVEAT text already named this gap in
+// prose ("does NOT require that any check actually ran"); these tests pin that the LABEL/verdict now
+// agrees with it. A contract this tool cannot even compute (no FORGE_HARD_RULES.json at this hermetic
+// root — every OTHER test above never sets one up) must keep degrading to "not evaluated", never a
+// fabricated pass NOR a fabricated fail — proven first so the RED tests below isolate the real signal.
+// =====================================================================================================
+function writeHardRules(tmp, rules) {
+  const dir = path.join(tmp, '.claude', 'config', 'orchestration');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'FORGE_HARD_RULES.json'), JSON.stringify({ owners_allowlist: [], rules }, null, 2), 'utf8');
+}
+const BLOCK_RULE_NEVER_SATISFIED = { id: 'missing-thing', rule: 'must log a thing that never happens', trigger: 'always', check: { type: 'event-present', key: 'thing_that_never_happens' }, severity: 'block', override: 'can be overridden by the owner', source: 'test' };
+const BLOCK_RULE_ALWAYS_SATISFIED = { id: 'dispatch-happened', rule: 'a named boss must have dispatched', trigger: 'always', check: { type: 'event-present', key: 'subagent_completed' }, severity: 'block', override: 'can be overridden by the owner', source: 'test' };
+
+t('certifyRun D6 baseline: with NO FORGE_HARD_RULES.json at this root, the contract is honestly "not evaluated" and never counts against certified', () => {
+  const tmp = mkRoot();
+  writeEventsRaw(tmp, 'runD6NoRules', toJsonl(buildChain('runD6NoRules', goodRawEvents())));
+  const cert = certify.certifyRun('runD6NoRules', tmp);
+  assert.strictEqual(cert.contract.evaluated, false, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.contract.ok, null);
+  assert.strictEqual(cert.certified, true, 'an uncomputable contract must not fabricate a fail');
+  assert.strictEqual(cert.label, 'CERTIFIED');
+});
+
+t('certifyRun D6: a contract that genuinely evaluates ok:true leaves an otherwise-CERTIFIED run unaffected', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_ALWAYS_SATISFIED]);
+  writeEventsRaw(tmp, 'runD6Green', toJsonl(buildChain('runD6Green', goodRawEvents())));
+  const cert = certify.certifyRun('runD6Green', tmp);
+  assert.strictEqual(cert.contract.evaluated, true, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.contract.ok, true, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.certified, true);
+  assert.strictEqual(cert.label, 'CERTIFIED');
+});
+
+t('certifyRun D6 (THE FIX): a contract this tool genuinely computes, and that is RED, pulls an otherwise-CERTIFIED run down to NOT CERTIFIED', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_NEVER_SATISFIED]);
+  writeEventsRaw(tmp, 'runD6Red', toJsonl(buildChain('runD6Red', goodRawEvents())));
+  const cert = certify.certifyRun('runD6Red', tmp);
+  assert.ok(cert.criteria.every((c) => c.ok), 'the 5 black-box criteria alone must still be green on this fixture: ' + JSON.stringify(cert.criteria, null, 2));
+  assert.strictEqual(cert.contract.evaluated, true, JSON.stringify(cert.contract));
+  assert.strictEqual(cert.contract.ok, false, JSON.stringify(cert.contract));
+  assert.ok(cert.contract.missing.includes('missing-thing'), JSON.stringify(cert.contract.missing));
+  assert.strictEqual(cert.certified, false, 'D6: certify must never say CERTIFIED over a red run contract');
+  assert.ok(/NOT CERTIFIED/.test(cert.label) && /run contract is red/.test(cert.label), cert.label);
+});
+
+t('printSummary D6: names the red run contract in the human-readable summary, keeps the existing CAVEAT text', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_NEVER_SATISFIED]);
+  writeEventsRaw(tmp, 'runD6Summary', toJsonl(buildChain('runD6Summary', goodRawEvents())));
+  const cert = certify.certifyRun('runD6Summary', tmp);
+  const out = certify.printSummary(cert);
+  assert.ok(/run contract: RED/.test(out), out);
+  assert.ok(/CAVEAT/.test(out) && /does NOT require that any check actually ran/.test(out), out);
+});
+
+t('CLI D6: exit 1 + NOT CERTIFIED naming the red run contract', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_NEVER_SATISFIED]);
+  writeEventsRaw(tmp, 'cliD6Red', toJsonl(buildChain('cliD6Red', goodRawEvents())));
+  const r = spawnSync(process.execPath, [CLI, 'cliD6Red', '--root', tmp], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+  assert.ok(/NOT CERTIFIED/.test(r.stdout));
+  assert.ok(/run contract/.test(r.stdout), r.stdout);
+});
+
+t('CLI D6 --json: exposes the contract field so a caller can see WHY certification was refused', () => {
+  const tmp = mkRoot();
+  writeHardRules(tmp, [BLOCK_RULE_NEVER_SATISFIED]);
+  writeEventsRaw(tmp, 'cliD6Json', toJsonl(buildChain('cliD6Json', goodRawEvents())));
+  const r = spawnSync(process.execPath, [CLI, 'cliD6Json', '--root', tmp, '--json'], { encoding: 'utf8' });
+  assert.strictEqual(r.status, 1, r.stdout + r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  assert.strictEqual(parsed.certified, false);
+  assert.strictEqual(parsed.contract.evaluated, true);
+  assert.strictEqual(parsed.contract.ok, false);
+});
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
