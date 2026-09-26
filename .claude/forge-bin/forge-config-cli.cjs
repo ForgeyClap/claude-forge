@@ -133,7 +133,13 @@ function main(argv) {
   }
 }
 
-module.exports = { main, parseArgv };
+// sec-v3r M2 (independent re-review, forge-gate-selfdisable.cjs): BOOL_OPTS/VALUE_OPTS exported (read-only
+// reuse, additive — nothing about parseArgv's own behaviour changes) so forge-gate-selfdisable.cjs can walk
+// argv the SAME way parseArgv does, but keep the ORIGINAL TOKEN OBJECTS for whichever entries land in `pos`
+// (parseArgv's own argv contract only ever returns flattened strings, which throws away exactly the raw
+// quoting/shape information a literal-vs-dynamic check needs). One shared table, never a second hand-rolled
+// copy that could quietly drift out of sync with this one.
+module.exports = { main, parseArgv, BOOL_OPTS, VALUE_OPTS };
 
 if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));

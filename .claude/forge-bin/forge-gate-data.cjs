@@ -175,20 +175,42 @@ function gitSubcommand(ws) {
   return null;
 }
 
-/** literalDataSpans(segs) -> the quoted-literal spans that are pure data (rule b, with L1 and L3). */
+/** literalDataSpans(segs) -> the quoted-literal spans that are pure data (rule b, with L1 and L3).
+ *  LINEAR REWRITE (wp-v3, sec-v1r-H1, independent review): the ORIGINAL implementation rebuilt the entire
+ *  REMAINING text (`segs.slice(k+1)...join('\n')`) and re-ran laterRisk() over it for EVERY segment k -- O(segment
+ *  count) work at EACH of O(segment count) segments, i.e. O(n^2) in the segment count. Lead-measured on harmless
+ *  `echo a` chains (script `lead-probe-secv1r-h1.cjs`): 1.6s/20kB, 5.9s/40kB, 24.1s/80kB semicolon-joined;
+ *  2.1s/8.5s/31.3s newline-joined; 1.1s/4.0s/15.1s `&&`-joined -- all well past this hook's own 10s timeout.
+ *
+ *  Fixed with ONE REVERSE PASS carrying a running "risk after this segment" flag. For each segment m, compute
+ *  segRisk[m] = laterRisk() over THAT SEGMENT's own joined-words text alone (the exact same laterRisk() call the
+ *  original code made, just on one segment's content instead of a freshly rebuilt suffix). Then fold a running
+ *  OR from the end: suffixRisk[m] = segRisk[m] || suffixRisk[m+1]. This is PROVABLY equivalent to the original,
+ *  not merely observed to match: laterRisk()'s own split regex treats `\n` as an UNCONDITIONAL separator with no
+ *  quote-awareness, and the original code always joined segments with `\n` -- so for any strings A, B,
+ *  laterRisk(A + '\n' + B) === laterRisk(A) || laterRisk(B), regardless of what either one contains (including a
+ *  stray `;`/`\n` embedded inside what was originally quoted content -- the SAME pre-existing quirk the original
+ *  whole-string rescan already had, preserved here rather than "fixed", since this function's job is an
+ *  equivalent rewrite, not a behaviour change). Proven with a property-style equivalence test in
+ *  forge-gate-hook.test.cjs comparing this function against the kept-verbatim ORIGINAL O(n^2) implementation
+ *  (the test's own oracle) across many generated benign and dangerous-SHAPED command texts — see that test's
+ *  own header for the exact case count. Total cost is now O(total segment content length), once. */
 function literalDataSpans(segs) {
   const head = (seg) => (seg.words[0] && !seg.words[0].spans.length ? seg.words[0].raw.toLowerCase() : '');
   for (let k = 1; k < segs.length; k++) {
     const h = head(segs[k]).split(/[\\/]/).pop().replace(/\.exe$/, '');
     if (segs[k - 1].sepAfter === '|' && (INTERPRETER_RE.test(h) || h === '.')) return [];
   }
+  const segRisk = segs.map((seg) => laterRisk(seg.words.map((x) => x.raw).join(' ')));
+  const suffixRisk = new Array(segs.length + 1);
+  suffixRisk[segs.length] = false;
+  for (let m = segs.length - 1; m >= 0; m--) suffixRisk[m] = segRisk[m] || suffixRisk[m + 1];
   const spans = [];
   segs.forEach((seg, k) => {
     const ws = seg.words;
     const h = head(seg);
     if (!h || seg.sepAfter === '|') return;
-    const later = segs.slice(k + 1).map((z) => z.words.map((x) => x.raw).join(' ')).join('\n');
-    if (later && laterRisk(later)) return;
+    if (suffixRisk[k + 1]) return;
     let picked = [];
     if (h === 'echo' || h === 'printf') {
       const dests = [];
@@ -223,7 +245,23 @@ function literalDataSpans(segs) {
   return spans;
 }
 
-/** stripInertData(command, shell) -> { text, regions }. Never throws: on any internal error nothing is stripped. */
+// wp-v3 (sec-v1r, item 3): a defense-in-depth ceiling on scanWords()'s own segment count, independent of the
+// literalDataSpans() linear fix above -- fails closed with the existing "too large to inspect" BLOCK (via
+// stripInertData()'s new tooManySegments flag, read by forge-gate-inspect.cjs) rather than trusting the linear
+// fix alone against a FUTURE regression in this or any other segment-driven code path. Justified from real
+// measurements, not a guess: a generous CI-style command chain (a few hundred to low thousands of `&&`-joined
+// steps) never comes close to this; the largest BENIGN adversarial shape this project's own timing probes
+// exercise -- a 190,000-char "echo a;"/"echo a\n" chain (7 chars/segment) -- produces ~27,142 segments, so
+// 50,000 stays comfortably (>1.8x) above every real probe shape while still bounding the theoretical worst case
+// (MAX_COMMAND_CHARS=200,000 chars of minimal ~2-char segments, up to ~100,000 of them) to a fast, fail-closed
+// BLOCK instead of unbounded segment-count-driven work, known or not yet discovered.
+const MAX_INERT_SCAN_SEGMENTS = 50000;
+
+/** stripInertData(command, shell) -> { text, regions, tooManySegments }. Never throws: on any internal error
+ *  nothing is stripped. tooManySegments (wp-v3, additive field) is true only when scanWords() itself produced
+ *  more than MAX_INERT_SCAN_SEGMENTS segments -- the caller (forge-gate-inspect.cjs) maps this straight to the
+ *  existing "too large to inspect" BLOCK; text/regions stay at their fail-safe "nothing stripped" values in that
+ *  case, exactly like any other refusal this function already makes. */
 function stripInertData(command, shell) {
   try {
     let text = String(command).replace(/\r\n/g, '\n');
@@ -232,6 +270,9 @@ function stripInertData(command, shell) {
     if (shell !== 'PowerShell') { const h = stripHeredocs(text); text = h.text; regions += h.regions; heredocLeft = h.unstripped; }
     if (!heredocLeft && !regions) {
       const segs = scanWords(text, shell);
+      if (segs && segs.length > MAX_INERT_SCAN_SEGMENTS) {
+        return { text: String(command), regions: 0, tooManySegments: true };
+      }
       const spans = segs ? literalDataSpans(segs) : [];
       const seen = new Set();
       for (const sp of spans.sort((a, b) => b.start - a.start)) {
@@ -241,14 +282,17 @@ function stripInertData(command, shell) {
         regions++;
       }
     }
-    return { text, regions };
+    return { text, regions, tooManySegments: false };
   } catch {
-    return { text: String(command), regions: 0 };
+    return { text: String(command), regions: 0, tooManySegments: false };
   }
 }
 
 module.exports = {
   stripInertData, stripHeredocs, scanWords, literalDataSpans, laterRisk, quoteMask, gitSubcommand,
   findHeredocDelim, // N05 (codex-recheck 2026-09-24, third pass) — exported for direct unit testing
-  INTERPRETER_RE, LAYOUT, SEARCH,
+  INTERPRETER_RE, LAYOUT, SEARCH, MAX_INERT_SCAN_SEGMENTS,
+  wholeInert, SCRIPT_EXT_RE, LOG_EVENT_RE, // wp-v3: exported so forge-gate-hook.test.cjs's kept-verbatim ORIGINAL
+  // literalDataSpans oracle (the sec-v1r-H1 equivalence proof) can rebuild the exact pre-fix function without a
+  // second, drift-prone copy of these small pure helpers.
 };

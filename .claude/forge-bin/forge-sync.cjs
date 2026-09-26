@@ -441,6 +441,23 @@ const SYSTEM = [
   // wave 6, wp-k1 (Codex p11 V09): the exactly-once pending -> consumed store for --once approvals (one atomic
   // rename; independent of the config lock). forge-config.cjs requires it. SYSTEM_GLOB-covered — pinned too.
   'forge-bin/forge-config-once-store.cjs',
+  // wp-v1 (2026-09-25, wave 13, run forge-2026-09-24-codex-fixes, security probe secl17-m1): the worker_threads
+  // watchdog that bounds forge-gate-hook.cjs's classify() step to a hard wall-clock ceiling (opaque-exec's
+  // pattern_line was measured super-linear on adversarial dense-pipe input, ~52s/190kB on master — DEADLINE_MS
+  // alone could never stop it since it is only checked AFTER classify() returns). forge-gate-hook.cjs requires
+  // both; an installed project without them silently loses the timeout guarantee, keeping only the pre-existing
+  // (insufficient) post-hoc deadline check. SYSTEM_GLOB-covered (forge-bin/*.cjs) — pinned here explicitly too
+  // anyway (same belt-and-suspenders discipline as forge-gate-quotes.cjs above).
+  'forge-bin/forge-gate-watchdog.cjs', 'forge-bin/forge-gate-classify-worker.cjs',
+  // wp-v3 (2026-09-25, wave 13, run forge-2026-09-24-codex-fixes, sec-v1r-H1/L2): the WHOLE inspection pipeline
+  // (stripInertData/selfDisable/classify/destructive-delete-recheck/scratchPassThrough) now lives in ONE shared
+  // function both the worker and forge-gate-hook.cjs's own fallback call — sec-v1r-H1 found stripInertData()
+  // running unbounded on the main thread, entirely outside the wp-v1/v2 watchdog's reach. forge-gate-hook.cjs
+  // and forge-gate-classify-worker.cjs both require these three; an installed project without them cannot load
+  // the hook at all (unlike the optional DATA/SCRATCH/WATCHDOG modules, these are unconditional requires).
+  // SYSTEM_GLOB-covered (forge-bin/*.cjs) — pinned here explicitly too anyway (same belt-and-suspenders
+  // discipline as forge-gate-quotes.cjs/forge-gate-watchdog.cjs above).
+  'forge-bin/forge-gate-inspect.cjs', 'forge-bin/forge-gate-selfdisable.cjs', 'forge-bin/forge-gate-messages.cjs',
   // wp-disclosure-ab (2026-07-31): forge-doctor.cjs's skill_hygiene advisory check (backlog item 12) +
   // the forge-skill-testing skill (backlog item 8 — activation-test/A/B protocol, step 2 after
   // forge-skill-evals.cjs's binary evals). forge-doctor.cjs/forge-doctor.test.cjs are already covered by

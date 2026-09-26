@@ -16,6 +16,16 @@
  * forge-config.cjs::consumeOnce() (codex-recheck S06) — never a blanket window. Text gates and
  * write-outside-root are NOT enforced here (legitimate flows; no reliable target path in a command line).
  *
+ * WP-V3 (sec-v1r-H1/L1/L2, independent re-review): the WHOLE inspection pipeline — stripInertData, selfDisable,
+ * classify, the destructive-delete raw recheck, scratchPassThrough — now runs in forge-gate-inspect.cjs::
+ * inspect(), called from EITHER the worker_threads Worker (forge-gate-watchdog.cjs, the normal protected path)
+ * OR, only when the watchdog module itself is unavailable and the command is small enough
+ * (WATCHDOG_UNAVAILABLE_FALLBACK_CHARS), directly from evaluate() below. This file's OWN job is now narrow: read
+ * input, apply the cheap top-level size ceiling, run the watchdog (or the explicitly-bounded fallback), map the
+ * result, and do the parts that must stay on the main thread because they read/write persistent state
+ * (gateHookEnabled()'s config read; decide()'s once-approval consumption via forge-config.cjs::consumeOnce()).
+ * Nothing else runs unbounded on the main thread — see forge-gate-inspect.cjs's own header for the full "why".
+ *
  * EXIT CODES (security wp9b M2, tightened by codex-recheck C01/S07): 2 = blocked · 1 = non-blocking but
  * VISIBLE (hook internal error, oversized/hanging/unparseable/ambiguous stdin, gate-hook OFF while a gate
  * would have fired, classifier unavailable and the fallback regex silent) · 0 = allowed. A call this hook
@@ -27,14 +37,10 @@
  * self-disable attempt is BLOCKED (exit 2) whenever gate-hook is ON, and also while a ONCE-style grant is
  * PENDING (codex-recheck V03 — the plain off/unset form must never upgrade a one-off approval into a
  * persistent OFF); it is visible-but-allowed only under a PERSISTENT off with no once-window open. When
- * hard-gates.json / the classifier cannot load, FALLBACK_RE
- * blocks the obviously destructive verbs (fail-CLOSED). Inert data is stripped first (forge-gate-data.cjs;
- * absent -> nothing is stripped); a delete whose every segment is a provable scratch delete passes
- * (scratchPassThrough, fail-closed) — and this proof now runs for EVERY recursive-delete SHAPE, even one the
- * classifier's own except-valve already excused (codex-recheck I01: that valve is supplemental detection, never
- * enforcement, for this hook). Never writes stdout or disk; zero dependencies beyond Node core (fs/os/path/
- * crypto). PowerShell is matched because the tool ledger shows real PowerShell tool calls (same `command`
- * field) and kill-by-name's forbidden forms are PowerShell-native.
+ * hard-gates.json / the classifier cannot load, FALLBACK_RE blocks the obviously destructive verbs (fail-CLOSED).
+ * Never writes stdout or disk; zero dependencies beyond Node core (fs/os/path/crypto). PowerShell is matched
+ * because the tool ledger shows real PowerShell tool calls (same `command` field) and kill-by-name's forbidden
+ * forms are PowerShell-native.
  *
  * MODEL: gateHookEnabled · selfDisable · scratchPassThrough · decide(payload, opts) -> {block, warn, gates,
  * reason, notice, why} · run(rawStdin, opts) -> {exitCode, stderr, why}. CLI: stdin -> run() -> stderr + exit.
@@ -44,16 +50,71 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-let DATA = null;
-try { DATA = require('./forge-gate-data.cjs'); } catch { DATA = null; } // absent -> nothing is stripped (stricter)
+// SCRATCH is still required directly here for the exported direct-test wrappers below (scratchPassThrough,
+// tokenize, verbIndex, extractTargets, resolveTarget, areaOf) — those are test conveniences, not part of the
+// quadratic-risk inspection pipeline (which reaches SCRATCH's scratchPassThrough independently, via
+// forge-gate-inspect.cjs). Absent -> no pass-through (stricter).
 let SCRATCH = null;
-try { SCRATCH = require('./forge-gate-scratch.cjs'); } catch { SCRATCH = null; } // absent -> no pass-through (stricter)
-// V02 (codex-recheck 2026-09-24, wave 2): the self-disable parser DELEGATES its option parsing to the real
-// forge-config-cli.cjs::parseArgv() instead of hand-duplicating its BOOL_OPTS/VALUE_OPTS table — the two
-// tables cannot drift apart because there is only ever one. Absent/broken -> every config-shaped segment is
-// treated as unparseable (falls through to the loose ambiguous-mutation fallback below, never to permission).
-let CONFIG_CLI = null;
-try { CONFIG_CLI = require('./forge-config-cli.cjs'); } catch { CONFIG_CLI = null; }
+try { SCRATCH = require('./forge-gate-scratch.cjs'); } catch { SCRATCH = null; }
+// wp-v1/wp-v3 (wave 13, codex-fixes): the worker_threads watchdog that now runs the WHOLE inspection pipeline —
+// see forge-gate-watchdog.cjs's header for the full design. Absent -> evaluate() falls back to running
+// forge-gate-inspect.cjs::inspect() directly, bounded by WATCHDOG_UNAVAILABLE_FALLBACK_CHARS.
+let WATCHDOG = null;
+try { WATCHDOG = require('./forge-gate-watchdog.cjs'); } catch { WATCHDOG = null; }
+// wp-v4 (sec-v3 M1, independent review): these three used to be required UNGUARDED — a broken or missing file
+// made THIS require() throw, which made require('./forge-gate-hook.cjs') itself throw, which crashed the WHOLE
+// process before run()'s CLI handler ever ran: every command (destructive or not) exited non-zero with no
+// verdict computed at all, the exact "every command runs unchecked" regression this fix closes. Before wave 13
+// every dependency was optional with a fail-closed fallback (FALLBACK_RE still blocked destructive verbs when
+// the classifier could not load) — restored below via minimal, zero-dependency LOCAL fallbacks for the handful
+// of exports evaluate()/decide()/run() actually call, so this file can never crash at require-time again
+// regardless of which sibling is missing or corrupted.
+let SELFDISABLE = null;
+try { SELFDISABLE = require('./forge-gate-selfdisable.cjs'); } catch { SELFDISABLE = null; }
+let MSG = null;
+try { MSG = require('./forge-gate-messages.cjs'); } catch { MSG = null; }
+let INSPECT = null;
+try { INSPECT = require('./forge-gate-inspect.cjs'); } catch { INSPECT = null; }
+
+// Fallback self-disable (mirrors forge-gate-inspect.cjs's own copy — see that file's header for why a small
+// duplication is deliberate here): a crude, over-inclusive check that still catches the obvious "forge-config
+// ... set/unset ... gate-hook" shape when the precise parser cannot load. Only used for this file's OWN
+// backward-compat exports (hook.selfDisable etc.) — the real pipeline's self-disable check lives in
+// forge-gate-inspect.cjs and has its own, independently-guarded copy of the same fallback.
+//
+// sec-v3r L3 (independent re-review): the old single ordered regex only matched two of the six possible
+// orderings of (script name, mutating verb, "gate-hook"), and never stripped quotes/backslashes or joined a
+// Bash backslash-newline / PowerShell backtick-newline line continuation before testing, so a trivially
+// reordered or quote-broken or continuation-split call could slip past this LAST-RESORT net. Replaced with
+// three independent, unordered word-boundary checks (script present AND a mutating verb present AND
+// "gate-hook" present, in ANY order) over a normalised copy of the text — every check is a single linear
+// scan, so this stays exactly as safe against ReDoS as the regex it replaces despite matching more shapes.
+function fallbackSelfDisableNormalize(seen) {
+  return String(seen)
+    .replace(/\\\r?\n/g, '') // Bash line continuation: backslash-newline is deleted, not a real separator
+    .replace(/`\r?\n/g, '') // PowerShell line continuation: backtick-newline is deleted, not a real separator
+    .replace(/["'\\]/g, ''); // quotes/backslashes stripped, same de-gluing looksLikeAmbiguousConfigMutation does
+}
+const FALLBACK_SELFDISABLE_SCRIPT_RE = /forge-config(?:-cli)?\.cjs/i;
+const FALLBACK_SELFDISABLE_VERB_RE = /\b(?:set|unset)\b/i;
+const FALLBACK_SELFDISABLE_KEY_RE = /\bgate-hook\b/i;
+function fallbackSelfDisableTest(seen) {
+  const norm = fallbackSelfDisableNormalize(seen);
+  return FALLBACK_SELFDISABLE_SCRIPT_RE.test(norm) && FALLBACK_SELFDISABLE_VERB_RE.test(norm)
+    && FALLBACK_SELFDISABLE_KEY_RE.test(norm);
+}
+
+// Fallback messages: no per-gate wording (that lives in forge-gate-messages.cjs), but still a real, honest,
+// NL/EN block reason and a bounded notice — used by evaluate()/decide()/offNotice() below whenever MSG itself
+// could not load, so a broken forge-gate-messages.cjs can never crash THIS file's own require either.
+const FALLBACK_NOTICE_CHARS = 300;
+function fallbackCap(s) { return s.length > FALLBACK_NOTICE_CHARS ? s.slice(0, FALLBACK_NOTICE_CHARS - 1) + '…' : s; }
+function fallbackBlockReason(ids) {
+  return 'FORGE GATE (' + ids.join(', ') + '): dit commando lijkt destructief; de uitleg-module kon niet laden, '
+    + 'dus is het voor de zekerheid geweigerd — herstel forge-gate-messages.cjs (draai de doctor). / '
+    + 'this command looks destructive; the wording module could not load, so it was refused to be safe — '
+    + 'restore forge-gate-messages.cjs (run the doctor).';
+}
 
 const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
 // V01 (codex-recheck 2026-09-24): only a hook_event_name Claude Code ACTUALLY sends for something other than a
@@ -64,76 +125,62 @@ const KNOWN_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'Stop', 'Session
 const FAILSAFE_MS = 3000;
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
-const MAX_NOTICE_CHARS = 300;
 // SB-M5 (wave 12, codex-recheck twelfth pass / wp-t1). MAX_STDIN_BYTES above bounds the whole JSON payload
-// (8 MiB); it says nothing about how expensive the CLASSIFIER's own regex/quote-scanning pipeline is on
-// whatever command text sits inside that payload — forge-gate-quotes.cjs's own shared work budgets scale
-// LINEARLY with the command's own length, so a command anywhere near the stdin ceiling could still cost real,
-// measurable time before this hook can decide anything, risking Claude Code's own external hook timeout (a
-// call that never gets an exit code in time is a call this hook never actually blocked). MAX_COMMAND_CHARS is
-// a much smaller, cheap-to-check ceiling on the COMMAND TEXT ALONE (comfortably above any real Bash/PowerShell
-// command a normal session ever constructs, comfortably below MAX_STDIN_BYTES) checked BEFORE the classifier
-// pipeline ever runs; DEADLINE_MS is a wall-clock safety net measured AROUND the classify() call itself — well
-// under the 10s hook timeout this project configures — so an unexpectedly slow classification (a future
-// regression this file's own tests did not foresee) is refused rather than silently trusted. Both refuse with
-// a plain "too large to inspect" BLOCK (exit 2), never the non-blocking "NOT checked" exit 1 an ordinary
-// inspection failure gets — an oversized or slow-to-judge command is exactly the shape this hook exists to
-// stop from running unchecked, not a shape to wave through with a warning.
+// (8 MiB); it says nothing about how expensive the inspection pipeline is on whatever command text sits inside
+// that payload. MAX_COMMAND_CHARS is a much smaller, cheap-to-check ceiling on the COMMAND TEXT ALONE
+// (comfortably above any real Bash/PowerShell command a normal session ever constructs, comfortably below
+// MAX_STDIN_BYTES) checked BEFORE anything else runs; DEADLINE_MS is a wall-clock safety net measured around
+// the inspection call itself (inline OR the watchdog round-trip, whichever runs).
+// wp-v1 (wave 13, codex-fixes, security probe secl17-m1): DEADLINE_MS ALONE was proven insufficient — it is
+// only ever compared AFTER the inspection call returns, so it cannot stop a call that has not returned yet.
+// wp-v3 (sec-v1r-H1, independent re-review): the SAME danger existed one level deeper than wp-v1/wp-v2 ever
+// protected — stripInertData() (called on the MAIN thread, entirely BEFORE the watchdog branch) had its own
+// super-linear cost on harmless input (many `echo a`-shaped segments; see forge-gate-data.cjs's own header for
+// the measured numbers), and the destructive-delete recheck / scratchPassThrough ALSO ran unguarded on the main
+// thread afterwards (sec-v1r L2). evaluate() below now routes the WHOLE inspection pipeline — not just
+// classify() — through the worker_threads Worker guarded by a 6000ms Atomics.wait whenever the watchdog module
+// is available (sec-v1 M2: no size threshold — see forge-gate-watchdog.cjs's header), so a runaway step
+// ANYWHERE in that pipeline is ABANDONED (and answered with this same "too large / too slow to inspect" BLOCK)
+// instead of silently exceeding the hook's own external timeout. DEADLINE_MS still catches the case where the
+// inspection genuinely finishes, just too slowly (4s-6s). WATCHDOG_UNAVAILABLE_FALLBACK_CHARS (sec-v1 M1,
+// lowered from 20,000 to 10,000 by sec-v1r L1) is the fail-closed ceiling used ONLY when the watchdog module
+// itself could not be required at all (e.g. no worker_threads in this environment): a command at or under it is
+// still classified inline (the pre-wp-v1 behaviour for an ordinary small command); anything larger is refused
+// outright rather than silently running an unbounded classification with nothing left to bound it. Justified
+// from measurements, not a guess: kill-by-name's own worst confirmed benign shape (a search piped through many
+// "| xargs echo" stages, no kill word anywhere) costs ~503ms at 10,000 chars (interpolated from 67ms/5,000 and
+// 4,028ms/20,000) — comfortably fast for an inline fallback path — and forge-gate-data.cjs's own
+// MAX_INERT_SCAN_SEGMENTS fix makes stripInertData() itself linear regardless of size, so 10,000 chars carries
+// negligible extra risk from that stage either. All three refuse with a plain "too large to inspect" BLOCK
+// (exit 2), never the non-blocking "NOT checked" exit 1 an ordinary inspection failure gets — an oversized or
+// slow-to-judge command is exactly the shape this hook exists to stop from running unchecked, not a shape to
+// wave through with a warning.
 const MAX_COMMAND_CHARS = 200000;
 const DEADLINE_MS = 4000;
-const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b|\biex\b|\bInvoke-Expression\b/i;
+const WATCHDOG_UNAVAILABLE_FALLBACK_CHARS = 10000;
+// sec-v3r L1 (independent re-review): four additions below, each kept BOUNDED — this regex still runs
+// unprotected on the main thread (the watchdog only ever protects the REAL classifier, never this fallback),
+// so no new alternative may reintroduce the \S*-before-a-literal shape sec-v1r-H1 already proved catastrophic
+// on adversarial dense input. `eval` uses a negative lookahead so a legitimate hyphenated token like
+// "eval-source-map" (a real webpack --devtool value) does not trip it. The pipe-into-a-shell and
+// kill-with-substitution alternatives use `\s*`/`{0,200}` (bounded), never `[^\n]*`. The encoded-PowerShell-flag
+// alternative is a fully deterministic nested-literal chain (no repeated class, so no backtracking ambiguity is
+// possible regardless of nesting depth) covering every real unambiguous abbreviation of -EncodedCommand,
+// starting at -en (the shortest prefix powershell.exe itself accepts without also matching -ExecutionPolicy).
+const FALLBACK_RE = /\b(rm|Remove-Item|rd|rmdir|del|taskkill|Stop-Process|pkill|killall)\b|\bgit\b[^\n]*\b(reset|clean|checkout|restore|switch|stash)\b|\biex\b|\bInvoke-Expression\b|\beval\b(?!-)|\|\s*(?:sudo\s+|env\s+)?(?:sh|bash|zsh|powershell(?:\.exe)?|pwsh(?:\.exe)?|cmd(?:\.exe)?)\b|-en(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:n(?:d)?)?)?)?)?)?)?)?)?)?)?)?\b|\bkill\b[^\n]{0,200}(?:\$\(|`)\s*(?:pgrep|pidof)\b/i;
 
 /** sha256(s) -> hex digest, used only to bind a once-consumption call to the exact command being evaluated
  *  (codex-recheck S06); never logged, never echoed back to the user. */
 function sha256(s) { return crypto.createHash('sha256').update(String(s), 'utf8').digest('hex'); }
 
-const ONCE_HINT = 'node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<the owner\'s words>"';
-
-/** Plain-language wording per gate — what the command does, and the safe variant to offer. */
-const WORDS = {
-  'destructive-delete': {
-    nl: 'dit commando verwijdert een hele map in één keer, zonder prullenbak',
-    en: 'this command deletes a whole folder tree at once, with no recycle bin',
-    safeNl: 'noem het exacte pad en controleer het eerst, verwijder losse bestanden, of ruim alleen op binnen _scratch/, node_modules/, dist/ of de tijdelijke map (dat mag zonder vragen)',
-    safeEn: 'name the exact path and check it first, delete single files, or clean up only inside _scratch/, node_modules/, dist/ or the temp folder (allowed without asking)',
-  },
-  'kill-by-name': {
-    nl: 'dit commando stopt ALLE processen met die naam, ook andere draaiende diensten',
-    en: 'this command kills EVERY process with that name, including unrelated running services',
-    safeNl: 'stop alleen het exacte PID dat je zelf gestart hebt (taskkill /PID <pid>, Stop-Process -Id <pid>)',
-    safeEn: 'kill only the exact PID you started yourself (taskkill /PID <pid>, Stop-Process -Id <pid>)',
-  },
-  'git-destructive': {
-    nl: 'dit commando gooit onvastgelegd werk weg',
-    en: 'this command discards uncommitted work',
-    safeNl: 'commit of stash eerst (git stash push), dan is het terug te halen',
-    safeEn: 'commit or stash first (git stash push), so it can be recovered',
-  },
-  'opaque-exec': {
-    nl: 'Forge kan niet zien wat dit commando echt zou uitvoeren (het geeft onbekende of gedecodeerde inhoud door aan een interpreter)',
-    en: 'Forge cannot see what this would run (it hands unknown or decoded content to an interpreter)',
-    safeNl: 'schrijf het commando voluit uit (geen iex/eval/sh -c op een variabele, geen pipe naar sh/bash/pwsh), of laat het als een los, leesbaar script-bestand draaien',
-    safeEn: 'write the command out in full (no iex/eval/sh -c on a variable, no pipe into sh/bash/pwsh), or run it as a separate, readable script file instead',
-  },
-  'gate-hook-self-disable': {
-    nl: 'dit commando zet de Forge-poort zelf uit',
-    en: 'this command switches the Forge gate itself off',
-    safeNl: 'alleen de eigenaar zet de poort uit; met een uitdrukkelijke ja van de eigenaar mag eenmalig (10 minuten): ' + ONCE_HINT,
-    safeEn: 'only the owner switches the gate off; with the owner\'s explicit yes a one-off (10 minutes) is allowed: ' + ONCE_HINT,
-  },
-  'classifier-unavailable': {
-    nl: 'de poort-classifier kon niet laden en dit commando lijkt destructief',
-    en: 'the gate classifier could not load and this command looks destructive',
-    safeNl: 'herstel .claude/config/orchestration/hard-gates.json of forge-actiongate.cjs (draai de doctor)',
-    safeEn: 'restore .claude/config/orchestration/hard-gates.json or forge-actiongate.cjs (run the doctor)',
-  },
-  'command-too-large': {
-    nl: 'dit commando is te groot om veilig te controleren (of duurde te lang om te beoordelen)',
-    en: 'this command is too large to inspect safely (or took too long to judge)',
-    safeNl: 'splits het commando op in kleinere stappen, of schrijf het als een los, leesbaar script-bestand',
-    safeEn: 'split the command into smaller steps, or run it as a separate, readable script file instead',
-  },
-};
+// WORDS/blockReason/cap/passNotice/ONCE_HINT now live in forge-gate-messages.cjs (wp-v3) so BOTH this file and
+// the worker build the exact same message text from one source. wp-v4 (sec-v3 M1): read defensively (never
+// destructure MSG directly — that would throw immediately at require-time if MSG is null) and fall back to the
+// minimal local implementations above when the real module could not load.
+const WORDS = MSG ? MSG.WORDS : {};
+const blockReason = MSG ? MSG.blockReason : fallbackBlockReason;
+const cap = MSG ? MSG.cap : fallbackCap;
+const passNotice = MSG ? MSG.passNotice : ((targets) => fallbackCap('FORGE GATE: destructive delete allowed — all targets inside a project scratch area or in the OS temp dir outside the project (' + targets.join(', ') + ')'));
 
 /** gateHookEnabled(opts) -> { on, source, set_at, set_by, expires_at, quote }. opts.config injects a forge-config
  *  module (tests); null = "module absent". Never throws; an absent/unreadable config means the default ON.
@@ -157,28 +204,17 @@ function gateHookEnabled(opts) {
   }
 }
 
-/** commandGateIds(gateModule) -> Set of the "command"-kind gate ids, read from the classifier's own config. */
+/** commandGateIds(gateModule) -> Set of the "command"-kind gate ids — delegates to forge-gate-inspect.cjs so
+ *  there is exactly one implementation. wp-v4 (sec-v3 M1): INSPECT may be null (guarded require) — an empty
+ *  Set is the honest, fail-safe answer (this export is a convenience for callers/tests, never part of the real
+ *  block/allow decision, which lives entirely inside forge-gate-inspect.cjs::inspect() itself). */
 function commandGateIds(gateModule) {
-  return new Set(gateModule.listGates().filter((g) => g.kind === 'command').map((g) => g.id));
+  return INSPECT ? INSPECT.commandGateIds(gateModule) : new Set();
 }
 
-function blockReason(ids) {
-  const lines = ['FORGE GATE (' + ids.join(', ') + '):'];
-  for (const id of ids) {
-    const w = WORDS[id] || WORDS['classifier-unavailable'];
-    lines.push('- ' + w.nl + ' — Forge vraagt eerst. / ' + w.en + ' — Forge asks first.');
-    lines.push('  Veilige variant: ' + w.safeNl + '. / Safe variant: ' + w.safeEn + '.');
-  }
-  lines.push('Forge biedt eerst de veilige variant aan (een gedateerde back-upmap in plaats van verwijderen, alleen dat ene proces stoppen op zijn exacte PID, eerst committen of stashen voordat er iets wordt weggegooid); alleen als de eigenaar uitdrukkelijk ja zegt tegen DIT commando, voert Forge zelf de eenmalige toestemming uit: ' + ONCE_HINT + '.');
-  lines.push('Forge offers the safe variant first (dated backup folder instead of delete, stop the one process by its exact PID, commit or stash before discarding); only when the owner explicitly says yes to THIS command does Forge run the one-off approval itself: ' + ONCE_HINT + '.');
-  return lines.join('\n');
-}
-
-// ---- SCRATCH PASS-THROUGH — delegated to forge-gate-scratch.cjs (split out 2026-09-24 to keep this file under
-// 500 lines). A destructive-delete SHAPE passes only when EVERY segment is itself a provable delete whose
-// targets all resolve inside a scratch area; reached for every such shape, including one the classifier's own
-// except-valve already excused (codex-recheck I01). An absent scratch module fails closed: no pass-through. The
-// tokenize/verbIndex/extractTargets/resolveTarget/areaOf re-exports below exist only for direct unit testing.
+// ---- SCRATCH PASS-THROUGH — direct-test wrappers only (the real inspection pipeline reaches SCRATCH through
+// forge-gate-inspect.cjs independently). Delegated to forge-gate-scratch.cjs (split out 2026-09-24 to keep this
+// file under 500 lines). An absent scratch module fails closed: no pass-through.
 function scratchPassThrough(command, ctx) {
   if (!SCRATCH) return { ok: false, why: 'scratch-module-unavailable' };
   return SCRATCH.scratchPassThrough(command, ctx);
@@ -189,128 +225,14 @@ const extractTargets = (...a) => (SCRATCH ? SCRATCH.extractTargets(...a) : null)
 const resolveTarget = (...a) => (SCRATCH ? SCRATCH.resolveTarget(...a) : null);
 const areaOf = (...a) => (SCRATCH ? SCRATCH.areaOf(...a) : null);
 
-const cap = (s) => (s.length > MAX_NOTICE_CHARS ? s.slice(0, MAX_NOTICE_CHARS - 1) + '…' : s);
-const passNotice = (targets) => cap('FORGE GATE: destructive delete allowed — all targets inside a project scratch area or in the OS temp dir outside the project (' + targets.join(', ') + ')');
-
-// ---- SELF-DISABLE (security wp9b M3), read from PARSED ARGV rather than a spelling match (codex-recheck S05):
-// any Bash/PowerShell forge-config.cjs invocation — any path form, a quoted verb, flags in any order/position,
-// `--json`/`--global` — whose target key is `gate-hook` with `set <off-word>` or `unset` is blocked, except the
-// exact one-off shape `set gate-hook off --once "<quote>"` on its own, with no other flag or trailing argument.
-const OFF_WORDS = new Set(['off', 'uit', 'false', 'no', 'nee', '0', 'disabled', 'disable', 'uitzetten', 'uitschakelen', 'deactiveren']);
-const CONFIG_SPLIT_RE = /&&|\|\||;;|;|\||&|\r\n|\n|\r|\$\(|`/g; // mirrors forge-actiongate's own SHELL_SPLIT_RE,
-// duplicated on purpose: self-disable detection must keep working even if forge-actiongate.cjs is missing/broken.
-function splitForSelfDisable(text) {
-  return String(text).split(CONFIG_SPLIT_RE).map((s) => s.trim()).filter(Boolean);
-}
-
-// V02 (codex-recheck 2026-09-24, wave 1 + wave 2): the real, equivalent ways this project's own docs and
-// scripts invoke forge-config.cjs — a node CLI flag before the script path, a full interpreter path, `env`
-// re-resolving it from PATH, sudo/time/nohup wrappers, AND every value-taking CLI option the real
-// forge-config-cli.cjs itself recognises (`--lang`, `--run`, `--flag`, `--once`, plus the boolean `--json`/
-// `--global`/`--yes`/`--ascii`/`--all`/`--mark-seen`/`--help`) in any order, before or between or after the
-// positional key/value — must all still reach the SAME parsed verdict as the bare `node forge-config.cjs set
-// gate-hook off` form, never fall through to "not a config call" = permission (wave-2 finding V02: a segment
-// like `set --lang en gate-hook off` used to mis-derive key="en" instead of "gate-hook" because the old
-// hand-rolled flag stripper only ever handled flags that take NO value).
-const CONFIG_WRAPPER_RE = /^(?:sudo|time|nohup)$/i;
-const CONFIG_BASENAME_RE = /^forge-config(?:-cli)?\.cjs$/i;
-// The only two forge-config.cjs subcommands that can ever mutate a setting (see forge-config-cli.cjs's own
-// runCommand() switch) — anything else (list/get/explain/diff/parse/help, or a garbled non-command like the
-// literal string "--json" landing in argv[0] when a flag precedes the subcommand) is never trusted enough to
-// derive verb/key/value from; it falls through to the loose ambiguous-mutation fallback instead (see below).
-const CONFIG_MUTATING_CMDS = new Set(['set', 'unset']);
-function isNodeToken(tok) {
-  if (!tok || tok.quoted) return false;
-  return /^node(?:\.exe)?$/i.test(String(tok.v).split(/[\\/]/).pop());
-}
-
-/** parseConfigCall(segment) -> a best-effort read of a single segment invoking forge-config.cjs or
- *  forge-config-cli.cjs (any path form: relative, absolute, quoted, bare basename, a full interpreter path,
- *  `env`-resolved, sudo/time/nohup-wrapped, with or without node CLI flags before the script), or null when
- *  this segment is not one OR when it cannot be read with FULL confidence (see below) — the caller
- *  (selfDisable) treats every null as "cannot read", never as "permitted" (V02).
- *
- *  Once the interpreter/script prefix is recognised, the REAL forge-config-cli.cjs::parseArgv() parses the
- *  remaining argv — the exact function the real CLI dispatches through, required directly so the two can
- *  never drift onto two different option tables (a drift-canary test pins that this module keeps exporting
- *  it). Two signals mean "do not trust this derivation, treat as unparseable": `a.bad` (the real CLI itself
- *  would exit on an option it does not recognise, so nothing would actually mutate) and `a.cmd` not being one
- *  of the two mutating subcommands (a flag landing in the subcommand slot — e.g. `--json set gate-hook off`
- *  parses to cmd:"--json", pos:["set","gate-hook","off"] — is exactly a "non-null but not a real schema
- *  mutation" parse; falling through to the ambiguous-mutation fallback rather than silently deriving a
- *  garbage key/value from it is the fix, not a special case). `tokenize()` refusing a glued-quote trick
- *  (`s"et"`) already returns null upstream of this, for the same reason. */
-function parseConfigCall(segment) {
-  const tokens = tokenize(segment);
-  if (!tokens || !tokens.length) return null;
-  let i = 0;
-  while (tokens[i] && !tokens[i].quoted && (CONFIG_WRAPPER_RE.test(tokens[i].v) || /^env$/i.test(tokens[i].v))) i++;
-  if (isNodeToken(tokens[i])) {
-    i++;
-    while (tokens[i] && !tokens[i].quoted && /^-/.test(tokens[i].v)) i++; // node's own CLI flags, e.g. --no-warnings
-  }
-  if (!tokens[i]) return null;
-  const base = String(tokens[i].v).split(/[\\/]/).pop();
-  if (!CONFIG_BASENAME_RE.test(base)) return null;
-  if (!CONFIG_CLI || typeof CONFIG_CLI.parseArgv !== 'function') return null; // cannot confidently parse -> ambiguous fallback
-  const rest = tokens.slice(i + 1).map((t) => String(t.v));
-  let a;
-  try { a = CONFIG_CLI.parseArgv(rest); } catch { return null; }
-  if (!a || !a.cmd || a.bad || !CONFIG_MUTATING_CMDS.has(String(a.cmd).toLowerCase())) return null;
-  const norm = (s) => (typeof s === 'string' ? s.toLowerCase() : '');
-  return {
-    verb: norm(a.cmd),
-    key: norm(a.pos[0]),
-    value: norm(a.pos[1]), // the FIRST word after the key only — matching OFF_WORDS' exact-word membership test;
-    // extraPositional below still disqualifies the once-exemption when a third positional (garbage/an
-    // unmatched trailing argument) is present, exactly as the real CLI's own `pos.slice(1).join(' ')` value
-    // would then fail forge-config.cjs's own boolean parseValue() and never actually apply.
-    once: typeof a.once === 'string' ? a.once : null,
-    extraFlags: !!(a.json || a.all || a.global || a.yes || a.markSeen || a.help || a.ascii || a.lang != null || a.run != null || (a.flags && a.flags.length > 0)),
-    extraPositional: a.pos.length > 2,
-  };
-}
-
-function isSelfDisableCall(p) {
-  if (!p || p.key !== 'gate-hook') return false;
-  if (p.verb === 'unset') return true;
-  if (p.verb === 'set') return OFF_WORDS.has(p.value);
-  return false;
-}
-function isOnceExempt(p) {
-  return !!p && p.verb === 'set' && p.key === 'gate-hook' && p.value === 'off'
-    && !p.extraFlags && !p.extraPositional
-    && typeof p.once === 'string' && p.once.trim().length > 0;
-}
-
-/** looksLikeAmbiguousConfigMutation(segment) -> boolean — V02 fail-closed fallback for a segment the STRICT
- *  tokenizer refuses to parse at all (e.g. a shell word-concatenation trick like `s"et"` or `'se't`, which is
- *  not a whole-word quote and correctly makes tokenize()/parseConfigCall() return null). Removing every quote
- *  character is a crude but honest normalisation: `s"et"` and `'se't` both de-glue to the word "set", exactly
- *  what a real shell would also assemble. This is used ONLY to decide whether an UNPARSEABLE segment must
- *  still be refused (blocked) as an ambiguous self-disable attempt — an ordinary, cleanly-tokenized segment
- *  always goes through the precise parseConfigCall()/isSelfDisableCall() path instead. */
-function deglue(segment) { return String(segment).replace(/["']/g, ''); }
-function looksLikeAmbiguousConfigMutation(segment) {
-  const words = deglue(segment).trim().split(/\s+/).filter(Boolean).map((w) => w.toLowerCase());
-  if (!words.length) return false;
-  const hasScript = words.some((w) => CONFIG_BASENAME_RE.test(String(w).split(/[\\/]/).pop()));
-  return hasScript && (words.includes('set') || words.includes('unset')) && words.includes('gate-hook');
-}
-
-/** selfDisable(seen) -> true when ANY segment of `seen` (the data-stripped text — a self-disable string quoted
- *  inside inert heredoc/echo/commit-message data must not itself trigger this) is a self-disabling forge-config
- *  call that is not the one exempt once-shape, OR (V02) a segment the strict parser could not read at all but
- *  whose de-quoted text still plausibly names forge-config.cjs + gate-hook with a mutating verb — refused
- *  rather than silently treated as permission. */
-function selfDisable(seen) {
-  for (const segment of splitForSelfDisable(seen)) {
-    const parsed = parseConfigCall(segment);
-    if (parsed) { if (isSelfDisableCall(parsed) && !isOnceExempt(parsed)) return true; continue; }
-    if (looksLikeAmbiguousConfigMutation(segment)) return true;
-  }
-  return false;
-}
+// selfDisable/parseConfigCall/isSelfDisableCall/isOnceExempt now live in forge-gate-selfdisable.cjs (wp-v3) so
+// BOTH this file (fallback path) and the worker call the exact same implementation. wp-v4 (sec-v3 M1): read
+// defensively — SELFDISABLE may be null (guarded require); these exports are backward-compat/test surface only
+// (the real pipeline's self-disable check lives inside forge-gate-inspect.cjs, independently guarded there).
+const selfDisable = SELFDISABLE ? SELFDISABLE.selfDisable : (seen) => fallbackSelfDisableTest(seen);
+const parseConfigCall = SELFDISABLE ? SELFDISABLE.parseConfigCall : () => null;
+const isSelfDisableCall = SELFDISABLE ? SELFDISABLE.isSelfDisableCall : () => false;
+const isOnceExempt = SELFDISABLE ? SELFDISABLE.isOnceExempt : () => false;
 
 function offNotice(en, gates) {
   const tail = ' — this would have been blocked (' + gates.join(', ') + ')';
@@ -318,9 +240,40 @@ function offNotice(en, gates) {
   return cap('FORGE GATE is OFF (set_at ' + (en.set_at || 'unknown') + ', set_by ' + (en.set_by || 'unknown') + ')' + tail);
 }
 
+/** buildInspectCtx(payload, opts) -> the plain, structured-cloneable context forge-gate-inspect.cjs::inspect()
+ *  (and, via classifyWithWatchdog(), the worker's own copy of it) needs — mirrors forge-gate-scratch.cjs's own
+ *  scratchPassThrough(seen, ctx) shape exactly, so it threads straight through unchanged. ctx.gate is read ONLY
+ *  on the inline path (a function cannot cross a Worker boundary; evaluate() never sets useWatchdog when
+ *  opts.gate is present, so the worker path never sees it). */
+function buildInspectCtx(payload, opts) {
+  const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
+  const env = opts.env || process.env;
+  return {
+    gate: opts.gate,
+    shell: payload.tool_name,
+    cwd,
+    root: opts.projectRoot || PROJECT_ROOT,
+    protectedRoots: [opts.projectRoot || PROJECT_ROOT, env.CLAUDE_PROJECT_DIR || cwd],
+    tmp: opts.tmpdir || os.tmpdir(),
+    platform: opts.platform || process.platform,
+    configPath: opts.configPath,
+  };
+}
+
 /** evaluate(payload, command, opts) -> the ON-verdict { block, warn?, gates, reason, notice, why }. SB-M5 (wave
  *  12): opts.maxCommandChars/opts.deadlineMs/opts.now are test seams (defaults MAX_COMMAND_CHARS/DEADLINE_MS/
- *  Date.now) for the size ceiling and wall-clock deadline described at their own declaration above. */
+ *  Date.now) for the size ceiling and wall-clock deadline described at their own declaration above.
+ *
+ *  wp-v3 (sec-v1r-H1/L2): this function's OWN job is now narrow — the size ceiling, deciding whether the
+ *  watchdog is usable, and mapping whichever result comes back. The entire inspection (stripInertData,
+ *  selfDisable, classify, the destructive-delete recheck, scratchPassThrough) lives in ONE shared function,
+ *  forge-gate-inspect.cjs::inspect(), called either through the watchdog (normal path) or directly here (the
+ *  watchdog-unavailable fallback, and any opts.gate-stubbed test — a test-injected classifier module can never
+ *  cross a Worker boundary). opts.watchdog is a test seam overriding the required WATCHDOG module for this one
+ *  call (default: the real module-level WATCHDOG; pass null to simulate an environment where
+ *  worker_threads/forge-gate-watchdog.cjs itself is unavailable). opts.watchdogTimeoutMs/opts.simulateSlowMs/
+ *  opts.simulateCrash/opts.WorkerImpl/opts.SharedArrayBufferImpl/opts.atomicsWait/opts.simulateInspectThrow are
+ *  test seams threaded straight through to classifyWithWatchdog(). */
 function evaluate(payload, command, opts) {
   const maxChars = opts.maxCommandChars || MAX_COMMAND_CHARS;
   if (command.length > maxChars) {
@@ -330,68 +283,78 @@ function evaluate(payload, command, opts) {
   const now = typeof opts.now === 'function' ? opts.now : Date.now;
   const deadlineMs = opts.deadlineMs || DEADLINE_MS;
   const startedAt = now();
-  const data = DATA ? DATA.stripInertData(command, payload.tool_name) : { text: command, regions: 0 };
-  const seen = data.text;
-  const note = data.regions ? ' (after stripping ' + data.regions + ' inert data region(s))' : '';
-  if (selfDisable(seen)) {
-    const ids = ['gate-hook-self-disable'];
-    return { block: true, gates: ids, reason: blockReason(ids), why: 'gate-hook-self-disable' };
+
+  const watchdogModule = opts.watchdog !== undefined ? opts.watchdog : WATCHDOG;
+  // wp-v4 (sec-v3 M1, "the watchdog and worker included"): a missing/deleted WORKER SCRIPT FILE means the same
+  // thing as the watchdog MODULE itself being unavailable (no working watchdog-protected path) — both must
+  // degrade identically to the inline fallback below, not one gracefully and the other by blocking everything.
+  // Only checked for the REAL, non-test-injected watchdog (opts.watchdog === undefined); a test supplying its
+  // own opts.watchdog stub is never second-guessed by a filesystem check it may not even need to satisfy.
+  const watchdogFileIntact = opts.watchdog !== undefined || !watchdogModule || !watchdogModule.WORKER_SCRIPT
+    || fs.existsSync(watchdogModule.WORKER_SCRIPT);
+  const useWatchdog = !!watchdogModule && watchdogFileIntact && !opts.gate;
+  // sec-v1 M1 / sec-v1r L1: when the watchdog is genuinely unavailable (not merely absent from a test stub via
+  // opts.gate), a command past this fail-closed fallback ceiling is refused outright rather than silently
+  // running an unbounded, unprotected inline inspection with nothing left to bound it.
+  if (!useWatchdog && !opts.gate && command.length > WATCHDOG_UNAVAILABLE_FALLBACK_CHARS) {
+    const ids = ['command-too-large'];
+    return {
+      block: true, gates: ids, reason: blockReason(ids),
+      why: 'watchdog-unavailable (' + command.length + ' chars > ' + WATCHDOG_UNAVAILABLE_FALLBACK_CHARS + ' fallback ceiling)',
+    };
   }
-  let gateModule;
-  let result;
-  let commandIds;
+
+  const ctx = buildInspectCtx(payload, opts);
   try {
-    gateModule = opts.gate || require('./forge-actiongate.cjs');
-    commandIds = commandGateIds(gateModule);
-    result = gateModule.classify({ text: seen });
+    let verdict;
+    if (useWatchdog) {
+      const w = watchdogModule.classifyWithWatchdog(command, Object.assign({}, ctx, {
+        watchdogTimeoutMs: opts.watchdogTimeoutMs, simulateSlowMs: opts.simulateSlowMs,
+        simulateCrash: opts.simulateCrash, WorkerImpl: opts.WorkerImpl,
+        SharedArrayBufferImpl: opts.SharedArrayBufferImpl, atomicsWait: opts.atomicsWait,
+        simulateInspectThrow: opts.simulateInspectThrow, // sec-v3r L2 test seam — never set outside a test
+      }));
+      if (!w.ok) {
+        // sec-v3 L1 (independent review): the worker tags a THROW INSIDE inspect() itself (a broken/missing
+        // hard-gates.json, a broken forge-actiongate.cjs, etc.) distinctly from a genuine watchdog/infrastructure
+        // failure (timeout, crash, payload corruption) — only the former is "the classifier could not run at
+        // all", which restores the EXACT pre-wave-13 classifier-unavailable branch (FALLBACK_RE + honest
+        // wording) instead of blanket-blocking it as "too large to inspect", a claim that would be false here.
+        if (w.classifierUnavailable) return classifierUnavailableVerdict(command, w.error || w.why);
+        const ids = ['command-too-large'];
+        return { block: true, gates: ids, reason: blockReason(ids), why: w.why + (w.error ? ' (' + String(w.error).split('\n')[0] + ')' : '') };
+      }
+      verdict = w.verdict;
+    } else {
+      if (!INSPECT) throw new Error('forge-gate-inspect.cjs unavailable');
+      verdict = INSPECT.inspect(command, ctx);
+    }
     const elapsedMs = now() - startedAt;
     if (elapsedMs > deadlineMs) {
       const ids = ['command-too-large'];
       return { block: true, gates: ids, reason: blockReason(ids), why: 'inspection-deadline-exceeded (' + elapsedMs + 'ms > ' + deadlineMs + 'ms)' };
     }
+    return verdict;
   } catch (e) {
-    const msg = String(e && e.message || e).split('\n')[0];
-    if (FALLBACK_RE.test(command)) {
-      const ids = ['classifier-unavailable'];
-      return { block: true, gates: ids, reason: blockReason(ids), why: 'classifier-unavailable, fail-closed fallback (' + msg + ')' };
-    }
-    return { block: false, warn: true, gates: [], notice: cap('forge-gate-hook: classifier unavailable (' + msg + ') — this call was NOT checked'), why: 'classifier-unavailable' };
+    // Defense in depth (the sec-v1 M1 lesson: never trust a "never throws" claim without covering every path) —
+    // classifyWithWatchdog() and inspect() are both designed to never throw/always resolve safely, but a throw
+    // here (from either, or INSPECT being unavailable on the inline path) still fails toward the SAME
+    // classifier-unavailable handling every prior version used.
+    return classifierUnavailableVerdict(command, String(e && e.message || e).split('\n')[0]);
   }
-  let fired = (result.matched || []).filter((id) => commandIds.has(id));
-  // I01 / ISO-SCRATCH-SHORTCIRCUIT: the classifier's exact-segment `except` valve is supplemental detection for
-  // its own advisory verdict, never an enforcement shortcut for this hook. A destructive-delete SHAPE reaches
-  // scratchPassThrough regardless of whether the valve already excused it.
-  let ddGate = null;
-  try {
-    if (commandIds.has('destructive-delete') && typeof gateModule.loadGates === 'function') {
-      ddGate = gateModule.loadGates().gates.find((g) => g.id === 'destructive-delete');
-    }
-  } catch { ddGate = null; } // cannot determine the raw shape either -> fall back to the classifier's own verdict
-  const ddExcused = !!ddGate && !fired.includes('destructive-delete')
-    && typeof gateModule.testCommandGateRaw === 'function' && gateModule.testCommandGateRaw(ddGate, seen);
-  if (!fired.length && !ddExcused) return { block: false, gates: [], why: (result.gate ? 'no-command-gate (' + result.matched.join(', ') + ')' : 'no-gate') + note };
-  let why = 'command-gate';
-  const onlyDD = fired.length === 1 && fired[0] === 'destructive-delete';
-  if (onlyDD || (fired.length === 0 && ddExcused)) {
-    const cwd = typeof payload.cwd === 'string' && path.isAbsolute(payload.cwd) ? payload.cwd : process.cwd();
-    const env = opts.env || process.env;
-    const pass = scratchPassThrough(seen, {
-      gate: gateModule,
-      shell: payload.tool_name,
-      cwd,
-      root: opts.projectRoot || PROJECT_ROOT,
-      protectedRoots: [opts.projectRoot || PROJECT_ROOT, env.CLAUDE_PROJECT_DIR || cwd],
-      tmp: opts.tmpdir || os.tmpdir(),
-      platform: opts.platform || process.platform,
-    });
-    if (pass.ok) {
-      if (!fired.length) return { block: false, gates: [], notice: passNotice(pass.targets), why: 'scratch-pass-through (except-valve overridden by proof)' };
-      return { block: false, gates: fired, notice: passNotice(pass.targets), why: 'scratch-pass-through' };
-    }
-    if (!fired.length) fired = ['destructive-delete'];
-    why = 'command-gate (no pass-through: ' + pass.why + ')';
+}
+
+/** classifierUnavailableVerdict(command, msg) -> the pre-wave-13 classifier-unavailable ON-verdict (sec-v3 L1):
+ *  a destructive-SHAPED command (FALLBACK_RE) is still BLOCKED (exit 2, fail-closed) even with the real
+ *  classifier unreachable; anything else is a VISIBLE, non-blocking "this call was NOT checked" notice (exit 1)
+ *  — never a silent allow, and never the (inaccurate) "too large to inspect" wording for a command that was
+ *  never actually too large or too slow, just unclassifiable. */
+function classifierUnavailableVerdict(command, msg) {
+  if (FALLBACK_RE.test(command)) {
+    const ids = ['classifier-unavailable'];
+    return { block: true, gates: ids, reason: blockReason(ids), why: 'classifier-unavailable, fail-closed fallback (' + msg + ')' };
   }
-  return { block: true, gates: fired, reason: blockReason(fired), why };
+  return { block: false, warn: true, gates: [], notice: cap('forge-gate-hook: classifier unavailable (' + msg + ') — this call was NOT checked'), why: 'classifier-unavailable' };
 }
 
 /** decide(payload, opts) -> { block, warn, gates, reason, notice, why }. Seams: opts.gate (classifier), opts.config,
@@ -471,6 +434,7 @@ module.exports = {
   run, decide, evaluate, gateHookEnabled, commandGateIds, blockReason, selfDisable, scratchPassThrough, tokenize, verbIndex,
   extractTargets, resolveTarget, areaOf, parseConfigCall, isSelfDisableCall, isOnceExempt, sha256,
   SHELL_TOOLS, WORDS, FAILSAFE_MS, MAX_STDIN_BYTES, PROJECT_ROOT, FALLBACK_RE, KNOWN_HOOK_EVENTS,
+  fallbackSelfDisableTest, fallbackSelfDisableNormalize,
 };
 
 // ---- CLI (PreToolUse hook target). Async stdin collection (proven safe on Windows by forge-toolhook.cjs); every

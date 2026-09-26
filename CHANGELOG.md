@@ -382,6 +382,29 @@ evidence or deferred with a reason before this release went out. The code fixes:
   statement with an unrelated earlier arm before the target, `docker exec … sh -c`, `kubectl exec … -- sh -c` and
   `find … -exec bash -c` are named, unmodelled shapes; a manual `watch --once` beside the watcher can pause once after
   a token refresh (fails safe); the M2 gaps are unchanged.
+- **Thirteenth pass (the gate hook now always answers within its own time limit — found by the maintainers' own
+  measurements with harmless input, fixed before any release).** Claude Code gives the gate hook 10 seconds; a hook
+  that is cut off at that point never blocks anything. Harmless but long commands made the hook's text classifier
+  slower than that: about 14 s at 100 kB and 52 s at 190 kB for a command full of pipe characters, about 32 s at
+  40 kB for a search command piped through many `xargs` stages, and 15-31 s at 80 kB for a long chain of short
+  commands joined by `;`, `&&` or newlines. The existing 200 000-character ceiling and 4-second deadline did not
+  help, because the deadline was only checked after the slow step had finished. Now the hook's main thread only
+  reads the input, checks the size ceiling and waits: the whole inspection (inert-data stripping, the self-disable
+  check, the gate classifier, the destructive-delete recheck and the scratch pass-through) runs as one function
+  (`forge-gate-inspect.cjs`) inside a worker thread (`forge-gate-classify-worker.cjs`) under a watchdog
+  (`forge-gate-watchdog.cjs`). After 6 seconds without an answer the worker is stopped and the command is refused
+  with the existing "too large or too slow to inspect" block (exit 2). Every failure of the watchdog itself — a
+  missing `worker_threads` module, a `SharedArrayBuffer` or `Atomics` error, a crashed or silent worker, a corrupt
+  result — ends in the same block, never in the non-blocking "not checked" path; when the watchdog module cannot load
+  at all, long commands are refused and `/forge doctor` shows it. The quadratic step in the inert-data stripping is
+  now linear (checked against the old version on 1512 generated commands, no difference), and an absurd number of
+  command segments is refused straight away. Measured on the maintainers' Windows machine: long harmless chains now
+  answer in 0.15-0.35 s up to 190 kB, the worst harmless shape in 2.8 s, and an everyday command's hook call went
+  from about 105 ms to about 142 ms. The slow regular expressions themselves were left unchanged — a rewrite measured
+  slower — so the watchdog is the guarantee. Messages and the self-disable subsystem moved into their own files
+  (`forge-gate-messages.cjs`, `forge-gate-selfdisable.cjs`); all new files are sync-pinned. Reviewed by an
+  independent read-only Security Boss in three rounds (sec-v1, sec-v1r, sec-v3); the internal reviews are the
+  project's own fallback check while Codex is out of usage, never presented as the Codex verdict.
 - **Completion honesty (`forge-runcontract.cjs`, `forge-verify.cjs`, `forge-finalize.cjs`, `forge-manifest.cjs`,
   `log-event.cjs`, dashboard `app.js`):** a `proof_verified: false` event no longer satisfies a rule; the domain comes
   from `run.json`, not from a caller flag; an armed manifest is a STALING claim — `manifestCompleteness()` surfaces every

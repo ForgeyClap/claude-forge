@@ -776,6 +776,21 @@ t('--help on every command exits 0 and names the command; no command 2; unknown 
   assert.strictEqual(cli(fx, ['frobnicate']).status, 2);
 });
 
+t('forge-config-cli.cjs exports BOOL_OPTS/VALUE_OPTS (sec-v3r M2) as the SAME objects parseArgv itself uses -- a drift canary for forge-gate-selfdisable.cjs, which reuses these tables instead of a second hand-rolled copy', () => {
+  const CLI = require('./forge-config-cli.cjs');
+  assert.strictEqual(typeof CLI.BOOL_OPTS, 'object');
+  assert.strictEqual(typeof CLI.VALUE_OPTS, 'object');
+  assert.strictEqual(CLI.BOOL_OPTS['--json'], 'json');
+  assert.strictEqual(CLI.BOOL_OPTS['--help'], 'help');
+  assert.strictEqual(CLI.VALUE_OPTS['--once'], 'once');
+  assert.strictEqual(CLI.VALUE_OPTS['--lang'], 'lang');
+  // the tables really are what parseArgv consults, not a coincidentally-matching copy: an option flip here
+  // must be visible in parseArgv's own output for the very same argv.
+  const a = CLI.parseArgv(['set', 'gate-hook', 'off', '--once', 'quote']);
+  assert.strictEqual(a.once, 'quote');
+  assert.ok(CLI.VALUE_OPTS['--once'] === 'once' && a.once === 'quote');
+});
+
 t('forge-config-cli.cjs run directly behaves exactly like forge-config.cjs (same output, same exit codes)', () => {
   const fx = fixture();
   const env = Object.assign({}, process.env, { FORGE_CONFIG_HOME: fx.home, FORGE_PROJECT_ROOT: fx.proj, HOME: fx.home, USERPROFILE: fx.home });

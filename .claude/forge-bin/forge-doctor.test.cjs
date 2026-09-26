@@ -2322,5 +2322,180 @@ t('beginner setup static: every spawned tool gets stdin closed (ignore) — noth
 t('beginner setup static: no shell:true anywhere in the section', !/shell:\s*true/.test(bsSection));
 t('beginner setup static: the forge-doctor CLI is the caller that opts in to the claude doctor probe', /runDoctor\(root, \{ probeClaudeDoctor: true \}\)/.test(DOCTOR_SRC_TEXT));
 
+// ---------------------------------------------------------------------------
+// wp-v4 (sec-v3 L2, independent review) -- gateWatchdogHealth() used to check ONLY forge-gate-watchdog.cjs and
+// claim the "full inspection pipeline runs watchdog-protected" from that alone. Now it resolves EVERY hook
+// dependency file and runs the REAL forge-gate-hook.cjs end-to-end (a genuine spawned process) on a harmless
+// command and a harmless destructive-SHAPED canary (never executed, only classified).
+// ---------------------------------------------------------------------------
+console.log('\ngateWatchdogHealth (wp-v4 sec-v3 L2)');
+
+const GWH_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-gwh-'));
+const GWH_BIN = path.join(GWH_ROOT, '.claude', 'forge-bin');
+fs.mkdirSync(GWH_BIN, { recursive: true });
+for (const f of D.GATE_HOOK_DEPENDENCY_FILES) fs.copyFileSync(path.join(__dirname, f), path.join(GWH_BIN, f));
+fs.copyFileSync(path.join(__dirname, 'forge-gate-classify-worker.cjs'), path.join(GWH_BIN, 'forge-gate-classify-worker.cjs'));
+
+t('gateWatchdogHealth: a missing dependency file is reported (warn), names the exact file', () => {
+  const victim = path.join(GWH_BIN, 'forge-gate-messages.cjs');
+  const original = fs.readFileSync(victim, 'utf8');
+  fs.unlinkSync(victim);
+  try {
+    const r = D.gateWatchdogHealth(GWH_ROOT);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.level, 'warn');
+    assert.ok(/forge-gate-messages\.cjs/.test(r.detail), r.detail);
+    assert.deepStrictEqual(r.missing, ['forge-gate-messages.cjs']);
+  } finally {
+    fs.writeFileSync(victim, original, 'utf8');
+  }
+});
+
+t('gateWatchdogHealth: a present-but-syntactically-broken dependency file is reported (warn), distinct from missing', () => {
+  const victim = path.join(GWH_BIN, 'forge-gate-selfdisable.cjs');
+  const original = fs.readFileSync(victim, 'utf8');
+  fs.writeFileSync(victim, 'this is not valid javascript {{{ syntax error', 'utf8');
+  try {
+    const r = D.gateWatchdogHealth(GWH_ROOT);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.level, 'warn');
+    assert.ok(r.broken.some((b) => b.startsWith('forge-gate-selfdisable.cjs')), JSON.stringify(r.broken));
+  } finally {
+    fs.writeFileSync(victim, original, 'utf8');
+  }
+});
+
+t('gateWatchdogHealth: the worker entry file is NEVER required directly (it would always throw outside a real Worker) -- only checked for existence', () => {
+  // sanity: requiring it directly (as this check must NOT do) really does throw, proving the exclusion is load-bearing
+  const workerPath = path.join(GWH_BIN, 'forge-gate-classify-worker.cjs');
+  delete require.cache[require.resolve(workerPath)];
+  assert.throws(() => require(workerPath), /workerData/);
+  // yet the real health check, with every file genuinely present and healthy, still reaches "ok" (proven by the
+  // end-to-end test below) -- i.e. it does not mistake the worker file's own direct-require throw for a real defect.
+  assert.ok(!D.GATE_HOOK_DEPENDENCY_FILES.includes('forge-gate-classify-worker.cjs'), 'the worker entry file must not be in the direct-require list');
+});
+
+t('gateWatchdogHealth: end-to-end PASS (both canaries injected) -> ok:true, names the real classifier', () => {
+  const spawnSyncImpl = (exe, args, opts) => {
+    const input = JSON.parse(opts.input);
+    const cmd = input.tool_input.command;
+    if (/^echo /.test(cmd)) return { status: 0, stderr: '', error: null, signal: null };
+    return { status: 2, stderr: 'FORGE GATE (destructive-delete): ...', error: null, signal: null };
+  };
+  const r = D.gateWatchdogHealth(GWH_ROOT, { spawnSyncImpl });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.real_classifier_engaged, true);
+  assert.ok(/the real classifier/.test(r.detail), r.detail);
+});
+
+t('gateWatchdogHealth: end-to-end PASS via the fail-closed fallback (classifier-unavailable wording) -> ok:true, but names the fallback, not the real classifier', () => {
+  const spawnSyncImpl = (exe, args, opts) => {
+    const input = JSON.parse(opts.input);
+    const cmd = input.tool_input.command;
+    if (/^echo /.test(cmd)) return { status: 0, stderr: '', error: null, signal: null };
+    return { status: 2, stderr: 'FORGE GATE (classifier-unavailable): ...', error: null, signal: null };
+  };
+  const r = D.gateWatchdogHealth(GWH_ROOT, { spawnSyncImpl });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.real_classifier_engaged, false);
+  assert.ok(/fail-closed fallback/.test(r.detail), r.detail);
+});
+
+t('gateWatchdogHealth: end-to-end FAIL when the harmless command does not exit 0 -> warn', () => {
+  const spawnSyncImpl = () => ({ status: 1, stderr: 'boom', error: null, signal: null });
+  const r = D.gateWatchdogHealth(GWH_ROOT, { spawnSyncImpl });
+  assert.strictEqual(r.ok, false);
+  assert.ok(/did NOT behave as expected/.test(r.detail), r.detail);
+});
+
+t('gateWatchdogHealth: end-to-end FAIL when the destructive-shaped canary is NOT blocked -> warn (the severe, doubly-failed case)', () => {
+  const spawnSyncImpl = (exe, args, opts) => {
+    const input = JSON.parse(opts.input);
+    const cmd = input.tool_input.command;
+    if (/^echo /.test(cmd)) return { status: 0, stderr: '', error: null, signal: null };
+    return { status: 0, stderr: '', error: null, signal: null }; // canary NOT blocked -- the emergency case
+  };
+  const r = D.gateWatchdogHealth(GWH_ROOT, { spawnSyncImpl });
+  assert.strictEqual(r.ok, false);
+  assert.ok(/wanted 2, BLOCKED/.test(r.detail), r.detail);
+});
+
+t('gateWatchdogHealth: REAL end-to-end against the actual project (no injected spawnSyncImpl) reports ok:true, and never touches the real project config/once-store', () => {
+  // sec-v3r M1 (independent re-review): this used to spawn the REAL hook with cwd pointed at the real project
+  // root, which (via forge-config.cjs's own __dirname-relative default) made it read/write the REAL project's
+  // FORGE_CONFIG.json and once-store on every doctor run -- risking spending a real pending owner one-off
+  // approval on this canary. Snapshot both real config surfaces before/after and assert neither moved.
+  const REAL_ROOT = path.resolve(__dirname, '..', '..');
+  const REAL_CONFIG_DIR = path.join(REAL_ROOT, '.claude', 'config');
+  const snapshot = () => {
+    const out = {};
+    (function walk(dir, prefix) {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name);
+        const rel = prefix ? prefix + '/' + ent.name : ent.name;
+        if (ent.isDirectory()) walk(full, rel);
+        else { try { out[rel] = fs.statSync(full).mtimeMs + ':' + fs.statSync(full).size; } catch { out[rel] = 'unreadable'; } }
+      }
+    }(REAL_CONFIG_DIR, ''));
+    return out;
+  };
+  const realOnceFilesOf = () => {
+    try { return fs.readdirSync(path.join(REAL_ROOT, '.claude')).filter((f) => f.startsWith('FORGE_CONFIG')); }
+    catch { return []; }
+  };
+  const before = snapshot();
+  const onceBefore = realOnceFilesOf();
+  const r = D.gateWatchdogHealth(REAL_ROOT);
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.harmless_exit, 0);
+  assert.strictEqual(r.canary_exit, 2);
+  assert.deepStrictEqual(snapshot(), before, 'gateWatchdogHealth must never modify the real project .claude/config directory');
+  assert.deepStrictEqual(realOnceFilesOf(), onceBefore, 'gateWatchdogHealth must never create/touch a real FORGE_CONFIG* file at the project root');
+});
+
+t('gateWatchdogHealth: an isolated copy with a PENDING one-off grant is recognised as not-clean and the canary is skipped, leaving the grant unspent', () => {
+  const isolated = D.buildIsolatedGateProject();
+  try {
+    const CFG = require(path.join(__dirname, 'forge-config.cjs'));
+    const onceStore = require(path.join(__dirname, 'forge-config-once-store.cjs'));
+    CFG.set('gate-hook', 'off', { once: 'test owner approval quote', projectRoot: isolated.root, configHome: isolated.home });
+    const pendingPath = onceStore.oncePendingPath(path.join(isolated.root, '.claude'), 'gate-hook');
+    assert.ok(fs.existsSync(pendingPath), 'test setup: the once-grant must be armed before the check runs');
+    const r = D.gateWatchdogHealth(GWH_ROOT, { isolated });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.ok(/skipped the destructive-shaped canary/.test(r.detail), r.detail);
+    assert.ok(fs.existsSync(pendingPath), 'the one-off grant must still be pending (unspent) after the health check ran');
+  } finally {
+    isolated.cleanup();
+  }
+});
+
+t('gateWatchdogHealth: an isolated copy that is persistently OFF (no once-grant) is also recognised as not-clean and the canary is skipped', () => {
+  const isolated = D.buildIsolatedGateProject();
+  try {
+    const CFG = require(path.join(__dirname, 'forge-config.cjs'));
+    CFG.set('gate-hook', 'off', { projectRoot: isolated.root, configHome: isolated.home });
+    const r = D.gateWatchdogHealth(GWH_ROOT, { isolated });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.ok(/skipped the destructive-shaped canary/.test(r.detail), r.detail);
+  } finally {
+    isolated.cleanup();
+  }
+});
+
+t('printSummary: renders the gate-watchdog-health line as advisory, ok as a green check', () => {
+  const rep = { root: GWH_ROOT, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: true, detail: 'the real hook was run end-to-end: a harmless command exited 0, and a harmless destructive-SHAPED canary (never executed, only classified) was BLOCKED (exit 2) by the real classifier' } } };
+  const out = D.printSummary(rep);
+  assert.ok(/✓ gate watchdog health \(advisory\): the real hook was run end-to-end/.test(out), out);
+});
+t('printSummary: renders the gate-watchdog-health line as a visible, non-blocking warn when degraded', () => {
+  const rep = { root: GWH_ROOT, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: false, detail: '1 hook dependency file(s) missing from X: forge-gate-messages.cjs' } } };
+  const out = D.printSummary(rep);
+  assert.ok(/⚠ gate watchdog health \(advisory, non-blocking\): 1 hook dependency/.test(out), out);
+  assert.ok(/⇒ ALL GREEN/.test(out), 'an advisory warn alone must never flip the overall verdict: ' + out);
+});
+
 console.log(pass + ' passed, ' + fail + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));
 process.exitCode = fail ? 1 : 0;
