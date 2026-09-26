@@ -127,6 +127,16 @@ forge_sha256() {
 forge_manifest_add() {
   local scope="$1" root="$2" abspath="$3" rel hash
   [ -n "${MANIFEST_TMP:-}" ] || return 0
+  # WP-P3 hardening (found by a real local run under extreme, unrelated system load): this used to
+  # check only that $MANIFEST_TMP is a non-empty STRING, not that the directory it names still
+  # exists. forge_copy_tree runs as the condition of an `if`, which disables `set -e` for its own
+  # entire call -- so once something external removed this scratch dir mid-run (observed once on a
+  # heavily loaded dev machine; never caused by this script itself, which only ever creates/removes
+  # its OWN uniquely-named mktemp -d directory), every remaining call silently failed the same
+  # append-redirect, one "No such file or directory" per file, for the rest of the run, instead of
+  # degrading once and quietly skipping the manifest for the rest of this pass (the actual file
+  # sync is completely unaffected either way -- this only feeds the --uninstall manifest).
+  [ -d "$MANIFEST_TMP" ] || return 0
   [ -f "$abspath" ] || return 0
   rel="${abspath#"$root"/}"
   [ "$rel" != "$abspath" ] || return 0

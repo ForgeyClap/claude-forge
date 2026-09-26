@@ -540,6 +540,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           exit 0
 
+      # v2.8.1 (WP-P3, coordinator follow-up): a real bounded local run (timeout + stdin from
+      # /dev/null) found a long-lived install.sh process can outlive its own mktemp -d manifest
+      # scratch dir on some environments -- forge_manifest_add then printed a repeated "No such file
+      # or directory" (one per remaining file) instead of degrading once. Fast, no full install
+      # needed: exercises the real forge_manifest_add straight out of install.sh.
+      - name: forge_manifest_add degrades silently when its scratch dir has vanished (POSIX)
+        if: runner.os != 'Windows'
+        run: bash tests/installer/manifest-add-survives-missing-tmp.sh
+
       # v2.8.1 (WP-P3, R3 independent review): before v2.8.0's template/user split (forge-standing.cjs,
       # N4/P1), an owner "/forge remember" rule was written straight into the SYSTEM-synced
       # FORGE_STANDING_RULES.json. `forge-sync` already migrates that rule out on upgrade
