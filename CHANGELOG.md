@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.8.1] - 2026-09-27
+
+A patch the day after 2.8.0. An independent verification review of 2.8.0's last fixes (read-only, done after the tag)
+found a few small gaps; they are fixed here, each with a test, and the 2.8.0 notes that went too far are corrected
+below.
+
+### Fixed
+- **Gate hook:** the pager check now looks at each word the way the shell hands it to git, after removing quotes and
+  backslashes, and also catches git's `-NUM` shortcut inside a short option group. `git grep -3O…`,
+  `git grep --"open-files-in-pager=…"`, `-\O…`, `-'O'…` and `--'op'=…` now keep a quoted kill verb blocked.
+  Everyday searches (`grep -o`, `grep -c`, `git grep -n3`, `rg -n3`) are still allowed.
+- **Installer upgrades keep your own rules:** re-running `install.sh` / `install.ps1` over a 2.7.x project now moves
+  your own `/forge remember` rules into the private `FORGE_STANDING_RULES.user.json` before the shipped rules file is
+  replaced. If your private file cannot be read, the old rules file is kept and you are told to fix its JSON (after
+  making a copy — never to delete it); nothing is thrown away. (2.8.0 did this only in `forge-sync`; the installer
+  left your rules in a backup file.) A second installer run changes nothing more, and `install.sh` no longer keeps
+  retrying when its temporary manifest folder disappears mid-run.
+- **Codex on Windows:** the reviewer now starts the real `codex.exe` from the npm install instead of npm's
+  `codex.js` wrapper, so a review that runs too long is really stopped (the wrapper could leave the real process
+  running). A timeout is reported as a timeout in the text output too, not as "could not start".
+- **Codex settings shown honestly:** an invalid model or effort in a config file is ignored with a warning, and the
+  labels no longer call it "pinned".
+- **forge-sync:** the dry run now shows the same "rules file kept until your private file is fixed" outcome as the
+  real run, the real run labels that case honestly, and the advice never suggests deleting your private rules.
+- **Run contract:** a role field that is present but not text no longer counts as a review claim (same rule 2.8.0
+  applied to task and mission).
+- **Tests:** the Command Center "live running run" test got enough time for a busy laptop (400 ms read
+  `timed_out` under load) and now also proves the gateway's own timeout closed the turn.
+
+### Corrections to the 2.8.0 notes
+- "git grep's pager in any spelling git accepts": not complete in 2.8.0 (the `-NUM` group and mid-word quotes or
+  backslashes still passed); complete from 2.8.1.
+- "existing owner rules are moved there automatically (also during an upgrade from 2.7.x)": true for `forge-sync`
+  only; true for the installers from 2.8.1.
+- "reported as timed out, never as a result": true for the JSON output only; the text output said "could not
+  start" until 2.8.1.
+- "the Command Center gateway suite green in its real location (1037 tests)": the final 2.8.0 run was 1041 tests,
+  all passing.
+
+### How this release was verified
+- Full source doctor all green (136 suites, 9198 tests passing); the Command Center gateway suite 1041/1041 in
+  its real location; every new rule has a regression test (gate: 8 new block/allow cases; Codex, sync, run
+  contract and the chat-runs test each gained tests).
+- Both installers were run for real on this Windows machine, in throwaway folders with an empty home: the upgrade
+  case (the owner rule is moved), the broken-private-file case (the old file is kept) and a second run.
+- An independent read-only verification review of the 2.8.0 fixes found the items fixed here; a fresh-laptop
+  simulation of this exact commit and CI on Linux and Windows (Node 18 and 22) run before the tag.
+
+### Known limitations
+- `install.sh` is slow under Git Bash on Windows (it starts helper programs per file); it finishes, but can take
+  several minutes. Windows users should use `install.ps1`, which is fast. A faster `install.sh` is planned.
+
 ## [2.8.0] - 2026-09-26
 
 The fresh-laptop release. An independent re-audit removed Forge completely and installed v2.7.2 from scratch
@@ -1224,7 +1276,8 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.1...HEAD
+[2.8.1]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.2...v2.8.0
 [2.7.2]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.0...v2.7.1
