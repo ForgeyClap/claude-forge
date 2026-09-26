@@ -539,3 +539,168 @@ jobs:
           node tests/installer/assert-hook-dedup.js $settingsPath
           if ($LASTEXITCODE -ne 0) { exit 1 }
           exit 0
+
+      # v2.8.1 (WP-P3, coordinator follow-up): a real bounded local run (timeout + stdin from
+      # /dev/null) found a long-lived install.sh process can outlive its own mktemp -d manifest
+      # scratch dir on some environments -- forge_manifest_add then printed a repeated "No such file
+      # or directory" (one per remaining file) instead of degrading once. Fast, no full install
+      # needed: exercises the real forge_manifest_add straight out of install.sh.
+      - name: forge_manifest_add degrades silently when its scratch dir has vanished (POSIX)
+        if: runner.os != 'Windows'
+        run: bash tests/installer/manifest-add-survives-missing-tmp.sh
+
+      # v2.8.1 (WP-P3, R3 independent review): before v2.8.0's template/user split (forge-standing.cjs,
+      # N4/P1), an owner "/forge remember" rule was written straight into the SYSTEM-synced
+      # FORGE_STANDING_RULES.json. `forge-sync` already migrates that rule out on upgrade
+      # (migrateOwnerStandingRules); the installer did not, so a 2.7.x owner rule was silently backed
+      # up and replaced by the rule-free template the moment someone re-ran the installer. This proves
+      # the installer now runs that same migration first, and that a second install is a true no-op.
+      - name: Owner-rule migration on upgrade moves the rule, then a second install is a no-op (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          proj="$RUNNER_TEMP/standing-migration-project"
+          mkdir -p "$proj/.claude/config/orchestration"
+          shipped="$GITHUB_WORKSPACE/.claude/config/orchestration/FORGE_STANDING_RULES.json"
+          target="$proj/.claude/config/orchestration/FORGE_STANDING_RULES.json"
+          node -e '
+            const fs = require("fs");
+            const shipped = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            shipped.rules = shipped.rules.concat([{
+              id: "owner-test-rule-1",
+              text: "Always answer in Dutch on Tuesdays.",
+              scope: "global", trigger: "always", domain: null, glob: null, topic: "owner-test",
+              source: "owner /forge remember", confidence: "high", status: "active"
+            }]);
+            fs.writeFileSync(process.argv[2], JSON.stringify(shipped, null, 2) + "\n");
+          ' "$shipped" "$target"
+          out=$(bash install.sh --project "$proj" --yes)
+          echo "$out"
+          echo "$out" | grep -qi "owner rule" || { echo "::error::install.sh did not report moving the owner rule"; exit 1; }
+          node tests/installer/assert-standing-migration.js migrated "$proj" "$shipped" owner-test-rule-1
+          userfile="$proj/.claude/config/orchestration/FORGE_STANDING_RULES.user.json"
+          forge_hash() { (command -v sha256sum >/dev/null 2>&1 && sha256sum -- "$1" || shasum -a 256 -- "$1") | awk '{print $1}'; }
+          before_tpl=$(forge_hash "$target")
+          before_usr=$(forge_hash "$userfile")
+          bash install.sh --project "$proj" --yes >/dev/null
+          after_tpl=$(forge_hash "$target")
+          after_usr=$(forge_hash "$userfile")
+          [ "$before_tpl" = "$after_tpl" ] || { echo "::error::FORGE_STANDING_RULES.json changed on a second, idempotent install"; exit 1; }
+          [ "$before_usr" = "$after_usr" ] || { echo "::error::FORGE_STANDING_RULES.user.json changed on a second, idempotent install"; exit 1; }
+          echo "ok   second install is a no-op for both files"
+
+      - name: Owner-rule migration on upgrade moves the rule, then a second install is a no-op (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          # Built with pure PowerShell (ConvertFrom-Json/ConvertTo-Json), not `node -e` -- a `node -e` string
+          # containing a double-quoted JS literal with a space is UNSAFE on Windows PowerShell (native-argument
+          # marshalling can silently strip the embedded quotes, found by a real local run, WP-P3); this sidesteps
+          # that risk on pwsh too instead of relying on it happening to behave differently from powershell.exe.
+          $proj = Join-Path $env:RUNNER_TEMP 'standing-migration-project'
+          New-Item -ItemType Directory -Force (Join-Path $proj '.claude\config\orchestration') | Out-Null
+          $shipped = Join-Path $env:GITHUB_WORKSPACE '.claude\config\orchestration\FORGE_STANDING_RULES.json'
+          $target = Join-Path $proj '.claude\config\orchestration\FORGE_STANDING_RULES.json'
+          $shippedObj = Get-Content -Raw -LiteralPath $shipped | ConvertFrom-Json
+          $ownerRule = [ordered]@{
+            id = 'owner-test-rule-1'; text = 'Always answer in Dutch on Tuesdays.'
+            scope = 'global'; trigger = 'always'; domain = $null; glob = $null; topic = 'owner-test'
+            source = 'owner /forge remember'; confidence = 'high'; status = 'active'
+          }
+          $rulesList = New-Object System.Collections.Generic.List[Object]
+          $rulesList.AddRange([object[]]$shippedObj.rules)
+          $rulesList.Add($ownerRule)
+          $shippedObj.rules = $rulesList.ToArray()
+          $fixtureJson = ($shippedObj | ConvertTo-Json -Depth 10)
+          [System.IO.File]::WriteAllText($target, $fixtureJson, (New-Object System.Text.UTF8Encoding($false)))
+          $out = powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes
+          Write-Host ($out -join "`n")
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::install.ps1 failed on the upgrade fixture'; exit 1 }
+          if (($out -join "`n") -notmatch '(?i)owner rule') { Write-Host '::error::install.ps1 did not report moving the owner rule'; exit 1 }
+          node tests/installer/assert-standing-migration.js migrated $proj $shipped owner-test-rule-1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $userfile = Join-Path $proj '.claude\config\orchestration\FORGE_STANDING_RULES.user.json'
+          $beforeTpl = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          $beforeUsr = (Get-FileHash -LiteralPath $userfile -Algorithm SHA256).Hash
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::the second, idempotent install failed'; exit 1 }
+          $afterTpl = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          $afterUsr = (Get-FileHash -LiteralPath $userfile -Algorithm SHA256).Hash
+          if ($beforeTpl -ne $afterTpl) { Write-Host '::error::FORGE_STANDING_RULES.json changed on a second, idempotent install'; exit 1 }
+          if ($beforeUsr -ne $afterUsr) { Write-Host '::error::FORGE_STANDING_RULES.user.json changed on a second, idempotent install'; exit 1 }
+          Write-Host 'ok   second install is a no-op for both files'
+          exit 0
+
+      # A malformed FORGE_STANDING_RULES.user.json must never be silently replaced -- the pending owner
+      # rule stays visible in the (not yet replaced) FORGE_STANDING_RULES.json, and the installer warns
+      # in plain English, instead of the owner rule being lost when the template file is overwritten.
+      - name: Owner-rule migration with a malformed private file is refused safely (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          proj="$RUNNER_TEMP/standing-migration-malformed-project"
+          mkdir -p "$proj/.claude/config/orchestration"
+          shipped="$GITHUB_WORKSPACE/.claude/config/orchestration/FORGE_STANDING_RULES.json"
+          target="$proj/.claude/config/orchestration/FORGE_STANDING_RULES.json"
+          node -e '
+            const fs = require("fs");
+            const shipped = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            shipped.rules = shipped.rules.concat([{
+              id: "owner-test-rule-2",
+              text: "Always answer in Dutch on Tuesdays.",
+              scope: "global", trigger: "always", domain: null, glob: null, topic: "owner-test",
+              source: "owner /forge remember", confidence: "high", status: "active"
+            }]);
+            fs.writeFileSync(process.argv[2], JSON.stringify(shipped, null, 2) + "\n");
+          ' "$shipped" "$target"
+          printf '{ this is not valid json' > "$proj/.claude/config/orchestration/FORGE_STANDING_RULES.user.json"
+          out=$(bash install.sh --project "$proj" --yes)
+          echo "$out"
+          echo "$out" | grep -qi "pending" || { echo "::error::install.sh did not warn about the pending owner-rule migration"; exit 1; }
+          node tests/installer/assert-standing-migration.js malformed-kept "$proj" owner-test-rule-2
+          grep -qF 'this is not valid json' "$proj/.claude/config/orchestration/FORGE_STANDING_RULES.user.json" || { echo "::error::the malformed private file was modified/replaced instead of being left untouched"; exit 1; }
+          echo "ok   the malformed private file was left exactly as-is"
+
+      - name: Owner-rule migration with a malformed private file is refused safely (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          # Built with pure PowerShell -- see the sibling "on upgrade" (Windows) step above for why this
+          # avoids `node -e` with a double-quoted, space-containing JS literal.
+          $proj = Join-Path $env:RUNNER_TEMP 'standing-migration-malformed-project'
+          New-Item -ItemType Directory -Force (Join-Path $proj '.claude\config\orchestration') | Out-Null
+          $shipped = Join-Path $env:GITHUB_WORKSPACE '.claude\config\orchestration\FORGE_STANDING_RULES.json'
+          $target = Join-Path $proj '.claude\config\orchestration\FORGE_STANDING_RULES.json'
+          $shippedObj = Get-Content -Raw -LiteralPath $shipped | ConvertFrom-Json
+          $ownerRule = [ordered]@{
+            id = 'owner-test-rule-2'; text = 'Always answer in Dutch on Tuesdays.'
+            scope = 'global'; trigger = 'always'; domain = $null; glob = $null; topic = 'owner-test'
+            source = 'owner /forge remember'; confidence = 'high'; status = 'active'
+          }
+          $rulesList = New-Object System.Collections.Generic.List[Object]
+          $rulesList.AddRange([object[]]$shippedObj.rules)
+          $rulesList.Add($ownerRule)
+          $shippedObj.rules = $rulesList.ToArray()
+          $fixtureJson = ($shippedObj | ConvertTo-Json -Depth 10)
+          [System.IO.File]::WriteAllText($target, $fixtureJson, (New-Object System.Text.UTF8Encoding($false)))
+          $userfile = Join-Path $proj '.claude\config\orchestration\FORGE_STANDING_RULES.user.json'
+          [System.IO.File]::WriteAllText($userfile, '{ this is not valid json', (New-Object System.Text.UTF8Encoding $false))
+          $out = powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes
+          Write-Host ($out -join "`n")
+          if (($out -join "`n") -notmatch '(?i)pending') { Write-Host '::error::install.ps1 did not warn about the pending owner-rule migration'; exit 1 }
+          node tests/installer/assert-standing-migration.js malformed-kept $proj owner-test-rule-2
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $userText = Get-Content -Raw -LiteralPath $userfile
+          if ($userText -notmatch 'this is not valid json') { Write-Host '::error::the malformed private file was modified/replaced instead of being left untouched'; exit 1 }
+          Write-Host 'ok   the malformed private file was left exactly as-is'
+          exit 0

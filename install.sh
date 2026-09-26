@@ -26,6 +26,37 @@ set -euo pipefail
 REPO_OWNER="ForgeyClap"
 REPO_NAME="claude-forge"
 
+# v2.8.1 (WP-P3, R3 independent review): relative path of the SYSTEM-synced owner-rules file — kept
+# as one constant so forge_check_standing_rules_migration/forge_copy_tree never drift out of step
+# with each other. Mirrors STANDING_RULES_REL in .claude/forge-bin/forge-sync.cjs.
+FORGE_STANDING_RULES_REL="config/orchestration/FORGE_STANDING_RULES.json"
+
+# The node one-liner forge_check_standing_rules_migration runs against the NEW payload's own
+# forge-sync.cjs — every path is passed as argv, never interpolated into this text, so a path
+# containing quotes/spaces/backslashes can never break out of the script. Read via
+# process.argv.slice(-2) rather than a fixed index: under `node -e THIS_TEXT a b`, argv is
+# [node, a, b] (no slot reserved for the eval text itself), but install.ps1 runs this identical text
+# from a real temp .js FILE instead (`node -e` is unsafe on PowerShell — see that installer's own
+# comment), where argv is [node, file, a, b] — a fixed argv[1]/argv[2] would silently read the wrong
+# thing on one of the two installers (found by a real local run, WP-P3: "sync.migrateOwnerStandingRules
+# is not a function"). slice(-2) reads the same two trailing paths regardless of which shape argv has.
+# Exit 0 = safe to replace FORGE_STANDING_RULES.json this run (no owner rule was present, or it was
+# moved to FORGE_STANDING_RULES.user.json already); exit 2 = NOT safe (an owner rule could not be
+# confirmed migrated) — forge_check_standing_rules_migration treats ANY non-zero exit the same way (skip).
+FORGE_STANDING_MIGRATE_JS='try {
+  var args = process.argv.slice(-2);
+  var sync = require(args[0]);
+  var ids = sync.migrateOwnerStandingRules(args[1]);
+  if (ids.pending) { process.exit(2); }
+  if (ids.length > 0) {
+    process.stdout.write("moved " + ids.length + " owner rule(s) from a pre-v2.8.0 install into config/orchestration/FORGE_STANDING_RULES.user.json\n");
+  }
+  process.exit(0);
+} catch (e) {
+  process.stderr.write("forge-sync: could not check for a pre-v2.8.0 owner rule (" + e.message + ")\n");
+  process.exit(2);
+}'
+
 # ---------------------------------------------------------------------------
 # small helpers (defined before main, called from inside main)
 # ---------------------------------------------------------------------------
@@ -96,6 +127,16 @@ forge_sha256() {
 forge_manifest_add() {
   local scope="$1" root="$2" abspath="$3" rel hash
   [ -n "${MANIFEST_TMP:-}" ] || return 0
+  # WP-P3 hardening (found by a real local run under extreme, unrelated system load): this used to
+  # check only that $MANIFEST_TMP is a non-empty STRING, not that the directory it names still
+  # exists. forge_copy_tree runs as the condition of an `if`, which disables `set -e` for its own
+  # entire call -- so once something external removed this scratch dir mid-run (observed once on a
+  # heavily loaded dev machine; never caused by this script itself, which only ever creates/removes
+  # its OWN uniquely-named mktemp -d directory), every remaining call silently failed the same
+  # append-redirect, one "No such file or directory" per file, for the rest of the run, instead of
+  # degrading once and quietly skipping the manifest for the rest of this pass (the actual file
+  # sync is completely unaffected either way -- this only feeds the --uninstall manifest).
+  [ -d "$MANIFEST_TMP" ] || return 0
   [ -f "$abspath" ] || return 0
   rel="${abspath#"$root"/}"
   [ "$rel" != "$abspath" ] || return 0
@@ -473,11 +514,50 @@ forge_copy_settings_file() {
   return 1
 }
 
+# forge_check_standing_rules_migration <project_dir> <source_claude_dir> — MUST run before
+# forge_copy_tree ever compares/replaces the project's FORGE_STANDING_RULES.json (3.4 fix,
+# WP-P3: the installer previously backed up and replaced this file on every upgrade with no
+# migration at all — see migrateOwnerStandingRules()'s own doc comment in forge-sync.cjs for the
+# full v2.7.x-owner-rule-loss contract this closes). Sets FORGE_STANDING_MIGRATION_SKIP to
+# $FORGE_STANDING_RULES_REL when the file must be left untouched THIS run (no confirmed-safe
+# migration — including "node is not available to check"), or "" when it is safe to proceed with
+# the normal copy. A brand-new project (no such file yet) is always safe and never even shells out.
+forge_check_standing_rules_migration() {
+  local project_dir="$1" source_claude_dir="$2"
+  local target="$project_dir/.claude/$FORGE_STANDING_RULES_REL"
+  local sync_tool="$source_claude_dir/forge-bin/forge-sync.cjs"
+  FORGE_STANDING_MIGRATION_SKIP=""
+
+  [ -f "$target" ] || return 0
+
+  if ! forge_have_cmd node || [ ! -f "$sync_tool" ]; then
+    forge_log "  node not found on PATH (or forge-sync.cjs is missing) — cannot check $FORGE_STANDING_RULES_REL for a pre-v2.8.0 owner rule; leaving your existing file in place this run"
+    FORGE_STANDING_MIGRATION_SKIP="$FORGE_STANDING_RULES_REL"
+    return 0
+  fi
+
+  local out code
+  if out=$(node -e "$FORGE_STANDING_MIGRATE_JS" "$sync_tool" "$project_dir"); then
+    code=0
+  else
+    code=$?
+  fi
+  [ -n "$out" ] && forge_log "  $out"
+
+  if [ "$code" -ne 0 ]; then
+    forge_log "  owner rule migration for $FORGE_STANDING_RULES_REL is pending — leaving your existing file in place this run (fix the JSON in config/orchestration/FORGE_STANDING_RULES.user.json — make a copy first; never delete it, it holds your own rules — then re-run install)"
+    FORGE_STANDING_MIGRATION_SKIP="$FORGE_STANDING_RULES_REL"
+  fi
+}
+
 # Recursively merge-copy every file under $1 (source dir) into $2 (dest dir).
 # $3 = "1" routes <dir>/settings.json through forge_copy_settings_file instead of the generic
 # backup-then-overwrite path (used for the project payload only — see forge_copy_settings_file).
 # $4/$5 (optional) = manifest scope/root — v2.8.0, see forge_manifest_add's header comment. Never
 # recorded for settings.json: that file is merged, not owned, and must never be deleted by --uninstall.
+# $6 (optional) = a single relative path (e.g. $FORGE_STANDING_RULES_REL) to leave COMPLETELY
+# untouched this call — set by forge_check_standing_rules_migration above when an owner rule from a
+# pre-v2.8.0 install could not be confirmed safely migrated. Never backed up, never manifested.
 # Returns 1 if ANY file failed to copy, 0 only if every file genuinely succeeded.
 forge_copy_tree() {
   local src_dir="$1"
@@ -485,6 +565,7 @@ forge_copy_tree() {
   local protect_settings="${3:-0}"
   local manifest_scope="${4:-}"
   local manifest_root="${5:-}"
+  local skip_rel="${6:-}"
   local file rel status=0
 
   if [ ! -d "$src_dir" ]; then
@@ -501,7 +582,13 @@ forge_copy_tree() {
   # actually survives to the `return "$status"` at the end of this function.
   while IFS= read -r -d '' file; do
     rel="${file#"$src_dir"/}"
-    if [ "$protect_settings" = "1" ] && [ "$rel" = "settings.json" ]; then
+    if [ -n "$skip_rel" ] && [ "$rel" = "$skip_rel" ]; then
+      if [ "$DRY_RUN" = "1" ]; then
+        forge_log "  [dry-run] would check $rel for a pre-v2.8.0 owner rule before touching it"
+      else
+        forge_log "  kept: $dst_dir/$rel (owner rule migration pending — see warning above)"
+      fi
+    elif [ "$protect_settings" = "1" ] && [ "$rel" = "settings.json" ]; then
       if ! forge_copy_settings_file "$file" "$dst_dir/$rel"; then
         status=1
       fi
@@ -1251,7 +1338,16 @@ main() {
     else
       mkdir -p -- "$PROJECT_DIR"
     fi
-    if forge_copy_tree "$SOURCE_DIR/.claude" "$PROJECT_DIR/.claude" "1" "project" "$PROJECT_DIR"; then
+    # 3.4 fix (WP-P3): move any v2.7-era owner standing rule into the project's own user file BEFORE
+    # FORGE_STANDING_RULES.json is ever compared/replaced below — the same preflight forge-sync.cjs
+    # itself runs before its own writes. Never during --dry-run, which must write nothing at all.
+    if [ "$DRY_RUN" = "1" ]; then
+      FORGE_STANDING_MIGRATION_SKIP=""
+      [ -f "$PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL" ] && forge_log "  [dry-run] would check $FORGE_STANDING_RULES_REL for a pre-v2.8.0 owner rule before replacing it"
+    else
+      forge_check_standing_rules_migration "$PROJECT_DIR" "$SOURCE_DIR/.claude"
+    fi
+    if forge_copy_tree "$SOURCE_DIR/.claude" "$PROJECT_DIR/.claude" "1" "project" "$PROJECT_DIR" "$FORGE_STANDING_MIGRATION_SKIP"; then
       PROJECT_OK="1"
     else
       PROJECT_OK="0"
@@ -1297,6 +1393,11 @@ main() {
       forge_err "project install failed — see errors above"
     fi
     exit 1
+  fi
+
+  if [ -n "${FORGE_STANDING_MIGRATION_SKIP:-}" ]; then
+    forge_log ""
+    forge_log "NOTE: $PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) — fix the JSON in $PROJECT_DIR/.claude/config/orchestration/FORGE_STANDING_RULES.user.json (make a copy first; never delete it, it holds your own rules), then re-run install so it can be moved to safety."
   fi
 
   forge_log ""
