@@ -677,6 +677,13 @@ function Remove-ForgeGitignoreLines {
 # the local copy of the tool does not know `unmerge` yet, or node/the tool are unavailable, this
 # leaves settings.json completely untouched and says so in one plain line -- it never falls back
 # to editing the file itself.
+# DENY-RULES-STAY (security review, WP-S12 in parallel): NEVER pass --remove-deny. `unmerge`
+# cannot tell a user's own pre-existing permissions.deny rule (e.g. a Read(./.env) they had
+# before installing Forge) from Forge's identical template rule, so removing deny rules on
+# uninstall could silently drop a user's own secret protection. Forge's deny rules (.env, keys)
+# are harmless to leave behind, so they are kept by default -- only its hooks are unmerged.
+# --project-root is passed so the tool's own containment checks apply here exactly as they do
+# for `apply` in Copy-ForgeSettingsFile above.
 function Invoke-ForgeSettingsUnmerge {
   param(
     [Parameter(Mandatory = $true)][string]$TargetSettings,
@@ -687,7 +694,8 @@ function Invoke-ForgeSettingsUnmerge {
     Write-ForgeLog "  kept:  $TargetSettings (does not exist -- nothing to unmerge)"
     return
   }
-  $mergeTool = Join-Path (Split-Path -Parent (Split-Path -Parent $TargetSettings)) '.claude\forge-bin\forge-settings-merge.cjs'
+  $targetDir = Split-Path -Parent $TargetSettings
+  $mergeTool = Join-Path (Split-Path -Parent $targetDir) '.claude\forge-bin\forge-settings-merge.cjs'
   if (-not (Test-Path -LiteralPath $mergeTool -PathType Leaf)) {
     Write-ForgeLog "  kept:  $TargetSettings unmerged -- forge-settings-merge.cjs is not on disk here; left untouched"
     return
@@ -697,7 +705,7 @@ function Invoke-ForgeSettingsUnmerge {
     Write-ForgeLog "  kept:  $TargetSettings unmerged -- node is not on PATH; left untouched"
     return
   }
-  $cliArgs = @('unmerge', '--target', $TargetSettings, '--source', $SourceSettings)
+  $cliArgs = @('unmerge', '--target', $TargetSettings, '--source', $SourceSettings, '--project-root', $targetDir)
   if ($IsDryRun) { $cliArgs += '--dry-run' }
   $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   try { $out = & node $mergeTool @cliArgs 2>&1 }
@@ -705,6 +713,7 @@ function Invoke-ForgeSettingsUnmerge {
   $code = $LASTEXITCODE
   if ($code -eq 0) {
     Write-ForgeLog "  $out"
+    Write-ForgeLog "  Forge's hooks were removed from settings.json; its read-protection rules for secrets (.env, keys) were left in place on purpose -- they are harmless and protect you"
   } elseif ($code -eq 1) {
     Write-ForgeLog "  kept:  $TargetSettings -- unmerge refused ($out); left untouched"
   } else {

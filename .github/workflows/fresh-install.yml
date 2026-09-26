@@ -394,6 +394,15 @@ jobs:
           grep -qxF '.claude/forge-runs/*/*' "$proj/.gitignore" && { echo "::error::a Forge-added .gitignore line survived --uninstall"; exit 1; }
           grep -qxF 'my-own-ignore-rule/' "$proj/.gitignore" || { echo "::error::the user's own .gitignore line was removed by --uninstall"; exit 1; }
           echo "ok   Forge's .gitignore lines are gone, the user's own line stayed"
+          # DENY-RULES-STAY (security review, WP-S12): unmerge never removes permissions.deny --
+          # it cannot tell a user's own pre-existing rule from Forge's identical template rule, so
+          # a deny rule (secret protection) surviving is the safe default, not a bug.
+          node -e '
+            const j = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const deny = (j.permissions && j.permissions.deny) || [];
+            if (!deny.includes("Read(./.env)")) { console.error("::error::a permissions.deny secret-protection rule was removed by --uninstall"); process.exit(1); }
+            console.log("ok   permissions.deny secret-protection rules survived --uninstall (by design)");
+          ' "$proj/.claude/settings.json"
           before=$(find "$proj/.claude" -type f 2>/dev/null | sort)
           bash install.sh --uninstall --project "$proj" --yes >/dev/null
           after=$(find "$proj/.claude" -type f 2>/dev/null | sort)
@@ -432,6 +441,12 @@ jobs:
           if ($giLines -contains '.claude/forge-runs/*/*') { Write-Host '::error::a Forge-added .gitignore line survived -Uninstall'; exit 1 }
           if ($giLines -notcontains 'my-own-ignore-rule/') { Write-Host "::error::the user's own .gitignore line was removed by -Uninstall"; exit 1 }
           Write-Host "ok   Forge's .gitignore lines are gone, the user's own line stayed"
+          # DENY-RULES-STAY (security review, WP-S12): unmerge never removes permissions.deny --
+          # it cannot tell a user's own pre-existing rule from Forge's identical template rule, so
+          # a deny rule (secret protection) surviving is the safe default, not a bug.
+          $settingsAfter = Get-Content -Raw -LiteralPath (Join-Path $proj '.claude\settings.json') | ConvertFrom-Json
+          if ($settingsAfter.permissions.deny -notcontains 'Read(./.env)') { Write-Host '::error::a permissions.deny secret-protection rule was removed by -Uninstall'; exit 1 }
+          Write-Host 'ok   permissions.deny secret-protection rules survived -Uninstall (by design)'
           $before = @(Get-ChildItem -LiteralPath (Join-Path $proj '.claude') -Recurse -File | ForEach-Object { $_.FullName }) | Sort-Object
           powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall -ProjectDir $proj -Yes | Out-Null
           $status2 = $LASTEXITCODE

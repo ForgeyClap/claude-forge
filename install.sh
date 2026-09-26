@@ -55,11 +55,23 @@ forge_resolve_dir() {
 # forge_sha256 <file> — prints the lowercase sha256 of a file using whatever hashing tool is on
 # PATH (sha256sum on Linux/Git-Bash/MSYS, shasum -a 256 on macOS/BSD). Prints nothing (empty) if
 # neither is available; callers treat an empty hash as "cannot verify -- never delete".
+#
+# BACKSLASH-ESCAPE-MODE (found by a real local run on Windows Git-Bash, 2026-09-26): GNU coreutils
+# sha256sum switches to its "escaped" output line the moment the filename argument contains a
+# backslash -- which EVERY Windows-native path does (C:\Users\...). In that mode the line is
+# `\<hash>  *<escaped-name>` (note the LEADING backslash before the hash itself), so the naive
+# `awk '{print $1}'` captured "\<hash>" instead of "<hash>" for every single file on this platform,
+# silently poisoning every recorded/compared hash and producing an install manifest that is not
+# even valid JSON (caught only by trying to JSON.parse the actual file this run produced). Forward
+# slashes are accepted interchangeably by the filesystem itself on Windows/MSYS, so normalizing the
+# path before hashing avoids escape mode entirely rather than trying to strip the prefix afterwards.
 forge_sha256() {
+  local p
+  p=$(printf '%s' "$1" | tr '\\' '/' 2>/dev/null)
   if forge_have_cmd sha256sum; then
-    sha256sum -- "$1" 2>/dev/null | awk '{print $1}'
+    sha256sum -- "$p" 2>/dev/null | awk '{print $1}'
   elif forge_have_cmd shasum; then
-    shasum -a 256 -- "$1" 2>/dev/null | awk '{print $1}'
+    shasum -a 256 -- "$p" 2>/dev/null | awk '{print $1}'
   else
     printf ''
   fi
@@ -741,13 +753,22 @@ forge_remove_gitignore_lines() {
 # entries `apply` added. If the local copy of the tool does not know `unmerge` yet, or node/the
 # tool are unavailable, this leaves settings.json completely untouched and says so in one plain
 # line — it never falls back to editing the file itself.
+#
+# DENY-RULES-STAY (security review, WP-S12 in parallel): NEVER pass --remove-deny. `unmerge`
+# cannot tell a user's own pre-existing permissions.deny rule (e.g. a Read(./.env) they had
+# before installing Forge) from Forge's identical template rule, so removing deny rules on
+# uninstall could silently drop a user's own secret protection. Forge's deny rules (.env, keys)
+# are harmless to leave behind, so they are kept by default -- only its hooks are unmerged.
+# --project-root is passed so the tool's own containment checks apply here exactly as they do
+# for `apply` in forge_copy_settings_file above.
 forge_settings_unmerge() {
-  local target="$1" source="$2" is_dry_run="$3" merge_tool out code
+  local target="$1" source="$2" is_dry_run="$3" merge_tool out code target_dir
   if [ ! -f "$target" ]; then
     forge_log "  kept:  $target (does not exist — nothing to unmerge)"
     return 0
   fi
-  merge_tool="$(dirname -- "$(dirname -- "$target")")/.claude/forge-bin/forge-settings-merge.cjs"
+  target_dir=$(dirname -- "$target")
+  merge_tool="$(dirname -- "$target_dir")/.claude/forge-bin/forge-settings-merge.cjs"
   if [ ! -f "$merge_tool" ]; then
     forge_log "  kept:  $target unmerged — forge-settings-merge.cjs is not on disk here; left untouched"
     return 0
@@ -756,11 +777,12 @@ forge_settings_unmerge() {
     forge_log "  kept:  $target unmerged — node is not on PATH; left untouched"
     return 0
   fi
-  local -a cli_args=(unmerge --target "$target" --source "$source")
+  local -a cli_args=(unmerge --target "$target" --source "$source" --project-root "$target_dir")
   [ "$is_dry_run" = "1" ] && cli_args+=(--dry-run)
   if out=$(node "$merge_tool" "${cli_args[@]}" 2>&1); then code=0; else code=$?; fi
   if [ "$code" -eq 0 ]; then
     forge_log "  $out"
+    forge_log "  Forge's hooks were removed from settings.json; its read-protection rules for secrets (.env, keys) were left in place on purpose — they are harmless and protect you"
   elif [ "$code" -eq 1 ]; then
     forge_log "  kept:  $target — unmerge refused ($out); left untouched"
   else
