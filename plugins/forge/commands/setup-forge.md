@@ -78,15 +78,14 @@ Auto-detect first for smart defaults: `git config user.name`, `git remote -v`, `
 `next.config.*`, n8n / workflow `*.json`, `requirements.txt` (+ vector libs → RAG), existing
 `CLAUDE.md`/`AGENTS.md`.
 
-Ask at most these four, each **leading with a recommended default in brackets** so Enter accepts:
+**Question cap (v2.7.0, `intake: silent`): fill every one of these from auto-detection + the name you already asked for a name; ask at most ONE actual question on the happy path** — the name (there is no reliable auto-detect for it), leading with a recommended default in brackets so Enter accepts:
 
-1. **What should I call you?**  `[<git config user.name>]`
-2. **What are you building here?**  (one line, e.g. "a landing page for my bakery")
-3. **Project type?**  `[<auto-detected>]`
-   `[1] Website  [2] Full-stack app  [3] Automation/n8n  [4] Chatbot/RAG  [5] Scraper  [6] Other/not sure`
-4. **Main language?**  `[1] English  [2] Nederlands`  — apply immediately.
+1. **What should I call you?**  `[<git config user.name>]` — ask this one.
+2. **What are you building here?**  — infer from the goal text if the user already said it; otherwise fold into the same turn as question 1 rather than a separate prompt.
+3. **Project type?**  `[<auto-detected>]` — use the auto-detected value silently; only surface the `[1] Website [2] Full-stack app [3] Automation/n8n [4] Chatbot/RAG [5] Scraper [6] Other/not sure` menu if detection genuinely found nothing.
+4. **Main language?**  — infer from the user's own message language; apply immediately, don't ask.
 
-Then: **"Happy with sensible defaults for everything else? (Y/n)"** Expand only if they decline.
+No `(Y/n)` confirmation step — proceed with sensible defaults and say what they were in one line; the user can correct anything afterward. `/setup-forge keys`/`doctor`/`reset` remain available for changes.
 
 **Persist the answers** (via the engine's `mark` in Step 5 when the full system is present, plus the
 human-readable profile): write/update `FORGE_PROJECT_PROFILE.md` and add or edit a single `## Forge`
@@ -101,8 +100,12 @@ never committed, temp removed on success (kept if a key still needs fixing)**, d
 through the engine:
 
 1. **Guard:** `node .claude/forge-bin/forge-setup.cjs guard`
-   - Exit `0` → continue.  Exit `3` → a `.env` is **already git-tracked**: **STOP**, relay the
-     engine's loud warning verbatim (`git rm --cached .env`, rotate exposed keys), don't proceed.
+   - Exit `0` → continue.
+   - Exit `3` → a `.env` is **already git-tracked**. Tell the user plainly, then run
+     `node .claude/forge-bin/forge-setup.cjs guard --fix` yourself — this untracks the file with
+     `git rm --cached -- .env` (the file and its content on disk are untouched). Report that you did
+     it, then tell the user to rotate any keys that were exposed while it was tracked. Never hand the
+     user the `git rm --cached` command to run themselves.
 2. **Create the fill-in file:** `node .claude/forge-bin/forge-setup.cjs init-keys --type <chosen-type>`
    — writes `.env.forge-setup` (already gitignored) with a short hint comment and a blank `KEY=` line
    for each key you might need (paste your key after the `=`, leave blank any you don't have); never
