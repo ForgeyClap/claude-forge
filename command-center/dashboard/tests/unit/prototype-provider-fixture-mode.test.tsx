@@ -71,7 +71,8 @@ describe('fixture mode still renders real example data through the lazy Suspense
     // interim frame — only that the real count eventually appears.
     await waitFor(() => {
       expect(screen.getByTestId('project-count').textContent).toBe(String(FIXTURE_DATASET.projects.length));
-    });
+    // 2026-09-27: the default 1 s was too short for the lazy chunk under a loaded full-suite run (one failure at 1032 ms).
+    }, { timeout: 5000 });
     expect(FIXTURE_DATASET.projects.length).toBeGreaterThan(0);
   });
 });

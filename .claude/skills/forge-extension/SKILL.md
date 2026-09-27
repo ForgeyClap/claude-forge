@@ -1,6 +1,6 @@
 ---
 name: forge-extension
-description: Forge playbook for browser extensions (Chrome/Edge MV3). Use for chrome extension, manifest v3, service worker, content script, permissions, CSP, Web Store, store policy.
+description: Forge: browser extensions (Chrome/Edge MV3): chrome extension, manifest v3, service worker, content script, permissions, CSP, Web Store, store policy.
 ---
 
 # Forge playbook — Browser extension (Chrome MV3)

@@ -2,7 +2,7 @@
 name: verify-boss
 description: OPTIONAL independent RE-EXECUTOR. Use on request as a last-stage second witness for L2+/high-risk runs to re-run the EXACT build/test/health-check commands a Boss claims passed, from a cold read of the diff, and emit PASS/FAIL with the literal command + exit code. Read+execute-only (Bash, PowerShell, Read, Grep, Glob — NO Write/Edit): it can re-run what a Boss claims, but can never edit the evidence it verifies. NOT a mandatory gate; never blocks a build. Distinct from codex-reviewer (external Codex opinion) and review-boss/security-boss (read-only, cannot re-execute).
 tools: Bash, PowerShell, Read, Grep, Glob
-model: claude-opus-5-5
+model: opus
 ---
 
 ## Prompt Defense Baseline

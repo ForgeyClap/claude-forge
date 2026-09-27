@@ -8,6 +8,7 @@ description: Advisory pre-deploy/pre-handoff checklist (not a blocker). Use when
 This is a **practical checklist**, not an enforced gate. Report items as pass/fail with evidence — never assert without checking. Nothing here blocks a build; it just helps you not hand off something broken. **Production deploys should still have explicit user approval.**
 
 ## Universal
+- Before declaring a run complete, run `node .claude/forge-bin/forge-verify.cjs <run_id>` and report its result; a mismatch means rework, not a pass.
 - No test mode, mock backend, or fake/sample data left in.
 - No localhost URLs, debug/test banners, or debug-only UI.
 - Secrets in env; `.env.example` uses placeholders; no real secrets committed.

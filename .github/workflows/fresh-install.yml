@@ -704,3 +704,121 @@ jobs:
           if ($userText -notmatch 'this is not valid json') { Write-Host '::error::the malformed private file was modified/replaced instead of being left untouched'; exit 1 }
           Write-Host 'ok   the malformed private file was left exactly as-is'
           exit 0
+
+      # F2/F4/F5 fix (2026-09-27 independent v2.8.1 review): a FORGE_STANDING_RULES.json that EXISTS
+      # but cannot itself be read or parsed (corrupt, locked, or an unreadable path) used to be
+      # silently backed up and replaced -- migrateOwnerStandingRules() cannot tell that case apart
+      # from "nothing to migrate" (same { length: 0, pending: false } either way; see that function's
+      # own doc comment in forge-sync.cjs, not edited by this fix). This proves a dry run correctly
+      # PREVIEWS the "kept" outcome instead of "would back up + overwrite" (F4), a real run keeps the
+      # file byte-for-byte with no backup and names the real cause instead of always blaming
+      # user.json (F5), and a second run is stable.
+      - name: A corrupt FORGE_STANDING_RULES.json is kept, not replaced -- dry run previews it, the note names the cause (POSIX)
+        if: runner.os != 'Windows'
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          set -e
+          proj="$RUNNER_TEMP/standing-unreadable-project"
+          mkdir -p "$proj/.claude/config/orchestration"
+          target="$proj/.claude/config/orchestration/FORGE_STANDING_RULES.json"
+          printf '{ this is not valid json' > "$target"
+          fixture="$RUNNER_TEMP/standing-unreadable-fixture.json"
+          cp "$target" "$fixture"
+          # NOTE: intentionally `grep ... <<< "$var"` (a here-string), never `echo "$var" | grep -q ...`.
+          # Found by a real local run building this exact step: install.sh's full non-dry-run output
+          # here is >64KB (500+ "wrote:" lines) and the pattern this checks for appears early, so
+          # `grep -q` exits the instant it matches while `echo` is still blocked writing the rest of a
+          # full pipe buffer -- under `set -o pipefail` (implied by `set -e` combined with a pipeline)
+          # that SIGPIPE'd `echo` can make the whole pipeline report non-zero even though grep DID
+          # match, silently turning a passing check into a false failure. A here-string has no producer
+          # process to SIGPIPE, so it is not just faster but actually correct here.
+          dry=$(bash install.sh --project "$proj" --yes --dry-run)
+          grep -qi "would keep" <<< "$dry" || { echo "::error::a dry run did not report that the corrupt file would be kept"; exit 1; }
+          grep -qi "would back up" <<< "$dry" && { echo "::error::a dry run still claims it would back up + overwrite the corrupt file"; exit 1; }
+          node tests/installer/assert-standing-migration.js template-unreadable-kept "$proj" "$fixture"
+          out=$(bash install.sh --project "$proj" --yes)
+          grep -qi "could not be read or parsed" <<< "$out" || { echo "::error::install.sh did not warn that the file could not be read or parsed"; exit 1; }
+          grep -qi "NOTE:.*could not be read or parsed" <<< "$out" || { echo "::error::the final NOTE does not name the real cause (F5)"; exit 1; }
+          if grep -qi "NOTE:.*fix the JSON in.*user.json" <<< "$out"; then echo "::error::the final NOTE still assumes the wrong cause (user.json) for a template-file problem"; exit 1; fi
+          node tests/installer/assert-standing-migration.js template-unreadable-kept "$proj" "$fixture"
+          bash install.sh --project "$proj" --yes >/dev/null
+          node tests/installer/assert-standing-migration.js template-unreadable-kept "$proj" "$fixture"
+          echo "ok   corrupt FORGE_STANDING_RULES.json: dry-run preview, real-run kept + honest cause, stable on a second run"
+
+      - name: A corrupt FORGE_STANDING_RULES.json is kept, not replaced -- dry run previews it, the note names the cause (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'standing-unreadable-project'
+          New-Item -ItemType Directory -Force (Join-Path $proj '.claude\config\orchestration') | Out-Null
+          $target = Join-Path $proj '.claude\config\orchestration\FORGE_STANDING_RULES.json'
+          [System.IO.File]::WriteAllText($target, '{ this is not valid json', (New-Object System.Text.UTF8Encoding($false)))
+          $fixture = Join-Path $env:RUNNER_TEMP 'standing-unreadable-fixture.json'
+          Copy-Item -LiteralPath $target -Destination $fixture
+          $dry = powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes -DryRun
+          $dryText = ($dry -join "`n")
+          if ($dryText -notmatch '(?i)would keep') { Write-Host '::error::a dry run did not report that the corrupt file would be kept'; exit 1 }
+          if ($dryText -match '(?i)would back up') { Write-Host '::error::a dry run still claims it would back up + overwrite the corrupt file'; exit 1 }
+          node tests/installer/assert-standing-migration.js template-unreadable-kept $proj $fixture
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $out = powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes
+          $outText = ($out -join "`n")
+          if ($outText -notmatch '(?i)could not be read or parsed') { Write-Host '::error::install.ps1 did not warn that the file could not be read or parsed'; exit 1 }
+          if ($outText -notmatch '(?is)NOTE:.*could not be read or parsed') { Write-Host '::error::the final NOTE does not name the real cause (F5)'; exit 1 }
+          if ($outText -match '(?is)NOTE:.*fix the JSON in.*user\.json') { Write-Host '::error::the final NOTE still assumes the wrong cause (user.json) for a template-file problem'; exit 1 }
+          node tests/installer/assert-standing-migration.js template-unreadable-kept $proj $fixture
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -ProjectDir $proj -Yes | Out-Null
+          node tests/installer/assert-standing-migration.js template-unreadable-kept $proj $fixture
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host 'ok   corrupt FORGE_STANDING_RULES.json: dry-run preview, real-run kept + honest cause, stable on a second run'
+          exit 0
+
+      # v2.8.1 (WP-P3): fast, function-level coverage of the same F2/F4 contract as the two steps just
+      # above, extracted straight from install.sh's own source (never a re-typed copy) -- catches a
+      # regression in forge_check_standing_rules_migration itself without a full install.
+      - name: forge_check_standing_rules_migration keeps an unreadable template, dry-run parity (POSIX)
+        if: runner.os != 'Windows'
+        run: bash tests/installer/standing-rules-unreadable-template.sh
+
+      # F2b fix (2026-09-27 independent v2.8.1 review): -ProjectDir "C:\My Proj\" (a real,
+      # space-containing path with a trailing backslash) reached node.exe as the corrupted
+      # `C:\My Proj"` -- PowerShell's own native-argv marshalling drops the closing quote it adds
+      # around a spaced argument when that argument ends in a backslash. Fast, function-level coverage
+      # of ConvertTo-ForgeCleanProjectPath, extracted straight from install.ps1's own source.
+      - name: ConvertTo-ForgeCleanProjectPath fixes the trailing-backslash node-argv corruption (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # F2b is titled "Windows PowerShell 5.1 quoting" -- invoked via classic powershell.exe (5.1),
+          # matching every other nested install.ps1 call in this workflow, not the outer step's own
+          # pwsh (7+) engine.
+          powershell -ExecutionPolicy Bypass -File tests\installer\assert-projectdir-trailing-backslash.ps1
+          exit $LASTEXITCODE
+
+      # F2b end-to-end: the real install.ps1, given a project directory whose path has both a space
+      # and a trailing backslash (exactly the shape a copy-paste from Explorer's address bar or tab
+      # completion produces), must actually install INTO that directory -- not fail, and not create a
+      # wrongly-named sibling directory with a stray quote in its name.
+      - name: install.ps1 succeeds with a space-and-trailing-backslash -ProjectDir (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+        run: |
+          $proj = Join-Path $env:RUNNER_TEMP 'f2b space project'
+          New-Item -ItemType Directory -Force $proj | Out-Null
+          $withTrailingBackslash = $proj.TrimEnd('\') + '\'
+          powershell -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectOnly -ProjectDir $withTrailingBackslash
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::install.ps1 failed with a space-and-trailing-backslash -ProjectDir'; exit 1 }
+          $doctorPath = Join-Path $proj '.claude\forge-bin\forge-doctor.cjs'
+          if (-not (Test-Path -LiteralPath $doctorPath -PathType Leaf)) { Write-Host '::error::the payload did not land inside the correctly-named project directory'; exit 1 }
+          $strayQuoteSibling = Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Filter '*"*' -ErrorAction SilentlyContinue
+          if ($strayQuoteSibling) { Write-Host "::error::a wrongly-named path with a stray quote was created: $($strayQuoteSibling.FullName -join ', ')"; exit 1 }
+          Write-Host 'ok   install.ps1 installed into the correctly-named space-and-trailing-backslash project directory'
+          exit 0

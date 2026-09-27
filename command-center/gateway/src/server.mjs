@@ -26,6 +26,7 @@ import { buildToolsInventory } from './tools.mjs';
 import { buildMcpView } from './mcp.mjs';
 import { buildCapabilities } from './capabilities.mjs';
 import { buildForgeConfig } from './config.mjs';
+import { writeForgeConfig } from './config-write.mjs';
 import { listDirectory, readFilePreview } from './files.mjs';
 import { buildRecovery, buildCheckpoints } from './recovery.mjs';
 import { buildApprovals } from './approvals.mjs';
@@ -52,7 +53,7 @@ import {
 import { buildArtifactContentResponse } from './artifact-content.mjs';
 import { readRawBody, parseMultipart, storeAttachment, AttachmentTooLargeError } from './attachments.mjs';
 import { createAskRequest, answerAskRequest } from './ask-store.mjs';
-import { getDiscordStatus, startDiscordService, stopDiscordService } from './discord-service.mjs';
+import { getDiscordStatus, startDiscordService, stopDiscordService, connectDiscordService, selectDiscordGuild } from './discord-service.mjs';
 
 const startedAtMs = Date.now();
 
@@ -314,6 +315,42 @@ async function handleApi(req, res, pathname, searchParams) {
   if (pathname === '/api/discord/stop' && req.method === 'POST') {
     const result = await stopDiscordService();
     return sendJson(res, 200, { ok: true, stopped: result.stopped });
+  }
+
+  // WP-v290-B (beginner onboarding, B1): the ONE beginner-facing "log in" write route — a real
+  // write (persists the token to discord/.env, then spawns a child) — exec token required, same
+  // as every other write route (checked once in requestListener, N6 fix, before handleApi runs).
+  if (pathname === '/api/discord/connect' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(res, err instanceof BodyTooLargeError ? 413 : 400, { ok: false, error: err.message });
+    }
+    const schemaErr = validateSchema(body, ['token', 'guildId'], ['token']);
+    if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
+    if (typeof body.token !== 'string') return sendJson(res, 400, { ok: false, error: 'token must be a string' });
+    const result = await connectDiscordService({ token: body.token, guildId: body.guildId });
+    if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+    return sendJson(res, result.status, { ok: true, pid: result.pid });
+  }
+
+  // WP-v290-B (beginner onboarding, B2): the owner's explicit guild pick when the bot is in
+  // several servers — a real write (persists to .env, then restarts the child) — same exec-token
+  // requirement as every other write route.
+  if (pathname === '/api/discord/guild' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(res, err instanceof BodyTooLargeError ? 413 : 400, { ok: false, error: err.message });
+    }
+    const schemaErr = validateSchema(body, ['guildId'], ['guildId']);
+    if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
+    if (typeof body.guildId !== 'string') return sendJson(res, 400, { ok: false, error: 'guildId must be a string' });
+    const result = await selectDiscordGuild({ guildId: body.guildId });
+    if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+    return sendJson(res, result.status, { ok: true, pid: result.pid });
   }
 
   if (pathname === '/api/projects') {
@@ -600,9 +637,8 @@ async function handleApi(req, res, pathname, searchParams) {
   }
 
   // forge-2026-09-24-config-v250 wp12: READ-ONLY view of the selected project's own Forge settings
-  // (its `forge-config.cjs list --json --all`, see config.mjs). GET only — there is deliberately no
-  // write route: a setting is changed in chat or with `/forge config set` (D2 write boundary).
-  if (pathname === '/api/config') {
+  // (its `forge-config.cjs list --json --all`, see config.mjs).
+  if (pathname === '/api/config' && req.method === 'GET') {
     const projectName = searchParams.get('project') || '';
     const { entry, registryError, ambiguous, matches } = await resolveProjectByName(projectName);
     if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
@@ -611,6 +647,31 @@ async function handleApi(req, res, pathname, searchParams) {
     const result = await buildForgeConfig(entry.path);
     const { _capturedAtMs, ...safe } = result;
     return sendJson(res, safe.ok ? 200 : 502, safe);
+  }
+
+  // WP-A (v2.9.0): POST /api/config?project=<name> — the dashboard's real config-write route, body
+  // { action:'set'|'unset', key, value? }. Shape only here; every semantic check (action/key/value
+  // validity, the gate-hook-off refusal, exit-code mapping) lives in config-write.mjs
+  // (writeForgeConfig) — same "server.mjs stays thin" split as agents-write.mjs's patchAgentModel.
+  if (pathname === '/api/config' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(res, err instanceof BodyTooLargeError ? 413 : 400, { ok: false, error: err.message });
+    }
+    const schemaErr = validateSchema(body, ['action', 'key', 'value'], ['action', 'key']);
+    if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
+    const projectName = searchParams.get('project') || '';
+    const { entry, registryError, ambiguous, matches } = await resolveProjectByName(projectName);
+    if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
+    if (ambiguous) return sendAmbiguousProject(res, matches);
+    if (!entry) return sendJson(res, 404, { ok: false, error: 'unknown project (must match /api/projects)' });
+    const result = await writeForgeConfig({
+      projectPath: entry.path, projectName: entry.name, action: body.action, key: body.key,
+      value: Object.prototype.hasOwnProperty.call(body, 'value') ? body.value : undefined,
+    });
+    return sendJson(res, result.status, result.body);
   }
 
   // ── WP8: secure project-scoped file browser (read-only, containment + denylist hardened) ──
@@ -1053,10 +1114,19 @@ export function requestListener(req, res) {
   // feat-ask-owner: two more real POST write routes — ASK_RE (the ask-mcp.mjs subprocess
   // registering a question) and ASK_ANSWER_RE (the dashboard's own real answer submission).
   const isAskWriteRoute = ASK_RE.test(pathname) || ASK_ANSWER_RE.test(pathname);
-  // WP-D1: the two real Discord-bot write routes (GET /api/discord/status stays read-only, unlisted
-  // here, exactly like every other GET route on this gateway).
-  const isDiscordWriteRoute = pathname === '/api/discord/start' || pathname === '/api/discord/stop';
-  const isWriteRoute = isConversationWriteRoute || isAskWriteRoute || isDiscordWriteRoute || pathname === '/api/projects';
+  // WP-D1 + WP-v290-B: the real Discord-bot write routes (GET /api/discord/status stays read-only,
+  // unlisted here, exactly like every other GET route on this gateway). /connect and /guild are
+  // B1/B2's own beginner-onboarding writes (token save + guild pick), same allowlist shape as the
+  // original start/stop pair.
+  const isDiscordWriteRoute =
+    pathname === '/api/discord/start' ||
+    pathname === '/api/discord/stop' ||
+    pathname === '/api/discord/connect' ||
+    pathname === '/api/discord/guild';
+  // WP-A (v2.9.0): the dashboard's real config-write route — GET /api/config stays read-only and
+  // unlisted here, exactly like every other GET route on this gateway.
+  const isConfigWriteRoute = pathname === '/api/config';
+  const isWriteRoute = isConversationWriteRoute || isAskWriteRoute || isDiscordWriteRoute || isConfigWriteRoute || pathname === '/api/projects';
   const isConversationDeleteRoute = CONV_ITEM_RE.test(pathname);
   // feat-agent-model-edit: the one PATCH route this gateway accepts at all, scoped exactly to
   // AGENT_MODEL_RE (same "one specific route, never the whole method" shape as the DELETE guard

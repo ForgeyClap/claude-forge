@@ -8,6 +8,7 @@ const path = require('path');
 const assert = require('assert');
 const { spawnSync } = require('child_process');
 const reinject = require('./forge-snapshot-reinject.cjs');
+const snap = require('./forge-snapshot.cjs'); // WP-D (2026-09-27) — real end-to-end proof, see section 6 below
 
 // Hermetic owner settings (forge-config.cjs, v2.7.0): the global settings file is read from a throwaway home,
 // never ~/.claude, and FORGE_PROJECT_ROOT is cleared so each fixture ROOT decides which project file is read.
@@ -251,6 +252,42 @@ t('CLI OFF path (FORGE_PROJECT_ROOT fixture, snapshots=false) with a due-marker 
   times.sort((a, b) => a - b);
   console.log('       OFF-path timings ms: ' + times.map((x) => x.toFixed(0)).join(', '));
   assert.ok(times[0] < OFF_BUDGET_MS, 'fastest OFF run took ' + times[0].toFixed(0) + ' ms (budget ' + OFF_BUDGET_MS + ' ms; override FORGE_HOOK_OFF_BUDGET_MS on a slow runner)');
+});
+
+// ---------------------------------------------------------------------------
+// 8) WP-D (2026-09-27) — end-to-end proof: the richer forge-snapshot.cjs content genuinely survives
+// re-injection, through the REAL generator (snap.write()), not a hand-built fixture snapshot like the
+// sections above. "Latest check failure" lives inside section 3 (Current state), one of the three sections
+// this hook actually re-injects, so it must appear in reinject's OWN output text.
+// ---------------------------------------------------------------------------
+console.log('\n8) WP-D end-to-end — a real check_failed survives the marker -> reinject pipeline');
+
+t('a real check_failed event (written via the real forge-snapshot.cjs) appears in the re-injected text', () => {
+  const root = freshRoot('reinj-wpd-e2e');
+  const runDir = path.join(root, '.claude', 'forge-runs', 'r1');
+  fs.mkdirSync(runDir, { recursive: true });
+  const events = [
+    { run_id: 'r1', event_type: 'run_started', agent: 'orchestrator', task: 'end-to-end WP-D proof', timestamp: '2026-09-27T10:00:00.000Z' },
+    { run_id: 'r1', event_type: 'check_failed', agent: 'Test Boss', note: 'SENTINEL-E2E-CHECK-FAILED', timestamp: '2026-09-27T10:05:00.000Z' },
+  ];
+  fs.writeFileSync(path.join(runDir, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+  // The real generator (not a hand-built fixture) — proves this project's OWN forge-snapshot.cjs, wired
+  // exactly as it ships, actually produces the new subsection.
+  const written = snap.write({ root, reason: 'manual', now: new Date('2026-09-27T11:00:00Z'), runId: 'r1' });
+  assert.ok(written.markdown.includes('SENTINEL-E2E-CHECK-FAILED'), 'the real generator did not render the check_failed detail');
+
+  // Simulate the marker having fired (its own contract — a due-marker file — is independent of WHERE the
+  // snapshot content came from) and run the REAL reinject hook against the REAL snapshot just written.
+  writeDue(root, { reason: 'precompact-manual' });
+  const r = reinject.run({ projectRoot: root });
+  assert.strictEqual(r.printed, true);
+  assert.ok(r.text.includes('SENTINEL-E2E-CHECK-FAILED'),
+    'the latest check_failed must survive into the re-injected text — it lives inside "Current state", one of the three re-injected sections');
+});
+
+t('the re-inject cap (MAX_CHARS) is unchanged by WP-D, exactly as instructed', () => {
+  assert.strictEqual(reinject.MAX_CHARS, 2400);
 });
 
 try { fs.rmSync(CONFIG_HOME, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ }

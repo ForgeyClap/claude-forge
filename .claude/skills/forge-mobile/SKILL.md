@@ -1,6 +1,6 @@
 ---
 name: forge-mobile
-description: Forge playbook for mobile apps — React Native/Expo/Flutter. Use for mobile app, iOS, Android, Expo, EAS, Flutter, apk, ipa, secure storage, deep link, App Store, Play Store.
+description: Forge: mobile apps — React Native/Expo/Flutter: mobile app, iOS, Android, Expo, EAS, Flutter, apk, ipa, secure storage, deep link, App Store, Play Store.
 ---
 
 # Forge playbook — Mobile app (React Native / Expo / Flutter)

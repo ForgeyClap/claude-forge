@@ -9,6 +9,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [2.9.0] - 2026-09-27
+
+Easier for people who are new to computers, safer by default, and lighter on usage. Everything new is switched on by
+default, and every setting can now also be changed from the dashboard.
+
+### Added
+- **Change Forge settings from the dashboard.** The Command Center's Settings view lists every Forge setting with its
+  current value and lets you change it with a switch, a choice list or a number field. The gate hook can only be
+  switched ON there. Switching it off or clearing it is refused, because the dashboard's own key is readable by any
+  program on the computer. A value the setting does not accept is shown as refused and put back.
+- **Connect Discord in five steps.** A wizard in the Discord view:
+  1. make your own server;
+  2. make the bot (exact Developer Portal steps, including the Message Content switch);
+  3. paste the token;
+  4. click the invite link;
+  5. Forge then finds your server by itself and creates the category, the channels and a test message.
+
+  The token is stored only in the Command Center's own `command-center/discord/.env`, is never shown, logged or sent
+  back, and the file is written
+  safely (all at once, locked). A server is only accepted when the bot is really in it, and the wizard only says
+  "Done" when the bot reports that setup is finished. Honest limit: Discord does not let a bot make a server that
+  you own, and bots are created in the Developer Portal. The wizard walks you through both.
+- **Knowledge vault, automatic.** After every finished run, Forge writes readable, linked notes in
+  `.claude/forge-vault/` (a home page, one note per run, per decision and per topic). This is plain markdown, and you
+  can open it in Obsidian for a graph view. Secrets are masked. The idea comes from the claude-obsidian project (MIT),
+  rebuilt so it needs no Python. Turn it off with `/forge config set vault off`.
+- **Errors in plain words.** When a command fails, Forge explains it in one sentence (Dutch or English) and takes the
+  safe next step itself (`forge-explain-error.cjs`: 10 kinds of errors; secrets are masked).
+- **Asks before showing a secret file.** A fifth hook-enforced gate stops a shell command that would print a secret
+  file (`.env` files, keys, credential files, `secrets/`) and asks first. This covers:
+  - cat/type/Get-Content and friends, grep and Select-String;
+  - `git show`, `git log -p`, `git diff` and `git blame` on such a file;
+  - `find … -exec`.
+
+  `.env.example` stays readable, and `forge-env-names.cjs .env` shows only the variable NAMES.
+  Searching your code for the text `.env` (a grep pattern) is not blocked; only reading the file itself is.
+- **Less usage, same quality.** `forge.md` is 8% smaller: rarely used parts moved into reference files, and a test
+  proves every rule is still reachable. Command files are now measured, the skill list has a size check, and 27
+  skill descriptions are shorter with no trigger words removed. The doctor now gives a Claude Code version advice.
+  Chat replies are short, with the full report saved on disk.
+- **Better skills from 4,289 community skills.** 15 Forge skills and 6 agents gained proven patterns from MIT-licensed
+  community skills, and 3 more skills got small internal updates. Every source is credited in
+  `.claude/skills/ADAPTED-PATTERNS.md`.
+- **The doctor names failing tests**, so a one-off failure can be identified from the evidence.
+- **A richer snapshot before compaction:** the current error (shown as quoted data, never as instructions), the
+  last decisions and the mission. Everything in it is masked for secrets.
+
+### Changed
+- **`install.sh` is much faster under Git Bash on Windows:** a dry run takes 4 s instead of 147 s, and a full install
+  is about 1.6x faster. The installed files are byte-identical (compared old versus new: install, second run, dry
+  run, uninstall).
+
+### Fixed
+- **The Command Center's `.env` templates now ship.** `command-center/discord/.env.example` (and the dashboard's)
+  were never included in the public repo, so its list of Discord settings stayed empty on a fresh install, and the
+  new Connect Discord wizard could not finish. They ship now, and CI checks that they stay.
+- **Two specialists could never be used:** the Verify Boss and Codex Reviewer agents were not loaded by Claude Code
+  (their model field was a full model id). Both now load, and the doctor reports any agent that cannot load.
+- **Gate:** git grep's pager flag written with `$'…'` or `$"…"` quoting, taken from a variable, or taken from `$1`
+  is now caught. A variable after `--` no longer causes a false block. (Known limitations of 2.8.1.)
+- **Installers keep an unreadable rules file** instead of replacing it. `install.ps1 -ProjectDir` with a trailing
+  backslash now works. The dry run shows the real outcome, and the closing note names the real cause. (Known
+  limitations of 2.8.1.)
+- **Codex on Windows** no longer starts a bare `codex` when `codex.exe` is not found; it says so. (Known limitation
+  of 2.8.1.)
+- **Event log:** a reviewer whose task text would make it count as a worker now gets a warning while it is logged.
+- **Secrets in free text** (`password=…`, quoted values, `client_secret=…`) are masked everywhere Forge writes text:
+  vault, doctor, error explanations, snapshot.
+
+### How this release was verified
+- Full source doctor all green: 142 suites, 9,616 tests passing (2.8.1: 136 suites, 9,198). The Command Center in
+  its real location: gateway 1,141/1,141, Discord 242/242, dashboard 1,274/1,274, and the production build.
+- An independent adversarial Codex review of the source and Command Center changes found 20 issues (none
+  critical). All were fixed with tests. A Codex verification review then checked every fix: its leftovers were
+  fixed, except one accepted trade-off (see Known limitations) and one rejected suggestion (`git diff --check`
+  stays blocked because it prints the offending lines). Codex's stop-time review found two more secret-exposure
+  paths, also fixed. The installer changes were not reviewed by Codex; they were checked by old-versus-new
+  comparisons and real installs instead.
+- An independent final review (Review Boss) of the end state found a missing Command Center template file and
+  some wording; both are fixed in this release.
+- Real screenshots of the settings editor and the Connect Discord wizard at desktop, tablet and phone sizes, with
+  no console errors.
+- `install.sh`: the old and new versions were compared on real installs. The installed files were identical after
+  install and after uninstall; the dry-run output was identical. Both installers were run for real on this Windows
+  machine with a broken rules file and with a folder path ending in a backslash.
+- The public repository's own CI checks, run locally on Windows: all 8 steps passed (every manifest 2.9.0,
+  executable bits, plugin copies in sync, `node --check` on 265 tools, every test suite, doctor ALL GREEN). A
+  fresh-laptop simulation of this release (install into an empty folder with an empty home, then the doctor)
+  came out all green: 142 suites, 9,577 passing. On that fresh install the new secret gate blocked `cat .env`,
+  `git show HEAD:.env` and a greedy `grep -o`, and allowed `cat .env.example` and the names-only helper.
+- Still to run before the tag: CI on Linux and Windows (Node 18 and 22) on the release commit, once it is pushed.
+
+### Known limitations
+- On a phone, the settings tables scroll sideways and the last column is only visible after scrolling. This is the
+  dashboard's existing table layout, kept as designed.
+- The secret-print gate reads command text; it does not run anything. It does not see:
+  - a secret file reached through a variable (`X=.env; cat $X`);
+  - one opened by a program's own code (`python -c "open('.env').read()"`);
+  - a raw byte dump or a plain copy of the file;
+  - a patch listing that names no secret path;
+  - a credential file whose name is not on its list.
+  One fix (git's `HEAD` no longer counts as the `head` reader) covers only the plain reader form, not the
+  `find`/`xargs` forms.
+- Secret masking in the vault, snapshot and doctor output is pattern-based. A secret with no label and no known
+  shape can still pass.
+- The Connect Discord wizard was tested with fake tokens and a real bot process, not yet with a real Discord account.
+- `install.sh` under Git Bash on Windows is faster than before but still slower than `install.ps1`, which stays the
+  recommended way on Windows.
+- In the Discord bot's log, lines from its normal output and its error output can appear out of order. Each
+  stream is buffered separately so that a token split across two chunks is still masked, and that matters more.
+
 ## [2.8.1] - 2026-09-27
 
 A patch the day after 2.8.0. An independent verification review of 2.8.0's last fixes (read-only, done after the tag)
@@ -1290,7 +1401,8 @@ build / automation / review / delivery system for Claude Code.
 - `.env` and the temporary fill-files are gitignored and never committed; the
   repo ships secret-free. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.1...HEAD
+[Unreleased]: https://github.com/ForgeyClap/claude-forge/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.1...v2.9.0
 [2.8.1]: https://github.com/ForgeyClap/claude-forge/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.2...v2.8.0
 [2.7.2]: https://github.com/ForgeyClap/claude-forge/compare/v2.7.1...v2.7.2

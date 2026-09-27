@@ -82,24 +82,53 @@ $ForgeStandingRulesRel = 'config/orchestration/FORGE_STANDING_RULES.json'
 # The node one-liner Test-ForgeStandingRulesMigration runs against the NEW payload's own
 # forge-sync.cjs — every path is passed as argv, never interpolated into this text, so a path
 # containing quotes/spaces/backslashes can never break out of the script. Read via
-# process.argv.slice(-2) rather than a fixed index: this text runs from a real temp .js FILE here
+# process.argv.slice(-4) rather than a fixed index: this text runs from a real temp .js FILE here
 # (`node -e` is unsafe on PowerShell -- see Test-ForgeStandingRulesMigration's own comment), where argv
-# is [node, file, a, b], but install.sh runs this identical text via `node -e THIS_TEXT a b`, where argv
-# is [node, a, b] (no slot reserved for the eval text itself) -- a fixed argv[1]/argv[2] would silently
-# read the wrong thing on one of the two installers (found by a real local run, WP-P3:
-# "sync.migrateOwnerStandingRules is not a function"). slice(-2) reads the same two trailing paths
-# regardless of which shape argv has. Exit 0 = safe to replace FORGE_STANDING_RULES.json this run (no
-# owner rule was present, or it was moved to FORGE_STANDING_RULES.user.json already); exit 2 = NOT safe
-# (an owner rule could not be confirmed migrated) — Test-ForgeStandingRulesMigration treats ANY
-# non-zero exit the same way (skip).
+# is [node, file, a, b, c, d], but install.sh runs this identical text via `node -e THIS_TEXT a b c d`,
+# where argv is [node, a, b, c, d] (no slot reserved for the eval text itself) -- a fixed
+# argv[1]/argv[2]/... would silently read the wrong thing on one of the two installers (found by a real
+# local run, WP-P3: "sync.migrateOwnerStandingRules is not a function"). slice(-4) reads the same four
+# trailing args regardless of which shape argv has: [0] the payload's forge-sync.cjs, [1] the project
+# dir, [2] the forward-slash form of $ForgeStandingRulesRel (kept as an argument, not a second
+# hardcoded copy of the literal, so this text and the constant it mirrors can never drift apart), [3]
+# "1" in a dry run, "0" in a real run.
+# Exit 0 = safe to replace FORGE_STANDING_RULES.json this run (no owner rule was present, or it was
+# moved to FORGE_STANDING_RULES.user.json already); exit 2 = NOT safe (an owner rule could not be
+# confirmed migrated); exit 3 (F2 fix, 2026-09-27 independent v2.8.1 review) = the file EXISTS but
+# could not itself be read or parsed (corrupt, locked, or an unreadable path) --
+# Test-ForgeStandingRulesMigration treats ANY non-zero exit the same way for the copy itself (skip),
+# but reports 3 with its own distinct, honest message instead of the generic "pending migration" one.
 $ForgeStandingMigrateJs = @'
 try {
-  var args = process.argv.slice(-2);
+  var args = process.argv.slice(-4);
   var sync = require(args[0]);
-  var ids = sync.migrateOwnerStandingRules(args[1]);
+  var projectDir = args[1];
+  var standingRulesRel = args[2];
+  var dryRun = args[3] === "1";
+  var ids = sync.migrateOwnerStandingRules(projectDir, { dryRun: dryRun });
   if (ids.pending) { process.exit(2); }
   if (ids.length > 0) {
-    process.stdout.write("moved " + ids.length + " owner rule(s) from a pre-v2.8.0 install into config/orchestration/FORGE_STANDING_RULES.user.json\n");
+    process.stdout.write((dryRun ? "[dry-run] would move " : "moved ") + ids.length + " owner rule(s) from a pre-v2.8.0 install into config/orchestration/FORGE_STANDING_RULES.user.json\n");
+    process.exit(0);
+  }
+  // F2 fix (2026-09-27, independent v2.8.1 review): migrateOwnerStandingRules() cannot tell "no file
+  // yet" apart from "the file exists but could not be read or parsed" -- both return the identical
+  // { length: 0, pending: false } (see that function's own doc comment in forge-sync.cjs, which this
+  // fix never edits -- the payload is off limits here, see this file's own header note on this
+  // block). The caller already confirmed the file EXISTS before this script ever runs, so reaching
+  // this point with an empty, non-pending result is ambiguous: either it parses fine and genuinely
+  // holds nothing to migrate, or it is corrupt/locked/unreadable and the function silently gave up.
+  // Re-attempting the identical read+parse here (never a write, safe in a dry run too) resolves that
+  // ambiguity without touching forge-sync.cjs: a failure here exits 3, a distinct code the installer
+  // treats as "keep the file, and say why" instead of silently letting it be backed up and replaced.
+  var fs = require("fs");
+  var path = require("path");
+  var targetPath = path.join(projectDir, ".claude", standingRulesRel);
+  try {
+    JSON.parse(fs.readFileSync(targetPath, "utf8"));
+  } catch (e) {
+    process.stderr.write("forge-sync: " + targetPath + " could not be read or parsed (" + e.message + ")\n");
+    process.exit(3);
   }
   process.exit(0);
 } catch (e) {
@@ -124,6 +153,27 @@ function Write-ForgeError {
 function Resolve-ForgeFullPath {
   param([Parameter(Mandatory = $true)][string]$Path)
   return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+# F2b fix (2026-09-27, independent v2.8.1 review): -ProjectDir "C:\My Proj\" binds a perfectly clean
+# PowerShell string (trailing backslash intact, no stray quote -- confirmed on this machine: the
+# script's OWN parameter binding is not affected) to $ProjectDir, but the MOMENT this installer hands
+# that same string to a NATIVE command (node.exe -- see Test-ForgeStandingRulesMigration) as an
+# argument, PowerShell's own native-argv marshalling breaks it: Windows' CommandLineToArgvW convention
+# reads a trailing backslash right before the closing quote PowerShell adds around a spaced argument
+# as an ESCAPED quote, not a literal backslash, so node's own argv actually receives the corrupted
+# `C:\My Proj"` -- confirmed with `& node -e "console.log(process.argv[1])" 'C:\My Proj\'` on this
+# machine (node received "C:\My Proj\"" byte-for-byte, no closing quote). `"` can never be part of a
+# real Windows path, so trimming a trailing one is always safe; a trailing backslash/slash is trimmed
+# too, UNLESS the path would collapse to a bare drive letter ("C:" means "current directory on drive
+# C" -- a DIFFERENT location than "C:\", the drive root -- so that one case is left untouched). Called
+# once, right where $projectDir is resolved, so every downstream use (every node call, every Join-Path)
+# already gets the clean value -- never re-trimmed ad hoc at each call site.
+function ConvertTo-ForgeCleanProjectPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $p = $Path.TrimEnd('"')
+  if ($p -match '^[A-Za-z]:[\\/]$') { return $p }
+  return $p.TrimEnd('\', '/')
 }
 
 # Copy $SourceFile to $DestFile in a merge-safe way.
@@ -396,14 +446,21 @@ function Copy-ForgeSettingsFile {
 # own doc comment in forge-sync.cjs for the full v2.7.x-owner-rule-loss contract this closes). Sets
 # $script:ForgeStandingMigrationSkip to $ForgeStandingRulesRel when the file must be left untouched
 # THIS run (no confirmed-safe migration -- including "node is not available to check"), or $null when
-# it is safe to proceed with the normal copy. A brand-new project (no such file yet) is always safe
-# and never even shells out.
+# it is safe to proceed with the normal copy. $script:ForgeStandingMigrationReason (F5 fix,
+# 2026-09-27 independent v2.8.1 review) is set alongside it to the REAL reason (node missing,
+# forge-sync.cjs's own specific warning text -- unreadable/malformed user file, a symlink/containment
+# refusal, a write failure -- or, new here, the template file itself being unreadable) instead of the
+# caller assuming one fixed cause. A brand-new project (no such file yet) is always safe and never
+# even shells out. -IsDryRun is passed straight through to migrateOwnerStandingRules() so a dry run
+# reports the SAME outcome a real run would reach (F4 fix) without writing anything.
 function Test-ForgeStandingRulesMigration {
   param(
     [Parameter(Mandatory = $true)][string]$ProjectDir,
-    [Parameter(Mandatory = $true)][string]$SourceClaudeDir
+    [Parameter(Mandatory = $true)][string]$SourceClaudeDir,
+    [bool]$IsDryRun = $false
   )
   $script:ForgeStandingMigrationSkip = $null
+  $script:ForgeStandingMigrationReason = $null
   $target = Join-Path $ProjectDir (".claude\" + ($ForgeStandingRulesRel -replace '/', '\'))
   $syncTool = Join-Path $SourceClaudeDir 'forge-bin\forge-sync.cjs'
 
@@ -411,7 +468,8 @@ function Test-ForgeStandingRulesMigration {
 
   $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
   if (-not $nodeCmd -or -not (Test-Path -LiteralPath $syncTool -PathType Leaf)) {
-    Write-ForgeLog "  node not found on PATH (or forge-sync.cjs is missing) -- cannot check $ForgeStandingRulesRel for a pre-v2.8.0 owner rule; leaving your existing file in place this run"
+    $script:ForgeStandingMigrationReason = "node was not found on PATH (or forge-sync.cjs is missing), so this run could not check $ForgeStandingRulesRel for a pre-v2.8.0 owner rule at all"
+    Write-ForgeLog "  $($script:ForgeStandingMigrationReason) -- leaving your existing file in place this run"
     $script:ForgeStandingMigrationSkip = $ForgeStandingRulesRel
     return
   }
@@ -422,24 +480,39 @@ function Test-ForgeStandingRulesMigration {
   # moved 2 owner, a syntax error) -- confirmed with `node -e 'console.log("hello world");'` reproducing
   # the exact same corruption. Writing the script to a real temp .js file and invoking THAT sidesteps the
   # whole native-argv quoting problem entirely; every real path still goes in purely as argv
-  # (process.argv[1]/[2]), never interpolated into the file's text.
+  # (process.argv[1]/[2]/...), never interpolated into the file's text.
   $tmpJs = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-standing-migrate-" + [guid]::NewGuid().ToString('N') + '.js')
+  $dryRunFlag = if ($IsDryRun) { '1' } else { '0' }
   try {
     [System.IO.File]::WriteAllText($tmpJs, $ForgeStandingMigrateJs, (New-Object System.Text.UTF8Encoding($false)))
     # $ErrorActionPreference is 'Stop' script-wide; a native tool's stderr line captured via 2>&1 can be
     # wrapped as a terminating ErrorRecord under that setting, so it is relaxed for this one call only —
     # same pattern Copy-ForgeSettingsFile's own merge-tool calls already use.
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { $out = & node $tmpJs $syncTool $ProjectDir 2>&1 }
+    try { $out = & node $tmpJs $syncTool $ProjectDir $ForgeStandingRulesRel $dryRunFlag 2>&1 }
     finally { $ErrorActionPreference = $prevEap }
   } finally {
     Remove-Item -LiteralPath $tmpJs -Force -ErrorAction SilentlyContinue
   }
   $code = $LASTEXITCODE
-  if ($out) { Write-ForgeLog "  $out" }
+  # "$out" (not a manual join) matches the pre-existing behavior this replaces: a single captured
+  # line stays a plain string, several lines are joined with PowerShell's default $OFS exactly as
+  # `if ($out) { Write-ForgeLog "  $out" }` already did before this fix -- only now also kept in a
+  # named variable so the same text can be reused below as the migration-skip reason.
+  $outText = "$out"
+  if ($outText) { Write-ForgeLog "  $outText" }
 
-  if ($code -ne 0) {
-    Write-ForgeLog "  owner rule migration for $ForgeStandingRulesRel is pending -- leaving your existing file in place this run (fix the JSON in config/orchestration/FORGE_STANDING_RULES.user.json -- make a copy first; never delete it, it holds your own rules -- then re-run install)"
+  if ($code -eq 3) {
+    # F2 fix: the file EXISTS (checked above) but could not itself be read or parsed -- kept, never
+    # silently treated as "nothing to migrate, safe to overwrite" the way a read/parse failure used to
+    # be. Plain NL+EN words, both facts (could not be read; left untouched) in both languages, reused
+    # verbatim for the immediate warning AND the final NOTE so the two never say something different.
+    $script:ForgeStandingMigrationReason = "$ForgeStandingRulesRel kon niet worden gelezen of verwerkt (corrupt, vergrendeld, of een onleesbaar pad) -- het bestand blijft exact ongewijzigd / could not be read or parsed (corrupt, locked, or an unreadable path) -- left exactly as-is"
+    Write-ForgeLog "  $($script:ForgeStandingMigrationReason)"
+    $script:ForgeStandingMigrationSkip = $ForgeStandingRulesRel
+  } elseif ($code -ne 0) {
+    $script:ForgeStandingMigrationReason = if ($outText) { $outText } else { 'an owner rule from a pre-v2.8.0 install could not be confirmed migrated' }
+    Write-ForgeLog "  owner rule migration for $ForgeStandingRulesRel is pending -- leaving your existing file in place this run"
     $script:ForgeStandingMigrationSkip = $ForgeStandingRulesRel
   }
 }
@@ -484,8 +557,14 @@ function Copy-ForgeTree {
     $rel = $file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')
     $dest = Join-Path -Path $DestDir -ChildPath $rel
     if ($SkipRel -and ($rel -replace '\\', '/') -eq $SkipRel) {
+      # F4 fix (2026-09-27 independent v2.8.1 review): $SkipRel is now computed identically in a dry
+      # run (Test-ForgeStandingRulesMigration already ran, read-only, before this loop -- see its own
+      # header comment), so by the time we get here the real outcome is already known; this used to
+      # unconditionally say "would check ... before touching it" even though the check had not (and,
+      # before this fix, structurally could not) run yet, and even though a REAL run's kept-file
+      # message below already says what actually happens. Mirrors that wording instead of guessing.
       if ($IsDryRun) {
-        Write-ForgeLog "  [dry-run] would check $rel for a pre-v2.8.0 owner rule before touching it"
+        Write-ForgeLog "  [dry-run] would keep: $dest (owner rule migration pending -- see message above)"
       } else {
         Write-ForgeLog "  kept: $dest (owner rule migration pending -- see warning above)"
       }
@@ -945,7 +1024,13 @@ function Write-ForgeVersionMarker {
 }
 
 function Main {
-  $projectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
+  # F2b fix: trimmed once here (see ConvertTo-ForgeCleanProjectPath's own comment) so every later use
+  # of $projectDir -- including every node argument -- already has the clean value. (A raw variable is
+  # resolved first and passed by name -- `ConvertTo-ForgeCleanProjectPath (if (...) {...} else {...})`
+  # parses but does not work: PowerShell's command-argument parsing tries to run `if` itself as an
+  # external command there and silently passes an empty string, found by a real local run.)
+  $rawProjectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
+  $projectDir = ConvertTo-ForgeCleanProjectPath $rawProjectDir
   # ONE home for every global path: the USERPROFILE/HOME environment (what Node's os.homedir() uses, so the
   # installer and the tools agree). PowerShell's automatic $HOME may follow HOMEDRIVE/HOMEPATH instead of an
   # overridden USERPROFILE, which is exactly the situation in a CI job that redirects the home.
@@ -1218,16 +1303,16 @@ function Main {
       }
       # 3.4 fix (WP-P3): move any v2.7-era owner standing rule into the project's own user file BEFORE
       # FORGE_STANDING_RULES.json is ever compared/replaced below -- the same preflight forge-sync.cjs
-      # itself runs before its own writes. Never during -DryRun, which must write nothing at all.
-      if ($isDryRun) {
-        $script:ForgeStandingMigrationSkip = $null
-        $preExisting = Join-Path $projectDir (".claude\" + ($ForgeStandingRulesRel -replace '/', '\'))
-        if (Test-Path -LiteralPath $preExisting -PathType Leaf) {
-          Write-ForgeLog "  [dry-run] would check $ForgeStandingRulesRel for a pre-v2.8.0 owner rule before replacing it"
-        }
-      } else {
-        Test-ForgeStandingRulesMigration -ProjectDir $projectDir -SourceClaudeDir (Join-Path $sourceDir '.claude')
-      }
+      # itself runs before its own writes.
+      # F4 fix (2026-09-27 independent v2.8.1 review): this used to skip the real check entirely under
+      # -DryRun (setting $script:ForgeStandingMigrationSkip = $null unconditionally and printing a
+      # generic "would check" line that could never actually reflect the outcome), so a dry run always
+      # reported "would back up + overwrite" even for a rules file a real run would keep. The check
+      # itself is a true read-only operation all the way through in dry-run mode (see its own header
+      # comment and migrateOwnerStandingRules()'s dryRun option in forge-sync.cjs) -- it is now always
+      # run, with -IsDryRun passed straight through, so -DryRun previews the exact same outcome a real
+      # run would reach and never writes anything either way.
+      Test-ForgeStandingRulesMigration -ProjectDir $projectDir -SourceClaudeDir (Join-Path $sourceDir '.claude') -IsDryRun $isDryRun
       $projectOk = Copy-ForgeTree -SourceDir (Join-Path $sourceDir '.claude') -DestDir (Join-Path $projectDir '.claude') -IsDryRun $isDryRun -ProtectSettings $true -MergeToolPath (Join-Path $sourceDir '.claude\forge-bin\forge-settings-merge.cjs') -ManifestScope 'project' -ManifestRoot $projectDir -SkipRel $script:ForgeStandingMigrationSkip
       # Seed the two project-root files Forge documents but the payload copy never delivered.
       # Added 2026-08-13 after a real fresh-install measurement: without them three suites
@@ -1275,9 +1360,16 @@ function Main {
       exit 1
     }
 
+    # F5 fix (2026-09-27 independent v2.8.1 review): this used to always say "fix the JSON in ...
+    # user.json", even when $script:ForgeStandingMigrationSkip was set for a completely different
+    # reason (node missing, a symlink/containment refusal, a write failure, or, after F2, the template
+    # file itself being unreadable). $script:ForgeStandingMigrationReason is set by
+    # Test-ForgeStandingRulesMigration to the real cause every time it sets Skip; this note now names
+    # that cause instead of guessing one.
     if ($script:ForgeStandingMigrationSkip) {
       Write-ForgeLog ''
-      Write-ForgeLog "NOTE: $projectDir\.claude\$($ForgeStandingRulesRel -replace '/', '\') was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) -- fix the JSON in $projectDir\.claude\config\orchestration\FORGE_STANDING_RULES.user.json (make a copy first; never delete it, it holds your own rules), then re-run install so it can be moved to safety."
+      $reason = if ($script:ForgeStandingMigrationReason) { $script:ForgeStandingMigrationReason } else { 'an owner rule from a pre-v2.8.0 install is pending migration' }
+      Write-ForgeLog "NOTE: $projectDir\.claude\$($ForgeStandingRulesRel -replace '/', '\') was left as-is this run -- $reason. Re-run install once that is fixed so it can be applied safely."
     }
 
     Write-ForgeLog ''
@@ -1301,7 +1393,9 @@ function Main {
 # .PARAMETER Uninstall doc comment at the top of this file for the full contract.
 # ---------------------------------------------------------------------------
 function Invoke-ForgeUninstall {
-  $projectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
+  # F2b fix: same trim as Main -- see ConvertTo-ForgeCleanProjectPath's and Main's own comments.
+  $rawProjectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
+  $projectDir = ConvertTo-ForgeCleanProjectPath $rawProjectDir
   $forgeHome = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { $HOME }
   $assumeYes = [bool]$Yes -or ($env:FORGE_YES -eq '1')
   $isDryRun = [bool]$DryRun

@@ -10,10 +10,22 @@ import { SessionStore } from './session-store.js';
 import { ProjectSync } from './project-sync.js';
 import { startHealthServer } from './health-server.js';
 import { createOwnerAwareProjectResolver } from './owner-elevation.js';
+import { computeInvitePermissions } from './invite.js';
+import { resolveGuild, resolveOwner } from './guild-autodetect.js';
+import { writeEnvValues } from './env-store.js';
+import { classifyLoginError } from './login-error.js';
 import path from 'node:path';
 
 const config = loadConfig();
 console.log('[forge-discord] config:', JSON.stringify(describeConfig(config)));
+
+// WP-v290-B: computed ONCE here (the only place this whole boot touches discord.js purely for
+// permission math) and handed to the health server, which reuses it on every /api/health snapshot
+// without importing discord.js itself. Guarded to the real transport only — mock transport (used
+// by nearly every existing test in this package) never had a discord.js runtime dependency before
+// this WP and must not gain one now; it never has an applicationId to build an invite URL from
+// anyway, so `null` here is the honest value, not a shortcut.
+const invitePermissions = config.transport === 'discord' ? await computeInvitePermissions() : null;
 
 // Snelle voorcontrole: draait er al een instantie?
 try {
@@ -97,6 +109,10 @@ gateway.usageGuard = new UsageGuard({
 });
 
 let phase = 'starting';
+// WP-v290-B: a plain-language reason once transport.connect() fails (bad token, Message Content
+// Intent not enabled, ...) — reported via /api/health so the dashboard can explain it instead of
+// the beginner only ever seeing a bare crash in a log file they do not know to look at.
+let loginError = null;
 const shutdown = async () => {
   console.log('[forge-discord] afsluiten…');
   phase = 'stopping';
@@ -121,6 +137,8 @@ const health = startHealthServer({
   runnerKind,
   onShutdown: shutdown,
   getPhase: () => phase,
+  getLoginError: () => loginError,
+  invitePermissions,
 });
 try {
   await health.listening;
@@ -132,14 +150,75 @@ console.log(`[forge-discord] health-lock actief: http://127.0.0.1:${config.botHt
 
 if (typeof transport.connect === 'function') {
   phase = 'connecting';
-  await transport.connect();
-  console.log('[forge-discord] transport verbonden; reconcile start…');
-  phase = 'reconciling';
-  await gateway.reconcile();
-  await transport.setBusy?.(false);
+  try {
+    await transport.connect();
+  } catch (err) {
+    // WP-v290-B: never let a beginner's wrong-token/wrong-intent paste crash this process with
+    // nothing but an unread log file — stay alive, report WHY over /api/health, and skip every
+    // step below that assumes a real connected client.
+    loginError = classifyLoginError(err);
+    phase = 'login-failed';
+    console.error(`[forge-discord] STOP: ${loginError}`);
+  }
+  if (!loginError) {
+    console.log('[forge-discord] transport verbonden; reconcile start…');
+    phase = 'reconciling';
+    await gateway.reconcile();
+    await transport.setBusy?.(false);
+  }
 }
 
-if (config.transport === 'discord') {
+// WP-v290-B (beginner onboarding, auto-detect): fills in DISCORD_GUILD_ID/OWNER_USER_IDS from what
+// Discord itself already told us at login — nobody has to go hunt for a numeric ID by hand. Pure
+// decision logic lives in guild-autodetect.js (fully unit-tested there); this is only the I/O
+// around it. Mock transport has no real `client`/guild list, so this only ever does anything for a
+// genuine Discord connection. Skipped entirely once loginError is set — the client is not in a
+// usable state (never fully connected) at that point.
+if (config.transport === 'discord' && !loginError) {
+  const guildsNow = [...(transport.client.guilds?.cache?.values() ?? [])].map((g) => ({
+    id: g.id,
+    name: g.name,
+    ownerId: g.ownerId,
+  }));
+  const { guildId: resolvedGuildId, phase: awaitPhase } = resolveGuild(guildsNow, config.guildId);
+  if (resolvedGuildId && resolvedGuildId !== config.guildId) {
+    config.guildId = resolvedGuildId;
+    const picked = guildsNow.find((g) => g.id === resolvedGuildId);
+    await transport.reRegisterSlashCommandsForGuild(resolvedGuildId);
+    writeEnvValues(process.cwd(), { DISCORD_GUILD_ID: resolvedGuildId });
+    console.log(`[forge-discord] server automatisch gekozen: ${picked?.name ?? resolvedGuildId} (${resolvedGuildId})`);
+  } else if (awaitPhase) {
+    phase = awaitPhase;
+    console.log(
+      awaitPhase === 'awaiting-invite'
+        ? '[forge-discord] LET OP: de bot is nog in geen enkele server uitgenodigd — gebruik de invite-link.'
+        : `[forge-discord] LET OP: de bot zit in ${guildsNow.length} servers — kies er één via het dashboard.`,
+    );
+  }
+  if (config.guildId) {
+    const knownGuild = guildsNow.find((g) => g.id === config.guildId) ?? null;
+    const resolvedOwners = resolveOwner(knownGuild, config.ownerUserIds);
+    if (resolvedOwners) {
+      // In-place splice, NEVER `config.ownerUserIds = resolvedOwners` — gateway.js's constructor
+      // (already run at this point) handed this EXACT array object, by reference, to both
+      // PermissionGateway and RunStatus (`this.ownerUserIds = ownerUserIds`, no copy). A plain
+      // reassignment here would only ever update `config`'s own pointer, leaving those two — the
+      // ones that actually GATE whether the newly-detected owner may use the bot at all — still
+      // looking at the original empty array. Splicing the SAME array in place is visible to every
+      // holder of that reference immediately, no restart required.
+      config.ownerUserIds.splice(0, config.ownerUserIds.length, ...resolvedOwners);
+      writeEnvValues(process.cwd(), { OWNER_USER_IDS: resolvedOwners.join(',') });
+      console.log('[forge-discord] server-eigenaar automatisch als Forge-owner ingesteld.');
+    }
+  }
+}
+
+// Channel setup/chat-reset/briefing/schedules/usage-guard all assume a real, known guild — skipped
+// for this boot when the auto-detect step above could not resolve one yet (0 or 2+ servers), or
+// when the connection itself never succeeded (loginError). The process stays alive either way; the
+// dashboard polls /api/health's `phase` and shows the right onboarding step (invite link, guild
+// picker, or the plain-language login error).
+if (config.transport === 'discord' && config.guildId && !loginError) {
   phase = 'syncing-projects';
   const { DiscordAdmin } = await import('./discord-admin.js');
   const admin = new DiscordAdmin({
@@ -148,6 +227,14 @@ if (config.transport === 'discord') {
     ownerUserIds: config.ownerUserIds,
   });
   const info = await admin.ensureTextChannel('forge-info');
+  // WP-v290-B: a short welcome/test message, but ONLY the first time this channel is genuinely
+  // created — never repeated on an ordinary restart (info.created is false then), so onboarding
+  // does not spam #forge-info every time the bot comes back up.
+  if (info.created) {
+    await transport
+      .send(info.channelId, '👋 Forge is verbonden met deze server. Dit kanaal toont projectupdates — stuur hier gerust een testbericht.')
+      .catch(() => {});
+  }
   const sync = new ProjectSync({
     projectsDir: config.projectsDir,
     router: gateway.router,
@@ -231,7 +318,11 @@ if (config.transport === 'discord') {
   }
 }
 
-phase = 'ready';
+// WP-v290-B: never overwrite an honest 'awaiting-invite'/'awaiting-guild-selection'/'login-failed'
+// with 'ready' — those phases mean setup is genuinely not done (or failed) yet, and the dashboard
+// is showing the real reason.
+const NOT_READY_PHASES = ['awaiting-invite', 'awaiting-guild-selection', 'login-failed'];
+if (!NOT_READY_PHASES.includes(phase)) phase = 'ready';
 // Wachtende/herstelde items direct oppakken + periodieke veiligheids-tick,
 // zodat een herstart nooit een QUEUED item laat liggen.
 const startedNow = gateway.scheduler.tick();

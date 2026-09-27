@@ -110,8 +110,10 @@ column. Do not mix: `install.sh` is for bash (macOS/Linux, or Git Bash), `instal
 | What the installer refuses | a target that is your home directory (`C:\Users\<you>`) — `cd` into the project first | a target that is your home directory (`/home/<you>`, `/Users/<you>`) — `cd` into the project first |
 | Never do this | run `install.sh` in `cmd.exe` or PowerShell; paste bash `--flags` into PowerShell | run `install.ps1`; paste PowerShell `-Flags` into bash |
 
-Git Bash on Windows: `install.sh` works there too (that is what the Windows CI job uses for its bash steps), but
-the documented, supported Windows path is `install.ps1`. Pick one and finish with it; do not run both.
+Git Bash on Windows: `install.sh` works there too (that is what the Windows CI job uses for its bash steps) and,
+since 2.9.0, runs much faster there — a dry run takes about 4 seconds instead of 147, and a full install is
+roughly 1.6x faster, installing the exact same files as before. The documented, supported Windows path is still
+`install.ps1`, which remains the fastest option. Pick one and finish with it; do not run both.
 
 **What the installer guarantees** (this is real behaviour, not a promise):
 - It copies **file by file** and never deletes your `.claude/` tree.
@@ -176,6 +178,16 @@ Claude's reach:
    reaching PowerShell by a route other than that flag are named, deliberate gaps (full list: `hard-gates.json` →
    `_not_caught`; beginner version: `docs/SETTINGS.md` → "What the gate hook stops, and what it cannot see").
 
+**A fifth gate, `secret-print` (new in 2.9.0),** stops a shell command from printing out the contents of a secret
+file: a `.env` file other than `.env.example`/`.env.sample`/`.env.template`, a private key (`*.pem`, `*.key`,
+`id_rsa*`, `id_ed25519*`), a credentials file (`credentials*.json`, `service-account*.json`, `*.p12`, `*.pfx`,
+`.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.docker/config.json`, `.aws/credentials`), `.claude/.credentials.json`,
+or anything under `secrets/`. It catches `cat`/`type`/`Get-Content`/`more`/`less`/`head`/`tail`/`bat`,
+`grep`/`rg`/`Select-String`/`findstr` searching one of those files, the content-revealing forms of `git show` /
+`git cat-file -p` / `git log -p` / `git diff` / `git blame` on one (the metadata-only git forms still pass), and
+`find … -exec` / `xargs` reaching one. The safe way to see just a `.env` file's variable *names*, never the
+values: `node .claude/forge-bin/forge-env-names.cjs .env`.
+
 **Deny rules** (`permissions.deny`, 29 rules): `Read(./.env)`, `Read(./.env.local)`, `Read(./.env.*.local)`,
 `Read(./.env.development)`, `Read(./.env.production)`, `Read(./.env.staging)`, `Read(./.env.test)`,
 `Read(./.env.forge-setup)`, `Read(./secrets/**)`, the same names nested anywhere (`Read(./**/.env)`,
@@ -200,7 +212,7 @@ be reserialized losslessly, is a directory or a link, or changed under the tool.
 exact stamped file it wrote.
 
 **Everything is on by default, and `/forge config` shows and changes it.** `/forge config list` (in a terminal:
-`node .claude/forge-bin/forge-config.cjs list --all`) lists all 36 settings with value, source and a plain
+`node .claude/forge-bin/forge-config.cjs list --all`) lists all 37 settings with value, source and a plain
 explanation. Choices are saved in `.claude/FORGE_CONFIG.json` (this project) and `~/.claude/FORGE_CONFIG.json`
 (machine-wide); a fresh install has neither file, so the built-in defaults apply. Mention this command in the
 handover — the user never has to edit a settings file.
@@ -235,7 +247,9 @@ This runs the full self-test (136 suites, several thousand assertions). It takes
 **Expected on a correct fresh install: `⇒ ALL GREEN`.**
 
 You may also see lines marked `(advisory, non-blocking)` — those are informational and do **not**
-mean the install failed. Only `✗` lines and `⇒ FAILURES ABOVE` mean something is genuinely wrong.
+mean the install failed. Only `✗` lines and `⇒ FAILURES ABOVE` mean something is genuinely wrong. Since 2.9.0
+the doctor names the exact failing test(s) when something fails, not just the suite total — quote that exact
+name back to the user instead of paraphrasing.
 
 Also confirm the two root files exist (the installer creates them when absent):
 
@@ -261,8 +275,8 @@ Tell them, in their own language, this:
   them with one command, or by just saying it in chat ("pause at 95 percent", "codex review off"). Everything is on
   by default. Details: [docs/SETTINGS.md](docs/SETTINGS.md).
 - **The beginner promise** — say it in their language:
-  - EN: "Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. It stops for the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and for a real usage-limit pause. Be precise about what 'stops' means: four of those gates (destructive deletes, killing processes by name, git commands that throw work away, commands that hide what they run) are enforced by a real hook that blocks the shell command before it runs — a classifier, not a proof: what it does not recognise it does not stop; the others are rules the assistant follows and a text classifier checks, not a technical stop, so keep an eye on anything that deploys, pushes or spends. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat."
-  - NL: "Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en voor een echte gebruikslimiet-pauze. Wees precies over wat 'stopt' betekent: vier van die poorten (destructief verwijderen, processen op naam killen, git-commando's die werk weggooien, commando's die verbergen wat ze uitvoeren) worden afgedwongen door een echte hook die het shellcommando blokkeert vóór het draait — een classifier, geen sluitend bewijs: wat hij niet herkent, houdt hij niet tegen; de overige poorten zijn regels die de assistent volgt en die een tekstclassifier controleert, geen technische stop — hou dus alles wat deployt, pusht of geld uitgeeft in het oog. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat."
+  - EN: "Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. It stops for the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and for a real usage-limit pause. Be precise about what 'stops' means: five of those gates (destructive deletes, killing processes by name, git commands that throw work away, commands that hide what they run, and commands that print out a secret file) are enforced by a real hook that blocks the shell command before it runs — a classifier, not a proof: what it does not recognise it does not stop; the others are rules the assistant follows and a text classifier checks, not a technical stop, so keep an eye on anything that deploys, pushes or spends. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat."
+  - NL: "Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en voor een echte gebruikslimiet-pauze. Wees precies over wat 'stopt' betekent: vijf van die poorten (destructief verwijderen, processen op naam killen, git-commando's die werk weggooien, commando's die verbergen wat ze uitvoeren, en commando's die de inhoud van een geheim bestand printen) worden afgedwongen door een echte hook die het shellcommando blokkeert vóór het draait — een classifier, geen sluitend bewijs: wat hij niet herkent, houdt hij niet tegen; de overige poorten zijn regels die de assistent volgt en die een tekstclassifier controleert, geen technische stop — hou dus alles wat deployt, pusht of geld uitgeeft in het oog. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat."
   (This is the same qualified wording as the README's beginner promise — keep the two identical when either changes.)
 - **New to Claude Code?** Point them to [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md) (English and Dutch).
 - **`CLAUDE.md`** in their project root is theirs to edit — it is the project brain every session

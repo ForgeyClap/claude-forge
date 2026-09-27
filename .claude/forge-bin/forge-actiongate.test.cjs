@@ -313,9 +313,9 @@ t('testCommandGate() is only consulted for match.kind "command" (a regex gate is
   assert.strictEqual(gate.testCommandGate(cmdGate, 'pkill node'), true);
 });
 
-t('the config really declares four command gates and they are all class irreversible', () => {
+t('the config really declares five command gates and they are all class irreversible', () => {
   const cmdGates = gate.loadGates().gates.filter((g) => g.match.kind === 'command');
-  assert.deepStrictEqual(cmdGates.map((g) => g.id).sort(), ['destructive-delete', 'git-destructive', 'kill-by-name', 'opaque-exec']);
+  assert.deepStrictEqual(cmdGates.map((g) => g.id).sort(), ['destructive-delete', 'git-destructive', 'kill-by-name', 'opaque-exec', 'secret-print']);
   for (const g of cmdGates) assert.strictEqual(g.class, 'irreversible');
 });
 
@@ -2871,6 +2871,37 @@ t('CLI with an unknown command exits 2 (usage error), not a silent pass', () => 
 t('CLI with no command at all exits 2', () => {
   const r = runCLI([]);
   assert.strictEqual(r.status, 2);
+});
+
+// ---------------------------------------------------------------------------
+// v2.9.0 independent review F4 follow-up (WP-L1, 2026-09-27) — hasUnresolvedVarLeadWord()'s -- end-of-options
+// boundary only ever recognised an UNQUOTED `--` word. A QUOTED "--"/'--' is exactly the same marker once the
+// shell strips it, but the old code kept scanning past it, saw the trailing $file, and (via
+// leadsWithInertSearchTool()) reported the segment as NOT led by an inert search tool.
+//
+// hasUnresolvedVarLeadWord/leadsWithInertSearchTool feed segmentTriggerClears()'s `patternInertToolOnly`
+// branch, which ONLY kill-by-name's DANGER_TRIGGER entry sets — destructive-delete instead carries
+// `patternBareAssignmentOnly`, and quote-blindly fires on any non-bare-assignment segment BY DESIGN (see
+// segmentTriggerClears's own doc above); its protection for this exact repro comes from the SEPARATE
+// forge-gate-data.cjs stripping layer, pre-classify(), covered by forge-gate-hook.test.cjs's own "F4
+// follow-up" tests. So the live repro here uses kill-by-name, the gate this file's fix actually reaches.
+// Without the fix, the first two assertions below fail: 'matched' stays empty on the OLD code only because
+// leadsWithInertSearchTool wrongly returns false, which the direct unit test above already pins; here the
+// same bug is proven again through the full classify() pipeline: 'matched' would include 'kill-by-name'.
+// ---------------------------------------------------------------------------
+console.log('\n6) F4 follow-up (WP-L1) — a quoted "--" end-of-options marker keeps a git grep search pattern inert');
+
+t('a read-only "git grep -e \'pkill node\' \\"--\\" $file" is never reported as kill-by-name', () => {
+  const r = gate.classify("git grep -e 'pkill node' \"--\" $file");
+  assert.ok(!r.matched.includes('kill-by-name'), JSON.stringify(r));
+});
+t('the single-quoted \'--\' form is treated the same way', () => {
+  const r = gate.classify('git grep -e "pkill node" \'--\' $file');
+  assert.ok(!r.matched.includes('kill-by-name'), JSON.stringify(r));
+});
+t('counterfactual: a variable BEFORE the quoted -- must still leave kill-by-name armed', () => {
+  const r = gate.classify("git grep $var 'pkill node' \"--\" x");
+  assert.ok(r.matched.includes('kill-by-name'), 'an unresolved variable before the boundary must not be excused: ' + JSON.stringify(r));
 });
 
 console.log('');

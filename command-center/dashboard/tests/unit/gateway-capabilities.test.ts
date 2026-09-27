@@ -465,6 +465,10 @@ describe('parseGatewayForgeConfig — GET /api/config?project=', () => {
       flags: [],
       setAt: null,
       setBy: null,
+      // WP-A (v2.9.0): absent on this fixture's raw row -> the safe defaults (no enum, no bounds).
+      allowed: [],
+      min: null,
+      max: null,
     });
     expect(result.settings[1].value).toBe('auto');
     expect(result.settings[1].status).toBeNull();

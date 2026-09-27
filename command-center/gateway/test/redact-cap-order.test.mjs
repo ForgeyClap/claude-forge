@@ -76,6 +76,25 @@ const SECRETS = {
     // A surviving BEGIN marker means the key body that follows it survived too.
     partial: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,
   },
+  // Unlike the 4 patterns above, this one is DELIBERATELY length-BOUNDED (redact.mjs's own comment
+  // explains why: an unbounded dotted-segment pattern would false-positive on ordinary text) — its
+  // real regex caps every segment at 70/10/70 chars, a 152-char maximum total. `build()` therefore
+  // always returns that MAXIMUM valid token regardless of the requested `len` — every site's cap
+  // (500/4000, see the SITES list below) is already bigger than 152, so this pattern can never
+  // "poke past" a cap by being longer than it; what CAN still happen (and is exactly what the
+  // straddle-fraction loop below exercises) is the cap boundary landing somewhere INSIDE this
+  // 152-char token when it sits near the end of a long field — proving redact() still catches it
+  // wherever the cut falls, not just when the whole token happens to fit with room to spare.
+  DISCORD_BOT_TOKEN: {
+    build: () => {
+      const seg = (filler, max) => (SENTINEL + filler.repeat(max)).slice(0, max);
+      return `${seg('x', 70)}.${seg('y', 10)}.${seg('z', 70)}`;
+    },
+    // Relaxed shape of a leaked token: two real dot-separated segments of some length. No trailing
+    // boundary requirement (matching redact.mjs's own real pattern, and for the same reason: a
+    // leaked token immediately abutted by more filler has no word/non-word transition to anchor on).
+    partial: /[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{4,}/,
+  },
 };
 
 test('COVERAGE GATE: every pattern redact.mjs redacts by has a straddle sample here', () => {

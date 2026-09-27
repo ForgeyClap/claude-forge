@@ -60,7 +60,7 @@
     },
     "gate-hook": {
       "type": "bool", "default": true, "scope": "project", "group": "core", "ignore_global": true,
-      "desc": { "nl": "Een echte stop (geen advies) op gevaarlijke commando's: alles recursief verwijderen, processen op naam killen, git-commando's die onvastgelegd werk weggooien, en commando's die verbergen wat ze uitvoeren (eval, een pipe naar een shell). Forge vraagt dan eerst.", "en": "A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work, and commands that hide what they run (eval, a pipe into a shell). Forge asks first." },
+      "desc": { "nl": "Een echte stop (geen advies) op gevaarlijke commando's: alles recursief verwijderen, processen op naam killen, git-commando's die onvastgelegd werk weggooien, commando's die verbergen wat ze uitvoeren (eval, een pipe naar een shell), en het tonen van de inhoud van een geheim bestand (.env, keys). Forge vraagt dan eerst.", "en": "A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work, commands that hide what they run (eval, a pipe into a shell), and printing a secret file's contents (.env, keys). Forge asks first." },
       "off_means": { "nl": "De harde poorten blijven bestaan als classifier en regel, maar worden niet meer door de hook afgedwongen.", "en": "The hard gates still exist as classifier and rule, but the hook no longer enforces them." },
       "consumers": [".claude/forge-bin/forge-gate-hook.cjs", ".claude/settings.json (PreToolUse Bash)", ".claude/forge-bin/forge-actiongate.cjs"],
       "aliases": { "nl": ["gate hook", "poort-hook", "commando-stop"], "en": ["gate hook", "command guard"] }
@@ -145,6 +145,13 @@
       "off_means": { "nl": "Geen wijzigingslogboek.", "en": "No change ledger." },
       "consumers": [".claude/forge-bin/forge-toolhook.cjs", ".claude/settings.json (PostToolUse)"],
       "aliases": { "nl": ["toollog", "wijzigingslog"], "en": ["tool log", "change ledger"] }
+    },
+    "vault": {
+      "type": "bool", "default": true, "scope": "project", "group": "core",
+      "desc": { "nl": "Schrijft na een echt afgeronde run leesbare notities in .claude/forge-vault/ (missie, besluiten, onderwerpen) die naar elkaar linken — gewoon platte markdown, optioneel te openen in Obsidian voor een graafweergave.", "en": "After a genuinely finished run, writes readable notes in .claude/forge-vault/ (mission, decisions, topics) that link to each other — plain markdown, optionally opened in Obsidian for a graph view." },
+      "off_means": { "nl": "Geen nieuwe of vernieuwde vault-notities; bestaande notities blijven staan.", "en": "No new or refreshed vault notes; existing notes stay as they are." },
+      "consumers": [".claude/forge-bin/forge-vault.cjs", ".claude/forge-bin/forge-finalize.cjs (best-effort, after a real finalize)"],
+      "aliases": { "nl": ["vault", "kennisvault", "notities", "kennisbank"], "en": ["vault", "knowledge vault", "notes"] }
     },
     "ui-quality": {
       "type": "bool", "default": true, "scope": "project", "group": "core",

@@ -1,6 +1,6 @@
 ---
 name: forge-payments
-description: Forge playbook for payment/checkout/billing — Stripe, Mollie, Adyen, PayPal. Use for payment, checkout, subscription, refund, webhook signature, idempotency key, PCI, 3D Secure.
+description: Forge: payment/checkout/billing — Stripe, Mollie, Adyen, PayPal: payment, checkout, subscription, refund, webhook signature, idempotency key, PCI, 3D Secure.
 ---
 
 # Forge playbook — Payments / checkout / billing
@@ -14,6 +14,7 @@ This is a **money + secrets + PCI-scope domain.** The `payment-integration` spec
 - **Signature-verified webhooks (receive side).** Every inbound gateway webhook verifies the provider HMAC signature against the **raw request body** (Stripe `Stripe-Signature` / `construct_event`, Mollie fetch-by-id re-check, Adyen HMAC) before acting. Reject on failure. Then dedupe on `event.id` with a UNIQUE constraint, return `2xx` **fast** (before heavy logic — Stripe fails a delivery after ~10s and retries for up to 3 days), and process the effect in a background/idempotent path. Tolerate duplicate and out-of-order events.
 - **Test vs live separation.** Test/sandbox keys are clearly separated from live; **no live charge and no live-key touch without explicit owner approval** (Forge honesty + irreversible-action rule). Real money is an owner-gated action, never autonomous.
 - **Secrets in env + `.env.example` placeholders.** No gateway secret, webhook signing secret, or API key in code, logs, error messages, or git.
+- **Refunds, disputes, and chargebacks handled explicitly.** Each has its own handler and appears in the order history. Nothing assumes a charge is final — re-fetch the charge state from the provider when it matters.
 
 ## Team (conditional)
 Lead: `integration-boss` (or `build-boss` if payments are one slice of a larger app). Payment work: **`payment-integration`** specialist. Support: `silent-failure-hunter` (dropped webhooks / swallowed gateway errors look like clean success), `typescript-reviewer` / `python-reviewer` (charge + webhook code), `database-reviewer` (idempotency table, transaction-state audit trail). Optional advisors: `security-reviewer`, `codex-reviewer` (recommended for the charge + webhook paths — payments is a Codex-on-risk trigger).

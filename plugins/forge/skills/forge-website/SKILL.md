@@ -1,6 +1,6 @@
 ---
 name: forge-website
-description: Forge playbook for websites, landing pages, and frontend UI. Use for website, landing page, responsive, mobile layout, SEO, accessibility, Lighthouse, React, Vue, Tailwind.
+description: Forge: websites, landing pages, and frontend UI: website, landing page, responsive, mobile layout, SEO, accessibility, Lighthouse, React, Vue, Tailwind.
 ---
 
 # Forge playbook — Website / landing / frontend
@@ -12,6 +12,8 @@ description: Forge playbook for websites, landing pages, and frontend UI. Use fo
 - No placeholder/Lorem/test/mock content in anything headed for prod.
 - Forms validate input and hit a real endpoint; clear error + success states.
 - Any analytics/form keys live in env, never in the committed bundle.
+- Meta and sharing basics: every page has a unique title and meta description, a canonical URL, Open Graph title/description/image, and JSON-LD (Organization or WebSite) where it fits — checked in the built HTML.
+- Performance proof: run Lighthouse or PageSpeed on the built site and report LCP, CLS and INP; numbers measured on localhost are labelled "local, indicative".
 
 ## Team (conditional by stack/level)
 - Lead: `planner` / `architect`.

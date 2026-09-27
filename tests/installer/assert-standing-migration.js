@@ -88,5 +88,43 @@ if (mode === 'malformed-kept') {
   process.exit(0);
 }
 
-console.error('usage: node assert-standing-migration.js <migrated|malformed-kept> <projectDir> ...');
+// F2 fix (2026-09-27, independent v2.8.1 review): a FORGE_STANDING_RULES.json that EXISTS but cannot
+// itself be read or parsed (corrupt/locked/unreadable) used to be silently backed up and replaced --
+// migrateOwnerStandingRules() cannot tell that case apart from "nothing to migrate" (see that
+// function's own doc comment; not edited by this fix). This asserts the opposite of that bug: the
+// corrupt file's bytes are untouched (never JSON.parse'd -- it is compared byte-for-byte against the
+// exact corrupt fixture text the caller wrote), and no *.forge-bak-* backup exists next to it (the
+// file was truly skipped, not backed-up-and-replaced).
+if (mode === 'template-unreadable-kept') {
+  const corruptFixturePath = process.argv[4];
+  if (!projectDir || !corruptFixturePath) {
+    console.error('usage: node assert-standing-migration.js template-unreadable-kept <projectDir> <corruptFixturePath>');
+    process.exit(2);
+  }
+
+  const targetPath = templatePathFor(projectDir);
+  let targetBuf, fixtureBuf;
+  try { targetBuf = fs.readFileSync(targetPath); }
+  catch (e) { console.error('could not read ' + targetPath + ': ' + e.message); process.exit(2); }
+  try { fixtureBuf = fs.readFileSync(corruptFixturePath); }
+  catch (e) { console.error('could not read ' + corruptFixturePath + ': ' + e.message); process.exit(2); }
+
+  if (!targetBuf.equals(fixtureBuf)) {
+    console.error('REPLACED OR MODIFIED: ' + targetPath + ' no longer matches the corrupt fixture it started as -- it should have been left exactly as-is');
+    process.exit(1);
+  }
+  console.log('ok   the corrupt FORGE_STANDING_RULES.json is byte-for-byte untouched');
+
+  const dir = path.dirname(targetPath);
+  const base = path.basename(targetPath);
+  const backups = fs.readdirSync(dir).filter((f) => f.indexOf(base + '.forge-bak-') === 0);
+  if (backups.length > 0) {
+    console.error('UNEXPECTED BACKUP: ' + backups.length + ' backup(s) of ' + base + ' exist even though it was supposed to be skipped entirely, not backed-up-and-replaced: ' + JSON.stringify(backups));
+    process.exit(1);
+  }
+  console.log('ok   no backup of the corrupt file was created (it was skipped, never touched)');
+  process.exit(0);
+}
+
+console.error('usage: node assert-standing-migration.js <migrated|malformed-kept|template-unreadable-kept> <projectDir> ...');
 process.exit(2);

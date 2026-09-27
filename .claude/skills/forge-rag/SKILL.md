@@ -1,6 +1,6 @@
 ---
 name: forge-rag
-description: Forge playbook for AI chatbots and RAG systems. Use for chatbot, RAG, retrieval, embeddings, vector search, knowledge base, hallucination, source-aware, lead capture.
+description: Forge: AI chatbots and RAG systems: chatbot, RAG, retrieval, embeddings, vector search, knowledge base, hallucination, source-aware, lead capture.
 ---
 
 # Forge playbook — AI chatbot / RAG
@@ -29,7 +29,7 @@ L3 typical.
 System prompt reviewed; retrieval + embeddings correct; ingestion idempotent; citations present; fallback verified; no invented facts; logging + handoff defined; an eval set on known Q/A.
 
 ## Ship-readiness (unique)
-Fallback verified for empty/low-confidence retrieval; answers cite sources; no invented business info; PII + keys in env; logging on; handoff tested; regression eval run. The `ship-readiness` AI/RAG checklist is advisory; optionally run `codex-reviewer` (Codex) on important code — not a blocker.
+Fallback exercised with real output on empty or low-confidence retrieval; answers cite sources, and every answer in the eval set cites a retrievable source; out-of-scope questions are refused; no invented business info; PII + keys in env; logging on; handoff tested; regression eval run. The `ship-readiness` AI/RAG checklist is advisory; optionally run `codex-reviewer` (Codex) on important code — not a blocker.
 
 ## Untrusted-content injection defense (scout #4, 2026-07-13 — patterns from arXiv 2506.08837, CC-BY-4.0)
 Structural (not just behavioral) handling of scraped/retrieved/inbound untrusted content. Risk REDUCTION, never "provably safe":

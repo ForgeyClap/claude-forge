@@ -1,6 +1,6 @@
 ---
 name: forge-nightshift
-description: Overnight session-limit-resilient builder — work-package queue, auto-resume, morning briefing. Use for run this overnight, keep going while I'm away, resume tomorrow, opt-in only.
+description: Overnight session-limit-resilient builder — work-package queue, auto-resume, morning briefing: run this overnight, keep going while I'm away, resume tomorrow, opt-in only.
 ---
 
 # Forge playbook — Nightshift (overnight self-resuming builder)

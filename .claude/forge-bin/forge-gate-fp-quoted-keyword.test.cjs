@@ -367,6 +367,12 @@ const COMPOSED_BLOCK = [
   'git grep -\\O"pkill node #" x',
   "git grep -'O'\"pkill node #\" x",
   'git grep --\'op\'="pkill node #" x',
+  // v2.9.0 independent review F1 (WP-J1): ANSI-C quoting, locale quoting, and an unresolved variable glued
+  // onto the quoted pager argument all used to slip past the quote/backslash strip — the shell removes the
+  // `$'...'`/`$"..."` delimiters (and expands the variable) before git ever sees the word.
+  'git grep $\'-O\'"pkill node #" x',
+  'git grep $"-O""pkill node #" x',
+  'f=-O; git grep $f"pkill node #" x',
 ];
 for (const cmd of ['git grep -n3 "pkill node" -- docs', 'rg -n3 "pkill node" docs', 'grep -c "pkill node" notes.txt', 'git grep -n "pkill node" -- docs', 'git grep --only-matching "pkill node" docs', 'rg -n "pkill node" docs | head -5', 'Select-String -Pattern "Stop-Process -Name" -Path docs\\notes.md']) {
   t('decide() still allows the plain search: ' + cmd, () => {
@@ -388,6 +394,45 @@ t('leadsWithInertSearchTool: ag/ack are no longer inert; process/command substit
   for (const s of ['ag x', 'ack x', 'grep x <(cat f)', 'grep x "$(date)"', 'grep x "`date`"', 'git grep -Ovi x', 'rg --pre ./p x', 'grep --open-files-in-pager=less x']) {
     assert.strictEqual(gate.leadsWithInertSearchTool(s), false, s);
   }
+});
+
+// v2.9.0 independent review F1 (WP-J1, 2026-09-27): the $-before-quote drop and the unresolved-variable-lead-word
+// check, both exercised directly through the exported leadsWithInertSearchTool/hasExecCapableFlag helpers.
+t('leadsWithInertSearchTool: ANSI-C/locale-quoted pager flags and a bare variable glued onto quoted data void the exemption too', () => {
+  for (const s of ['git grep $\'-O\'"pkill node #" x', 'git grep $"-O""pkill node #" x', 'git grep $f"pkill node #" x', 'git grep ${f}"pkill node #" x']) {
+    assert.strictEqual(gate.leadsWithInertSearchTool(s), false, s);
+  }
+});
+t('leadsWithInertSearchTool: a genuinely inert $-quoted/escaped word next to a search tool stays inert (no over-block)', () => {
+  for (const s of ["grep $'\\t' file", 'grep "$HOME" file', "grep '$HOME' file"]) {
+    assert.strictEqual(gate.leadsWithInertSearchTool(s), true, s);
+  }
+});
+t('hasExecCapableFlag: drops a $ that sits directly before a quote before matching (ANSI-C/locale), stays silent on an inert $-quoted tab word', () => {
+  assert.strictEqual(gate.hasExecCapableFlag('$\'-O\'"pkill node #"'), true);
+  assert.strictEqual(gate.hasExecCapableFlag('$"-O""pkill node #"'), true);
+  assert.strictEqual(gate.hasExecCapableFlag("$'\\t'"), false);
+  assert.strictEqual(gate.hasExecCapableFlag('"$HOME"'), false);
+});
+t('hasUnresolvedVarLeadWord: fires only on a genuinely unquoted $name/${name} at word start', () => {
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('$f"pkill node #"'), true);
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('${f}"pkill node #"'), true);
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('"$HOME"'), false);
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord("$'-O'\"pkill\""), false);
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('grep -n x f'), false);
+});
+
+// v2.9.0 independent review F4 follow-up (WP-L1, 2026-09-27): the -- end-of-options boundary used to
+// recognise only an UNQUOTED `--` word, so a variable AFTER a QUOTED "--"/'--' still counted as unresolved
+// (a real false block: `git grep -e 'rm -rf' "--" $file` stayed flagged exec-capable). Without this fix, the
+// FIRST assertion below fails (returns true instead of false) because the old code's `words.indexOf('--')`
+// can never match the quoted word `"--"`.
+t('hasUnresolvedVarLeadWord: a QUOTED "--"/\'--\' end-of-options marker voids a trailing variable exactly like the unquoted form', () => {
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord("grep -e x \"--\" $file"), false, 'double-quoted -- must end the scan');
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord("grep -e x '--' $file"), false, 'single-quoted -- must end the scan');
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('grep -e x -- $file'), false, 'sanity: the pre-existing unquoted -- boundary is unaffected');
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('grep -e x "--foo" $file'), true, '"--foo" is a different word, not the end-of-options marker, so $file still counts');
+  assert.strictEqual(gate.hasUnresolvedVarLeadWord('grep $file "--" x'), true, 'a variable BEFORE the (quoted) boundary must still count as flag-capable');
 });
 
 t('leadsWithInertSearchTool: wrappers, awk, sed, xargs and interpreters are never inert', () => {

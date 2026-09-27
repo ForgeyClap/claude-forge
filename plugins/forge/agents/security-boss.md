@@ -51,7 +51,7 @@ Load via the Skill tool when relevant: security-review, verification-before-comp
 
 ### Logging & data exposure
 - Logs never contain tokens, passwords, full card numbers, or other PII in plaintext.
-- Client-facing error messages do not leak stack traces, internal paths, or config values.
+- Client-facing error messages do not leak stack traces, internal paths, config values, tokens, password hashes, or internal ids.
 - Third-party script/CDN inclusion has no obvious supply-chain red flag (unpinned, unverifiable source).
 
 _Checklist patterns adapted from VoltAgent awesome-claude-code-subagents (MIT)._

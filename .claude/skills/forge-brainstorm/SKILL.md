@@ -25,7 +25,7 @@ work package rather than a full standalone design doc.
 
 ## The loop (diverge → constraints → converge → smallest viable first)
 1. **Diverge.** List 2-4 genuinely different approaches (not trivial variations of the same one). For
-   each: what it is, why it could work, and its real cost/risk.
+   each: name and what it is · why it could work here · real cost (time/complexity/risk) · one risk it does not address — side by side, so hidden assumptions show.
 2. **Constraints.** Apply what actually limits the choice here: existing architecture/conventions, stack,
    team size/skills available, time/complexity budget (fan-out level), security/compliance posture,
    anything the owner already ruled out.

@@ -1,6 +1,6 @@
 ---
 name: forge-api
-description: Forge playbook for contract-first APIs. Use for API, REST, GraphQL, gRPC, OpenAPI, endpoint, auth, JWT, versioning, rate limit, idempotency, contract test, backend.
+description: Forge: contract-first APIs: API, REST, GraphQL, gRPC, OpenAPI, endpoint, auth, JWT, versioning, rate limit, idempotency, contract test, backend.
 ---
 
 # Forge playbook — Contract-first API

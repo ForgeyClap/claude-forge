@@ -165,6 +165,19 @@ const SYSTEM = [
   // ships alongside the agent definition (agents/*.md is already SYSTEM_GLOB-covered) so a synced
   // project's test-boss.md instructions and its referenced recipe doc never drift apart.
   'docs/test-boss-mutation-recipe.md',
+  // v2.9.0 WP-C (2026-09-27): five rarely-used forge.md blocks (Paperclip, learn/harvest, resume/WAVE-D,
+  // legacy dashboard, tournament/secondbrain/codemodel/briefing) moved to docs/forge-reference/*.md to
+  // shrink the always-loaded command payload — commands/forge.md now points at these by path (see
+  // forge-md-coverage.test.cjs), so a synced project needs the files those pointers name, same discipline
+  // as the docs/ pins immediately above. docs/ carries no SYSTEM_GLOB (see the commands/ note below).
+  'docs/forge-reference/paperclip.md', 'docs/forge-reference/resume.md',
+  'docs/forge-reference/learn-harvest.md', 'docs/forge-reference/legacy-dashboard.md',
+  'docs/forge-reference/tournament-secondbrain-codemodel-briefing.md',
+  // forge-md-coverage.test.cjs itself is forge-bin/*.cjs and already SYSTEM_GLOB-covered; its frozen fixture
+  // is forge-bin/*.json, which is OUTSIDE the forge-bin glob's extension list (same precedent as the
+  // forge-run-budget.cjs .txt payload noted below) so it needs this explicit pin or a synced project's copy
+  // of the test would load with no titles and pass vacuously.
+  'forge-bin/forge-md-coverage.fixture.json',
   'FORGE_MODEL_ROUTING.json', 'FORGE_PAPERCLIP_AGENTS.json',
   'skills/forge-deeplearn/SKILL.md', 'skills/forge-prd/SKILL.md', 'skills/forge-mindmap/SKILL.md',
   'skills/forge-registry/SKILL.md', 'skills/forge-doctor/SKILL.md',

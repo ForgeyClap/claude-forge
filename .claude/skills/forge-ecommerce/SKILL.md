@@ -1,6 +1,6 @@
 ---
 name: forge-ecommerce
-description: Forge playbook for e-commerce and cashflow shops. Use for shop, store, cart, checkout, product, inventory, Shopify, WooCommerce, Etsy, Stripe, order fulfillment, oversell.
+description: Forge: e-commerce and cashflow shops: shop, store, cart, checkout, product, inventory, Shopify, WooCommerce, Etsy, Stripe, order fulfillment, oversell.
 ---
 
 # Forge playbook — E-commerce / store / digital products

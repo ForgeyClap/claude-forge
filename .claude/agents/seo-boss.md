@@ -55,7 +55,8 @@ Harvested from the seo-specialist analogue.
 ### Reporting discipline
 
 - Every finding names the specific page, route, or file it applies to — no site-wide claim without at least one concrete example.
-- Recommendations are prioritized by real impact (indexability, then Core Web Vitals, then polish), not listed in arbitrary order.
+- Recommendations fit this project's stack and are prioritized by real impact (indexability, then Core Web Vitals, then polish), not listed in arbitrary order.
+- Ranking-impact claims are made only for Core Web Vitals signals, indexability blockers, or structural issues — never for cosmetic improvements or generic best practices.
 
 _Checklist patterns adapted from VoltAgent awesome-claude-code-subagents (MIT)._
 

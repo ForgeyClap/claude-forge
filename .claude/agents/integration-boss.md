@@ -45,7 +45,8 @@ Load via the Skill tool when relevant: forge-integration, n8n-mcp-tools-expert, 
 ### Webhook & event handling
 - Incoming webhooks verify signature/HMAC/auth before acting on the payload.
 - n8n workflows import inactive-by-default and stay in test mode until the owner explicitly approves live activation.
-- Error branches exist for automation flows — not just the happy path.
+- Error branches exist for automation flows — not just the happy path. No empty error handlers, no swallowed webhook errors, no queue failures silently dropped.
+- Webhook/queue handlers are idempotent and graceful: no duplicate side effects on replay, async errors are caught, and stack traces are not lost.
 - Notification/outreach steps (email, Slack, SMS) are draft-only unless the owner has explicitly approved auto-send.
 
 ### Documentation & config clarity

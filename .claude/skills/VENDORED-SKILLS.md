@@ -149,7 +149,8 @@ Plaats een opgehaalde skill onder `.claude/skills/<naam>/SKILL.md`; Forge pikt h
 ## Alleen als patroon overgenomen (niets gevendord)
 
 Deze bronnen zijn beoordeeld en in de Scout-ledger (`.claude/config/orchestration/FORGE_SCOUT_VETTING.json`)
-vastgelegd, maar er is geen code of tekst van overgenomen:
+vastgelegd, maar er is geen code of tekst van overgenomen. Voor geadapteerde patterns in Forge's eigen woorden
+zie `.claude/skills/ADAPTED-PATTERNS.md`:
 
 - **hookify** (Claude Code-plugin) — hard-pass op automatisch installeren: hooks zijn in Forge owner-gated.
   Alleen het idee (regels als hooks formuleren) is genoteerd.

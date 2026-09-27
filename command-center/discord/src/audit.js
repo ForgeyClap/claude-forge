@@ -1,8 +1,16 @@
 import { JsonlLog } from './store.js';
 
-// Discord-bottokens hebben de vorm <base64 id>.<6-7 tekens>.<27+ tekens>;
-// daarnaast generieke key=value-secrets afdekken vóór iets de ledger raakt.
-const DISCORD_TOKEN_RE = /[\w-]{23,28}\.[\w-]{6,7}\.[\w-]{25,}/g;
+// Discord-bottokens hebben de vorm <base64 id>.<timestamp>.<hmac>; daarnaast generieke
+// key=value-secrets afdekken vóór iets de ledger raakt.
+//
+// WP-L2 Codex-bevinding 3: dit patroon eiste eerder 23-28/6-7/25+ tekens per segment — SMALLER dan
+// wat de gateway-kant als geldig accepteert. Bron van de waarheid is `DISCORD_BOT_TOKEN_CORE_SOURCE`
+// in `gateway/src/redact.mjs` (10-70/3-20/10-70), diezelfde vorm die discord-service.mjs's eigen
+// `isValidBotTokenFormat()` gebruikt om een token op de weg IN goed te keuren. discord/ en gateway/
+// zijn twee losse packages zonder gedeelde module-graaf (zie discord-service.mjs's eigen "black-box
+// supervised" toelichting), dus hier gekopieerd in plaats van geïmporteerd — een token dat de
+// gateway op de weg in accepteerde glipte hiervóór ongemerkt door deze redactor op de weg uit.
+const DISCORD_TOKEN_RE = /[\w-]{10,70}\.[\w-]{3,20}\.[\w-]{10,70}/g;
 const KEYED_SECRET_RE = /((?:token|secret|password|api[_-]?key)["']?\s*[:=]\s*["']?)[^"'\s,}]+/gi;
 const WEBHOOK_RE = /https?:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/\S+/gi;
 const ANTHROPIC_KEY_RE = /sk-ant-[\w-]{10,}/gi;

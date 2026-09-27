@@ -311,25 +311,36 @@ function windowsNativeCodexExeCandidates(npmDir, arch) {
   ];
 }
 
-/** resolveCodexBin(env, platform, arch) -> the executable to spawn for a real run. FORGE_CODEX_BIN wins (a
- *  real per-machine binary path or a hermetic test's fake binary). Otherwise 'codex' (PATH lookup, no
- *  shell) — except on Windows, where `npm install -g @openai/codex` (the documented install) only puts a
- *  `codex.cmd` shim on PATH, which a shell:false spawn cannot start (see runCodex()). There the PATH is
- *  searched for a real `codex.exe` first (an entry earlier on PATH always wins); when a directory instead
- *  has the npm shim's `codex.cmd`, the REAL native `codex.exe` next to it is preferred (see
- *  windowsNativeCodexExeCandidates() above — this is the fix for F7's timeout not actually stopping
- *  codex.js's own child process); only when neither native candidate exists does resolution fall back to
- *  the npm shim's own script (`<dir>/node_modules/@openai/codex/bin/codex.js`), which runCodex() runs as
- *  `node <script>` — still no shell, and a fresh laptop needs no hand-set variable. Never read from either
- *  config file, so a gitignored/unreviewed file can never redirect what actually gets executed.
- *  `env`/`platform`/`arch` default to this process (injectable for tests; arch picks the native-package
- *  triple — 'x64' or 'arm64' — independent of the `platform` used for the win32/non-win32 branch).
+/** resolveCodexBin(env, platform, arch) -> the executable to spawn for a real run, or `null` when nothing
+ *  usable can be found (v2.9.0 independent review F3 — see below). FORGE_CODEX_BIN wins (a real
+ *  per-machine binary path or a hermetic test's fake binary). On non-Windows this falls back to the bare
+ *  string 'codex' (a real PATH lookup, no shell, and a POSIX exec() never consults the current working
+ *  directory, so this stays safe) — except on Windows, where `npm install -g @openai/codex` (the
+ *  documented install) only puts a `codex.cmd` shim on PATH, which a shell:false spawn cannot start (see
+ *  runCodex()). There the PATH is searched for a real `codex.exe` first (an entry earlier on PATH always
+ *  wins); when a directory instead has the npm shim's `codex.cmd`, the REAL native `codex.exe` next to it
+ *  is preferred (see windowsNativeCodexExeCandidates() above — this is the fix for F7's timeout not
+ *  actually stopping codex.js's own child process); only when neither native candidate exists does
+ *  resolution fall back to the npm shim's own script (`<dir>/node_modules/@openai/codex/bin/codex.js`),
+ *  which runCodex() runs as `node <script>` — still no shell, and a fresh laptop needs no hand-set
+ *  variable. Never read from either config file, so a gitignored/unreviewed file can never redirect what
+ *  actually gets executed. `env`/`platform`/`arch` default to this process (injectable for tests; arch
+ *  picks the native-package triple — 'x64' or 'arm64' — independent of the `platform` used for the
+ *  win32/non-win32 branch).
  *
  *  F7 fix (2026-09-26 independent review, LOW): a relative PATH entry (e.g. `.` or a bare `bin`) resolves
  *  against whatever the CURRENT WORKING DIRECTORY happens to be at spawn time — not a fixed, known
  *  location — so "the first codex.exe/codex.cmd found on PATH" could silently pick up a same-named file
  *  from an unrelated, cwd-dependent directory. Non-absolute PATH entries are now skipped entirely; only an
- *  absolute directory is ever searched. */
+ *  absolute directory is ever searched.
+ *
+ *  F3 fix (v2.9.0 independent review, WP-J1, 2026-09-27): when the win32 search above finds NOTHING, this
+ *  used to fall all the way through to the same bare `'codex'` string non-Windows uses — but on win32,
+ *  Node's own child_process launcher still lets the OS search the current working directory and every
+ *  PATH entry (absolute or not) for an unqualified executable name, even with `shell:false`; a bare name
+ *  is never provably safe there the way it is on POSIX. Returning `null` instead makes "nothing was found"
+ *  an honest, distinct outcome that runCodex()/the CLI must check for and report in plain words, rather
+ *  than silently handing an unqualified name to the OS's own search. */
 function resolveCodexBin(env, platform, arch) {
   const e = env || process.env;
   const plat = platform || process.platform;
@@ -349,6 +360,7 @@ function resolveCodexBin(env, platform, arch) {
         if (fs.existsSync(script)) return script;
       }
     }
+    return null; // F3: never spawn a bare 'codex' name on win32 — see doc comment above
   }
   return 'codex';
 }
@@ -390,6 +402,17 @@ function runCodex(effective, opts) {
   // opts.timeoutMs) to say plainly how long codex ran before being stopped — resolved once, up front, and
   // returned on every branch below (dry-run included, since that is what a real run WOULD use).
   const timeoutMs = o.timeoutMs || resolveCodexTimeoutMs();
+  // F3 fix (v2.9.0 independent review, WP-J1, 2026-09-27): resolveCodexBin() now returns `null` on win32 when
+  // no real codex.exe/codex.cmd/script was found anywhere on PATH (see its own doc comment) instead of the
+  // bare string 'codex' — spawning that unqualified name would let the OS search the current working
+  // directory too, never provably safe on Windows. Reported here, plainly, before anything is spawned. A
+  // dry run is deliberately EXEMPT (pre-existing contract, see its own test: "no codexBin required at all")
+  // — it only resolves and displays argv, it never spawns, so there is nothing unsafe about previewing one
+  // even when codex is not installed anywhere on this machine.
+  if (!codexBin && !o.dryRun) {
+    return { dry_run: false, codex_bin: null, argv: finalArgv, exec_target: null, exec_args: [], status: -1, stdout: '', stderr: '', spawn_error: null, timed_out: false, timeout_ms: timeoutMs,
+      not_found: 'Codex was not found — install it or set FORGE_CODEX_BIN' };
+  }
   // A prompt that starts with `-` would reach codex as an OPTION, not as the prompt (the same smuggling
   // route the MODEL_PATTERN leading-dash rule closes: `--prompt "--dangerously-bypass-approvals-and-sandbox"`).
   // Refused before anything is spawned; a real review prompt never needs to start with a dash.
@@ -473,6 +496,15 @@ function runRunCommand(rest) {
     return;
   }
   const result = runCodex(eff, { adversarial: opts.adversarial, prompt: opts.prompt, dryRun: opts.dryRun });
+  // F3 fix (v2.9.0 independent review, WP-J1): resolveCodexBin() found nothing at all on win32 — report it in
+  // plain words and stop here. Never fall through to the generic "ran:"/spawn_error branches below, which
+  // would otherwise try to display or spawn a codex_bin that is null.
+  if (result.not_found) {
+    if (opts.json) console.log(JSON.stringify(result));
+    console.error('forge-codexreview-config: ' + result.not_found + '.');
+    process.exitCode = 2;
+    return;
+  }
   if (result.refused) {
     if (opts.json) console.log(JSON.stringify(result));
     console.error('forge-codexreview-config: refused — ' + result.refused + '.');

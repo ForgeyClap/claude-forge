@@ -186,6 +186,13 @@ const crypto = require('crypto');
 
 const CLAUDE_DIR = path.resolve(__dirname, '..');
 const RUNS_DIR = path.join(CLAUDE_DIR, 'forge-runs');
+// v2.9.0 lesson fix (WP-J1, 2026-09-27): reuse forge-runcontract.cjs's OWN isReviewDispatch()/REVIEW_ROLE_RE/
+// ROL_VELDEN so the "does this dispatch read as review-only" question is answered by exactly one set of
+// rules — never a second, re-typed copy here that could quietly drift from the contract's own judgement.
+// forge-runcontract.cjs only requires THIS file back lazily, inside a function body (readEventsJsonl), never
+// at its own top level, so this top-level require here creates no load-time cycle either direction.
+let RUNCONTRACT = null;
+try { RUNCONTRACT = require(path.join(CLAUDE_DIR, 'forge-bin', 'forge-runcontract.cjs')); } catch { RUNCONTRACT = null; }
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -485,6 +492,33 @@ function verifyEvent(ev) {
     // Only the parent-logged START/creation events must carry a dispatch id (proof of a real Agent call);
     // self-logged progress/output/completion events are name-checked only (see DISPATCH_PROOF_EVENTS note).
     if (DISPATCH_PROOF_EVENTS.has(et) && !ev.dispatch_id && !internalRole) v.dispatch_unverified = true;
+  }
+  /** v2.9.0 lesson fix (WP-J1, 2026-09-27) — a real incident: the Lead logged `subagent_started` for a
+   *  reviewer with `role:"reviewer"` and `task:"independent read-only verification review of v2.8.1"`.
+   *  forge-runcontract.cjs's isReviewDispatch() rejected it (the word "v2.8.1" is not in its REVIEW_WOORDEN
+   *  allowlist), so this dispatch counted as WORK, and that reviewer could never be this run's independent
+   *  reviewer — discovered only after the hash-chained log could no longer be corrected. This does NOT
+   *  refuse the event (the writer is not the place to police wording — refusing here would make an
+   *  append-only, hash-chained log uncorrectable for a mistake that is still perfectly legal to log) and it
+   *  does NOT change what counts as a review (that stays exactly forge-runcontract.cjs's own call, reused
+   *  as-is, never re-typed here). It only WARNS, loudly and early, on the one shape most likely to repeat
+   *  this incident: a dispatch START/creation event whose role field READS like a reviewer but whose
+   *  task/mission text does not pass isReviewDispatch()'s stricter allowlist. */
+  if (RUNCONTRACT && DISPATCH_PROOF_EVENTS.has(et)) {
+    const rolVelden = RUNCONTRACT.ROL_VELDEN || ['role', 'dispatch_role', 'purpose'];
+    const looksLikeReviewer = rolVelden.some((f) => typeof ev[f] === 'string' && RUNCONTRACT.REVIEW_ROLE_RE.test(ev[f].trim()));
+    if (looksLikeReviewer && !RUNCONTRACT.isReviewDispatch(ev)) {
+      v.review_dispatch_counts_as_work = true;
+      /** v2.9.0 WP-K2 (Codex F8): this warning used to embed the RAW VALUE of every present role-ish field
+       *  (`purpose:"access_token=abc123"`) into _forge_verify AND stderr. A role/purpose/task field is free
+       *  text a caller controls, so a secret-shaped value pasted in there got echoed a second time onto a
+       *  diagnostic surface that had no reason to carry it. Fixed: name only the FIELD NAMES that triggered
+       *  the warning (a fixed, safe label), never their values — the field's own value still lands in the
+       *  event line exactly as the caller wrote it (unchanged, that is the caller's own data), it is just
+       *  never additionally repeated inside this warning text. */
+      const flaggedFieldNames = rolVelden.filter((f) => typeof ev[f] === 'string');
+      v.review_dispatch_warning = 'this ' + et + ' has a reviewer-shaped role (fields: ' + flaggedFieldNames.join(', ') + ') but forge-runcontract.cjs::isReviewDispatch() says its task/mission is not on the strict review-word allowlist — this dispatch counts as WORK, so this agent cannot review this run. Use only review words in task/mission (see forge-runcontract.cjs REVIEW_WOORDEN). / deze dispatch heeft een reviewrol maar de taak/mission-tekst staat niet op de strikte reviewwoorden-toelaatlijst van forge-runcontract.cjs::isReviewDispatch() — deze dispatch telt als WERK, dus deze agent kan geen reviewer van deze run zijn. Gebruik alleen reviewwoorden in task/mission.';
+    }
   }
   if (PROOF_EVENTS[et]) {
     const need = PROOF_EVENTS[et];
@@ -974,8 +1008,14 @@ function readEventsClassified(file, opts) {
 
 function flagsTag(v) {
   // only emit a tag when there is real flag content — otherwise accepted events printed a confusing ' []' (fix 2026-07-09)
-  const flags = v ? [v.event_type_unknown ? 'UNKNOWN-TYPE' : '', v.agent_registered === false ? 'UNREGISTERED' : '', v.proof_verified === false ? 'UNVERIFIED' : '', v.dispatch_unverified ? 'NO-DISPATCH-ID' : '', v.model_unverified ? 'MODEL-UNVERIFIED' : ''].filter(Boolean) : [];
+  const flags = v ? [v.event_type_unknown ? 'UNKNOWN-TYPE' : '', v.agent_registered === false ? 'UNREGISTERED' : '', v.proof_verified === false ? 'UNVERIFIED' : '', v.dispatch_unverified ? 'NO-DISPATCH-ID' : '', v.model_unverified ? 'MODEL-UNVERIFIED' : '', v.review_dispatch_counts_as_work ? 'REVIEW-DISPATCH-COUNTS-AS-WORK' : ''].filter(Boolean) : [];
   return flags.length ? ' [' + flags.join(' ') + ']' : '';
+}
+/** printReviewDispatchWarning(v) — v2.9.0 lesson fix (WP-J1). The event is still WRITTEN either way (see
+ *  verifyEvent()'s own doc comment above for why refusing here would be worse); this only makes the
+ *  consequence impossible to miss on the terminal, in both languages, right when it happens. */
+function printReviewDispatchWarning(v) {
+  if (v && v.review_dispatch_counts_as_work) console.error('forge-log-event: WARNING — ' + v.review_dispatch_warning);
 }
 
 // ---- CLI ----
@@ -1020,6 +1060,7 @@ function mainCli() {
       if (!ev.event_type) { console.error('batch line ' + (i + 1) + ': event_type is required'); refusals++; continue; }
       const val = validateForWrite(ev);
       if (!val.ok) { console.error('batch line ' + (i + 1) + ': ' + val.message); refusals++; continue; }
+      printReviewDispatchWarning(val.verify);
       accepted.push(ev);
     }
     if (refusals) {
@@ -1067,6 +1108,7 @@ function mainCli() {
   if (!rd.ok) { console.error(rd.message); process.exit(1); }
   const val = validateForWrite(ev);
   if (!val.ok) { console.error(val.message); process.exit(val.exitCode); }
+  printReviewDispatchWarning(val.verify);
   const w = appendChainedLocked(rd.runDir, [ev]);
   if (!w.ok) { console.error(w.message); process.exit(1); }
   console.log('logged ' + ev.event_type + ' -> ' + path.join('forge-runs', ev.run_id, 'events.jsonl') + flagsTag(val.verify));

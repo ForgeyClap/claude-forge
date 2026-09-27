@@ -6,7 +6,7 @@
 > ("zet de usage guard op 97%", "vraag me niet meer bij elke fase"). Forge voert het commando zelf uit en zegt
 > in één zin wat er veranderd is. Je hoeft nooit zelf een bestand te openen of een commando te typen.
 
-Forge has **36 settings** in three groups, plus **7 locked rules** that are always on. Everything is **on by
+Forge has **37 settings** in three groups, plus **7 locked rules** that are always on. Everything is **on by
 default**. You can see and change any setting with one command, or by simply saying it in chat.
 
 > [!TIP]
@@ -68,7 +68,7 @@ fixed, and says which file and why.
 
 ## What `/forge config list --all` shows
 
-This is the real output of `node .claude/forge-bin/forge-config.cjs list --all --lang en --ascii` on a fresh install (installer run into an empty project folder named `proj`, empty home, so every value is still its default; captured on 2.7.0 and re-checked line by line against the 2.7.2 tool output):
+This is the real output of `node .claude/forge-bin/forge-config.cjs list --all --lang en --ascii` on a fresh install (installer run into an empty project folder named `proj`, empty home, so every value is still its default; captured on 2.7.0 and re-checked line by line against the 2.7.2 tool output; not yet re-captured since — it does not show the `vault` setting added in 2.9.0, which appears in the full table below):
 
 ```text
 Forge settings - project "proj" (everything is ON by default; change it with one command)
@@ -254,7 +254,7 @@ Change: /forge config set <setting> <value> - Explain: /forge config explain <se
 | `usage-guard.pause-at` | 98 % | this computer | Forge pauses at this percentage of your usage limit (50–99). | — | |
 | `autonomy` | continue-within-mission | this project | Keeps working across phases without asking "continue?" each time. STOP always works; deploy, push, spend, DNS and production always ask first. | `ask-each-phase`: Forge stops at every phase boundary and waits for you. (`full-auto-within-mission` is also allowed.) | |
 | `start-gate` | off | this project | Does not wait for a START before building: the plan is posted and work continues immediately (say STOP to pause). | `l4-only`: only large phased missions wait for START. `always`: every run waits for START. | |
-| `gate-hook` | on | this project | A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work, and commands that hide what they run (eval, a pipe into a shell). Forge asks first. | The hard gates still exist as classifier and rule, but the hook no longer enforces them. | |
+| `gate-hook` | on | this project | A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work, commands that hide what they run (eval, a pipe into a shell), and printing a secret file's contents (`.env`, keys). Forge asks first. | The hard gates still exist as classifier and rule, but the hook no longer enforces them. | |
 | `git-checkpoint` | on | this project | Creates a local git safety point (commit or branch, never pushed) before a bigger build, so everything can be undone. | No automatic safety point; only what you commit yourself. | |
 | `intake` | silent | this project | Answers the intake questions itself from your request and the project; asks at most one question when two targets are equally plausible. | `interview`: Forge asks you the intake questions one at a time. | |
 | `prompt-doctor` | on | this project | Checks your request for the classic traps (vague goal, no definition of done, no context) and fills the gaps itself or asks the one targeted question. | Forge takes your request literally, without the trap check. | |
@@ -266,6 +266,7 @@ Change: /forge config set <setting> <value> - Explain: /forge config explain <se
 | `agent-memory` | on | this project | Agents remember lessons from earlier runs of this project (passwords and keys are always removed). | No new lessons stored; existing memory stays. | |
 | `snapshots` | on | this project | Saves the mission when the conversation is compacted, so Forge never forgets what it was doing after a long session. | No snapshot on compaction. | |
 | `tool-log` | on | this project | Records which files agents change (in `.claude/forge-runs/_toollog/`, not in git). | No change ledger. | |
+| `vault` *(new in 2.9.0)* | on | this project | After a genuinely finished run, writes readable notes in `.claude/forge-vault/` (mission, decisions, topics) that link to each other — plain markdown, optionally opened in Obsidian for a graph view. | No new or refreshed vault notes; existing notes stay as they are. | |
 | `ui-quality` | on | this project | Websites and apps are only done with real desktop, tablet and phone screenshots and a real quality check. | No mandatory screenshots; Forge visibly logs that you turned this off. | |
 | `real-file-testing` | on | this project | For money, invoices, parsers and data: tests on your real sample files, not on made-up data. | No real-file requirement; results are labelled as untested on real data. | |
 | `research-first` | on | this project | Looks up existing solutions and documentation before building anything new. | Build directly, without the research step. | |
@@ -361,6 +362,14 @@ It is a **classifier over the command text**, not a proof: what it does not reco
   `git switch -f`, forced `git clean`, forced worktree removal);
 - commands that hide what they run: `eval`, `iex` / `Invoke-Expression` as the command of a statement, `sh -c` /
   `bash -c` / `pwsh -c` on a variable or substitution, a pipe straight into a shell, an encoded PowerShell command;
+- printing out the contents of a secret file *(new in 2.9.0)*: a `.env` file (except `.env.example`,
+  `.env.sample`, `.env.template`), a private key (`*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`), a credentials file
+  (`credentials*.json`, `service-account*.json`, `*.p12`, `*.pfx`, `.npmrc`, `.pypirc`, `.netrc`,
+  `.git-credentials`, `.docker/config.json`, `.aws/credentials`), `.claude/.credentials.json`, or anything under
+  `secrets/` — via `cat`/`type`/`Get-Content`/`more`/`less`/`head`/`tail`/`bat`, `grep`/`rg`/`Select-String`/`findstr`,
+  the content-revealing forms of `git show`/`git cat-file -p`/`git log -p`/`git diff`/`git blame` (the
+  metadata-only git forms still pass), or `find … -exec`/`xargs`. The safe way to see just a `.env` file's
+  variable *names*, never the values: `node .claude/forge-bin/forge-env-names.cjs .env`;
 - the assistant's own attempt to switch this setting off, in the spellings the hook recognises — including
   through the `forge`/`forge.cmd`/`forge.ps1`/`forge.sh` wrapper's own `config` subcommand.
 
@@ -398,6 +407,6 @@ current in `HOOKS_OPT_IN.md` (section 6, "Honest limits") in the project's `.cla
 
 ---
 
-<sub>Source of truth: `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` (36 settings, 7 locked rules),
+<sub>Source of truth: `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` (37 settings, 7 locked rules),
 read only through `.claude/forge-bin/forge-config.cjs`. Back to the [README](../README.md) ·
 [Commands](../COMMANDS-QUICK-REF.md) · [Claude Code basics](CLAUDE-CODE-BASICS.md).</sub>

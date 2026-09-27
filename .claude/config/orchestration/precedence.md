@@ -25,13 +25,16 @@ before intake — never re-derive this ordering elsewhere; point back to this fi
      documented non-coverage (see `hard-gates.json`'s `_not_caught` block, which lists exactly what
      it does not see). An action it does not recognise is simply not gated — so the absence of an
      interrupt is never evidence that an action was safe.
-   - **The exception — four COMMAND gates are hook-enforced (three since v2.7.0 WP16; `opaque-exec` since the 2026-09-24 codex-recheck) — a classifier, not a proof.**
-     `destructive-delete`, `kill-by-name` and `git-destructive` are also checked by a real PreToolUse hook,
+   - **The exception — five COMMAND gates are hook-enforced (three since v2.7.0 WP16; `opaque-exec` since the 2026-09-24 codex-recheck; `secret-print` since WP-D 2026-09-27) — a classifier, not a proof.**
+     `destructive-delete`, `kill-by-name`, `git-destructive`, `opaque-exec` and `secret-print` are also checked by a real PreToolUse hook,
      `.claude/forge-bin/forge-gate-hook.cjs` (matcher `Bash|PowerShell`, started as
      `node "$CLAUDE_PROJECT_DIR/.claude/forge-bin/forge-gate-hook.cjs"` so it works from any working directory),
      which blocks a matching command with exit 2 BEFORE it runs: a recursive delete with OR without the force
-     flag, killing processes by name (including pgrep/pidof substitutions and xargs pipelines), and git commands
-     that discard uncommitted work. Config key `gate-hook`, default on. Only the owner switches it off — an
+     flag, killing processes by name (including pgrep/pidof substitutions and xargs pipelines), git commands
+     that discard uncommitted work, feeding unknown/decoded content straight into an interpreter, and printing
+     the CONTENTS of a secret file (`.env`-shaped files except `.env.example`/`.env.sample`/`.env.template`,
+     `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.claude/.credentials.json`, `secrets/**`) via a shell reader
+     like `cat`/`type`/`Get-Content`/`grep`. Config key `gate-hook`, default on. Only the owner switches it off — an
      agent's own `forge-config … set gate-hook off` / `unset` / `reset` is itself blocked; the one exact shape
      `node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<quote>"` (a quoted owner approval with a
      short expiry) passes, and while the gate is off every call it would have stopped still prints a visible

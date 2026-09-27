@@ -197,13 +197,22 @@ describe('INVARIANT REQUIRES_ANTHROPIC_API_KEY=false', () => {
       ['env read of a token', /env\s*(\.\s*[A-Z_]*AUTH_TOKEN|\[\s*['"][A-Z_]*AUTH_TOKEN)/],
       ['a key being assigned', /\bapiKey\s*[:=]/],
       ['apiKeyHelper wiring', /\bapiKeyHelper\b/],
-      ['a password input control', /type\s*=\s*["']password["']/],
       ['copy that asks for a key', /enter[^.\n]{0,40}api\s*key/i],
       ['a credentials file being read', /readFileSync\([^)]*\.(credentials|netrc)\b/i],
     ];
 
     const hits = bans.flatMap(([label, pattern]) => scan(FILES, pattern).map((h) => `${label}: ${h}`));
     expect(hits, `an API-key path exists:\n${hits.join('\n')}`).toEqual([]);
+
+    // WP-v290-B: same narrow, documented exemption as no-runtime-contact.test.ts's own copy of
+    // this rule — see that file's comment for the full reasoning (this invariant is specifically
+    // about a VENDOR/Anthropic API key; a Discord bot-token field is a different, unrelated,
+    // owner-approved secret and does not make REQUIRES_ANTHROPIC_API_KEY=false untrue).
+    const APPROVED_NON_VENDOR_SECRET_FIELD = 'src\\views\\discord\\ConnectWizard.tsx';
+    const passwordHits = scan(FILES, /type\s*=\s*["']password["']/).filter(
+      (hit) => !hit.startsWith(APPROVED_NON_VENDOR_SECRET_FIELD),
+    );
+    expect(passwordHits, `a password input control exists outside the approved exemption:\n${passwordHits.join('\n')}`).toEqual([]);
   });
 
   it('the probe reports the NAME of a credential source and never a credential', () => {

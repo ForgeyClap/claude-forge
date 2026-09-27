@@ -36,6 +36,15 @@ const WORDS = {
     safeNl: 'schrijf het commando voluit uit (geen iex/eval/sh -c op een variabele, geen pipe naar sh/bash/pwsh), of laat het als een los, leesbaar script-bestand draaien',
     safeEn: 'write the command out in full (no iex/eval/sh -c on a variable, no pipe into sh/bash/pwsh), or run it as a separate, readable script file instead',
   },
+  'secret-print': {
+    nl: 'dit commando print de INHOUD van een geheim bestand (.env, een sleutel, id_rsa, credentials.json, .npmrc/.netrc, .aws/credentials, of iets in secrets/) naar het scherm — ook via git show/cat-file of find -exec/xargs',
+    en: 'this command prints the CONTENTS of a secret file (.env, a key, id_rsa, credentials.json, .npmrc/.netrc, .aws/credentials, or something in secrets/) to the screen — including via git show/cat-file or find -exec/xargs',
+    // WP-K1 (2026-09-27): grep's -o/--only-matching is NO LONGER a safe variant — `grep -o '.*' .env` proved
+    // the flag alone does not guarantee a names-only result, so the exemption was removed. The dedicated
+    // helper below never prints a value, even on a malformed line.
+    safeNl: 'toon alleen de variabele NAMEN met de speciale helper (node .claude/forge-bin/forge-env-names.cjs .env), nooit met grep -o — die toont nog steeds de waarde',
+    safeEn: 'show only the variable NAMES with the dedicated helper (node .claude/forge-bin/forge-env-names.cjs .env), never with grep -o — that still shows the value',
+  },
   'gate-hook-self-disable': {
     nl: 'dit commando zet de Forge-poort zelf uit',
     en: 'this command switches the Forge gate itself off',

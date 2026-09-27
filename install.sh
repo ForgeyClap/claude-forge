@@ -34,22 +34,52 @@ FORGE_STANDING_RULES_REL="config/orchestration/FORGE_STANDING_RULES.json"
 # The node one-liner forge_check_standing_rules_migration runs against the NEW payload's own
 # forge-sync.cjs — every path is passed as argv, never interpolated into this text, so a path
 # containing quotes/spaces/backslashes can never break out of the script. Read via
-# process.argv.slice(-2) rather than a fixed index: under `node -e THIS_TEXT a b`, argv is
-# [node, a, b] (no slot reserved for the eval text itself), but install.ps1 runs this identical text
-# from a real temp .js FILE instead (`node -e` is unsafe on PowerShell — see that installer's own
-# comment), where argv is [node, file, a, b] — a fixed argv[1]/argv[2] would silently read the wrong
-# thing on one of the two installers (found by a real local run, WP-P3: "sync.migrateOwnerStandingRules
-# is not a function"). slice(-2) reads the same two trailing paths regardless of which shape argv has.
+# process.argv.slice(-4) rather than a fixed index: under `node -e THIS_TEXT a b c d`, argv is
+# [node, a, b, c, d] (no slot reserved for the eval text itself), but install.ps1 runs this identical
+# text from a real temp .js FILE instead (`node -e` is unsafe on PowerShell — see that installer's own
+# comment), where argv is [node, file, a, b, c, d] — a fixed argv[1]/argv[2]/... would silently read
+# the wrong thing on one of the two installers (found by a real local run, WP-P3:
+# "sync.migrateOwnerStandingRules is not a function"). slice(-4) reads the same four trailing args
+# regardless of which shape argv has: [0] the payload's forge-sync.cjs, [1] the project dir, [2] the
+# forward-slash form of FORGE_STANDING_RULES_REL (kept as an argument, not a second hardcoded copy of
+# the literal, so this text and the bash/PowerShell constant it mirrors can never drift apart), [3]
+# "1" in a dry run, "0" in a real run.
 # Exit 0 = safe to replace FORGE_STANDING_RULES.json this run (no owner rule was present, or it was
 # moved to FORGE_STANDING_RULES.user.json already); exit 2 = NOT safe (an owner rule could not be
-# confirmed migrated) — forge_check_standing_rules_migration treats ANY non-zero exit the same way (skip).
+# confirmed migrated); exit 3 (F2 fix, 2026-09-27 independent v2.8.1 review) = the file EXISTS but
+# could not itself be read or parsed (corrupt, locked, or an unreadable path) — forge_check_standing_
+# rules_migration treats ANY non-zero exit the same way for the copy itself (skip), but reports 3
+# with its own distinct, honest message instead of the generic "pending migration" one.
 FORGE_STANDING_MIGRATE_JS='try {
-  var args = process.argv.slice(-2);
+  var args = process.argv.slice(-4);
   var sync = require(args[0]);
-  var ids = sync.migrateOwnerStandingRules(args[1]);
+  var projectDir = args[1];
+  var standingRulesRel = args[2];
+  var dryRun = args[3] === "1";
+  var ids = sync.migrateOwnerStandingRules(projectDir, { dryRun: dryRun });
   if (ids.pending) { process.exit(2); }
   if (ids.length > 0) {
-    process.stdout.write("moved " + ids.length + " owner rule(s) from a pre-v2.8.0 install into config/orchestration/FORGE_STANDING_RULES.user.json\n");
+    process.stdout.write((dryRun ? "[dry-run] would move " : "moved ") + ids.length + " owner rule(s) from a pre-v2.8.0 install into config/orchestration/FORGE_STANDING_RULES.user.json\n");
+    process.exit(0);
+  }
+  // F2 fix (2026-09-27, independent v2.8.1 review): migrateOwnerStandingRules() cannot tell "no file
+  // yet" apart from "the file exists but could not be read or parsed" -- both return the identical
+  // { length: 0, pending: false } (see that function'"'"'s own doc comment in forge-sync.cjs, which this
+  // fix never edits -- the payload is off limits here, see install.sh'"'"'s own header note on this
+  // block). The caller already confirmed the file EXISTS before this script ever runs, so reaching
+  // this point with an empty, non-pending result is ambiguous: either it parses fine and genuinely
+  // holds nothing to migrate, or it is corrupt/locked/unreadable and the function silently gave up.
+  // Re-attempting the identical read+parse here (never a write, safe in a dry run too) resolves that
+  // ambiguity without touching forge-sync.cjs: a failure here exits 3, a distinct code the installer
+  // treats as "keep the file, and say why" instead of silently letting it be backed up and replaced.
+  var fs = require("fs");
+  var path = require("path");
+  var targetPath = path.join(projectDir, ".claude", standingRulesRel);
+  try {
+    JSON.parse(fs.readFileSync(targetPath, "utf8"));
+  } catch (e) {
+    process.stderr.write("forge-sync: " + targetPath + " could not be read or parsed (" + e.message + ")\n");
+    process.exit(3);
   }
   process.exit(0);
 } catch (e) {
@@ -96,16 +126,33 @@ forge_resolve_dir() {
 # even valid JSON (caught only by trying to JSON.parse the actual file this run produced). Forward
 # slashes are accepted interchangeably by the filesystem itself on Windows/MSYS, so normalizing the
 # path before hashing avoids escape mode entirely rather than trying to strip the prefix afterwards.
+#
+# v2.9.0 (WP speed pass — install.sh is slow under Git Bash on Windows, CHANGELOG 2.8.1): this used
+# to be `printf '%s' "$1" | tr '\\' '/'` (a subshell + one forked process) plus `sha256sum ... | awk
+# '{print $1}'` (two more forked processes) -- FOUR real fork+execs per call, and this runs once per
+# copied file (roughly 1000+ times on a full install: global core + canonical template + project
+# payload). Every fork/exec costs ~50-150ms on Git Bash/MSYS, so this one function was a large share
+# of the multi-minute runtime. Only the actual hashing tool (sha256sum/shasum) still forks below --
+# the path normalization and field-extraction are now pure parameter expansion, no process started.
+# `${1//\\//}` was verified byte-identical to `printf '%s' "$1" | tr '\\' '/'` on real Git-Bash/MSYS
+# bash across plain Windows paths, paths with spaces, doubled/trailing backslashes, and the empty
+# string (built and diffed via bash's own $'\\' quoting, not a retyped literal, to rule out any
+# transcription drift in the test itself).
 forge_sha256() {
-  local p
-  p=$(printf '%s' "$1" | tr '\\' '/' 2>/dev/null)
+  local p out
+  p="${1//\\//}"
   if forge_have_cmd sha256sum; then
-    sha256sum -- "$p" 2>/dev/null | awk '{print $1}'
+    out=$(sha256sum -- "$p" 2>/dev/null)
   elif forge_have_cmd shasum; then
-    shasum -a 256 -- "$p" 2>/dev/null | awk '{print $1}'
+    out=$(shasum -a 256 -- "$p" 2>/dev/null)
   else
     printf ''
+    return 0
   fi
+  # First whitespace-delimited field -- same result as `awk '{print $1}'`, including its behavior in
+  # the (now unreachable in practice, since $p has no backslashes left) BACKSLASH-ESCAPE-MODE case
+  # documented above: a leading "\" in $out would stay part of this field too, exactly as before.
+  printf '%s\n' "${out%% *}"
 }
 
 # ---------------------------------------------------------------------------
@@ -164,7 +211,17 @@ forge_write_manifest_file() {
     while IFS=$'\t' read -r rel hash; do
       [ -n "$rel" ] || continue
       if [ "$first" = "1" ]; then first=0; else printf ',\n'; fi
-      esc_rel=$(printf '%s' "$rel" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      # v2.9.0 (WP speed pass — install.sh is slow under Git Bash on Windows, CHANGELOG 2.8.1): was
+      # `printf '%s' "$rel" | sed 's/\\/\\\\/g; s/"/\\"/g'` -- a subshell + a forked `sed`, once per
+      # manifest ENTRY (every file this run copied: ~540 for a project-only install, ~1000+ for a
+      # full install), timed live as several extra minutes on top of the per-file copy/hash cost this
+      # release already fixed above. $rel is always forward-slash-only by construction (see this
+      # function's own header comment), so in practice only the quote-escaping ever fires -- but the
+      # backslash pass is kept for defensive parity with the original. Verified byte-identical to the
+      # sed script across plain paths, embedded double quotes, real backslash characters, a mix of
+      # both, and the empty string.
+      esc_rel="${rel//\\/\\\\}"
+      esc_rel="${esc_rel//\"/\\\"}"
       printf '    { "path": "%s", "sha256": "%s" }' "$esc_rel" "$hash"
     done < <(sort -- "$tsv")
     printf '\n  ]\n}\n'
@@ -310,7 +367,15 @@ forge_copy_file() {
   local dst_file="$2"
   local dst_dir stamp bak_file
 
-  dst_dir=$(dirname -- "$dst_file")
+  # v2.9.0 (WP speed pass — install.sh is slow under Git Bash on Windows, CHANGELOG 2.8.1): was
+  # `dirname -- "$dst_file"`, a forked process on every single file. Every dst_file this installer
+  # ever builds is "<absolute-dir>/<relative-file-path>" (forge_copy_tree always calls this as
+  # `forge_copy_file "$file" "$dst_dir/$rel"`, where $dst_dir is itself absolute and $rel is a find(1)
+  # relative FILE path, never empty/trailing-slash) -- so it always contains at least one non-trailing
+  # '/', and stripping the shortest trailing "/*" match (the last path segment) is exactly what
+  # `dirname` returns for every path shape this code passes. Verified against real `dirname` for
+  # nested paths, single-segment directories, and paths containing spaces.
+  dst_dir="${dst_file%/*}"
 
   if [ "$DRY_RUN" = "1" ]; then
     if [ -f "$dst_file" ]; then
@@ -325,9 +390,17 @@ forge_copy_file() {
     return 0
   fi
 
-  if ! mkdir -p -- "$dst_dir"; then
-    forge_err "failed to create directory: $dst_dir"
-    return 1
+  # v2.9.0 (WP speed pass): `mkdir -p` used to run unconditionally, once per FILE, even though most
+  # files in this tree share a handful of directories -- after the first file in a directory creates
+  # it, every later file in that SAME directory forked `mkdir -p` again just to no-op against an
+  # already-existing directory. Skipping the call once `[ -d ]` is already true changes nothing
+  # observable (mkdir -p on an existing directory was always a silent success) and collapses this
+  # from "once per file" to "once per directory that did not already exist yet".
+  if [ ! -d "$dst_dir" ]; then
+    if ! mkdir -p -- "$dst_dir"; then
+      forge_err "failed to create directory: $dst_dir"
+      return 1
+    fi
   fi
 
   if [ -f "$dst_file" ]; then
@@ -514,38 +587,56 @@ forge_copy_settings_file() {
   return 1
 }
 
-# forge_check_standing_rules_migration <project_dir> <source_claude_dir> — MUST run before
-# forge_copy_tree ever compares/replaces the project's FORGE_STANDING_RULES.json (3.4 fix,
+# forge_check_standing_rules_migration <project_dir> <source_claude_dir> [is_dry_run] — MUST run
+# before forge_copy_tree ever compares/replaces the project's FORGE_STANDING_RULES.json (3.4 fix,
 # WP-P3: the installer previously backed up and replaced this file on every upgrade with no
 # migration at all — see migrateOwnerStandingRules()'s own doc comment in forge-sync.cjs for the
 # full v2.7.x-owner-rule-loss contract this closes). Sets FORGE_STANDING_MIGRATION_SKIP to
 # $FORGE_STANDING_RULES_REL when the file must be left untouched THIS run (no confirmed-safe
 # migration — including "node is not available to check"), or "" when it is safe to proceed with
-# the normal copy. A brand-new project (no such file yet) is always safe and never even shells out.
+# the normal copy. FORGE_STANDING_MIGRATION_REASON (F5 fix, 2026-09-27 independent v2.8.1 review) is
+# set alongside it to the REAL reason (node missing, forge-sync.cjs's own specific warning text —
+# unreadable/malformed user file, a symlink/containment refusal, a write failure — or, new here, the
+# template file itself being unreadable) instead of the caller assuming one fixed cause. A brand-new
+# project (no such file yet) is always safe and never even shells out. is_dry_run ("1"/"0", default
+# "0") is passed straight through to migrateOwnerStandingRules() so a dry run reports the SAME
+# outcome a real run would reach (F4 fix) without writing anything — dry-run-ness never changes which
+# guard trips, only whether the final write at the very end of that function actually happens.
 forge_check_standing_rules_migration() {
-  local project_dir="$1" source_claude_dir="$2"
+  local project_dir="$1" source_claude_dir="$2" is_dry_run="${3:-0}"
   local target="$project_dir/.claude/$FORGE_STANDING_RULES_REL"
   local sync_tool="$source_claude_dir/forge-bin/forge-sync.cjs"
   FORGE_STANDING_MIGRATION_SKIP=""
+  FORGE_STANDING_MIGRATION_REASON=""
 
   [ -f "$target" ] || return 0
 
   if ! forge_have_cmd node || [ ! -f "$sync_tool" ]; then
-    forge_log "  node not found on PATH (or forge-sync.cjs is missing) — cannot check $FORGE_STANDING_RULES_REL for a pre-v2.8.0 owner rule; leaving your existing file in place this run"
+    FORGE_STANDING_MIGRATION_REASON="node was not found on PATH (or forge-sync.cjs is missing), so this run could not check $FORGE_STANDING_RULES_REL for a pre-v2.8.0 owner rule at all"
+    forge_log "  $FORGE_STANDING_MIGRATION_REASON — leaving your existing file in place this run"
     FORGE_STANDING_MIGRATION_SKIP="$FORGE_STANDING_RULES_REL"
     return 0
   fi
 
   local out code
-  if out=$(node -e "$FORGE_STANDING_MIGRATE_JS" "$sync_tool" "$project_dir"); then
+  if out=$(node -e "$FORGE_STANDING_MIGRATE_JS" "$sync_tool" "$project_dir" "$FORGE_STANDING_RULES_REL" "$is_dry_run" 2>&1); then
     code=0
   else
     code=$?
   fi
   [ -n "$out" ] && forge_log "  $out"
 
-  if [ "$code" -ne 0 ]; then
-    forge_log "  owner rule migration for $FORGE_STANDING_RULES_REL is pending — leaving your existing file in place this run (fix the JSON in config/orchestration/FORGE_STANDING_RULES.user.json — make a copy first; never delete it, it holds your own rules — then re-run install)"
+  if [ "$code" -eq 3 ]; then
+    # F2 fix: the file EXISTS (checked above) but could not itself be read or parsed — kept, never
+    # silently treated as "nothing to migrate, safe to overwrite" the way a read/parse failure used to
+    # be. Plain NL+EN words, both facts (could not be read; left untouched) in both languages, reused
+    # verbatim for the immediate warning AND the final NOTE so the two never say something different.
+    FORGE_STANDING_MIGRATION_REASON="$FORGE_STANDING_RULES_REL kon niet worden gelezen of verwerkt (corrupt, vergrendeld, of een onleesbaar pad) — het bestand blijft exact ongewijzigd / could not be read or parsed (corrupt, locked, or an unreadable path) — left exactly as-is"
+    forge_log "  $FORGE_STANDING_MIGRATION_REASON"
+    FORGE_STANDING_MIGRATION_SKIP="$FORGE_STANDING_RULES_REL"
+  elif [ "$code" -ne 0 ]; then
+    FORGE_STANDING_MIGRATION_REASON="${out:-an owner rule from a pre-v2.8.0 install could not be confirmed migrated}"
+    forge_log "  owner rule migration for $FORGE_STANDING_RULES_REL is pending — leaving your existing file in place this run"
     FORGE_STANDING_MIGRATION_SKIP="$FORGE_STANDING_RULES_REL"
   fi
 }
@@ -583,8 +674,14 @@ forge_copy_tree() {
   while IFS= read -r -d '' file; do
     rel="${file#"$src_dir"/}"
     if [ -n "$skip_rel" ] && [ "$rel" = "$skip_rel" ]; then
+      # F4 fix (2026-09-27 independent v2.8.1 review): $skip_rel is now computed identically in a dry
+      # run (forge_check_standing_rules_migration already ran, read-only, before this loop -- see its
+      # own header comment), so by the time we get here the real outcome is already known; this used
+      # to unconditionally say "would check ... before touching it" even though the check had not
+      # (and, before this fix, structurally could not) run yet, and even though a REAL run's kept-file
+      # message below already says what actually happens. Mirrors that wording instead of guessing.
       if [ "$DRY_RUN" = "1" ]; then
-        forge_log "  [dry-run] would check $rel for a pre-v2.8.0 owner rule before touching it"
+        forge_log "  [dry-run] would keep: $dst_dir/$rel (owner rule migration pending — see message above)"
       else
         forge_log "  kept: $dst_dir/$rel (owner rule migration pending — see warning above)"
       fi
@@ -1340,13 +1437,16 @@ main() {
     fi
     # 3.4 fix (WP-P3): move any v2.7-era owner standing rule into the project's own user file BEFORE
     # FORGE_STANDING_RULES.json is ever compared/replaced below — the same preflight forge-sync.cjs
-    # itself runs before its own writes. Never during --dry-run, which must write nothing at all.
-    if [ "$DRY_RUN" = "1" ]; then
-      FORGE_STANDING_MIGRATION_SKIP=""
-      [ -f "$PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL" ] && forge_log "  [dry-run] would check $FORGE_STANDING_RULES_REL for a pre-v2.8.0 owner rule before replacing it"
-    else
-      forge_check_standing_rules_migration "$PROJECT_DIR" "$SOURCE_DIR/.claude"
-    fi
+    # itself runs before its own writes.
+    # F4 fix (2026-09-27 independent v2.8.1 review): this used to skip the real check entirely under
+    # --dry-run (setting FORGE_STANDING_MIGRATION_SKIP="" unconditionally and printing a generic
+    # "would check" line that could never actually reflect the outcome), so a dry run always reported
+    # "would back up + overwrite" even for a rules file a real run would keep. The check itself is a
+    # true read-only operation all the way through in dry-run mode (see its own header comment and
+    # migrateOwnerStandingRules()'s dryRun option in forge-sync.cjs) — it is now always run, with
+    # is_dry_run passed straight through, so --dry-run previews the exact same outcome a real run
+    # would reach and never writes anything either way.
+    forge_check_standing_rules_migration "$PROJECT_DIR" "$SOURCE_DIR/.claude" "$DRY_RUN"
     if forge_copy_tree "$SOURCE_DIR/.claude" "$PROJECT_DIR/.claude" "1" "project" "$PROJECT_DIR" "$FORGE_STANDING_MIGRATION_SKIP"; then
       PROJECT_OK="1"
     else
@@ -1395,9 +1495,15 @@ main() {
     exit 1
   fi
 
+  # F5 fix (2026-09-27 independent v2.8.1 review): this used to always say "fix the JSON in ...
+  # user.json", even when FORGE_STANDING_MIGRATION_SKIP was set for a completely different reason
+  # (node missing, a symlink/containment refusal, a write failure, or, after F2, the template file
+  # itself being unreadable). FORGE_STANDING_MIGRATION_REASON is set by forge_check_standing_rules_
+  # migration to the real cause every time it sets SKIP; this note now names that cause instead of
+  # guessing one.
   if [ -n "${FORGE_STANDING_MIGRATION_SKIP:-}" ]; then
     forge_log ""
-    forge_log "NOTE: $PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL was left as-is this run (an owner rule from a pre-v2.8.0 install is pending migration) — fix the JSON in $PROJECT_DIR/.claude/config/orchestration/FORGE_STANDING_RULES.user.json (make a copy first; never delete it, it holds your own rules), then re-run install so it can be moved to safety."
+    forge_log "NOTE: $PROJECT_DIR/.claude/$FORGE_STANDING_RULES_REL was left as-is this run — ${FORGE_STANDING_MIGRATION_REASON:-an owner rule from a pre-v2.8.0 install is pending migration}. Re-run install once that is fixed so it can be applied safely."
   fi
 
   forge_log ""

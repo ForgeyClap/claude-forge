@@ -61,23 +61,55 @@ const SEARCH = new Set(['grep', 'rg', 'egrep', 'fgrep', 'select-string', 'sls', 
 // v2.8.0 final review F1 + v2.8.1 verification R1: `--op` covers every unique prefix git accepts for
 // --open-files-in-pager, `-[A-Za-z0-9]*O` a grouped short-option word such as `-iO<pager>` or `-3O<pager>`, and the
 // word is matched after removing quotes AND backslashes (the shell strips both anywhere inside a word).
+// v2.9.0 independent review F1 (WP-J1, 2026-09-27, same fix as forge-actiongate.cjs's hasExecCapableFlag): a `$`
+// glued directly in front of a quote (ANSI-C/locale quoting, `$'-O'"pkill node #"` / `$"-O""pkill node #"`) is
+// dropped BEFORE the quote/backslash strip, or the leftover `$` breaks the leading `-`/`--` match.
 const EXEC_FLAG_WORD_RE = /^(?:-[A-Za-z0-9]*O|--op|--pager|--pre)/;
-const segHasExecFlag = (ws) => ws.some((x) => EXEC_FLAG_WORD_RE.test(String(x.raw).replace(/["'\\]/g, '')));
+const segHasExecFlag = (ws) => ws.some((x) => EXEC_FLAG_WORD_RE.test(String(x.raw).replace(/\$(?=["'])/g, '').replace(/["'\\]/g, '')));
+// v2.9.0 independent review F1 (WP-J1): a word starting with an unquoted `$name`/`${name}` (e.g. `$f"pkill node
+// #"` from `f=-O; git grep $f"pkill node #" x`) is an unresolved variable this classifier cannot evaluate —
+// treated as possibly exec-capable, same reasoning as forge-actiongate.cjs's hasUnresolvedVarLeadWord. A quoted
+// `"$HOME"` starts with the quote character, not `$`, so it never matches.
+//
+// v2.9.0 WP-K1 (2026-09-27, independent Codex review of the v2.9.0 integration) F3: widened to also match a
+// POSITIONAL or SPECIAL parameter (`$0`-`$9`, `${10}`, `$@`, `$*`, `$#`, `$?`, `$$`, `$!`, `$-`) — the old
+// name-only class missed `set -- -O; git grep $1"pkill node #" src`, where `$1` (not `$name`) carries the
+// unresolved pager flag. Same regex as forge-actiongate.cjs's BARE_VAR_LEAD_RE; keep the two in sync.
+const BARE_VAR_LEAD_RE = /^\$\{?[A-Za-z_0-9@*#?$!-]/;
 // v2.8.0 final review Q1: an unquoted `{`/`(` (PowerShell script block or sub-expression) or a live `$(`/backtick
 // anywhere in the segment means the "search" can run one of its quoted arguments — nothing is stripped then.
-const segCanRunText = (ws) => ws.some((x) => {
-  const raw = String(x.raw);
-  const spans = Array.isArray(x.spans) ? x.spans : [];
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
-    const sub = c === '`' || (c === '$' && raw[i + 1] === '(');
-    if (c !== '{' && c !== '(' && !sub) continue;
-    const pos = x.start + i;
-    const inSpan = spans.some((sp) => pos >= sp.start && pos < sp.end && (!sub || sp.inert));
-    if (!inSpan) return true;
-  }
-  return false;
-});
+//
+// v2.9.0 WP-K1 F4: the BARE_VAR_LEAD_RE check used to apply to every word in the segment, so `git grep -e
+// 'rm -rf' -- $file` was judged exec-capable purely because `$file` appears somewhere on the line — which
+// left the quoted `rm -rf` UNSTRIPPED and reaching destructive-delete's own quote-blind trigger catch (a real,
+// live false block). `$file` sits AFTER a standalone `--` (end-of-options): a well-behaved search tool can
+// never again read an argument as a FLAG past that point, whatever it expands to. The variable check now only
+// looks at words BEFORE the first standalone (unquoted) `--` word; a variable found before it still counts.
+//
+// v2.9.0 independent review F4 follow-up (WP-L1, 2026-09-27): that boundary only matched an UNQUOTED `--`
+// word (spans.length === 0), so `git grep -e 'rm -rf' "--" $file` — the quoted form of the exact same
+// end-of-options marker — still scanned every word, saw `$file`, and stayed exec-capable: the real, live
+// false block this follow-up closes. wholeInert() (below) already tells us a word is one quoted span
+// covering the whole word; its unwrapped content just needs to equal `--` too.
+const isEndOfOptionsWord = (x) => (!x.spans.length && x.raw === '--') || (wholeInert(x) && x.raw.slice(1, -1) === '--');
+const segCanRunText = (ws) => {
+  const dashDashIdx = ws.findIndex(isEndOfOptionsWord);
+  const varBoundary = dashDashIdx === -1 ? ws.length : dashDashIdx;
+  return ws.some((x, idx) => {
+    const raw = String(x.raw);
+    if (idx < varBoundary && BARE_VAR_LEAD_RE.test(raw)) return true;
+    const spans = Array.isArray(x.spans) ? x.spans : [];
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i];
+      const sub = c === '`' || (c === '$' && raw[i + 1] === '(');
+      if (c !== '{' && c !== '(' && !sub) continue;
+      const pos = x.start + i;
+      const inSpan = spans.some((sp) => pos >= sp.start && pos < sp.end && (!sub || sp.inert));
+      if (!inSpan) return true;
+    }
+    return false;
+  });
+};
 const SCRIPT_EXT_RE = /\.(sh|bash|zsh|ps1|psm1|cmd|bat|js|cjs|mjs|ts|py|rb|pl|php)$/i;
 // MARKER_RE/MARKER_AT_RE (the heredoc-marker regexes) now live in forge-gate-quotes.cjs — this file no longer
 // scans for a marker itself, it only supplies the writer/commit-head detection stripHeredocs() there consumes.
@@ -199,6 +231,59 @@ function gitSubcommand(ws) {
   return null;
 }
 
+// WP-M1 (2026-09-27, independent review + the Lead's own live use of secret-print): this file used to strip
+// EVERY whole-quoted word after a search-tool head as "inert data" — right for kill-by-name/destructive-delete/
+// opaque-exec (none of them care whether a search tool's own FILE argument happens to be quoted), but wrong for
+// secret-print, which reads the FILE argument's own content and must never be defeated merely because that
+// argument is quoted: `grep API_KEY '.env'` used to strip to `grep API_KEY ''`, silently erasing the exact
+// secret target that gate exists to catch, before classify() ever ran. searchPatternWords() below narrows
+// stripping to ONLY the recognised PATTERN position — same three-family position rules as
+// forge-actiongate.cjs::secretPrintPatternExempt() (duplicated on purpose, same documented-duplication
+// convention this file already uses for BARE_VAR_LEAD_RE/segHasExecFlag's own sibling copy: "keep the two in
+// sync" — this file never requires forge-actiongate.cjs, which stays the dependency ROOT other files require(),
+// never a dependant of one of them).
+const GREP_PATTERN_FLAG_RE = /^(?:-e|--regexp|-f|--file)$/;
+const GREP_PATTERN_FLAG_ATTACHED_RE = /^(?:--regexp|--file)=/;
+const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
+
+/** searchPatternWords(h, ws) -> Set of the word OBJECTS (from `ws`, the segment's full word array including
+ *  its own head at index 0) that are this search-tool invocation's own PATTERN argument(s) — the only ones
+ *  literalDataSpans() may still treat as strippable inert data for a SEARCH.has(h) segment. `h` is the
+ *  already-lower-cased head. See forge-actiongate.cjs::secretPrintPatternExempt() for the full "why" of each
+ *  family's own rule; this function only needs to know WHICH words are the pattern, never whether any of them
+ *  looks secret-shaped (that question belongs entirely to the classifier, not this pre-classify data pass). */
+function searchPatternWords(h, ws) {
+  const rest = ws.slice(1);
+  const picked = new Set();
+  if (h === 'select-string' || h === 'sls') {
+    for (let i = 0; i < rest.length; i++) {
+      if (SELECT_STRING_PATTERN_FLAG_RE.test(rest[i].raw) && rest[i + 1]) picked.add(rest[i + 1]);
+    }
+    return picked; // deliberately NO positional fallback — see secretPrintPatternExempt()'s own doc
+  }
+  let explicit = false;
+  if (h !== 'findstr') {
+    for (let i = 0; i < rest.length; i++) {
+      if (GREP_PATTERN_FLAG_RE.test(rest[i].raw)) {
+        explicit = true;
+        if (rest[i + 1]) picked.add(rest[i + 1]);
+      } else if (GREP_PATTERN_FLAG_ATTACHED_RE.test(rest[i].raw)) {
+        explicit = true;
+        picked.add(rest[i]);
+      }
+    }
+  }
+  if (!explicit) {
+    const isFlag = (raw) => (h === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
+    for (const w of rest) {
+      if (isFlag(w.raw)) continue;
+      picked.add(w);
+      break; // exactly one implicit positional pattern
+    }
+  }
+  return picked;
+}
+
 /** literalDataSpans(segs) -> the quoted-literal spans that are pure data (rule b, with L1 and L3).
  *  LINEAR REWRITE (wp-v3, sec-v1r-H1, independent review): the ORIGINAL implementation rebuilt the entire
  *  REMAINING text (`segs.slice(k+1)...join('\n')`) and re-ran laterRisk() over it for EVERY segment k -- O(segment
@@ -246,7 +331,8 @@ function literalDataSpans(segs) {
       picked = ws.slice(1).filter(wholeInert);
     } else if (SEARCH.has(h)) {
       if (segHasExecFlag(ws) || segCanRunText(ws)) return; // v2.8.0 N1/Q1: the tool can execute one of its arguments
-      picked = ws.slice(1).filter(wholeInert);
+      const patternWords = searchPatternWords(h, ws); // WP-M1: only the PATTERN position, never a FILE argument
+      picked = ws.filter((x) => patternWords.has(x) && wholeInert(x));
     } else if (h === 'git') {
       const sub = gitSubcommand(ws);
       const subWord = sub && !sub.word.spans.length ? sub.word.raw.toLowerCase() : '';
@@ -316,6 +402,8 @@ function stripInertData(command, shell) {
 module.exports = {
   stripInertData, stripHeredocs, scanWords, literalDataSpans, laterRisk, quoteMask, gitSubcommand,
   findHeredocDelim, // N05 (codex-recheck 2026-09-24, third pass) — exported for direct unit testing
+  segHasExecFlag, segCanRunText, // v2.9.0 independent review F1 (WP-J1) — exported for direct unit testing
+  searchPatternWords, // WP-M1 (2026-09-27) — exported for direct unit testing
   INTERPRETER_RE, LAYOUT, SEARCH, MAX_INERT_SCAN_SEGMENTS,
   wholeInert, SCRIPT_EXT_RE, LOG_EVENT_RE, // wp-v3: exported so forge-gate-hook.test.cjs's kept-verbatim ORIGINAL
   // literalDataSpans oracle (the sec-v1r-H1 equivalence proof) can rebuild the exact pre-fix function without a

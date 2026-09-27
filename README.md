@@ -24,9 +24,9 @@ Turn Claude Code into a coordinated **team of agents** that builds, automates, r
 
 ## 🤝 The beginner promise
 
-Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. It stops for the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and for a real usage-limit pause. Be precise about what "stops" means: four of those gates (destructive deletes, killing processes by name, git commands that throw work away, commands that hide what they run) are enforced by a real hook that blocks the shell command before it runs — a classifier, not a proof: what it does not recognise it does not stop, and its measured limits are listed in the settings guide; the others are rules the assistant follows and are checked by a text classifier, not by a technical stop — a model can still ignore a rule, so keep an eye on anything that deploys, pushes or spends. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat.
+Forge does it for you. It runs every command, script, install and build itself and never asks you to run a file or code. It does not ask 'shall I continue?' between phases. It stops for the hard gates — deploying, pushing, spending money, DNS, production, credentials, sending anything out, killing processes by name, destructive deletes, writing outside your project — and for a real usage-limit pause. Be precise about what "stops" means: five of those gates (destructive deletes, killing processes by name, git commands that throw work away, commands that hide what they run, and commands that print out a secret file) are enforced by a real hook that blocks the shell command before it runs — a classifier, not a proof: what it does not recognise it does not stop, and its measured limits are listed in the settings guide; the others are rules the assistant follows and are checked by a text classifier, not by a technical stop — a model can still ignore a rule, so keep an eye on anything that deploys, pushes or spends. Everything is on by default; `/forge config` shows and changes any setting in one command, or just say it in chat.
 
-**Nederlands:** Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en voor een echte gebruikslimiet-pauze. Wees precies over wat "stopt" betekent: vier van die poorten (destructief verwijderen, processen op naam killen, git-commando's die werk weggooien, commando's die verbergen wat ze uitvoeren) worden afgedwongen door een echte hook die het shellcommando blokkeert vóór het draait — een classifier, geen sluitend bewijs: wat hij niet herkent, houdt hij niet tegen; de overige poorten zijn regels die de assistent volgt en die een tekstclassifier controleert, geen technische stop — een model kan een regel negeren, dus hou alles wat deployt, pusht of geld uitgeeft in het oog. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat.
+**Nederlands:** Forge doet het voor je. Het draait elk commando, script, installatie en build zelf en vraagt je nooit om zelf een bestand of code te draaien. Het vraagt niet 'moet ik verder?' tussen fases. Het stopt voor de harde poorten — deployen, pushen, geld uitgeven, DNS, productie, credentials, iets versturen, processen op naam killen, destructief verwijderen, buiten je project schrijven — en voor een echte gebruikslimiet-pauze. Wees precies over wat "stopt" betekent: vijf van die poorten (destructief verwijderen, processen op naam killen, git-commando's die werk weggooien, commando's die verbergen wat ze uitvoeren, en commando's die de inhoud van een geheim bestand printen) worden afgedwongen door een echte hook die het shellcommando blokkeert vóór het draait — een classifier, geen sluitend bewijs: wat hij niet herkent, houdt hij niet tegen; de overige poorten zijn regels die de assistent volgt en die een tekstclassifier controleert, geen technische stop — een model kan een regel negeren, dus hou alles wat deployt, pusht of geld uitgeeft in het oog. Alles staat standaard aan; `/forge config` toont en wijzigt elke instelling met één commando, of zeg het gewoon in de chat.
 
 > [!NOTE]
 > **New to Claude Code itself?** Forge runs inside it, and installing Claude Code is the one step Forge cannot do for you. [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md) explains, in English and Dutch, the paid plan, the install line for your shell, permission prompts, undo, usage limits and `/clear`.
@@ -158,7 +158,7 @@ The plugin is **LITE**; the installer is **FULL**. This split is architectural, 
 | **Files written by the install** | None (read-only plugin cache); its agents edit your project only when you ask them to build | `./.claude` + `~/.claude` core |
 | **Live dashboard** | No | ✅ Yes, localhost:4100 |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
-| **Settings (`/forge config`)** | No | ✅ Yes, 36 settings, everything on by default |
+| **Settings (`/forge config`)** | No | ✅ Yes, 37 settings, everything on by default |
 | **Safety stop + `.env` deny rules** | No | ✅ Yes, in the shipped `.claude/settings.json` |
 | **Commands** | Namespaced `/forge:forge` | Bare `/forge` |
 | **Best for** | Quick trial, prototyping | Real projects, long-term |
@@ -189,7 +189,8 @@ Honest and non-adversarial — only rows that actually ship.
 | 🤖 **19 agents in the full install** | 12 permanent Bosses + 7 specialists — see [AGENTS.md](AGENTS.md). The LITE plugin carries 18 agents. |
 | 🧠 **72 skills (full), 22 (LITE)** | 51 Forge skills (routing, domain playbooks, the prompt coach, reporting, verification, ship-readiness) plus 21 well-known public skills that ship with Forge — see [docs/FEATURES.md](docs/FEATURES.md) and [the section below](#-public-skills-that-ship-with-forge). The GSAP and humanizer skills the maintainer uses in development are still deliberately **not** redistributed — see [.claude/skills/VENDORED-SKILLS.md](.claude/skills/VENDORED-SKILLS.md). |
 | ⚙️ **`/forge config`** | every setting in one list, with its value, where it comes from and what it does; change any of them with one command or one sentence — see [docs/SETTINGS.md](docs/SETTINGS.md) |
-| 🛡️ **A real safety stop** | a hook blocks mass deletes, killing programs by name and git commands that throw away work until you say yes; Claude's file-reading tool cannot open your `.env` secret files (a shell command still can — see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md)) |
+| 🛡️ **A real safety stop** | a hook blocks mass deletes, killing programs by name, git commands that throw away work, commands that hide what they run, and (new in 2.9.0) many shell commands that print out a secret file's contents, until you say yes; Claude's file-reading tool separately cannot open your `.env` secret files (see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md)) |
+| 🗂️ **Knowledge vault** | new in 2.9.0 — after every finished run, readable linked notes in `.claude/forge-vault/`, plain markdown, optionally opened in Obsidian for a graph view |
 | 📊 **Command Center dashboard** | one localhost app on `127.0.0.1:4100` that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |
@@ -200,32 +201,40 @@ Honest and non-adversarial — only rows that actually ship.
 
 ---
 
-## 🆕 What's new in v2.8.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
+## 🆕 What's new in v2.9.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
 
 <details>
-<summary><b>A fresh-laptop audit release — works with nothing pre-installed, a fairer usage guard, a real uninstaller</b> — click to expand</summary>
+<summary><b>A fifth safety gate for secrets, an editable dashboard, a Discord setup wizard, a knowledge vault, and a lighter footprint</b> — click to expand</summary>
 
-This release comes from an independent audit that removed Forge completely and reinstalled it on a
-clean Windows laptop with no plugins, no global skills and no Codex — then fixed what broke.
-
-- **Works on a genuinely fresh machine.** A machine with Claude Code but zero plugins or global
-  skills is a valid starting point now — the doctor no longer treats that as a failure.
-- **A fairer usage guard.** A single model's weekly window filling up used to pause *all* of Forge
-  for days, even while you were working in a different model with room to spare. The guard now
-  pauses only the window that's actually full and resumes as soon as it drops back below the
-  threshold, and tells you plainly which window paused you.
-- **A real uninstaller.** `install.ps1 -Uninstall` / `install.sh --uninstall` removes exactly what a
-  claude-forge installer wrote, and nothing else — see [below](#-removing-forge).
-- **A safer gate hook.** The four command gates now block the `forge`/`forge.cmd`/`forge.ps1`/`forge.sh`
-  wrapper's own attempt to switch itself off, not just a direct call to `forge-config.cjs`, and fewer
-  harmless searches get caught by mistake.
-- **Private rules and the Codex pin never ship.** Anything you add with `/forge remember` now lives in
-  your own gitignored file, never in the product's shipped rules; the same split applies to the Codex
-  model pin.
-- **Command Center write routes all need the token.** Every non-GET route on the local gateway checks
-  the execution token once, consistently, before doing anything.
-- **CI and the doctor are green on both Windows and Linux**, and the release notes' numbers come from
-  that same green run.
+- **A fifth gate: `secret-print`.** The safety-stop hook now also asks before a shell command prints
+  the contents of a secret file — a `.env` file (except `.env.example`/`.env.sample`/`.env.template`),
+  a private key, or a credentials file. The safe way to see just a `.env` file's variable *names*:
+  `node .claude/forge-bin/forge-env-names.cjs .env`.
+- **The dashboard's Settings view is now editable.** It used to be read-only; now you can change any
+  setting right there (a switch, a choice, or a number). The gate hook is the one exception — the
+  dashboard can only switch it ON, never off.
+- **A Connect Discord wizard**, five steps: make your own server, make the bot in the Developer
+  Portal, paste the token, click the invite link, and Forge sets up the category, channels and a
+  test message. The token lives only in the Command Center's own `command-center/discord/.env`, never shown or logged.
+- **A knowledge vault.** After every finished run, Forge writes readable, linked notes in
+  `.claude/forge-vault/` — plain markdown, optionally opened in Obsidian for a graph view. Setting
+  `vault`, on by default. Credited to the claude-obsidian project (MIT); rebuilt without Python.
+- **Plain-language errors.** `node .claude/forge-bin/forge-explain-error.cjs "<error text>"` explains
+  an error in one sentence plus the safe next step Forge takes itself; Forge uses it whenever a
+  command fails.
+- **A lighter footprint.** `forge.md` is 8% smaller (the rarely-used parts moved to
+  `.claude/docs/forge-reference/`, with a test proving every rule is still reachable); skill
+  descriptions are shorter with no trigger words removed; the doctor now gives Claude Code version
+  advice; chat replies are shorter, with the full report saved to disk.
+- **`install.sh` is much faster under Git Bash on Windows** — a dry run takes about 4 seconds instead
+  of 147, and a full install is roughly 1.6x faster, installing the exact same files.
+  `install.ps1` remains the fastest option on Windows.
+- **Installers keep your standing-rules file if it can't be read**, instead of replacing it;
+  `install.ps1 -ProjectDir` now also works with a trailing backslash; the dry run shows the real
+  outcome.
+- **The doctor names the exact failing test(s)** when something fails, instead of only the suite
+  total — and a fix landed so the optional `verify-boss` and `codex-reviewer` specialist agents load
+  correctly (before, they could not).
 
 </details>
 
@@ -278,16 +287,16 @@ ON      prompt-doctor                on                       default          C
                                                                                (vague goal, no definition of done, no
                                                                                context) and fills the gaps itself or
                                                                                asks the one targeted question.
-... (8 of the 36 settings; the full list, with the where-from column and every group: /forge config list --all)
+... (8 of the 37 settings; the full list, with the where-from column and every group: /forge config list --all)
 ```
 
-The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %** before your limit), **`gate-hook`** (on, the safety stop below), **`git-checkpoint`** (on, a local safety point before a bigger build), **`intake`** (`silent`: at most one question) and **`explain-mode`** (on: one plain sentence per phase). The full list of all 36 settings (core, when-needed and advanced) with every default, the 7 locked rules that can never be switched off, and where your choices are saved: **[docs/SETTINGS.md](docs/SETTINGS.md)**.
+The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %** before your limit), **`gate-hook`** (on, the safety stop below), **`git-checkpoint`** (on, a local safety point before a bigger build), **`intake`** (`silent`: at most one question) and **`explain-mode`** (on: one plain sentence per phase). The full list of all 37 settings (core, when-needed and advanced) with every default, the 7 locked rules that can never be switched off, and where your choices are saved: **[docs/SETTINGS.md](docs/SETTINGS.md)**.
 
 ---
 
 ## 🛡️ A real safety stop
 
-Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks four dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`), and commands whose real content is hidden from the check (`eval`, `Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`). Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your project) still pass, but only when the check can prove the path really is such a folder, and quoted text handed to a plain writer or search tool (a `cat` heredoc, an `echo`, a `grep` pattern) is treated as data, not as a command; other heredocs, such as a commit message, are still read line by line, so a line that itself starts with a dangerous command is stopped. If the check cannot judge a command (unreadable input, a damaged config) it says so out loud instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files (also the `.env.development`, `.env.staging`, `.env.test` and setup variants, at any depth), `secrets/` folders, private keys, your own credential files and the secret file behind the usage guard's owner approval (29 rules); `.env.example` stays readable. The stop is built so the assistant cannot switch it off on its own: an agent that types `set gate-hook off` is blocked. You switch it off either by typing `/forge config set gate-hook off` yourself, or by prefixing any command with `!` (that runs in your own shell, not through Claude's tool) — an agent's own attempt at either is still blocked. The one-off form (`--once "<your words>"`) must quote your approval, covers exactly one command, is used up the moment that command runs and expires after at most 10 minutes. What the check cannot do is verify who typed that quote, so when Claude reports "the owner approved this command", read that line before it runs. While the stop is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay in place, formatting is preserved, a backup is written first, and running it again changes nothing; a file it cannot preserve losslessly is left alone and reported. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
+Written rules are advice; a model can still ignore them. So Forge adds a small check that runs **before every shell command** Claude wants to run. It blocks five dangerous kinds of command until you say yes: deleting whole folders at once (`rm -r`, with or without `-f`, `Remove-Item -Recurse`), stopping programs by name (`taskkill /IM`, `pkill`, also via `pgrep` tricks), git commands that throw away work you have not committed (`git reset --hard`, `git checkout .`, `git restore <path>`, `git switch -f`), commands whose real content is hidden from the check (`eval`, `Invoke-Expression`, `bash -c "$SCRIPT"`, anything piped straight into a shell such as `curl … | sh`), and — new in 2.9.0 — commands that print out the contents of a secret file: a `.env` file (except `.env.example`/`.env.sample`/`.env.template`), a private key, or a credentials file, via `cat`/`type`/`Get-Content`/`grep`/`rg`/`findstr` or the content-revealing forms of `git show`/`git log -p`/`git diff`/`git blame` (the metadata-only git forms still pass). The safe way to see just a `.env` file's variable *names*, never the values: `node .claude/forge-bin/forge-env-names.cjs .env`. Cleanups inside temporary folders (`_scratch`, `node_modules`, `dist`, the system temp folder outside your project) still pass, but only when the check can prove the path really is such a folder, and quoted text handed to a plain writer or search tool (a `cat` heredoc, an `echo`, a `grep` pattern) is treated as data, not as a command; other heredocs, such as a commit message, are still read line by line, so a line that itself starts with a dangerous command is stopped. If the check cannot judge a command (unreadable input, a damaged config) it says so out loud instead of silently letting it through. The same settings file stops Claude from reading your `.env` secret files (also the `.env.development`, `.env.staging`, `.env.test` and setup variants, at any depth), `secrets/` folders, private keys, your own credential files and the secret file behind the usage guard's owner approval (29 rules); `.env.example` stays readable. The stop is built so the assistant cannot switch it off on its own: an agent that types `set gate-hook off` is blocked. You switch it off either by typing `/forge config set gate-hook off` yourself, or by prefixing any command with `!` (that runs in your own shell, not through Claude's tool) — an agent's own attempt at either is still blocked. The one-off form (`--once "<your words>"`) must quote your approval, covers exactly one command, is used up the moment that command runs and expires after at most 10 minutes. What the check cannot do is verify who typed that quote, so when Claude reports "the owner approved this command", read that line before it runs. While the stop is off you still see a notice for every command it would have stopped. (If your project already had its own `.claude/settings.json`, the installer merges Forge's hooks and deny rules into it — your own entries stay in place, formatting is preserved, a backup is written first, and running it again changes nothing; a file it cannot preserve losslessly is left alone and reported. Upgrades through `forge-sync install` do the same, so an older Forge project gets the safety stop too.)
 
 ---
 
@@ -381,7 +390,7 @@ cd ../.. && node command-center/gateway/supervisor.mjs        # start it (restar
 
 </details>
 
-The **Settings** view has a read-only **Forge settings** section that shows the active project's settings, read from `GET /api/config`; you change them in chat or with `/forge config`.
+The **Settings** view lists every Forge setting for the active project and, since 2.9.0, changes it right there too (a switch, a choice, or a number) — the one exception is the gate hook, which the dashboard can only switch ON, never off. You can still change settings in chat or with `/forge config`.
 
 The gateway is zero-dependency Node and is the **only** layer allowed to spawn the real `claude` CLI. Run events stay per-project: every run writes `.claude/forge-runs/<run_id>/events.jsonl` via `.claude/forge-dashboard/log-event.cjs`, and the Command Center reads those **read-only**. It shows **real activity only** — never fabricated, never shared across projects.
 

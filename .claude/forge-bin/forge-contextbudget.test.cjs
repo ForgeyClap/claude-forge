@@ -836,6 +836,125 @@ t('CLI counterfactual: without --help, the CLI still runs its real report (--jso
   assert.ok(typeof rep.total_approx_tokens === 'number', 'a real report was not produced: ' + r.stdout.slice(0, 200));
 });
 
+// =============================================================================================================
+// COMMANDS/*.MD POST (v2.9.0 WP-C) — a slash command's FULL body loads on invocation and then stays for the
+// rest of the session; nothing tracked its growth at all before this wave (usage-minimisation research,
+// 2026-09-26: commands/forge.md alone estimated at 6.800-8.000 tokens on every /forge, uncounted).
+// =============================================================================================================
+function writeCommand(root, relFile, chars) {
+  const abs = path.join(root, '.claude', 'commands', relFile);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, 'x'.repeat(chars));
+}
+
+t('commands_dir counts the FULL body of every *.md under .claude/commands, not just frontmatter', () => {
+  const fx = buildFixture('cbx-cmd-basic');
+  writeCommand(fx.root, 'forge.md', 300);
+  writeCommand(fx.root, 'commit.md', 120);
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  const cmd = post(rep, 'commands_dir');
+  assert.ok(cmd, 'commands_dir post missing entirely');
+  assert.strictEqual(cmd.exists, true);
+  assert.strictEqual(cmd.chars, 420, 'expected the sum of both full files (300+120); got ' + cmd.chars);
+  assert.strictEqual(cmd.files.length, 2, JSON.stringify(cmd.files));
+  assert.strictEqual(cmd.in_project, true, 'commands/ is a project-relative path, unlike the global/plugin skill catalogs');
+});
+
+t('commands_dir finds a NAMESPACED command in a subfolder (bounded, symlink-safe walk, same discipline as the skill catalog walk)', () => {
+  const fx = buildFixture('cbx-cmd-nested');
+  writeCommand(fx.root, path.join('frontend', 'component.md'), 88);
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  const cmd = post(rep, 'commands_dir');
+  assert.strictEqual(cmd.chars, 88);
+  assert.ok(cmd.files.some((f) => f.file === 'frontend/component.md'), 'catalog-relative path not recorded: ' + JSON.stringify(cmd.files));
+});
+
+t('commands_dir with no .claude/commands directory at all is an honest zero, never a throw', () => {
+  const fx = buildFixture('cbx-cmd-absent');
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  const cmd = post(rep, 'commands_dir');
+  assert.strictEqual(cmd.exists, false);
+  assert.strictEqual(cmd.chars, 0);
+  assert.ok(/no such directory/i.test(cmd.note), cmd.note);
+});
+
+t('commands_dir participates in the SAME generic baseline/growth check every other post gets, with no special-casing', () => {
+  const fx = buildFixture('cbx-cmd-baseline');
+  writeCommand(fx.root, 'forge.md', 100);
+  cb.writeBaseline(fx.root, { paths: paths(fx) });
+  writeCommand(fx.root, 'forge.md', 5000); // simulate real re-growth of the command file
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  const grown = rep.findings.filter((f) => f.kind === 'over_baseline' && f.id === 'commands_dir');
+  assert.strictEqual(grown.length, 1, 'commands_dir growth was not caught by the generic baseline check: ' + JSON.stringify(rep.findings));
+});
+
+t('commands_dir is included in total_chars exactly once (no double count)', () => {
+  const fx = buildFixture('cbx-cmd-total');
+  writeCommand(fx.root, 'forge.md', 777);
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  assert.strictEqual(rep.total_chars, rep.posts.reduce((n, p) => n + p.chars, 0));
+  assert.ok(post(rep, 'commands_dir').chars === 777);
+});
+
+// =============================================================================================================
+// SKILL-LISTING BUDGET (v2.9.0 WP-C) — distinct from max_skill_depth (which bounds the WALK): does the total
+// LOADED name+description across all three skill catalogs still fit Anthropic's roughly 1%-of-context-window
+// listing budget. Once it overflows, Claude Code drops descriptions for the least-used skills first.
+// =============================================================================================================
+t('skill_listing is reported on every measurement, budget computed from a 200K-token context by default', () => {
+  const fx = buildFixture('cbx-listing-default');
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  assert.ok(rep.skill_listing, 'skill_listing missing from the report');
+  assert.strictEqual(rep.skill_listing.context_window_tokens, cb.DEFAULT_CONTEXT_WINDOW_TOKENS);
+  assert.strictEqual(rep.skill_listing.budget_pct, cb.DEFAULT_SKILL_LISTING_BUDGET_PCT);
+  assert.strictEqual(rep.skill_listing.budget_approx_tokens, Math.floor(cb.DEFAULT_CONTEXT_WINDOW_TOKENS * cb.DEFAULT_SKILL_LISTING_BUDGET_PCT));
+  assert.strictEqual(rep.skill_listing.chars, rep.skill_sources.reduce((n, s) => n + s.chars, 0), 'must equal the sum of the three LOADED catalog posts, never the disabled/potential weight');
+});
+t('a tiny fixture is comfortably UNDER the default listing budget — no finding, ok stays true', () => {
+  const fx = buildFixture('cbx-listing-under');
+  const rep = cb.measure(fx.root, { paths: paths(fx) });
+  assert.strictEqual(rep.skill_listing.over_budget, false);
+  assert.strictEqual(rep.findings.filter((f) => f.kind === 'over_listing_budget').length, 0);
+  assert.strictEqual(rep.ok, true);
+});
+t('the SAME small fixture trips over_listing_budget once the budget is configured small enough (the check is real, not decorative)', () => {
+  const fx = buildFixture('cbx-listing-over');
+  const rep = cb.measure(fx.root, { paths: paths(fx), contextWindowTokens: 1000, skillListingBudgetPct: 0.01 });
+  // budget = floor(1000*0.01)=10 tokens = 40 chars at chars_per_token 4; the fixture's three skill posts
+  // (138+90+68=296 chars) are comfortably over that on purpose.
+  assert.strictEqual(rep.skill_listing.over_budget, true, JSON.stringify(rep.skill_listing));
+  const finding = rep.findings.find((f) => f.kind === 'over_listing_budget');
+  assert.ok(finding, 'over_listing_budget finding missing: ' + JSON.stringify(rep.findings));
+  assert.strictEqual(finding.id, 'skill_listing');
+  assert.ok(/least-used skills first/i.test(finding.detail), finding.detail);
+  assert.strictEqual(rep.ok, false, 'an over-budget listing must make the report not-ok (advisory, but reported)');
+});
+t('the listing budget is CONFIG-overridable (context_window_tokens / skill_listing_budget_pct), same posture as chars_per_token', () => {
+  const fx = buildFixture('cbx-listing-config');
+  const cfg = cb.readConfig(fx.root);
+  cfg.context_window_tokens = 1000;
+  cfg.skill_listing_budget_pct = 0.01;
+  cb.saveConfig(fx.root, cfg);
+  const rep = cb.measure(fx.root, { paths: paths(fx) }); // no opts override this time — reads from the saved config
+  assert.strictEqual(rep.skill_listing.context_window_tokens, 1000);
+  assert.strictEqual(rep.skill_listing.over_budget, true, 'the config-driven budget must be honored exactly like an opts override');
+});
+t('an opts override wins over a saved config value for the listing budget (same precedence as every other opts/config pair here)', () => {
+  const fx = buildFixture('cbx-listing-precedence');
+  const cfg = cb.readConfig(fx.root);
+  cfg.context_window_tokens = 1000; // would trip over_budget alone
+  cb.saveConfig(fx.root, cfg);
+  const rep = cb.measure(fx.root, { paths: paths(fx), contextWindowTokens: 1000000 }); // opts wins -> huge budget
+  assert.strictEqual(rep.skill_listing.context_window_tokens, 1000000);
+  assert.strictEqual(rep.skill_listing.over_budget, false);
+});
+t('CLI human output prints the skill listing budget line', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cbx-cli-listing-'));
+  const r = runCLI(['--root', dir]);
+  assert.strictEqual(r.status, 0, 'exit was ' + r.status + ' stderr=' + r.stderr);
+  assert.ok(/skill listing budget:/.test(r.stdout), 'CLI output missing the listing-budget line: ' + r.stdout);
+});
+
 console.log('');
 // Skips horen in de tally: een overgeslagen assertie die nergens verschijnt is niet te onderscheiden van
 // een assertie die slaagde — dat is precies het verschil dat deze scheiding zichtbaar moest maken.

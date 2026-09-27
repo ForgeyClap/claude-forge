@@ -133,13 +133,13 @@
     "codex-reviewer": {
       "class": "exec-reviewer",
       "tools": ["Bash", "PowerShell", "Read", "Grep", "Glob"],
-      "model": "claude-opus-5-5",
+      "model": "opus",
       "rationale": "Optional independent code-quality reviewer. Needs a shell (Bash, or PowerShell on a bash-less Windows host) solely to invoke the Codex CLI/slash-commands (`/codex:review`, `/codex:adversarial-review`) and to run `git diff`. Deliberately has NO Write/Edit — it must never directly edit the code it is reviewing. Per bash_is_a_write_primitive/powershell_is_a_write_primitive, this agent is NOT read-only despite lacking Write/Edit; it is classified exec-reviewer, a distinct, narrower-than-full-build class than a coder role, not a security-equivalent to review-boss/security-boss."
     },
     "verify-boss": {
       "class": "exec-reviewer",
       "tools": ["Bash", "PowerShell", "Read", "Grep", "Glob"],
-      "model": "claude-opus-5-5",
+      "model": "opus",
       "rationale": "Optional independent RE-EXECUTOR: re-runs the exact build/test/health-check command a Boss claims passed, from a cold read of the diff, and reports the literal exit code. Needs a shell (Bash, or PowerShell on a bash-less Windows host) to actually re-execute those checks (forge-doctor/forge-runwatch/forge-flaky/the cited test suite) — a re-executor that could not run a command would be pointless. Deliberately has NO Write/Edit — per bash_is_a_write_primitive/powershell_is_a_write_primitive it is NOT read-only, but it must never be able to 'fix' the very evidence it verifies, so exec-reviewer (Bash/PowerShell + Read/Grep/Glob, no Write/Edit) is the correct minimum. Distinct from codex-reviewer (external Codex opinion) and from read-only review-boss/security-boss (which cannot re-execute at all)."
     }
   }

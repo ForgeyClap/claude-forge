@@ -107,13 +107,37 @@ describe('no code path reads an API key', () => {
     ['env read of a generic api key', /env\s*(\.\s*[A-Z_]*API_KEY|\[\s*['"][A-Z_]*API_KEY)/],
     ['apiKey property assignment', /\bapiKey\s*[:=]/],
     ['apiKeyHelper wiring', /\bapiKeyHelper\b/],
-    ['password input control', /type\s*=\s*["']password["']/],
     ['"enter ... api key" copy', /enter[^.\n]{0,40}api\s*key/i],
   ];
 
   it.each(RULES)('contains no %s', (_name, pattern) => {
     const hits = scan(FILES, pattern);
     expect(hits, `API-key path found:\n${hits.join('\n')}`).toEqual([]);
+  });
+
+  // WP-v290-B (beginner Discord onboarding): this invariant is named
+  // REQUIRES_ANTHROPIC_API_KEY — it exists to prove this dashboard never collects a VENDOR
+  // (Anthropic/OpenAI/NVIDIA) API key, because it authenticates through the already-logged-in
+  // local Claude Code CLI instead (see the sibling USES_LOCAL_CLAUDE_CODE=true invariant). A
+  // masked input for a Discord BOT TOKEN — a third-party integration secret the owner explicitly
+  // asked this dashboard to collect (ConnectWizard.tsx, gateway's own POST /api/discord/connect)
+  // — is a different, unrelated secret; it does not make the Anthropic-key invariant false. The
+  // exemption below is narrow and explicit (one exact file, checked by the second test to really
+  // be the Discord field and never a vendor-key field creeping in under this exemption) — every
+  // OTHER file in src/ is still held to the original, unweakened rule.
+  const PASSWORD_INPUT_PATTERN = /type\s*=\s*["']password["']/;
+  const APPROVED_NON_VENDOR_SECRET_FIELD = 'src\\views\\discord\\ConnectWizard.tsx';
+
+  it('contains no password input control, except the one owner-approved non-vendor secret field', () => {
+    const hits = scan(FILES, PASSWORD_INPUT_PATTERN).filter((hit) => !hit.startsWith(APPROVED_NON_VENDOR_SECRET_FIELD));
+    expect(hits, `API-key-shaped password input found outside the approved exemption:\n${hits.join('\n')}`).toEqual([]);
+  });
+
+  it('the approved exemption really is a Discord bot-token field, never a vendor API key one (guards against exemption drift)', () => {
+    const file = FILES.find((f) => f.rel === APPROVED_NON_VENDOR_SECRET_FIELD);
+    expect(file, 'the approved exemption file must actually exist').toBeTruthy();
+    expect(file?.text).toMatch(PASSWORD_INPUT_PATTERN);
+    expect(file?.text).not.toMatch(/anthropic|openai|api[_-]?key/i);
   });
 });
 

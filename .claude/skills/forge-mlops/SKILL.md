@@ -1,6 +1,6 @@
 ---
 name: forge-mlops
-description: Forge playbook for production ML systems (opt-in Python) — training-to-serving lifecycle. Use for MLOps, model registry, MLflow, drift monitoring, A/B test, canary, rollback.
+description: Forge: production ML systems (opt-in Python) — training-to-serving lifecycle: MLOps, model registry, MLflow, drift monitoring, A/B test, canary, rollback.
 ---
 
 # Forge playbook — Production ML / MLOps
@@ -10,6 +10,8 @@ description: Forge playbook for production ML systems (opt-in Python) — traini
 The unit of value in MLOps is a **reproducible, versioned, monitored model that a human decides to promote** — not a one-off notebook accuracy number. The dangerous failure is a model that looks better offline, silently skews at serving, decays over weeks, or worse, is wired to *act* (spend, send, trade) on its own. A model **informs**; the owner promotes and the owner gates any irreversible action.
 
 ## Hard rules
+- **Decision note before training.** Before training code, write a one-page decision note: goal, success and guardrail metrics, acceptable vs unacceptable mistakes, baseline, data snapshot, rollback plan.
+- **Metric selection by mistake cost.** Choose metrics by the cost of each mistake: precision when false positives are expensive, recall when misses are; include latency and cost; always compare against the current baseline.
 - **Reproducible training.** Seeds fixed, dependencies pinned, data + code + config versioned (DVC / MLflow / a manifest), and the run captured so the **same code + same data regenerates the same metric**. An accuracy you can't reproduce is not a result.
 - **Model versioning + working rollback.** Every model artifact is immutable and versioned in a registry with its training data/version and metrics attached. There is a **tested** rollback path and a fallback model (or graceful degradation) if the new one fails at serve time.
 - **No train/serve skew.** Feature engineering is versioned and identical between training and serving. A data-validation gate at pipeline entry (schema + range checks) rejects bad input before it poisons training or inference.

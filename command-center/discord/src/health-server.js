@@ -2,34 +2,67 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { guardRequest } from './local-guard.js';
+import { buildInviteUrl } from './invite.js';
+import { redactSecrets } from './audit.js';
 
 // Lokale status-API (alleen 127.0.0.1) + heartbeat naar state/BOT_STATUS.json.
 // De waarheid komt LIVE uit gateway/queue/scheduler — nooit uit een cache — zodat
 // "zegt dat het runt maar doet niets" hier direct zichtbaar zou zijn.
-export function startHealthServer({ gateway, config, runnerKind, onShutdown, getPhase = () => 'ready' }) {
+//
+// WP-v290-B (beginner onboarding): `invitePermissions` is the decimal bitfield main.js computes
+// ONCE at boot (invite.js's computeInvitePermissions() — the only place this whole package touches
+// discord.js for that), so this module never needs its own discord.js import: botUsername/
+// applicationId/guilds/inviteUrl below are plain reads of whatever the transport's real client
+// already reported after login — `null`/`[]` (never fabricated) for the mock transport or before
+// login completes.
+export function startHealthServer({
+  gateway,
+  config,
+  runnerKind,
+  onShutdown,
+  getPhase = () => 'ready',
+  getLoginError = () => null,
+  invitePermissions = null,
+}) {
   const startedAt = Date.now();
   const statusFile = path.join(config.stateDir, 'BOT_STATUS.json');
 
-  const snapshot = () => ({
-    live: true,
-    phase: getPhase(),
-    pid: process.pid,
-    startedAt,
-    uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-    transport: config.transport,
-    connected: gateway.transport.connected ?? null,
-    busy: gateway.scheduler.activeCount() > 0,
-    activeRuns: gateway.scheduler.activeCount(),
-    queueDepth: gateway.queue.depth(),
-    runner: runnerKind,
-    guildId: config.guildId,
-    projects: gateway.router.projects.map((p) => ({
-      projectId: p.projectId,
-      channelId: p.forumChannelId,
-      forgeMode: p.forgeMode ?? false,
-      archived: p.archived,
-    })),
-  });
+  const snapshot = () => {
+    const client = gateway.transport?.client ?? null;
+    const applicationId = client?.application?.id ?? null;
+    const guildsCache = client?.guilds?.cache;
+    const guilds = guildsCache ? [...guildsCache.values()].map((g) => ({ id: g.id, name: g.name })) : [];
+    const rawLoginError = getLoginError();
+    return {
+      live: true,
+      phase: getPhase(),
+      pid: process.pid,
+      startedAt,
+      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+      transport: config.transport,
+      connected: gateway.transport.connected ?? null,
+      busy: gateway.scheduler.activeCount() > 0,
+      activeRuns: gateway.scheduler.activeCount(),
+      queueDepth: gateway.queue.depth(),
+      runner: runnerKind,
+      guildId: config.guildId,
+      // Codex finding K3-3 (defense in depth): classifyLoginError() already redacts an unrecognised
+      // error's raw text at the source, but this is the ONE place that value is written to
+      // BOT_STATUS.json on disk and served over /api/health, so it is redacted again here too —
+      // never trust a value to already be clean just because its one known producer says so today.
+      loginError: typeof rawLoginError === 'string' ? redactSecrets(rawLoginError) : rawLoginError,
+      botUsername: client?.user?.username ?? null,
+      applicationId,
+      guilds,
+      inviteUrl: applicationId && invitePermissions ? buildInviteUrl(applicationId, invitePermissions) : null,
+      projects: gateway.router.projects.map((p) => ({
+        projectId: p.projectId,
+        channelId: p.forumChannelId,
+        forgeMode: p.forgeMode ?? false,
+        archived: p.archived,
+      })),
+    };
+  };
 
   const writeStatus = (extra = {}) => {
     try {

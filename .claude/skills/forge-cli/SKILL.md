@@ -1,6 +1,6 @@
 ---
 name: forge-cli
-description: Forge playbook for CLIs and dev tools. Use for CLI, command line, argparse, flag, --help, exit code, stdin, stdout, pipe, dry-run, cross-platform, terminal, subcommand.
+description: Forge: CLIs and dev tools: CLI, command line, argparse, flag, --help, exit code, stdin, stdout, pipe, dry-run, cross-platform, terminal, subcommand.
 ---
 
 # Forge playbook — Command-line tool / CLI

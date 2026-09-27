@@ -247,9 +247,11 @@ t('runCodex(): a codexBin that cannot be found reports spawn_error honestly inst
   assert.strictEqual(result.status, -1);
 });
 
-t('resolveCodexBin() defaults to "codex" and honors FORGE_CODEX_BIN', () => {
+t('resolveCodexBin() defaults to "codex" on non-Windows, `null` (never a bare name) when win32 finds nothing, and honors FORGE_CODEX_BIN', () => {
   assert.strictEqual(CR.resolveCodexBin({ PATH: '' }, 'linux'), 'codex');
-  assert.strictEqual(CR.resolveCodexBin({ PATH: '' }, 'win32'), 'codex');
+  // F3 fix (v2.9.0 independent review, WP-J1): win32 with nothing found on PATH must return null, never the
+  // bare 'codex' string — see resolveCodexBin()'s own doc comment for why a bare name is unsafe there.
+  assert.strictEqual(CR.resolveCodexBin({ PATH: '' }, 'win32'), null);
   assert.strictEqual(CR.resolveCodexBin({ PATH: '', FORGE_CODEX_BIN: '/some/fake/path' }, 'win32'), '/some/fake/path');
   const saved = process.env.FORGE_CODEX_BIN;
   try {
@@ -269,10 +271,11 @@ t('resolveCodexBin() on Windows finds the npm shim\'s own codex.js next to codex
   const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-empty-'));
   // a Windows env object spells the key "Path"; the lookup must not depend on its casing
   assert.strictEqual(CR.resolveCodexBin({ Path: emptyDir + ';"' + npmDir + '"' }, 'win32'), path.join(binDir, 'codex.js'));
-  // a codex.cmd without the npm package next to it is not guessed at
+  // a codex.cmd without the npm package next to it is not guessed at, and (F3, v2.9.0) never falls back to
+  // the bare 'codex' string on win32 — it is a genuine not-found, reported as null.
   const shimOnly = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-shim-'));
   fs.writeFileSync(path.join(shimOnly, 'codex.cmd'), '@echo off');
-  assert.strictEqual(CR.resolveCodexBin({ PATH: shimOnly }, 'win32'), 'codex');
+  assert.strictEqual(CR.resolveCodexBin({ PATH: shimOnly }, 'win32'), null);
   // a real codex.exe earlier on PATH wins
   const exeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-exe-'));
   fs.writeFileSync(path.join(exeDir, 'codex.exe'), '');
@@ -443,14 +446,79 @@ t('F7: runCodex() picks up FORGE_CODEX_TIMEOUT_MS from process.env when opts.tim
 
 t('F7: resolveCodexBin() on Windows skips a non-absolute (relative) PATH entry instead of resolving it against the cwd', () => {
   // a relative PATH entry named "." (or any bare relative name) must never be treated as a real directory
-  // to search — only an absolute directory is ever searched.
-  assert.strictEqual(CR.resolveCodexBin({ PATH: '.;relative\\dir;another' }, 'win32'), 'codex');
+  // to search — only an absolute directory is ever searched. Nothing absolute found => null (F3, v2.9.0),
+  // never the bare 'codex' string.
+  assert.strictEqual(CR.resolveCodexBin({ PATH: '.;relative\\dir;another' }, 'win32'), null);
   // an absolute entry among relative ones still works
   const absDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-abs-'));
   fs.writeFileSync(path.join(absDir, 'codex.exe'), '');
   assert.strictEqual(CR.resolveCodexBin({ PATH: '.;' + absDir + ';relative\\dir' }, 'win32'), path.join(absDir, 'codex.exe'));
   fs.rmSync(absDir, { recursive: true, force: true });
 });
+
+// --- F3 (v2.9.0 independent review, WP-J1, 2026-09-27): resolveCodexBin() returning the bare string 'codex'
+// on win32 when nothing was found meant a real run would spawn an unqualified name — Node's own win32
+// launcher still lets the OS search the current working directory for it even with shell:false. Fixed to
+// return null and have runCodex()/the CLI report it in plain words, never spawn it. ---
+// runCodex()'s own default resolution is `o.codexBin || resolveCodexBin()` — a falsy override (including
+// `null`) is indistinguishable from "no override" and falls through to the REAL resolveCodexBin(), which
+// reads the REAL process.env/process.platform. So "resolveCodexBin() found nothing" can only be forced on
+// runCodex() by actually mutating process.env for the duration of the call (this process really is win32
+// here), never by passing the already-resolved null value as codexBin. Saved/restored like the existing
+// FORGE_CODEX_BIN test above.
+t('F3: runCodex() reports not_found (never spawns) when resolveCodexBin() finds nothing at all on win32', () => {
+  const eff = { review: { model: 'm1', reasoning_effort: 'high', sandbox: 'read-only' } };
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-none-'));
+  const savedPath = process.env.PATH;
+  const savedBin = process.env.FORGE_CODEX_BIN;
+  try {
+    process.env.PATH = emptyDir;
+    delete process.env.FORGE_CODEX_BIN;
+    assert.strictEqual(CR.resolveCodexBin(), null, 'sanity check: the mutated real env must itself resolve to null');
+    const result = CR.runCodex(eff, { prompt: 'review the staged diff' });
+    assert.strictEqual(result.not_found, 'Codex was not found — install it or set FORGE_CODEX_BIN');
+    assert.strictEqual(result.status, -1);
+    assert.strictEqual(result.spawn_error, null, 'never a spawn attempt at all, so never a spawn_error either');
+    assert.strictEqual(result.exec_target, null);
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedBin === undefined) delete process.env.FORGE_CODEX_BIN; else process.env.FORGE_CODEX_BIN = savedBin;
+    fs.rmSync(emptyDir, { recursive: true, force: true });
+  }
+});
+t('F3: runCodex() dry-run is exempt from not_found — still resolves and shows argv with no codex installed anywhere', () => {
+  const eff = { review: { model: 'm1', reasoning_effort: 'high', sandbox: 'read-only' } };
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-none-dry-'));
+  const savedPath = process.env.PATH;
+  const savedBin = process.env.FORGE_CODEX_BIN;
+  try {
+    process.env.PATH = emptyDir;
+    delete process.env.FORGE_CODEX_BIN;
+    const result = CR.runCodex(eff, { dryRun: true });
+    assert.strictEqual(result.not_found, undefined);
+    assert.strictEqual(result.dry_run, true);
+    assert.strictEqual(result.status, null);
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedBin === undefined) delete process.env.FORGE_CODEX_BIN; else process.env.FORGE_CODEX_BIN = savedBin;
+    fs.rmSync(emptyDir, { recursive: true, force: true });
+  }
+});
+if (process.platform === 'win32') {
+  t('F3: CLI "run" exits 2 and prints "Codex was not found" (never attempts a bare-name spawn) when PATH has no codex anywhere', () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-none-cli-'));
+    const env = {};
+    for (const k of Object.keys(process.env)) { if (k.toUpperCase() !== 'PATH' && k.toUpperCase() !== 'FORGE_CODEX_BIN') env[k] = process.env[k]; }
+    env.PATH = emptyDir;
+    const r = spawnSync(process.execPath, [CLI, 'run', '--json', '--prompt', 'review the staged diff'], { encoding: 'utf8', env });
+    assert.strictEqual(r.status, 2);
+    assert.ok(/Codex was not found/.test(r.stderr), 'stderr: ' + r.stderr);
+    const parsed = JSON.parse(r.stdout.trim());
+    assert.strictEqual(parsed.not_found, 'Codex was not found — install it or set FORGE_CODEX_BIN');
+    assert.strictEqual(parsed.codex_bin, null);
+    fs.rmSync(emptyDir, { recursive: true, force: true });
+  });
+}
 
 t('CLI "run" without --prompt (and without --dry-run) exits 2 and never starts codex with the placeholder', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fakecodex-'));

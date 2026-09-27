@@ -17,9 +17,16 @@ import {
 } from '../src/conversations.mjs';
 import { buildCapabilities, _resetCapabilitiesCacheForTests, _setForgeCapabilitiesCjsForTests } from '../src/capabilities.mjs';
 
-test('redact() strips all 5 real credential shapes and leaves ordinary text untouched', () => {
+test('redact() strips all 6 real credential shapes and leaves ordinary text untouched', () => {
   const names = _secretPatternNamesForTests();
-  assert.deepEqual(names, ['NVIDIA_API_KEY', 'GENERIC_SK_KEY', 'GITHUB_PAT', 'AWS_ACCESS_KEY_ID', 'PEM_PRIVATE_KEY']);
+  assert.deepEqual(names, [
+    'NVIDIA_API_KEY',
+    'GENERIC_SK_KEY',
+    'GITHUB_PAT',
+    'AWS_ACCESS_KEY_ID',
+    'PEM_PRIVATE_KEY',
+    'DISCORD_BOT_TOKEN',
+  ]);
 
   assert.match(redact('key=nvapi-abcdefghij1234567890'), /\[REDACTED:NVIDIA_API_KEY\]/);
   assert.match(redact('token sk-abcdefghijklmnopqrstuvwx'), /\[REDACTED:GENERIC_SK_KEY\]/);
@@ -29,9 +36,19 @@ test('redact() strips all 5 real credential shapes and leaves ordinary text unto
     redact('-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----'),
     /\[REDACTED:PEM_PRIVATE_KEY\]/,
   );
+  // Built in pieces (never a literal token-shaped string in one place) — same GitHub
+  // push-protection dodge discord/tests/misc.test.js's own audit test already documents.
+  const fakeDiscordToken = ['MTIzNDU2Nzg5MDEyMzQ1Njc4', 'GaBcDe', 'aBcDeFgHiJkLmNoPqRsTuVwXyZ012345'].join('.');
+  assert.match(redact(`token=${fakeDiscordToken} end`), /\[REDACTED:DISCORD_BOT_TOKEN\]/);
 
   const plain = 'this is a perfectly ordinary sentence with no secrets in it at all';
   assert.equal(redact(plain), plain);
+});
+
+test('redact() DISCORD_BOT_TOKEN pattern does not false-positive on ordinary short dotted text', () => {
+  assert.equal(redact('version 2.8.1 released'), 'version 2.8.1 released');
+  assert.equal(redact('see docs/PLAN.md for details'), 'see docs/PLAN.md for details');
+  assert.equal(redact('routed to task-orchestrator.v2.final'), 'routed to task-orchestrator.v2.final');
 });
 
 test('redact() is idempotent: redacting already-redacted text changes nothing further', () => {

@@ -7,6 +7,9 @@ description: Produces the standard end-of-task Forge report — project adaptati
 
 Be concrete and honest; reflect **only** checks that actually ran. Never claim agents/Codex/tests/preview that did not really happen. Do not say "done" if it isn't. Include all sections below.
 
+## 0. Chat reply vs the file on disk (v2.9.0, usage-minimisation)
+The 14 sections below are the CONTRACT for `.claude/forge-runs/<run_id>/final-report.md` — never trimmed, never skipped, always complete on disk. What actually goes in the **chat reply** is a SHORT summary only: **verdict** (Section 13's one-line pick) · **what changed** (2-4 lines, from Sections 3-4) · **checks run** (Section 5's real commands, one line each) · **blockers** (Section 11, or "none") · **next step** (Section 14) — then the exact path to the full report for anyone who wants the rest. Never re-paste the whole file into chat by default; the owner can always open the path. A small L1 fix may compress this into 3-5 plain lines. A large/client deliverable still gets this short chat form **plus** the complete file — never a full re-paste in chat instead of writing the file.
+
 ## 1. Classification
 task type · complexity (L#) · START NEW or CONTINUE · active project folder · fan-out level used.
 
@@ -24,7 +27,7 @@ Plain summary.
 Paths (all inside the project), one-line note each.
 
 ## 5. Checks/tests run
-Actual commands + results only. No fabricated output.
+Actual commands + results only. No fabricated output. Before declaring a run complete, run `node .claude/forge-bin/forge-verify.cjs <run_id>` and report its result; a mismatch means rework, not a pass.
 
 ## 6. Agent Activity Ledger (required table — evidence, no fake claims)
 Each row has a **Runtime** (ECC agent · ECC skill · native/main · Codex) and a Status. Statuses ONLY: `ECC REAL INVOKED` · `ECC SKILL LOADED` · `NATIVE AGENT INVOKED` · `INTERNAL ROLE ONLY` · `NOT USED` · `FAILED` · `BLOCKED`.
@@ -104,4 +107,4 @@ Per-layer (state each): **Core** · **Codex** · **Browser proof** · **Dashboar
 ## 14. Next step
 Single most useful next action.
 
-Keep it tight; compact by default, full detail for large/client deliverables.
+The FILE on disk keeps every section above in full. The CHAT reply stays short — see Section 0.

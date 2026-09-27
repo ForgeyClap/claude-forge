@@ -1,6 +1,6 @@
 ---
 name: forge-fullstack
-description: Forge playbook for full-stack apps — frontend + backend + database + auth. Use for full-stack, SaaS, CRUD app, Postgres, Supabase, JWT, session, signup, dashboard.
+description: Forge: full-stack apps — frontend + backend + database + auth: full-stack, SaaS, CRUD app, Postgres, Supabase, JWT, session, signup, dashboard.
 ---
 
 # Forge playbook — Full-stack app
@@ -8,7 +8,7 @@ description: Forge playbook for full-stack apps — frontend + backend + databas
 **Do not duplicate ECC skills — defer to:** `make-plan`/`do` (planning+execution), `using-git-worktrees` (parallel isolation), `subagent-driven-development` (both ship with Forge as pinned vendored skills). Orchestration only.
 
 ## Hard rules
-- Auth on **every** protected route, enforced server-side (authn + authz).
+- Auth on **every** protected route, enforced server-side (authn + authz). Protected pages and API routes read the session server-side (cookies); a client-side check is never the only guard, and auth tokens are not kept in localStorage.
 - Input validation on every endpoint; never trust client data.
 - Secrets in env + `.env.example` placeholders; no secrets in the client bundle.
 - DB migrations reviewed by `database-reviewer` and reversible.

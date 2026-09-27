@@ -129,6 +129,19 @@ t('LOCKED_IDS is a superset of KNOWN_GATES + always_interrupt + schema.locked (d
   const locked = new Set(cfg.LOCKED_IDS);
   for (const id of GATES.concat(ALWAYS, LOCKED_SCHEMA_IDS)) assert.ok(locked.has(id), id + ' missing from LOCKED_IDS');
 });
+t('WP-M1 (independent-review R3): gate-hook desc names all FIVE enforced command gates, incl. secret-print, in both languages', () => {
+  // drift canary: if a 6th command gate is ever added, this fails until BOTH this test and the desc text below
+  // are updated together — the same discipline hard-gates.json's own _gate_coverage block already enforces.
+  const commandGates = actiongate.listGates().filter((g) => g.kind === 'command').map((g) => g.id).sort();
+  assert.deepStrictEqual(commandGates, ['destructive-delete', 'git-destructive', 'kill-by-name', 'opaque-exec', 'secret-print'].sort());
+  const d = RAW.settings['gate-hook'].desc;
+  for (const phrase of ['recursive', 'killing processes', 'uncommitted work', 'hide what they run', "secret file's contents"]) {
+    assert.ok(d.en.includes(phrase), 'desc.en missing "' + phrase + '" (' + JSON.stringify(d.en) + ')');
+  }
+  for (const phrase of ['recursief verwijderen', 'op naam killen', 'onvastgelegd werk', 'verbergen wat ze uitvoeren', 'geheim bestand']) {
+    assert.ok(d.nl.includes(phrase), 'desc.nl missing "' + phrase + '" (' + JSON.stringify(d.nl) + ')');
+  }
+});
 t('owner directive pinned: usage-guard default ON, pause-at default 98, the three documented exceptions OFF', () => {
   assert.strictEqual(RAW.settings['usage-guard'].default, true);
   assert.strictEqual(RAW.settings['usage-guard.pause-at'].default, 98);
@@ -332,6 +345,39 @@ t('set writes atomically (no temp file left) with set_at/set_by, into the projec
   assert.strictEqual(d.version, 1);
   assert.deepStrictEqual(fs.readdirSync(path.dirname(fx.projectFile)).filter((f) => f.endsWith('.tmp')), []);
   assert.strictEqual(fs.existsSync(fx.globalFile), false, 'a project key never touches the global file');
+});
+t('WP-A: set_by is "owner via dashboard" only for the literal env/opts value "dashboard", never free text', () => {
+  const saved = process.env.FORGE_CONFIG_SET_BY;
+  try {
+    // opts.setBy test seam (mirrors pathsFor's opts-beats-env convention) — no env var touched.
+    const fx1 = fixture();
+    const R1 = cfg.set('autonomy', 'ask-each-phase', withOpts(fx1, { setBy: 'dashboard' }));
+    assert.strictEqual(R1.entry.set_by, 'owner via dashboard');
+    assert.strictEqual(readJson(fx1.projectFile).settings.autonomy.set_by, 'owner via dashboard');
+
+    // The real gateway shape: FORGE_CONFIG_SET_BY=dashboard on the child env, no opts.setBy at all.
+    process.env.FORGE_CONFIG_SET_BY = 'dashboard';
+    const fx2 = fixture();
+    const R2 = cfg.set('autonomy', 'ask-each-phase', fx2.o);
+    assert.strictEqual(R2.entry.set_by, 'owner via dashboard');
+    assert.strictEqual(readJson(fx2.projectFile).settings.autonomy.set_by, 'owner via dashboard');
+
+    // Every other value is an allowlist MISS — ignored outright, the normal CLI attribution stays.
+    for (const bogus of ['DASHBOARD', 'dashboard ', ' dashboard', 'cli', '', 'true', 'owner via dashboard', '1']) {
+      process.env.FORGE_CONFIG_SET_BY = bogus;
+      const fxN = fixture();
+      const R = cfg.set('autonomy', 'ask-each-phase', fxN.o);
+      assert.strictEqual(R.entry.set_by, 'owner /forge config set', 'bogus FORGE_CONFIG_SET_BY=' + JSON.stringify(bogus) + ' must never change attribution');
+    }
+
+    // No env var at all -> unaffected, same default as before this feature existed.
+    delete process.env.FORGE_CONFIG_SET_BY;
+    const fx4 = fixture();
+    const R4 = cfg.set('autonomy', 'ask-each-phase', fx4.o);
+    assert.strictEqual(R4.entry.set_by, 'owner /forge config set');
+  } finally {
+    if (saved === undefined) delete process.env.FORGE_CONFIG_SET_BY; else process.env.FORGE_CONFIG_SET_BY = saved;
+  }
 });
 t('a global-scope key goes to the global file automatically; --global writes ONLY into the temp home', () => {
   const fx = fixture();
@@ -601,6 +647,30 @@ t('--json parses and every entry exposes source/set_at/set_by', () => {
   const c = L.settings.find((s) => s.key === 'council');
   assert.deepStrictEqual([c.source, c.set_by], ['project', 'owner /forge config set']);
   assert.ok(Date.parse(c.set_at) > 0);
+});
+t('WP-A: --json list entries carry allowed/min/max straight from the schema (no per-key explain needed)', () => {
+  const fx = fixture();
+  const r = cli(fx, ['list', '--json', '--all']);
+  const L = JSON.parse(r.out);
+  assert.strictEqual(L.settings.length, KEYS.length);
+  for (const s of L.settings) {
+    const spec = RAW.settings[s.key];
+    assert.deepStrictEqual(s.allowed, Array.isArray(spec.allowed) ? spec.allowed : null, s.key + '.allowed');
+    assert.strictEqual(s.min, typeof spec.min === 'number' ? spec.min : null, s.key + '.min');
+    assert.strictEqual(s.max, typeof spec.max === 'number' ? spec.max : null, s.key + '.max');
+    assert.strictEqual(s.unit, typeof spec.unit === 'string' ? spec.unit : null, s.key + '.unit');
+  }
+  // Spot-checks against the real, current schema so this can never pass on a schema that happens
+  // to carry no allowed/min/max/unit anywhere (a per-key loop alone would vacuously pass on that).
+  const autonomy = L.settings.find((s) => s.key === 'autonomy');
+  assert.deepStrictEqual(autonomy.allowed, RAW.settings.autonomy.allowed);
+  assert.deepStrictEqual([autonomy.min, autonomy.max], [null, null]);
+  const pauseAt = L.settings.find((s) => s.key === 'usage-guard.pause-at');
+  assert.deepStrictEqual([pauseAt.allowed, pauseAt.min, pauseAt.max, pauseAt.unit], [null, 50, 99, '%']);
+  const budget = L.settings.find((s) => s.key === 'budget-usd');
+  assert.deepStrictEqual([budget.min, budget.max, budget.unit], [0.25, 25, 'USD']);
+  const teamMax = L.settings.find((s) => s.key === 'team-max');
+  assert.deepStrictEqual([teamMax.allowed, teamMax.min, teamMax.max], [null, 1, 12]);
 });
 t('get prints the documented one-liner', () => {
   const fx = fixture();

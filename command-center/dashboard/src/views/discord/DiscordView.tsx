@@ -32,6 +32,8 @@ import {
   useGatewayDiscordStatus,
 } from '@/prototype/state/gateway-discord';
 import type { DiscordService } from '@/prototype/state/gateway-discord';
+import ConnectWizard from './ConnectWizard';
+import { computeWizardStep } from './wizard-step';
 import './discord.css';
 
 /* ------------------------------------------------------------------ atoms */
@@ -245,6 +247,12 @@ export default function DiscordView() {
             />
           ) : (
             <>
+              {/* WP-v290-B: purely ADDITIVE — shown only while setup genuinely is not done yet
+                  (no token, awaiting invite/guild pick, or a failed login). An already-connected
+                  owner never sees this; the classic panels below are completely unchanged. */}
+              {computeWizardStep(service) !== 'done' ? (
+                <ConnectWizard service={service} onChanged={() => {}} />
+              ) : null}
               <ServicePanel
                 service={service}
                 pending={pending}

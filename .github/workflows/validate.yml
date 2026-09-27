@@ -57,6 +57,17 @@ jobs:
       # *.sh as 644 and a bare `./install.sh` refused with "Permission denied". `git ls-files -s` reads
       # the mode git will check out, not the working tree's current OS-level bit (which core.filemode
       # can ignore) — this is the one check that would have actually caught the 2.7.2 regression.
+      # v2.9.0 (final review R1): the Command Center reads its list of Discord settings from
+      # command-center/discord/.env.example. The command-center sync used to block every path starting with
+      # .env, so that template never shipped and the Connect Discord wizard could not finish on a fresh
+      # install. Tests create their own temporary copy, so only a check on the tracked tree catches this.
+      - name: Shipped .env templates are tracked
+        run: |
+          set -e
+          for f in .env.example command-center/discord/.env.example command-center/dashboard/.env.example; do
+            git ls-files --error-unmatch "$f" > /dev/null 2>&1 || { echo "::error::$f is not tracked, but the product needs it"; exit 1; }
+            echo "ok   $f"
+          done
       - name: Every tracked *.sh carries the executable bit (100755) in git's index
         run: |
           set -e

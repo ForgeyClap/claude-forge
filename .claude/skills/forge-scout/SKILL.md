@@ -1,6 +1,6 @@
 ---
 name: forge-scout
-description: Forge doctrine for researching and vetting external skills, plugins, MCP servers, and CLIs. Use for find a skill for X, check if there's a plugin/MCP for Y — approve/hard-pass gate.
+description: Forge doctrine for researching and vetting external skills, plugins, MCP servers, and CLIs: find a skill for X, check if there's a plugin/MCP for Y — approve/hard-pass gate.
 ---
 
 # Forge playbook — Scout (external-capability research + vetting)

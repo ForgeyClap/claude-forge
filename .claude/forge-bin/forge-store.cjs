@@ -124,6 +124,60 @@ function redactValue(v, keyHint) {
   return v; // numbers/booleans/null pass through unchanged
 }
 
+// ---- redactText(str) — v2.9.0 WP-K2 (Codex F5/F9/F10/F11 fix): redactValue()'s key-name heuristic
+// (SECRET_KEY_RE) only ever runs against OBJECT KEYS, so a labelled secret sitting inside ordinary FREE
+// TEXT — "password=hunter2", "client_secret=abc123", "access_token: xyz", `"api_key": "..."` — passed
+// straight through every existing caller that redacts a bare string (forge-vault.cjs's decision/mission
+// notes, forge-doctor.cjs's failing-test lines, forge-snapshot.cjs's latest-check-failure quote). This is a
+// SEPARATE, additive function — redactValue()/redactString()/SECRET_KEY_RE are UNCHANGED, so every existing
+// caller and test keeps its exact current behaviour; only NEW callers that need free-text scanning use this.
+//
+// Two passes, in order: (1) the existing SECRET_PATTERNS (identical to redactString — catches an unlabelled
+// secret shape anywhere in the text, so a value is still masked even before its label is checked); (2) a
+// key=value / key: value / "key": "value" / key value scan reusing SECRET_KEY_RE's own vocabulary (widened
+// with a few more common secret-labelled key names: pwd, auth, session, cookie), case-insensitive, with
+// "_"/"-"/"." separators. The bare "key value" shape (no punctuation at all) is by far the noisiest of the
+// four — an ordinary sentence can accidentally look like it ("a token of appreciation") — so it requires a
+// materially longer value (8+ chars) before it fires; the three punctuated shapes only need 3+ (long enough
+// to skip a bare trailing separator with nothing after it, short enough to still catch a short illustrative
+// value like "xyz"). Every quantifier is UPPER-bounded (ReDoS-safe, same discipline as SECRET_PATTERNS
+// above — no nested/ambiguous repetition anywhere, so both are strictly linear) and the overall input is
+// length-capped before either regex ever sees it. Never throws.
+const TEXT_KEY_TERM = '(?:password|passwd|pwd|client[_.-]?secret|secret[_.-]?key|secret|access[_.-]?token|refresh[_.-]?token|session[_.-]?token|token|api[_.-]?key|apikey|access[_.-]?key|private[_.-]?key|credentials?|authorization|bearer|auth|session|cookie)';
+// Codex stop-gate K2-01 (2026-09-27): a QUOTED value is redacted in full up to its closing quote (an unterminated
+// quote fails closed to the end of the line), and an unquoted punctuated value from its FIRST character — a 1-2
+// character password is still a password. Order matters: quoted forms first, then the unquoted form.
+const KEY_PART = '(?<![A-Za-z0-9])(["\']?)(' + TEXT_KEY_TERM + ')(["\']?)(\\s*[:=]\\s*)';
+const KEY_VALUE_DQ_RE = new RegExp(KEY_PART + '"([^"\\r\\n]{1,4096})("?)', 'gi');
+const KEY_VALUE_SQ_RE = new RegExp(KEY_PART + "'([^'\\r\\n]{1,4096})('?)", 'gi');
+const KEY_VALUE_PUNCT_RE = new RegExp(KEY_PART + '(?!["\'])([^\\s"\',;]{1,4096})', 'gi');
+// v2.9.0 independent review N2 (WP-L1, 2026-09-27): the {8,} floor on ANY non-whitespace run let the bare
+// "key value" form (by far the noisiest of the four — a key term followed by whitespace is common ordinary
+// prose, not a labelled secret) redact real English words: "The access token expiration is set to 3600
+// seconds." lost "expiration" (10 chars), "The password recovery flow is enabled." lost "recovery" (8
+// chars). Both sentences must stay byte-identical. Fixed two ways together: the floor raised to 12 (already
+// excludes "recovery"/"expiration" on length alone), AND the candidate is only redacted when
+// isTokenShapedBareValue() (below) says it mixes letters and digits — an ordinary word (all letters) or a
+// bare number (all digits) never qualifies, but a real token/hash almost always mixes both (the existing
+// 8a5 test's "4b19f0e2c9aa", "abcd1234efgh5678"). The regex still only captures a token-SAFE charset run
+// (unchanged from before, minus the raised floor); the letter+digit check is applied in the replace()
+// callback in redactText() below, not the pattern itself, so it stays easy to read and to test on its own.
+const KEY_VALUE_BARE_RE = new RegExp('(?<![A-Za-z0-9])(' + TEXT_KEY_TERM + ')(\\s+)([A-Za-z0-9_.\\-/+=]{12,4096})', 'gi');
+function isTokenShapedBareValue(v) { return /[A-Za-z]/.test(v) && /[0-9]/.test(v); }
+const TEXT_REDACT_MAX_CHARS = 50000; // defensive cap — every real caller today already bounds its own text far below this
+function redactText(s) {
+  if (typeof s !== 'string') return s == null ? '' : redactText(String(s));
+  try {
+    const truncated = s.length > TEXT_REDACT_MAX_CHARS;
+    let out = redactString(truncated ? s.slice(0, TEXT_REDACT_MAX_CHARS) : s);
+    out = out.replace(KEY_VALUE_DQ_RE, (_m, kq1, key, kq2, sep, _val, close) => kq1 + key + kq2 + sep + '"***REDACTED***' + close);
+    out = out.replace(KEY_VALUE_SQ_RE, (_m, kq1, key, kq2, sep, _val, close) => kq1 + key + kq2 + sep + "'***REDACTED***" + close);
+    out = out.replace(KEY_VALUE_PUNCT_RE, (_m, kq1, key, kq2, sep) => kq1 + key + kq2 + sep + '***REDACTED***');
+    out = out.replace(KEY_VALUE_BARE_RE, (m, key, sep, val) => isTokenShapedBareValue(val) ? key + sep + '***REDACTED***' : m);
+    return truncated ? out + '…[truncated]' : out;
+  } catch { return '[redaction failed]'; }
+}
+
 function nowIso() { return new Date().toISOString(); }
 
 // ---- store operations ----
@@ -168,8 +222,9 @@ function readIndex(store) {
 }
 
 module.exports = {
-  putEntity, getEntity, listStore, readIndex, redactValue, isValidId, isValidStore,
+  putEntity, getEntity, listStore, readIndex, redactValue, redactText, isValidId, isValidStore,
   STORES, resolveStoreDir, CLAUDE_DIR, SECRET_PATTERNS, SECRET_KEY_RE,
+  isTokenShapedBareValue, // N2 (WP-L1) — exported for direct unit testing
 };
 
 // ---- CLI ----

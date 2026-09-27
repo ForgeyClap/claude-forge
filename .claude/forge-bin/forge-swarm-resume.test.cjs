@@ -190,25 +190,29 @@ console.log('\nG5) wp-leases: exact een side effect per wp');
   //     lease geweigerd (geen dubbel risico), na de TTL neemt een herstart hem over: nog steeds 1 effect.
   {
     const M = require(MOD);
+    // 2026-09-27: the lease window was 400 ms with 600 ms waits, so a busy machine (a loaded full doctor run) could let
+    // more than 400 ms pass between two claims that must fall INSIDE the window: one failure in 16 runs under load.
+    // A 2 s window with 2.3 s waits keeps the same logic with room for a slow laptop (about 3 s added to this suite).
+    const LEASE_TTL = 2000, LEASE_WAIT = 2300;
     const root = fs.mkdtempSync(path.join(os5.tmpdir(), 'lease-crash-'));
-    const c1 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-1' }, { root, ttlMs: 400 });
+    const c1 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-1' }, { root, ttlMs: LEASE_TTL });
     t('G5b attempt-1 claimt', c1.ok === true);
     // crash: GEEN release, GEEN side effect. Een verse herstart binnen de TTL:
-    const c2 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: 400 });
+    const c2 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: LEASE_TTL });
     t('G5b binnen de TTL wordt de wees-lease geweigerd (nooit gokken dat de houder dood is)', c2.ok === false && /geleased/.test(c2.reason || ''));
-    sleep5(600); // TTL voorbij
-    const c3 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: 400 });
+    sleep5(LEASE_WAIT); // TTL voorbij
+    const c3 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: LEASE_TTL });
     t('G5b na de TTL neemt de herstart de lease over (tookOverStale)', c3.ok === true && c3.tookOverStale === true, JSON.stringify(c3));
     // r4 #5: een herclaim door dezelfde houder is NIET meer stil ok (dat maakte de eigen WP opnieuw
     // dispatchbaar) — hij weigert met alreadyMine; alleen het expliciete reclaim-protocol geeft een
     // verse lease (recovery na een eigen crash).
-    const c4 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: 400 });
+    const c4 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2' }, { root, ttlMs: LEASE_TTL });
     t('G5b een stille herclaim door dezelfde houder WEIGERT met alreadyMine (geen dubbele dispatch)', c4.ok === false && c4.alreadyMine === true, JSON.stringify(c4));
     // r5 #14: reclaim op een LEVENDE eigen lease weigert ook — pas na de expiry is het recovery
-    const c5live = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', reclaim: true }, { root, ttlMs: 400 });
+    const c5live = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', reclaim: true }, { root, ttlMs: LEASE_TTL });
     t('G5b reclaim op een LEVENDE eigen lease WEIGERT (twee processen met dezelfde holder dispatchen nooit dubbel)', c5live.ok === false && /LEEFT/.test(c5live.reason || ''), JSON.stringify(c5live).slice(0, 140));
-    sleep5(600); // expiry van de c3-lease (ttl 400)
-    const c5 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', reclaim: true }, { root, ttlMs: 400 });
+    sleep5(LEASE_WAIT); // expiry van de c3-lease (ttl LEASE_TTL)
+    const c5 = M.claimWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'attempt-2', reclaim: true }, { root, ttlMs: LEASE_TTL });
     t('G5b reclaim:true op een VERLOPEN eigen lease geeft hem opnieuw uit (recoveryprotocol)', c5.ok === true && typeof c5.token === 'string', JSON.stringify(c5).slice(0, 120));
     // release: vreemde houder geweigerd; houder zonder token geweigerd (CAS); houder mét token slaagt
     t('G5b release door een vreemde houder wordt geweigerd', M.releaseWp({ run_id: 'crash-run', wp_id: 'wpX', holder: 'niet-ik', token: c5.token }, { root }).released === false);

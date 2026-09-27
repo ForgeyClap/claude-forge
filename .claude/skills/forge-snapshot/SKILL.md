@@ -83,6 +83,7 @@ or is explicitly marked in the Honesty footer's "unknown/missing" list — never
 - Automatically: the wired PreCompact/SessionStart(compact) hooks fire on a real compaction.
 - Manually: `/forge snapshot` (phase boundary, or whenever the owner wants a fresh, evidenced snapshot without
   waiting for a compaction) -> `node .claude/forge-bin/forge-snapshot.cjs write --reason phase`.
+- Suggest `/compact` with a short focus note at a logical boundary (a phase just finished, or before an unrelated task) — around 60% context use — never in the middle of a task.
 - `node .claude/forge-bin/forge-snapshot.cjs check --max-age-hours 24` to probe staleness (e.g. from a doctor
   pass or before a long unattended run).
 

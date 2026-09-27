@@ -218,6 +218,32 @@ const rtRealFail = D.runTests(RT_REAL_FAIL);
 t('runTests: a genuinely failing suite (3 passed, 2 failed) is STILL read correctly', rtRealFail.perSuite[0].passed === 3 && rtRealFail.perSuite[0].failed === 2);
 t('runTests: real failure is still marked failed — anchoring does NOT weaken existing detection', rtRealFail.perSuite[0].ok === false && rtRealFail.suitesFailed === 1 && rtRealFail.ok === false);
 
+// v2.9.0 (WP-J): a failing suite names its failing tests; a passing or timed-out suite carries no failures field.
+const RT_NAMED_FAIL = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rt-namedfail-'));
+fs.mkdirSync(path.join(RT_NAMED_FAIL, '.claude', 'forge-bin'), { recursive: true });
+fs.writeFileSync(path.join(RT_NAMED_FAIL, '.claude', 'forge-bin', 'namedfail.test.cjs'),
+  "console.log('  ok   a passing case');\n" +
+  "console.log('  FAIL the broken case — expected 1, got 2');\n" +
+  "console.log('not ok 7 - a node:test style failure');\n" +
+  "console.log('1 passed, 2 failed');\n" +
+  "process.exit(1);\n");
+const rtNamed = D.runTests(RT_NAMED_FAIL);
+t('runTests: a failing suite records its failing test NAMES (FAIL and not ok lines)', Array.isArray(rtNamed.perSuite[0].failures) && rtNamed.perSuite[0].failures.length === 2 && /the broken case/.test(rtNamed.perSuite[0].failures[0]) && /node:test style failure/.test(rtNamed.perSuite[0].failures[1]), JSON.stringify(rtNamed.perSuite[0].failures));
+t('runTests: passing lines are not recorded as failures', !rtNamed.perSuite[0].failures.some((l) => /a passing case/.test(l)));
+t('runTests: a passing suite carries no failures field', rtReal.perSuite[0].failures === undefined);
+t('runTests: a timed-out suite carries no failures field (it never finished)', rtTimeout.perSuite[0].failures === undefined);
+const manyFails = Array.from({ length: 9 }, (_, i) => '  FAIL case ' + i).join('\n');
+t('failingTestNames: capped at FAIL_NAMES_MAX lines', D.failingTestNames(manyFails).length === D.FAIL_NAMES_MAX && D.FAIL_NAMES_MAX === 5);
+t('failingTestNames: each line capped at 200 chars', D.failingTestNames('  FAIL ' + 'x'.repeat(500))[0].length === 200);
+t('failingTestNames: a secret-shaped value in a failure line is redacted', !/sk-ant-api03-[A-Za-z0-9_-]{20}/.test(D.failingTestNames('  FAIL leaked sk-ant-api03-' + 'A'.repeat(40))[0]));
+t('failingTestNames: no failure lines -> empty list', D.failingTestNames('  ok   fine\n3 passed, 0 failed').length === 0);
+// v2.9.0 WP-K2 (Codex F9): redactValue() on a bare string never caught a LABELLED secret (only object-key
+// heuristics did) — "FAIL test password=hunter2" kept the raw value. Fixed by switching to redactText().
+t('failingTestNames: a labelled key=value secret in a failure line is redacted (F9)', (() => {
+  const line = D.failingTestNames('  FAIL test password=hunter2')[0];
+  return !line.includes('hunter2') && line.includes('password=') && /REDACTED/.test(line);
+})());
+
 // --- FIX 3: --json prints exactly ONE parseable JSON object on stdout, matching the fixed contract keys ---
 const { spawnSync } = require('child_process');
 const DOCTOR_CLI = path.join(__dirname, 'forge-doctor.cjs');
@@ -374,6 +400,14 @@ const reviewBossText = fs.readFileSync(reviewBossPath, 'utf8');
 assert.ok(/^---\r?\n/.test(reviewBossText), 'fixture assumption: review-boss.md starts with a frontmatter block');
 fs.writeFileSync(reviewBossPath, reviewBossText.replace(/^---\r?\n/, '---\nmemory: project\n'), 'utf8');
 const agentsRegrowRep = D.agentsCheck(REGROW_ROOT);
+// v2.9.0: an agent whose model is not a Claude Code alias is never loaded; the doctor must say so.
+const REAL_AGENTS = D.agentsCheck(path.resolve(__dirname, '..', '..'));
+t('agentsCheck: every shipped agent file uses a model alias Claude Code loads (opus/sonnet/haiku/fable/inherit)', Array.isArray(REAL_AGENTS.unloadableModel) && REAL_AGENTS.unloadableModel.length === 0, JSON.stringify(REAL_AGENTS.unloadableModel));
+const UNLOAD_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-unloadable-'));
+fs.mkdirSync(path.join(UNLOAD_ROOT, '.claude', 'agents'), { recursive: true });
+fs.writeFileSync(path.join(UNLOAD_ROOT, '.claude', 'agents', 'my-helper.md'), '---\nname: my-helper\ndescription: x\ntools: Read\nmodel: claude-opus-5-5\n---\nbody\n');
+const unloadRep = D.agentsCheck(UNLOAD_ROOT);
+t('agentsCheck: a full model id (claude-opus-5-5) is reported as not loadable', unloadRep.unloadableModel.some((u) => u.agent === 'my-helper' && u.model === 'claude-opus-5-5'), JSON.stringify(unloadRep.unloadableModel));
 t('agentsCheck: a read-only-audit agent (review-boss) regaining `memory: project` is caught in badFrontmatter', agentsRegrowRep.badFrontmatter.includes('review-boss') && agentsRegrowRep.ok === false, JSON.stringify(agentsRegrowRep.badFrontmatter));
 t('agentsCheck: the regression is isolated to review-boss — every other Boss stays clean', agentsRegrowRep.badFrontmatter.length === 1, JSON.stringify(agentsRegrowRep.badFrontmatter));
 
@@ -2395,6 +2429,50 @@ const BS_NOEXEC = bsTmp('pathnoexec');
 fs.writeFileSync(path.join(BS_NOEXEC, 'claude'), '#!/bin/sh\necho nope\n');
 if (!BS_WIN) fs.chmodSync(path.join(BS_NOEXEC, 'claude'), 0o644);
 t('beginner path-tools: a non-executable "claude" file is NOT counted as on PATH (' + (BS_WIN ? 'no PATHEXT extension' : 'no execute bit') + ')', D.resolveOnPath('claude', bsEnv(BS_NOEXEC), process.platform) === null);
+
+// --- claudeVersionAdvisory (v2.9.0 WP-C) — pure-function tests with a stubbed version string, then the
+//     real pathTools integration via the SAME stub-binary mechanism the tests above already use. ---
+tFn('claudeVersionAdvisory: an older claude gets a plain, non-judgmental nudge naming CLAUDE_VERSION_ADVISORY_MIN', () => {
+  const msg = D.claudeVersionAdvisory('2.1.220 (Claude Code)');
+  if (!msg) throw new Error('expected an advisory for 2.1.220, got null');
+  if (!/2\.1\.220/.test(msg)) throw new Error('does not name the installed version: ' + msg);
+  if (!msg.includes(D.CLAUDE_VERSION_ADVISORY_MIN)) throw new Error('does not name the advisory threshold: ' + msg);
+  if (!/claude update/.test(msg)) throw new Error('does not mention `claude update`: ' + msg);
+});
+t('claudeVersionAdvisory: exactly the threshold version -> no advisory (>= is current, not "older than")', D.claudeVersionAdvisory('2.1.280') === null);
+t('claudeVersionAdvisory: a newer version -> no advisory', D.claudeVersionAdvisory('2.1.281 (Claude Code)') === null && D.claudeVersionAdvisory('3.0.0') === null);
+t('claudeVersionAdvisory: an older MAJOR version is still caught (numeric triple comparison, not string comparison)', D.claudeVersionAdvisory('1.9.999') !== null);
+t('claudeVersionAdvisory: an unparseable version string returns null rather than guessing', D.claudeVersionAdvisory('unknown') === null && D.claudeVersionAdvisory('') === null && D.claudeVersionAdvisory(null) === null);
+t('claudeVersionAdvisory: never uses the word "broken" or similar alarm language — it is a heads-up, not a defect', !/broken|error|fail/i.test(D.claudeVersionAdvisory('0.0.1-stub')));
+tFn('parseVersionTriple / compareVersionTriples: ordinary numeric triple behaviour', () => {
+  const a = D.parseVersionTriple('2.1.9'), b = D.parseVersionTriple('2.1.10');
+  if (!a || !b) throw new Error('failed to parse a real triple');
+  if (!(D.compareVersionTriples(a, b) < 0)) throw new Error('2.1.9 must compare BELOW 2.1.10 (numeric, not lexicographic — "9" < "10")');
+  if (D.parseVersionTriple('not-a-version') !== null) throw new Error('garbage input must return null, never a guessed triple');
+});
+
+const BS_OLDCLAUDE = bsTmp('patholdclaude');
+bsVersionStub(BS_OLDCLAUDE, 'node', 'v99.1.0-stub');
+bsVersionStub(BS_OLDCLAUDE, 'git', 'git version 9.9.9-stub');
+bsVersionStub(BS_OLDCLAUDE, 'claude', '2.1.220 (Claude Code)');
+const ptOldClaude = D.pathTools(BS_OLDCLAUDE, { env: bsEnv(BS_OLDCLAUDE) });
+t('beginner path-tools: an OLD claude gets version_advisory attached, in ADDITION to (never instead of) the real version', ptOldClaude.tools.claude.version === '2.1.220 (Claude Code)' && typeof ptOldClaude.tools.claude.version_advisory === 'string' && /claude update/.test(ptOldClaude.tools.claude.version_advisory), JSON.stringify(ptOldClaude.tools.claude));
+t('beginner path-tools: the advisory is folded into detail, but level/ok stay driven ONLY by missing tools — never red for a version alone', ptOldClaude.level === 'ok' && ptOldClaude.ok === true && /claude update/.test(ptOldClaude.detail), JSON.stringify({ level: ptOldClaude.level, ok: ptOldClaude.ok, detail: ptOldClaude.detail }));
+
+const BS_NEWCLAUDE = bsTmp('pathnewclaude');
+bsVersionStub(BS_NEWCLAUDE, 'node', 'v99.1.0-stub');
+bsVersionStub(BS_NEWCLAUDE, 'git', 'git version 9.9.9-stub');
+bsVersionStub(BS_NEWCLAUDE, 'claude', '2.1.281 (Claude Code)');
+const ptNewClaude = D.pathTools(BS_NEWCLAUDE, { env: bsEnv(BS_NEWCLAUDE) });
+t('beginner path-tools: a CURRENT claude gets no version_advisory field at all', ptNewClaude.tools.claude.version_advisory === undefined, JSON.stringify(ptNewClaude.tools.claude));
+tFn('beginner path-tools: an old claude ALONGSIDE a missing tool still surfaces the advisory in the warn text too', () => {
+  const dir = bsTmp('patholdclaudepartial');
+  bsVersionStub(dir, 'claude', '2.0.0');
+  // node and git deliberately absent -> forces the warn branch
+  const rep = D.pathTools(dir, { env: bsEnv(dir) });
+  if (rep.level !== 'warn') throw new Error('expected warn (node/git missing); got ' + rep.level);
+  if (!/claude update/.test(rep.detail)) throw new Error('the version advisory must still appear in the warn branch: ' + rep.detail);
+});
 
 // --- bypass-mode ---
 const BS_BY = bsTmp('bypass');

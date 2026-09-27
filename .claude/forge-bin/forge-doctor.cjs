@@ -236,6 +236,21 @@ function nodeCheckAll(root) {
 // silent pass — same "no evidence" treatment as nodeCheckAll; (c) a suite that hits the spawn timeout is
 // labeled `timedOut:true` / `blocked`, never lumped in with a real failure.
 const DOCTOR_SUITE_TIMEOUT_MS = 300000;
+// v2.9.0 (WP-J): a failing suite names its failing tests in the evidence. On 2026-09-27 one gate-hook test failed
+// once inside a release gate and could not be identified, because perSuite held counts only. A failure line is what
+// a suite's own harness prints for it: this project's `  FAIL <name>`, or node:test's `not ok` / a cross mark. At most
+// FAIL_NAMES_MAX lines of FAIL_NAME_MAX_CHARS each, redacted by forge-store, so a noisy suite cannot bloat the report.
+const FAIL_LINE_RE = /^\s*(?:FAIL\b|not ok\b|\u2716|\u2717)/;
+const FAIL_NAMES_MAX = 5;
+const FAIL_NAME_MAX_CHARS = 200;
+function failingTestNames(out) {
+  // v2.9.0 WP-K2 (Codex F9): redactValue() on a bare string only ever runs the pattern-shaped SECRET_PATTERNS
+  // pass \u2014 its key-name heuristic (SECRET_KEY_RE) only matches OBJECT KEYS, so a failing test line like
+  // "FAIL test password=hunter2" (a fixture printing a labelled secret in its own failure description) kept
+  // the value. redactText() adds the missing key=value scan on top of the same SECRET_PATTERNS pass.
+  return String(out || '').split(/\r?\n/).filter((l) => FAIL_LINE_RE.test(l))
+    .slice(0, FAIL_NAMES_MAX).map((l) => String(store.redactText(l.trim())).slice(0, FAIL_NAME_MAX_CHARS));
+}
 function runTests(root, opts) {
   // timeoutMs is test-only-overridable so a hermetic test can prove the timedOut/blocked classification
   // against a REAL spawnSync timeout in milliseconds instead of waiting minutes or faking the spawnSync
@@ -282,6 +297,7 @@ function runTests(root, opts) {
     else if (!suiteOk) suitesFailed++;
     passed += p; failed += f;
     const entry = { suite: path.basename(t), passed: p, failed: f, ok: suiteOk, timedOut };
+    if (!suiteOk && !timedOut) { const names = failingTestNames(out); if (names.length) entry.failures = names; }
     if (timedOut && r.signal) entry.signal = r.signal;
     perSuite.push(entry);
   }
@@ -695,6 +711,10 @@ function memoryAllowedForClass(policyFile, agentName) {
     ? policyFile.classes[cls].forbidden : null;
   return forbidden ? !forbidden.includes('Write') : null;
 }
+// v2.9.0: Claude Code only loads a project agent whose frontmatter `model` is one of its aliases. On 2026-09-27 the
+// two agents that carried the full id "claude-opus-5-5" (verify-boss, codex-reviewer) were silently absent from the
+// session's agent list while all 17 alias agents loaded — so every install shipped two agents nobody could dispatch.
+const LOADABLE_AGENT_MODELS = new Set(['opus', 'sonnet', 'haiku', 'fable', 'inherit']);
 function agentsCheck(root) {
   const dir = path.join(claudeDir(root), 'agents');
   const missing = [], badFrontmatter = [], injection = [];
@@ -715,12 +735,14 @@ function agentsCheck(root) {
   // frontmatter still gets compared against the policy rather than silently skipped).
   let files = []; try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')); } catch { files = []; }
   const grants = {};
+  const unloadableModel = [];
   for (const f of files) {
     let text; try { text = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; }
     for (const p of AGENT_INJECTION_PATTERNS) { if (p.re.test(text)) injection.push({ file: 'agents/' + f, pattern: p.name }); }
     const base = f.replace(/\.md$/, '');
     const fm = parseFrontmatter(text);
     grants[base] = parseToolsList(fm && fm.tools);
+    if (fm && fm.model && !LOADABLE_AGENT_MODELS.has(String(fm.model).trim().toLowerCase())) unloadableModel.push({ file: 'agents/' + f, agent: base, model: String(fm.model).trim() });
   }
   // WP2 (2026-07-14) — mechanical least-privilege enforcement: compare every agent-md's ACTUAL frontmatter
   // tools against the pinned .claude/config/agents/agent-tool-policy.json source of truth. A missing/
@@ -736,13 +758,15 @@ function agentsCheck(root) {
     toolPolicy = policy.toolPolicyCheck(toolPolicyFile, grants);
   }
   return {
-    ok: missing.length === 0 && badFrontmatter.length === 0 && injection.length === 0 && toolPolicy.ok === true,
+    ok: missing.length === 0 && badFrontmatter.length === 0 && injection.length === 0 && toolPolicy.ok === true
+      && !unloadableModel.some((u) => toolPolicyFileForAgents && toolPolicyFileForAgents.agents && toolPolicyFileForAgents.agents[u.agent]),
     expected: BOSS_NAMES.length,
     found: files.length,
     missing,
     badFrontmatter,
     injection,
     toolPolicy,
+    unloadableModel,
   };
 }
 
@@ -2284,6 +2308,12 @@ const PATH_MISSING_HINT = 'Close and reopen your terminal; if it is still missin
 const NODE_MISSING_HINT = "Forge's own tools are Node scripts and need Node 18 or newer, even though Claude Code itself does not.";
 const WIN_EXEC_EXTS = ['.COM', '.EXE', '.BAT', '.CMD'];
 const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+/** CLAUDE_VERSION_ADVISORY_MIN — v2.9.0 WP-C (2026-09-27): the Claude Code release that turned on Opus 5.5's
+ *  medium-effort default and the current prompt-caching behaviour (usage-minimisation research,
+ *  .claude/forge-research/2026-09-26-usage-minimisation/REPORT.md, citing the CHANGELOG). An older install
+ *  just gets the older behaviour silently — worth a plain, non-red nudge, never a warn: this is a version
+ *  observation, not a defect in the project or machine. */
+const CLAUDE_VERSION_ADVISORY_MIN = '2.1.280';
 
 function envGet(env, name) {
   if (!env) return undefined;
@@ -2382,9 +2412,39 @@ function isSameFile(a, b) {
     return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
   } catch { return false; }
 }
+/** parseVersionTriple(str) -> [major, minor, patch] | null — pulls the first x.y.z-looking token out of an
+ *  arbitrary `--version` first line (e.g. "2.1.220 (Claude Code)", or a test stub like "0.0.1-stub"). Never
+ *  guesses: a string with no such token returns null rather than a fabricated triple. */
+function parseVersionTriple(str) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(str || ''));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+/** compareVersionTriples(a, b) -> negative | 0 | positive, ordinary numeric triple comparison. */
+function compareVersionTriples(a, b) {
+  for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+  return 0;
+}
+/** claudeVersionAdvisory(versionString) -> string | null — v2.9.0 WP-C. A plain-words, non-judgmental nudge
+ *  when the installed `claude` predates CLAUDE_VERSION_ADVISORY_MIN; null (no advisory at all) once it is
+ *  current, and null on an unparseable string too — this ADVISES, it never guesses a verdict from a string
+ *  it can't read. Pure function so it is directly testable with a stubbed version string, independent of
+ *  ever spawning a real binary. */
+function claudeVersionAdvisory(versionString) {
+  const cur = parseVersionTriple(versionString);
+  if (!cur) return null;
+  const min = parseVersionTriple(CLAUDE_VERSION_ADVISORY_MIN);
+  if (compareVersionTriples(cur, min) >= 0) return null;
+  return 'your claude (' + versionString + ') is older than ' + CLAUDE_VERSION_ADVISORY_MIN + ' — that release '
+    + "turned on Opus 5.5's medium-effort default and the current caching behaviour, so an older install just "
+    + 'gets the earlier behaviour silently. `claude update` picks up the newer version when convenient — this '
+    + 'is only a heads-up, no action required.';
+}
+
 /** path-tools — claude, git, node resolvable on PATH, each with the first line of its --version (3 s cap).
  *  When the `node` on PATH IS the binary running this doctor, its version is process.version — the exact
- *  string `node --version` prints — and one of three spawns is saved (measured 40-140 ms per spawn here). */
+ *  string `node --version` prints — and one of three spawns is saved (measured 40-140 ms per spawn here).
+ *  v2.9.0 WP-C: an outdated `claude` gets a plain version advisory tacked onto the SAME `ok`/`warn` verdict
+ *  path-tools already computes from missing tools — the advisory never flips that verdict (never red). */
 function pathTools(root, opts) {
   const o = opts || {};
   const env = o.env || process.env;
@@ -2397,11 +2457,16 @@ function pathTools(root, opts) {
       ? { found: true, path: found, version: process.version, version_source: 'this doctor process' }
       : Object.assign({ found: true, path: found }, toolVersion(found, env, root));
   }
+  if (tools.claude && tools.claude.found && tools.claude.version) {
+    const advisory = claudeVersionAdvisory(tools.claude.version);
+    if (advisory) tools.claude.version_advisory = advisory;
+  }
   const missing = BEGINNER_PATH_TOOLS.filter((n) => !tools[n].found);
   const listing = BEGINNER_PATH_TOOLS.map((n) => n + ': ' + (!tools[n].found ? 'MISSING' : (tools[n].version || 'found (' + tools[n].version_note + ')'))).join(' · ');
-  if (!missing.length) return beginnerResult('path-tools', 'ok', listing, { tools, missing });
+  const versionAdvisorySuffix = (tools.claude && tools.claude.version_advisory) ? ' · ' + tools.claude.version_advisory : '';
+  if (!missing.length) return beginnerResult('path-tools', 'ok', listing + versionAdvisorySuffix, { tools, missing });
   return beginnerResult('path-tools', 'warn', listing + ' — not recognized on PATH: ' + missing.join(', ') + '. ' + PATH_MISSING_HINT
-    + (missing.includes('node') ? ' ' + NODE_MISSING_HINT : ''), { tools, missing });
+    + (missing.includes('node') ? ' ' + NODE_MISSING_HINT : '') + versionAdvisorySuffix, { tools, missing });
 }
 
 /** bypass-mode — the PROJECT's .claude/settings.json + settings.local.json only (never a global settings
@@ -2521,14 +2586,26 @@ function settingsWired(root, opts) {
  *  `warn` (nothing failed). One plain sentence, no jargon, no imperative telling the reader to run a specific
  *  command — it DESCRIBES that `/costs` and `/insights` exist rather than instructing "run /costs now".
  *  English-only, like every other beginner_setup check here (none of them branch on language either) —
- *  written in short, idiom-free sentences so it reads the same for a Dutch or English first-time user. */
+ *  written in short, idiom-free sentences so it reads the same for a Dutch or English first-time user.
+ *
+ *  v2.9.0 WP-C (2026-09-27) added the CACHE-DISCIPLINE sentence, in the same descriptive, non-imperative
+ *  register: switching model or tools mid-session, or compacting right after a long gap, is what actually
+ *  costs the most (research: .claude/forge-research/2026-09-26-usage-minimisation/REPORT.md — a cache miss
+ *  costs roughly 25-40x a cache read of the same content), so this is worth a beginner knowing even though
+ *  Forge itself has no switch to flip for it — see the forge.md "CACHE DISCIPLINE" section for the fuller
+ *  version of the same guidance. */
 function modelChoiceHint() {
   return beginnerResult('model-choice-hint', 'info',
     'model choice affects quality and cost together: a balanced, Sonnet-class model already covers everyday '
     + 'work well, a heavier model is worth reaching for only on genuinely high-risk work (security, '
     + 'production, a hard bug), a usage guard pauses Forge when you near your usage limit (it measures on an '
     + 'interval, so it is a pause before the limit, not a guaranteed instant block), and both `/costs` and '
-    + '`/insights` keep the amount already used visible inside Claude Code.');
+    + '`/insights` keep the amount already used visible inside Claude Code. Picking the model and effort level '
+    + 'once at the start of a session and keeping both for its whole length is what keeps the cached context '
+    + 'cheap — switching model partway through, or turning a tool on or off, makes the next step re-read the '
+    + 'whole conversation at full price instead of the cached rate; `/compact` is cheapest at a natural break '
+    + 'between tasks rather than after a long gap (which already lost the saving), and `/rewind` is the cheaper '
+    + 'way back when a path is being abandoned instead of compacting past it.');
 }
 
 /** beginnerSetup(root, {env, platform, probeClaudeDoctor, claudeDoctorTimeoutMs, overrideMap, settingsSource}) ->
@@ -2677,7 +2754,7 @@ function printSummary(rep) {
       (tp.driftViolations || []).length ? 'TOOL-GRANT DRIFT: ' + tp.driftViolations.map((v) => v.agent + (v.extra.length ? ' +' + v.extra.join(',') : '') + (v.missing.length ? ' -' + v.missing.join(',') : '')).join('; ') : '',
     ].filter(Boolean).join(' · ') : '';
     const detail = a.ok ? (a.expected + '/' + a.expected + ' Boss files · ' + a.found + ' agents · frontmatter valid · injection-clean · tool-policy clean')
-      : ([a.missing.length ? 'missing: ' + a.missing.join(',') : '', a.badFrontmatter.length ? 'bad frontmatter: ' + a.badFrontmatter.join(',') : '', a.injection.length ? 'INJECTION: ' + a.injection.map((h) => h.pattern + ' in ' + h.file).join('; ') : '', tpBad].filter(Boolean).join(' · '));
+      : ([a.missing.length ? 'missing: ' + a.missing.join(',') : '', a.badFrontmatter.length ? 'bad frontmatter: ' + a.badFrontmatter.join(',') : '', a.injection.length ? 'INJECTION: ' + a.injection.map((h) => h.pattern + ' in ' + h.file).join('; ') : '', (a.unloadableModel || []).length ? 'NOT LOADABLE by Claude Code (model must be opus/sonnet/haiku/fable/inherit): ' + a.unloadableModel.map((u) => u.agent + '=' + u.model).join(', ') : '', tpBad].filter(Boolean).join(' · '));
     out.push(line('agents', a.ok, detail));
   }
   if (c.chain) {
@@ -2808,7 +2885,7 @@ function printSummary(rep) {
   return out.join('\n');
 }
 
-module.exports = {
+module.exports = { failingTestNames, FAIL_NAMES_MAX,
   nodeCheckAll, runTests, strictEventCheck, spaPresent, leakScan, agentsCheck, chainCheck, rebindingGuard, backfillContinuity, runDoctor, printSummary, secretLabel, parseFrontmatter, parseToolsList, loadToolPolicy, BOSS_NAMES, looksLikeRealSecret, secretPortion, STRONG_PLACEHOLDER_RE, isPatternDefinitionContext, parseEventsJsonlLenient, chainCanon, PATTERN_DEFINITION_PATHS, LEAK_SCAN_MAX_BYTES, LEAK_SCAN_MAX_LINE,
   // N5 (2026-09-26 laptop re-audit) — class-aware `memory:` frontmatter requirement (see its own doc comment)
   memoryAllowedForClass,
@@ -2847,6 +2924,8 @@ module.exports = {
   settingsWired, settingsTemplatePath,
   // wp-l4 (2026-09-24, loop iteration 4) — model-choice-hint beginner-setup check
   modelChoiceHint,
+  // v2.9.0 WP-C (2026-09-27) — the claude-version advisory folded into path-tools
+  claudeVersionAdvisory, parseVersionTriple, compareVersionTriples, CLAUDE_VERSION_ADVISORY_MIN,
   // wp-v4 (sec-v3 L2) — the real hook end-to-end health check + the dependency file list it resolves
   gateWatchdogHealth, GATE_HOOK_DEPENDENCY_FILES, buildIsolatedGateProject,
 };

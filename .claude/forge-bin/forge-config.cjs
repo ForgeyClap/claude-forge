@@ -589,6 +589,18 @@ function nowMsOf(opts) {
   const ms = n instanceof Date ? n.getTime() : typeof n === 'string' ? Date.parse(n) : typeof n === 'number' ? n : NaN;
   return Number.isFinite(ms) ? ms : Date.now();
 }
+/** setByFor(opts) -> the set_by attribution a set() write records (CFG-11, WP-A v2.9.0). An
+ *  ALLOWLIST, never free text: opts.setBy (test seam, same override-beats-env shape as pathsFor's
+ *  FORGE_PROJECT_ROOT) or process.env.FORGE_CONFIG_SET_BY is read, and the literal value
+ *  "dashboard" is the ONLY thing that changes anything — every other value (unset, empty, a typo,
+ *  anything else a caller might set the env var to) is ignored and the normal CLI attribution
+ *  (text.SET_BY) stays, so this can never become a spoofable "set_by whatever I want" channel. The
+ *  Command Center gateway sets FORGE_CONFIG_SET_BY=dashboard on the child it spawns for a real
+ *  dashboard-initiated write (config-write.mjs) — this is the only current caller. */
+function setByFor(opts) {
+  const raw = (opts && opts.setBy) || process.env.FORGE_CONFIG_SET_BY || '';
+  return raw === 'dashboard' ? text.SET_BY_DASHBOARD : text.SET_BY;
+}
 
 // ---- resolve / get / list ----
 function resolve(opts) {
@@ -753,6 +765,11 @@ function list(opts) {
   const schema = loadSchema(P.schema, opts);
   const r = resolve(opts);
   const lang = r.lang;
+  // WP-A (v2.9.0): allowed/min/max travel with every entry (straight off the spec, never a second
+  // lookup) so a caller — the Command Center dashboard's settings screen in particular — can build
+  // the right input control (a select for `allowed`, a bounded number field for min/max) from this
+  // one list() call alone, with no per-key explain() round trip. `unit` already flowed through via
+  // resolve()'s own per-key Object.assign (r.settings[key].unit) and is left untouched here.
   const all = Object.keys(schema.settings).map((key) => {
     const spec = schema.settings[key];
     return Object.assign({}, r.settings[key], {
@@ -761,6 +778,9 @@ function list(opts) {
       off_means: spec.off_means ? spec.off_means[lang] : null,
       disclosure: spec.disclosure ? spec.disclosure[lang] : null,
       flags: (spec.flags || []).slice(),
+      allowed: Array.isArray(spec.allowed) ? spec.allowed.slice() : null,
+      min: typeof spec.min === 'number' ? spec.min : null,
+      max: typeof spec.max === 'number' ? spec.max : null,
     });
   });
   const settings = opts.all ? all : all.filter((s) => s.group !== 'advanced');
@@ -800,7 +820,10 @@ function writableKey(key, opts, checkIgnoreGlobal) {
  *  Throws (nothing written): 'locked' exit 3 · 'unknown_key' / 'invalid_value' / 'malformed' exit 2 ·
  *  'once_pending' exit 3 (V03, Codex recheck 2026-09-24 — see below). The actual read-modify-write against
  *  `file` is serialized with onceLib.withLock (CFG-09): a concurrent writer targeting the same file always
- *  re-reads AFTER acquiring the lock, so neither writer's change can be lost. */
+ *  re-reads AFTER acquiring the lock, so neither writer's change can be lost. The written entry's set_by
+ *  is setByFor(opts) (WP-A, CFG-11): text.SET_BY normally, or text.SET_BY_DASHBOARD when this call came
+ *  from the Command Center gateway (FORGE_CONFIG_SET_BY=dashboard) — an allowlisted attribution, never
+ *  free text. */
 function set(key, rawValue, opts) {
   opts = opts || {};
   if (opts.once != null) return setOnce(key, rawValue, opts);
@@ -845,7 +868,7 @@ function set(key, rawValue, opts) {
       try { unchanged = parseValue(key, old.value, schema, lang) === value; } catch { unchanged = false; /* an invalid old value is simply replaced */ }
     }
     if (!unchanged) {
-      const entry = { value, set_at: new Date(nowMsOf(opts)).toISOString(), set_by: text.SET_BY };
+      const entry = { value, set_at: new Date(nowMsOf(opts)).toISOString(), set_by: setByFor(opts) };
       const settings = Object.assign({}, data.settings, { [key]: entry });
       atomicWriteJson(file, Object.assign({}, data, { version: hasOwn(data, 'version') ? data.version : 1, settings }), fence);
     }

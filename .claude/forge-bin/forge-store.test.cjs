@@ -183,5 +183,52 @@ t('7b2: a non-secret array element is left untouched', arrOut.items[0] === 'plai
   t('7c3: the guard restoration did not leave a stray escaped directory on disk', !fs.existsSync(path.resolve(TMP, '..', 'escaped-outside')));
 }
 
+// 8) redactText() — v2.9.0 WP-K2 (Codex F5/F9/F10/F11): free-text key=value/key: value/"key": "value"/
+// key value scanning that redactValue()'s object-key-only heuristic never covered. redactValue/redactString/
+// SECRET_KEY_RE stay byte-for-byte unchanged (proven by every test above still passing unmodified) — this
+// is purely additive coverage on a NEW export.
+t('8a1: "password=hunter2" -> the value is redacted, the key stays readable', S.redactText('password=hunter2') === 'password=***REDACTED***');
+t('8a2: "client_secret=abc123" -> redacted (compound key, "_" separator)', S.redactText('client_secret=abc123') === 'client_secret=***REDACTED***');
+t('8a3: "access_token: xyz" -> redacted (colon separator, short illustrative value)', S.redactText('access_token: xyz') === 'access_token: ***REDACTED***');
+t('8a4: \'"api_key": "abc123"\' -> redacted (quoted key AND quoted value)', S.redactText('"api_key": "abc123"') === '"api_key": "***REDACTED***"');
+t('8a5: bare "key value" form (no punctuation) redacts a long token-shaped value', S.redactText('token 4b19f0e2c9aa') === 'token ***REDACTED***');
+t('8b1: a secret-shaped run (no label at all) is still caught by the existing SECRET_PATTERNS pass', !S.redactText('leak: sk-' + '1'.repeat(30)).includes('sk-' + '1'.repeat(30)));
+t('8c1: ordinary prose "a token of appreciation" is left byte-for-byte unchanged (short bare value)', S.redactText('a token of appreciation') === 'a token of appreciation');
+// Codex stop-gate K2-01: quoted values in full, short values too, unterminated quotes fail closed.
+t('8d1: password="correct horse battery staple" -> the WHOLE quoted value is redacted', S.redactText('password="correct horse battery staple"') === 'password="***REDACTED***"');
+t('8d2: single-quoted value with spaces is redacted in full', S.redactText("secret: 'two words here'") === "secret: '***REDACTED***'");
+t('8d3: a 2-character value is redacted (password=ab)', S.redactText('password=ab') === 'password=***REDACTED***');
+t('8d4: a 1-character value is redacted (token: x)', S.redactText('token: x') === 'token: ***REDACTED***');
+t('8d5: an unterminated quoted value fails closed to the end of the line', !/unterminated|value here/.test(S.redactText('api_key = "unterminated value here')) && S.redactText('api_key = "unterminated value here\nnext line').endsWith('\nnext line'));
+t('8d6: a JSON-style pair with spaces in the value is redacted in full', S.redactText('{"client_secret": "s p a c e"}') === '{"client_secret": "***REDACTED***"}');
+t('8d7: an innocent key that merely starts with a secret word is untouched (author=John)', S.redactText('author=John') === 'author=John');
+t('8c2: ordinary prose "the bearer had a bag" is left unchanged (short bare value after "bearer")', S.redactText('the bearer had a bag') === 'the bearer had a bag');
+t('8c3: a decision-style sentence mentioning "session"/"auth" as ordinary words is left unchanged', S.redactText('SENTINEL-DECISION: chosen a session based auth pattern for the login flow') === 'SENTINEL-DECISION: chosen a session based auth pattern for the login flow');
+t('8c4: a check-failure-style sentence with no secret content is left unchanged', S.redactText('SENTINEL-CHECK-FAILED: unit tests red on forge-gate-hook.test.cjs') === 'SENTINEL-CHECK-FAILED: unit tests red on forge-gate-hook.test.cjs');
+t('8d1: non-string input never throws (null -> empty string)', S.redactText(null) === '');
+t('8d2: non-string input never throws (undefined -> empty string)', S.redactText(undefined) === '');
+t('8d3: non-string input never throws (number -> coerced, never a crash)', typeof S.redactText(42) === 'string');
+t('8e1: a huge input is length-capped rather than hanging (bounded, no ReDoS)', (() => {
+  const started = Date.now();
+  const huge = 'password=' + 'x'.repeat(200000);
+  const out = S.redactText(huge);
+  const elapsed = Date.now() - started;
+  return elapsed < 2000 && typeof out === 'string';
+})());
+t('8f1: redactValue()\'s existing object-key behaviour is completely unchanged by adding redactText', S.redactValue({ password: 'hunter2plaintext' }).password === '***REDACTED***');
+
+// v2.9.0 independent review N2 (WP-L1, 2026-09-27): the bare "key value" form's old {8,} floor mangled
+// ordinary prose. Both exact sentences from the finding must stay byte-identical; without the fix each
+// loses its own next word to "***REDACTED***" (redactText would return a shorter, different string).
+t('8g1: N2 — "The access token expiration is set to 3600 seconds." stays byte-identical', S.redactText('The access token expiration is set to 3600 seconds.') === 'The access token expiration is set to 3600 seconds.');
+t('8g2: N2 — "The password recovery flow is enabled." stays byte-identical', S.redactText('The password recovery flow is enabled.') === 'The password recovery flow is enabled.');
+// 8a5 (above) already pins the positive case through redactText(); these three pin the underlying
+// isTokenShapedBareValue() helper directly, so the exact boundary (12 chars, letter AND digit) is provable
+// on its own rather than only inferred from redactText()'s end-to-end behaviour.
+t('8g3: isTokenShapedBareValue — an all-letter word (any length) is never token-shaped', !S.isTokenShapedBareValue('expiration') && !S.isTokenShapedBareValue('recovery'));
+t('8g4: isTokenShapedBareValue — an all-digit run (any length) is never token-shaped', !S.isTokenShapedBareValue('3600') && !S.isTokenShapedBareValue('123456789012'));
+t('8g5: isTokenShapedBareValue — mixed letters+digits is token-shaped regardless of which comes first', S.isTokenShapedBareValue('4b19f0e2c9aa') && S.isTokenShapedBareValue('abcd1234efgh5678'));
+t('8g6: N2 — a value one character short of the 12-char floor is left unchanged even if token-shaped', S.redactText('token ab123456789') === 'token ab123456789' && 'ab123456789'.length === 11);
+
 console.log(pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

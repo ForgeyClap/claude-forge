@@ -1,6 +1,6 @@
 ---
 name: forge-cms
-description: Forge playbook for CMS work — WordPress and headless CMS. Use for CMS, WordPress, theme, plugin, custom post type, WP-CLI, Contentful, Sanity, Strapi, Payload, content model.
+description: Forge: CMS work — WordPress and headless CMS: CMS, WordPress, theme, plugin, custom post type, WP-CLI, Contentful, Sanity, Strapi, Payload, content model.
 ---
 
 # Forge playbook — CMS (WordPress · headless)

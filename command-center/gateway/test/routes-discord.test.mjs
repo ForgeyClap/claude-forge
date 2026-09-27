@@ -154,3 +154,131 @@ test('DELETE /api/discord/status (unsupported method for this path) is rejected 
   const res = await requestWithBody(port, '/api/discord/status', { method: 'DELETE' });
   assert.equal(res.statusCode, 405);
 });
+
+// ── WP-v290-B (beginner Discord onboarding, B1/B2) ─────────────────────────────────────────────
+// Built in pieces (never a literal token-shaped string in one place) — same GitHub push-protection
+// dodge misc.test.js's own audit test in the discord/ package already documents.
+const FAKE_TOKEN = ['MTIzNDU2Nzg5MDEyMzQ1Njc4', 'GaBcDe', 'aBcDeFgHiJkLmNoPqRsTuVwXyZ012345'].join('.');
+
+test('POST /api/discord/connect without the exec token is rejected with 403, never spawns, never writes .env', async () => {
+  let spawnCalls = 0;
+  _setSpawnFnForTests(() => { spawnCalls += 1; return makeFakeChild(1111); });
+  const envBefore = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+
+  const res = await requestWithBody(port, '/api/discord/connect', {
+    method: 'POST',
+    jsonBody: { token: FAKE_TOKEN },
+    omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(spawnCalls, 0);
+  assert.equal(fs.readFileSync(path.join(tempDir, '.env'), 'utf8'), envBefore, '.env must be untouched');
+});
+
+test('POST /api/discord/connect with a malformed token is rejected with 400, never spawns, never writes .env, and the bad token never appears in the response body', async () => {
+  let spawnCalls = 0;
+  _setSpawnFnForTests(() => { spawnCalls += 1; return makeFakeChild(1112); });
+  const badToken = 'clearly not a real token';
+  const envBefore = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+
+  const res = await requestWithBody(port, '/api/discord/connect', { method: 'POST', jsonBody: { token: badToken } });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json.ok, false);
+  assert.equal(spawnCalls, 0);
+  assert.equal(fs.readFileSync(path.join(tempDir, '.env'), 'utf8'), envBefore);
+  assert.equal(res.body.includes(badToken), false, 'even a REJECTED token must never be echoed back in the response');
+});
+
+test('POST /api/discord/connect with an unknown body field is rejected with 400 (strict schema)', async () => {
+  const res = await requestWithBody(port, '/api/discord/connect', {
+    method: 'POST',
+    jsonBody: { token: FAKE_TOKEN, extra: 'nope' },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json.ok, false);
+});
+
+test('POST /api/discord/connect with a real exec token and a valid token really writes .env and starts the service — the token never appears anywhere in the response', async () => {
+  _setExtraEnvOverridesForTests({ RUNNER: 'fake' });
+  _setSpawnFnForTests(() => makeFakeChild(2223));
+
+  const res = await requestWithBody(port, '/api/discord/connect', { method: 'POST', jsonBody: { token: FAKE_TOKEN } });
+  assert.equal(res.statusCode, 202, JSON.stringify(res.json));
+  assert.equal(res.json.ok, true);
+  assert.equal(res.json.pid, 2223);
+  assert.equal(res.body.includes(FAKE_TOKEN), false, 'the real token must never be echoed back in the response body');
+
+  const envAfter = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+  assert.match(envAfter, /^TRANSPORT=discord$/m);
+  assert.ok(envAfter.includes(FAKE_TOKEN), '.env itself (never the HTTP response) is where the token belongs');
+
+  const statusRes = await request(port, '/api/discord/status');
+  assert.equal(statusRes.json.service.running, true);
+  assert.equal(statusRes.json.service.pid, 2223);
+});
+
+test('POST /api/discord/guild without the exec token is rejected with 403 and never touches .env', async () => {
+  const envBefore = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+  const res = await requestWithBody(port, '/api/discord/guild', {
+    method: 'POST',
+    jsonBody: { guildId: '123456789012345678' },
+    omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(fs.readFileSync(path.join(tempDir, '.env'), 'utf8'), envBefore);
+});
+
+test('POST /api/discord/guild with a non-numeric guildId is rejected with 400', async () => {
+  const res = await requestWithBody(port, '/api/discord/guild', { method: 'POST', jsonBody: { guildId: 'not-a-real-id' } });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json.ok, false);
+});
+
+test('POST /api/discord/guild with a real exec token and a guildId the bot is ACTUALLY in persists it and (re)starts the service', async () => {
+  _setExtraEnvOverridesForTests({ RUNNER: 'fake' });
+  _setSpawnFnForTests(() => makeFakeChild(3334));
+  // The FIRST /api/health probe is this route's own guild-membership verification against the OLD
+  // instance; every probe after that is startDiscordService()'s own conflict check, which must see
+  // nothing there once the old instance has been stopped — see the matching comment in
+  // discord-service.test.mjs's own version of this fixture for the full reasoning.
+  let healthCalls = 0;
+  _setFetchFnForTests(async (url) => {
+    if (!String(url).includes('/api/health')) return { ok: true, json: async () => ({ ok: true }) };
+    healthCalls += 1;
+    if (healthCalls === 1) {
+      return { ok: true, json: async () => ({ live: true, pid: 1, phase: 'awaiting-guild-selection', guilds: [{ id: '987654321098765432', name: 'Beta' }] }) };
+    }
+    throw new Error('unreachable — the old instance is stopped by now');
+  });
+
+  const res = await requestWithBody(port, '/api/discord/guild', { method: 'POST', jsonBody: { guildId: '987654321098765432' } });
+  assert.equal(res.statusCode, 202, JSON.stringify(res.json));
+  assert.equal(res.json.ok, true);
+  assert.equal(res.json.pid, 3334);
+
+  const envAfter = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+  assert.match(envAfter, /^DISCORD_GUILD_ID=987654321098765432$/m);
+});
+
+test('SECURITY Codex K3-6: POST /api/discord/guild refuses a format-valid guildId the bot is NOT in, never restarts', async () => {
+  let spawnCalls = 0;
+  _setExtraEnvOverridesForTests({ RUNNER: 'fake' });
+  _setSpawnFnForTests(() => { spawnCalls += 1; return makeFakeChild(9); });
+  _setFetchFnForTests(async () => ({
+    ok: true,
+    json: async () => ({ live: true, pid: 1, phase: 'awaiting-guild-selection', guilds: [{ id: '111', name: 'Alpha' }] }),
+  }));
+
+  const res = await requestWithBody(port, '/api/discord/guild', { method: 'POST', jsonBody: { guildId: '987654321098765432' } });
+  assert.equal(res.statusCode, 400, JSON.stringify(res.json));
+  assert.equal(res.json.ok, false);
+  assert.match(res.json.error, /not one of the servers this bot is currently in/);
+  assert.equal(spawnCalls, 0);
+  const envAfter = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+  assert.equal(envAfter.includes('DISCORD_GUILD_ID=987654321098765432'), false);
+});
+
+test('GET /api/discord/connect (no matching GET route for this path) is a real 404', async () => {
+  const res = await request(port, '/api/discord/connect');
+  assert.equal(res.statusCode, 404);
+});

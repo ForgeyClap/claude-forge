@@ -44,6 +44,27 @@ test('config: mock-transport werkt zonder secrets, discord-transport eist ze', (
   assert.equal(describeConfig(full).botToken, '***set***');
 });
 
+// WP-v290-B (beginner Discord onboarding): DISCORD_GUILD_ID and OWNER_USER_IDS are no longer
+// required up front for TRANSPORT=discord — main.js's own auto-detect (guild-autodetect.js) fills
+// them in after the bot logs in and persists them itself (env-store.js). Only the token is
+// genuinely required to even attempt a connection now.
+test('config: TRANSPORT=discord no longer requires DISCORD_GUILD_ID/OWNER_USER_IDS up front (WP-v290-B auto-detect)', () => {
+  const cwd = tmpStateDir();
+  const tokenOnly = loadConfig({
+    env: { TRANSPORT: 'discord', DISCORD_BOT_TOKEN: 'x.y.z' },
+    cwd,
+  });
+  assert.equal(tokenOnly.transport, 'discord');
+  assert.equal(tokenOnly.guildId, '');
+  assert.deepEqual(tokenOnly.ownerUserIds, []);
+
+  assert.throws(
+    () => loadConfig({ env: { TRANSPORT: 'discord' }, cwd }),
+    /DISCORD_BOT_TOKEN/,
+    'the token itself is still genuinely required',
+  );
+});
+
 // C1 fix (WP-C1, 2026-09-26 laptop re-audit — coordinator flag): projectsDir's default used to be
 // the maintainer's own hard-coded `C:\Users\YOU\Documents\ForgeProjects`, which does not exist on
 // any other machine. It must now be derived from the CURRENT user's real home directory, with no

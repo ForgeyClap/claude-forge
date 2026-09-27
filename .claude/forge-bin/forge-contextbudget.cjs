@@ -101,6 +101,20 @@ const DEFAULT_THRESHOLDS = {
   total_growth_min_tokens: 200, // … with a floor that ignores ordinary editing noise
 };
 const DEFAULT_CHARS_PER_TOKEN = 4;
+/** SKILL LISTING BUDGET (v2.9.0, WP-C — usage-minimisation research 2026-09-26). Anthropic reserves roughly
+ *  1% of the model's context window for the skill listing (every loaded skill's name+description, shown on
+ *  every turn whether or not the skill is ever invoked); once that overflows, Claude Code drops descriptions
+ *  for the least-used skills first, which silently removes the keywords Claude needs to trigger them on its
+ *  own. DEFAULT_CONTEXT_WINDOW_TOKENS is a starting assumption (a 200K-context session), not a live reading —
+ *  both it and the percentage are overridable in the config, same posture as chars_per_token/max_skill_depth
+ *  above, because neither is a fact this module can observe from disk. */
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200000;
+const DEFAULT_SKILL_LISTING_BUDGET_PCT = 0.01;
+/** COMMAND_MAX_DEPTH — how deep the commands/*.md walk descends below `.claude/commands/`. Every real
+ *  command in this project sits flat (depth 0), but Claude Code supports namespaced subfolders
+ *  (`commands/<ns>/<name>.md`), so this stays a small bounded walk rather than a flat readdir — bounded, like
+ *  MAX_SKILL_DEPTH above, so a symlink loop can never turn a read-only meter into an unbounded crawl. */
+const COMMAND_MAX_DEPTH = 4;
 
 /** MAX_SKILL_DEPTH — how many directory levels below a catalog root the SKILL.md walk descends. A skill at
  *  `<root>/<name>/SKILL.md` sits at depth 1; the real plugin layout,
@@ -453,6 +467,62 @@ function measureSkillSource(src, dir, root, perToken, maxDepth, enablement) {
   };
 }
 
+/** walkMarkdownFiles(baseDir, maxDepth) -> {files[], dirExists} — every `*.md` under baseDir, bounded and
+ *  symlink-safe exactly like walkSkillCatalog above, but collecting plain markdown files rather than
+ *  SKILL.md specifically (commands/*.md has no fixed filename to look for). Never throws. */
+function walkMarkdownFiles(baseDir, maxDepth) {
+  const limit = Number.isFinite(maxDepth) && maxDepth > 0 ? Math.floor(maxDepth) : COMMAND_MAX_DEPTH;
+  const files = [];
+  let dirExists = false;
+  try { dirExists = fs.statSync(baseDir).isDirectory(); } catch { dirExists = false; }
+  if (!dirExists) return { files, dirExists };
+  const seen = new Set();
+  try { seen.add(fs.realpathSync(baseDir)); } catch { seen.add(path.resolve(baseDir)); }
+  (function walk(dir, depth) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (!e.isDirectory() && /\.md$/i.test(e.name)) { files.push(p); continue; }
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) { try { isDir = fs.statSync(p).isDirectory(); } catch { isDir = false; } }
+      if (!isDir || depth >= limit) continue;
+      let real; try { real = fs.realpathSync(p); } catch { real = path.resolve(p); }
+      if (seen.has(real)) continue;
+      seen.add(real);
+      walk(p, depth + 1);
+    }
+  })(baseDir, 0);
+  files.sort();
+  return { files, dirExists };
+}
+
+/** measureCommandsDir(dir, root, perToken, maxDepth) -> one post for `.claude/commands/*.md`. Unlike a
+ *  skill (progressive disclosure: only name+description is always-loaded, the body loads on invocation),
+ *  a slash command has no such split — its FULL body enters context the moment the command is invoked and
+ *  then stays for the rest of the session. Measured 2026-09-26: commands/forge.md alone is large enough
+ *  that nothing here tracked its growth at all before this wave (research: .claude/forge-research/
+ *  2026-09-26-usage-minimisation/REPORT.md). Counted as full content, deliberately not frontmatter-only. */
+function measureCommandsDir(dir, root, perToken, maxDepth) {
+  const walk = walkMarkdownFiles(dir, maxDepth);
+  const files = walk.files.map((abs) => {
+    const text = readFileSafe(abs) || '';
+    return { file: path.relative(dir, abs).split(path.sep).join('/'), chars: text.length, approx_tokens: estimateTokens(text.length, perToken) };
+  });
+  files.sort((a, b) => b.chars - a.chars || (a.file < b.file ? -1 : 1));
+  const chars = files.reduce((n, f) => n + f.chars, 0);
+  const inProject = isInside(root, dir);
+  let note;
+  if (!walk.dirExists) note = 'no such directory on this machine (' + dir + ') — an honest zero';
+  else if (!files.length) note = 'the directory exists but holds no *.md file';
+  else note = files.length + ' command file(s), FULL body counted (a slash command loads in full on invocation, unlike a skill\'s progressive-disclosure body)';
+  return {
+    id: 'commands_dir', kind: 'dir', label: 'commands/*.md (' + files.length + ' file(s), full body)',
+    path: dir, in_project: inProject, access: inProject ? 'read-write (this project)' : 'read-only',
+    exists: walk.dirExists, chars, approx_tokens: estimateTokens(chars, perToken), files, note,
+  };
+}
+
 /** frontmatterField — the one field this module needs (name / description) out of the leading `---` block.
  *  Never throws; returns null when there is no frontmatter or no such key.
  *
@@ -526,6 +596,10 @@ function readConfig(root) {
   return {
     chars_per_token: Number.isFinite(raw.chars_per_token) && raw.chars_per_token > 0 ? raw.chars_per_token : DEFAULT_CHARS_PER_TOKEN,
     max_skill_depth: Number.isFinite(raw.max_skill_depth) && raw.max_skill_depth > 0 ? Math.floor(raw.max_skill_depth) : MAX_SKILL_DEPTH,
+    // v2.9.0 WP-C: the skill-LISTING budget (distinct from max_skill_depth, which bounds the WALK). Both
+    // overridable for the same reason chars_per_token is — neither is a fact this module can read off disk.
+    context_window_tokens: Number.isFinite(raw.context_window_tokens) && raw.context_window_tokens > 0 ? raw.context_window_tokens : DEFAULT_CONTEXT_WINDOW_TOKENS,
+    skill_listing_budget_pct: Number.isFinite(raw.skill_listing_budget_pct) && raw.skill_listing_budget_pct > 0 ? raw.skill_listing_budget_pct : DEFAULT_SKILL_LISTING_BUDGET_PCT,
     thresholds: Object.assign({}, DEFAULT_THRESHOLDS, (raw.thresholds && typeof raw.thresholds === 'object') ? raw.thresholds : {}),
     paths: (raw.paths && typeof raw.paths === 'object') ? raw.paths : {},
     baseline: (raw.baseline && typeof raw.baseline === 'object' && raw.baseline.posts && typeof raw.baseline.posts === 'object') ? raw.baseline : null,
@@ -558,6 +632,8 @@ function saveConfig(root, cfg) {
 function resolvePaths(cfg, opts, root) {
   const d = defaultPaths();
   d.projectSkillsDir = path.join(claudeDir(root), 'skills');
+  // v2.9.0 WP-C: project-relative like projectSkillsDir (a command is a project concept, not a home one).
+  d.commandsDir = path.join(claudeDir(root), 'commands');
   const fromCfg = cfg.paths || {};
   const fromOpts = (opts && opts.paths) || {};
   const pick = (k) => fromOpts[k] || fromCfg[k] || d[k];
@@ -566,6 +642,7 @@ function resolvePaths(cfg, opts, root) {
     workspaceClaudeMd: pick('workspaceClaudeMd'),
     eccRulesDir: pick('eccRulesDir'),
     projectSkillsDir: pick('projectSkillsDir'),
+    commandsDir: pick('commandsDir'),
     globalSkillsDir: pick('globalSkillsDir'),
     pluginSkillsDir: pick('pluginSkillsDir'),
     settingsJson: pick('settingsJson'),
@@ -625,6 +702,13 @@ function measure(root, opts) {
   posts.push(measurePath('workspace_claude_md', 'file', 'workspace CLAUDE.md', P.workspaceClaudeMd, root, perToken));
   posts.push(measurePath('project_claude_md', 'file', 'project CLAUDE.md', path.join(root, 'CLAUDE.md'), root, perToken));
 
+  // 5b. the project's slash commands (v2.9.0 WP-C) — commands/*.md, FULL body (a command is not
+  //     progressive-disclosure like a skill: its whole file loads the moment it is invoked and then stays
+  //     for the rest of the session). Not part of every single turn's context like CLAUDE.md, but nothing
+  //     tracked its growth at all before this wave, so it gets the same baseline discipline as everything
+  //     else here.
+  posts.push(measureCommandsDir(P.commandsDir, root, perToken, COMMAND_MAX_DEPTH));
+
   // 6-8. the skill catalogs — the name + description of every skill in EACH of the three sources a session
   //    carries, as three separate posts. This is the specific budget that overflowed on 2026-07-31 (the skill
   //    list was truncated and 48 skills went invisible) and the one this meter itself under-read until the
@@ -654,6 +738,38 @@ function measure(root, opts) {
       });
     }
   }
+
+  // v2.9.0 WP-C — the SKILL-LISTING budget, distinct from the walk-depth guard above: not "did the walk see
+  // every skill" but "does the LOADED listing (name+description summed across all three catalogs) still fit
+  // the roughly 1%-of-context-window budget Claude Code itself enforces". Once it overflows, Claude Code
+  // drops descriptions for the least-used skills first — silently removing the keywords Claude needs to
+  // trigger them on its own (the exact 2026-07-31 failure mode this whole module exists to catch, see the
+  // file header). ADVISORY like every other finding here: it flips this report's own `ok`, never
+  // forge-doctor's hard verdict (contextBudgetCheck() in forge-doctor.cjs wraps this whole module as advisory).
+  const contextWindowTokens = Number.isFinite(opts.contextWindowTokens) && opts.contextWindowTokens > 0
+    ? opts.contextWindowTokens : cfg.context_window_tokens;
+  const listingBudgetPct = Number.isFinite(opts.skillListingBudgetPct) && opts.skillListingBudgetPct > 0
+    ? opts.skillListingBudgetPct : cfg.skill_listing_budget_pct;
+  const skillListingBudgetTokens = Math.floor(contextWindowTokens * listingBudgetPct);
+  const skillListingBudgetChars = skillListingBudgetTokens * perToken;
+  const skillListingChars = skillSources.reduce((n, s) => n + s.chars, 0);
+  const skillListingTokens = estimateTokens(skillListingChars, perToken);
+  const overListingBudget = skillListingChars > skillListingBudgetChars;
+  if (overListingBudget) {
+    findings.push({
+      kind: 'over_listing_budget', id: 'skill_listing',
+      detail: 'the loaded skill listing (name+description summed across all three catalogs) is ' + skillListingChars
+        + ' chars (~' + skillListingTokens + ' est. tokens), over the ~' + (listingBudgetPct * 100) + '% '
+        + 'context-window listing budget of ~' + skillListingBudgetChars + ' chars (~' + skillListingBudgetTokens
+        + ' est. tokens at a ' + contextWindowTokens + '-token context) — once this overflows, Claude Code drops '
+        + 'descriptions for the least-used skills first, which removes the keywords Claude needs to trigger them',
+    });
+  }
+  const skillListing = {
+    chars: skillListingChars, approx_tokens: skillListingTokens,
+    budget_chars: skillListingBudgetChars, budget_approx_tokens: skillListingBudgetTokens,
+    context_window_tokens: contextWindowTokens, budget_pct: listingBudgetPct, over_budget: overListingBudget,
+  };
 
   const totalChars = posts.reduce((n, p) => n + p.chars, 0);
   const totalTokens = estimateTokens(totalChars, perToken);
@@ -767,6 +883,7 @@ function measure(root, opts) {
       available: enablement.available, reason: enablement.reason,
       enabled_count: enablement.enabled_count, plugin_count: enablement.plugin_count,
     },
+    skill_listing: skillListing,
     baseline: cfg.baseline,
     thresholds: th,
     findings,
@@ -842,7 +959,10 @@ module.exports = {
   // 2026-08-01 — plugin enablement (see the PLUGIN ENABLEMENT block above). Exported so a caller/test can
   // audit a single attribution row instead of re-deriving the whole rule set.
   readEnablement, attributePluginSkill, pluginKeyFromPath,
+  // v2.9.0 WP-C — commands/*.md post + the skill-listing budget check.
+  walkMarkdownFiles, measureCommandsDir,
   CONFIG_REL, DEFAULT_THRESHOLDS, DEFAULT_CHARS_PER_TOKEN, ESTIMATE_NOTE, MAX_SKILL_DEPTH, SKILL_SOURCES,
+  DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_SKILL_LISTING_BUDGET_PCT, COMMAND_MAX_DEPTH,
 };
 
 // ---- CLI ----
@@ -891,6 +1011,12 @@ if (require.main === module) {
     }
     console.log('  plugins: ' + rep.plugin_enablement.reason);
     console.log('  ' + skillSourceLine(rep));
+    if (rep.skill_listing) {
+      const sl = rep.skill_listing;
+      console.log('  skill listing budget: ' + sl.chars + ' chars (~' + sl.approx_tokens + ' est. tokens) of a ~'
+        + sl.budget_chars + '-char (~' + sl.budget_approx_tokens + '-token) budget at ' + (sl.budget_pct * 100)
+        + '% of a ' + sl.context_window_tokens + '-token context — ' + (sl.over_budget ? 'OVER budget' : 'within budget'));
+    }
     for (const n of (rep.notes || [])) console.log('  note (' + n.kind + '): ' + n.detail);
     console.log('  ' + (rep.ok ? '✓ ' : '⚠ ') + summarize(rep));
   }

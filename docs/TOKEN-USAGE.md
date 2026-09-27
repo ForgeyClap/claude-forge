@@ -95,6 +95,19 @@ Or just say it in chat: *"pause at 95 percent"*, *"zet de usage guard uit"*. For
 
 ---
 
+## A lighter Forge footprint (new in 2.9.0)
+
+Forge also trims its own overhead, separately from the model/team choices above:
+
+- **`forge.md` is 8% smaller.** The rarely-used parts moved to `.claude/docs/forge-reference/`, and a
+  test proves every rule is still reachable from there.
+- **Command files and the skill list are measured**, so their size is visible instead of growing silently.
+- **Skill descriptions are shorter**, with no trigger words removed — Forge still recognizes the same requests.
+- **The doctor gives Claude Code version advice.**
+- **Chat replies are shorter**, with the full report saved to disk instead of printed out in full every time.
+
+---
+
 ## How *you* keep it cheap
 
 A practical checklist (these are the habits Forge itself follows):

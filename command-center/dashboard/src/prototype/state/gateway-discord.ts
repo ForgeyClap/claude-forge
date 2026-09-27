@@ -53,6 +53,12 @@ export interface DiscordPorts {
   readonly manager: null;
 }
 
+/** One server the bot is currently a member of (WP-v290-B beginner onboarding). */
+export interface DiscordGuild {
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface DiscordService {
   readonly installed: boolean;
   readonly running: boolean;
@@ -61,8 +67,11 @@ export interface DiscordService {
   /** `'mock'` | `'discord'` | `null`, verbatim from the gateway. */
   readonly transport: string | null;
   readonly ports: DiscordPorts;
-  /** The bot's own health JSON, verbatim, when reachable — `null` otherwise. Shape is not fixed;
-   *  render whatever keys are actually present, never assume one. */
+  /** The bot's own health JSON when reachable — `null` otherwise. Shape is not fixed; render
+   *  whatever keys are actually present, never assume one. The gateway deep-redacts every string
+   *  field in this object before it ever crosses the HTTP boundary (WP-L2 finding 3), so this is
+   *  never the raw, unredacted payload even though it is otherwise passed through structurally
+   *  unchanged. */
   readonly health: Record<string, unknown> | null;
   /** An honest reason the service cannot start right now (e.g. another instance already
    *  listening), shown verbatim — `null` when there is no conflict. */
@@ -70,6 +79,23 @@ export interface DiscordService {
   readonly envKeys: readonly DiscordEnvKey[];
   readonly stateDir: string;
   readonly logFile: string;
+  /* ---- WP-v290-B (beginner onboarding): promoted top-level fields, same honesty contract as
+   * every field above — an absent/unreachable value reads back null/[], never a guess. ---- */
+  /** The bot's own Discord username, once logged in. */
+  readonly username: string | null;
+  /** The bot's real Discord application id — the OAuth2 invite URL's `client_id`. */
+  readonly applicationId: string | null;
+  /** Every server the bot is currently a member of. */
+  readonly guilds: readonly DiscordGuild[];
+  /** The ready-to-click OAuth2 invite URL, built from real discord.js permission flags. */
+  readonly inviteUrl: string | null;
+  /** The bot's own onboarding phase (e.g. `'awaiting-invite'`, `'awaiting-guild-selection'`,
+   *  `'ready'`, `'login-failed'`), verbatim — drives which wizard step the view shows. */
+  readonly setupState: string | null;
+  /** A plain-language reason the LAST connection attempt failed (bad token, Message Content
+   *  Intent not enabled, ...), verbatim from the bot itself — `null` when there is no failure to
+   *  report. Only meaningful together with `setupState === 'login-failed'`. */
+  readonly loginError: string | null;
 }
 
 export const EMPTY_DISCORD_SERVICE: DiscordService = {
@@ -84,6 +110,12 @@ export const EMPTY_DISCORD_SERVICE: DiscordService = {
   envKeys: [],
   stateDir: '',
   logFile: '',
+  username: null,
+  applicationId: null,
+  guilds: [],
+  inviteUrl: null,
+  setupState: null,
+  loginError: null,
 };
 
 /** `{ loading, error, data }` — mirrors `gateway-capabilities.ts`'s `GatewayFetchState<T>` shape,
@@ -103,6 +135,13 @@ function toEnvKey(row: Record<string, unknown>): DiscordEnvKey {
   return {
     name: pickString(row, ['name']) ?? '',
     present: pickBool(row, ['present']) ?? false,
+  };
+}
+
+function toGuild(row: Record<string, unknown>): DiscordGuild {
+  return {
+    id: pickString(row, ['id']) ?? '',
+    name: pickString(row, ['name']) ?? '',
   };
 }
 
@@ -126,6 +165,12 @@ export function parseDiscordService(data: Record<string, unknown>): DiscordServi
     envKeys: pickArray(service, ['env_keys']).map(toEnvKey),
     stateDir: pickString(service, ['state_dir']) ?? '',
     logFile: pickString(service, ['log_file']) ?? '',
+    username: pickString(service, ['username']),
+    applicationId: pickString(service, ['application_id']),
+    guilds: pickArray(service, ['guilds']).map(toGuild),
+    inviteUrl: pickString(service, ['invite_url']),
+    setupState: pickString(service, ['setup_state']),
+    loginError: pickString(service, ['login_error']),
   };
 }
 
@@ -197,4 +242,43 @@ export async function requestDiscordStop(): Promise<DiscordStopResult> {
   const result = await gwPost('/api/discord/stop', {}, execHeaders());
   if (!result.ok) return { ok: false, stopped: false, error: result.error };
   return { ok: true, stopped: pickBool(result.data, ['stopped']) ?? false, error: null };
+}
+
+export interface DiscordConnectResult {
+  readonly ok: boolean;
+  readonly pid: number | null;
+  /** The gateway's own real error text (verbatim) — a bad token format, a save failure, or
+   *  anything startDiscordService() itself can fail with. Never a client-invented message. */
+  readonly error: string | null;
+}
+
+/**
+ * `POST /api/discord/connect` — WP-v290-B's ONE beginner-facing "log in" action: sends the pasted
+ * token (and an optional already-known guildId) to the gateway, which validates the FORMAT, saves
+ * it, and starts the bot. The token is sent over the loopback-only gateway connection and is never
+ * stored by this module — it exists only for the duration of this one call.
+ */
+export async function requestDiscordConnect(token: string, guildId?: string): Promise<DiscordConnectResult> {
+  const body: Record<string, string> = { token };
+  if (guildId !== undefined && guildId.length > 0) body.guildId = guildId;
+  const result = await gwPost('/api/discord/connect', body, execHeaders());
+  if (!result.ok) return { ok: false, pid: null, error: result.error };
+  return { ok: true, pid: pickNumber(result.data, ['pid']), error: null };
+}
+
+export interface DiscordSelectGuildResult {
+  readonly ok: boolean;
+  readonly pid: number | null;
+  readonly error: string | null;
+}
+
+/**
+ * `POST /api/discord/guild` — the owner's explicit pick when the bot is in several servers and
+ * auto-detect could not choose alone (`service.setupState === 'awaiting-guild-selection'`, pick
+ * from `service.guilds`).
+ */
+export async function requestDiscordSelectGuild(guildId: string): Promise<DiscordSelectGuildResult> {
+  const result = await gwPost('/api/discord/guild', { guildId }, execHeaders());
+  if (!result.ok) return { ok: false, pid: null, error: result.error };
+  return { ok: true, pid: pickNumber(result.data, ['pid']), error: null };
 }

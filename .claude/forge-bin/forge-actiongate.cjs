@@ -425,12 +425,54 @@ const INERT_SEARCH_TOOLS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'findstr', '
 // `-3O<pager>`), and the shell removes quotes and backslashes anywhere inside a word (`--"open-files-in-pager=…"`,
 // `-\O…`, `-'O'…`). Each word is therefore matched AFTER stripping quotes and backslashes, the way the shell will
 // hand it to git.
+// v2.9.0 independent review F1 (WP-J1, 2026-09-27): stripping quotes/backslashes alone still missed two live
+// bypasses. (1) ANSI-C/locale quoting (`$'-O'"pkill node #"`, `$"-O""pkill node #"`) leaves a `$` glued directly
+// in front of the quote; bash's own expansion drops that `$` and the quote delimiters together, but the old
+// strip removed only the quote, leaving a stray `$` that broke the leading `-`/`--` match. Fixed by dropping any
+// `$` that sits directly before a quote BEFORE the quote/backslash strip. (2) A word can also be an unresolved
+// shell VARIABLE glued onto quoted data (`f=-O; git grep $f"pkill node #" x`) — nothing here can know what `$f`
+// holds, so this file fails toward "not provably inert" instead of guessing; see hasUnresolvedVarLeadWord below.
 const EXEC_CAPABLE_FLAG_WORD_RE = /^(?:-[A-Za-z0-9]*O|--op|--pager|--pre)/;
-const hasExecCapableFlag = (s) => String(s).split(/\s+/).some((w) => EXEC_CAPABLE_FLAG_WORD_RE.test(w.replace(/["'\\]/g, '')));
+const hasExecCapableFlag = (s) => String(s).split(/\s+/).some((w) => EXEC_CAPABLE_FLAG_WORD_RE.test(w.replace(/\$(?=["'])/g, '').replace(/["'\\]/g, '')));
+/** hasUnresolvedVarLeadWord(s) -> boolean — v2.9.0 independent review F1 (WP-J1). True when some whitespace-split
+ *  word STARTS with an unquoted `$name`/`${name}` (a bare shell/PowerShell variable reference, never itself
+ *  quoted — a quoted `"$HOME"`/`'$HOME'` starts with the quote character, not `$`, and never matches). Such a
+ *  word's real value is unknown to a static classifier, so it is treated as possibly exec-capable rather than
+ *  assumed inert — deliberately narrow: `$'...'`/`$"..."` (ANSI-C/locale quoting, handled above) never match
+ *  since the character right after `$` there is a quote, not a name-start character or `{`.
+ *
+ *  v2.9.0 WP-K1 (2026-09-27, independent Codex review of the v2.9.0 integration) F3: `BARE_VAR_LEAD_RE` used to
+ *  require a NAME (`[A-Za-z_]`) right after `$`/`${`, so a POSITIONAL or SPECIAL parameter — `$0`-`$9`, `${10}`,
+ *  `$@`, `$*`, `$#`, `$?`, `$$`, `$!`, `$-` — never matched, even though every one of them is exactly as
+ *  unresolved to a static classifier as `$name` is. Live repro: `set -- -O; git grep $1"pkill node #" src` set
+ *  `$1` to the pager flag `-O` and glued it onto the quoted kill-word text, and the OLD regex waved it through
+ *  because `1` is not `[A-Za-z_]`. Now any of `[A-Za-z_0-9@*#?$!-]` right after the optional `{` counts.
+ *
+ *  F4: the check used to apply to EVERY word in the segment, so `git grep -e 'rm -rf' -- $file` was flagged
+ *  exec-capable purely because `$file` appears somewhere in the line — but `$file` sits AFTER a standalone `--`
+ *  (end-of-options), where a well-behaved tool (grep, git, …) can never again read an argument as a FLAG,
+ *  whatever it expands to. hasUnresolvedVarLeadWord() now stops scanning at the first standalone `--` token —
+ *  a variable found BEFORE it still counts (it could still supply a flag), one found AFTER it does not.
+ *
+ *  v2.9.0 independent review F4 follow-up (WP-L1, 2026-09-27): the boundary check above only ever recognised
+ *  an UNQUOTED `--` word, so `git grep -e 'rm -rf' "--" $file` (the shell strips the quotes before grep ever
+ *  sees them — a quoted `"--"`/`'--'` is exactly the same end-of-options marker) still scanned every word,
+ *  saw `$file`, and was flagged exec-capable again — the real, live false block this follow-up closes. A word
+ *  that, once its own surrounding quotes are removed, is exactly `--` now ends the scan too; a bare `--`
+ *  glued to other text (`--foo`) is deliberately excluded since it is a different word. */
+const BARE_VAR_LEAD_RE = /^\$\{?[A-Za-z_0-9@*#?$!-]/;
+const isEndOfOptionsWord = (w) => w === '--' || w === '"--"' || w === "'--'";
+function hasUnresolvedVarLeadWord(s) {
+  const words = String(s).split(/\s+/);
+  const endOfOptions = words.findIndex(isEndOfOptionsWord);
+  const scanned = endOfOptions === -1 ? words : words.slice(0, endOfOptions);
+  return scanned.some((w) => BARE_VAR_LEAD_RE.test(w));
+}
 function segmentCanExecuteEmbeddedText(segment, mask, baseOffset) {
   const s = String(segment || '');
   if (/<\(|>\(|\$\(|`/.test(s)) return true;
   if (hasExecCapableFlag(s)) return true;
+  if (hasUnresolvedVarLeadWord(s)) return true;
   // an unquoted `(` (PowerShell sub-expression) or `{` (PowerShell script block, e.g. a delay-bind
   // `-Path { . 'verb' }` — final review Q1) can run a quoted verb from inside the "search" segment
   for (let i = 0; i < s.length; i++) {
@@ -491,6 +533,143 @@ const DANGER_TRIGGER = {
   },
 };
 
+/** SECRET_TARGET_RE — WP-M1 (2026-09-27, independent review + the Lead's own live use of the gate). A JS-side
+ *  mirror of hard-gates.json's secret-print gate's own target alternation (the same "is this filename shaped
+ *  like a secret" text repeated in each of that gate's verb arms) — duplicated here on purpose, the same
+ *  documented-duplication convention this file already uses for DANGER_TRIGGER's own verb lists (keep the two
+ *  in sync; forge-gate-secretprint.test.cjs cross-checks concrete examples against this constant's behaviour).
+ *  Used ONLY by secretPrintPatternExempt() below to test whether a candidate FILE argument (never the pattern
+ *  argument) looks secret-shaped — it never decides whether the gate fires in the first place, which stays
+ *  entirely hard-gates.json's own job. */
+const SECRET_TARGET_RE = /\.env\b(?!\.(?:example|sample|template)\b)|\.pem\b|\.key\b|\bid_rsa|\bid_ed25519|[\w.-]*credentials[\w.-]*\.json\b|\bsecrets[\\/]|\bservice-account[\w.-]*\.json\b|\.p12\b|\.pfx\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\.git-credentials\b|\.docker[\\/]config\.json\b|\.aws[\\/]credentials\b/i;
+
+// secretPrintPatternExempt()'s three search-tool families — split because each has a DIFFERENT rule for where
+// its pattern argument sits (see that function's own doc for why).
+const SEARCH_TOOL_HEADS = new Set(['grep', 'egrep', 'fgrep', 'rg']);
+const FINDSTR_HEAD = 'findstr';
+const SELECT_STRING_HEADS = new Set(['select-string', 'sls']);
+// grep/egrep/fgrep/rg: GNU/ripgrep semantics — once ANY -e/--regexp/-f/--file is given, EVERY remaining
+// positional is a FILE, never also "the" pattern (closes `grep -e x .env.local`: the positional after an
+// explicit -e must still be read as the file). -f/--file's own value is a pattern-SOURCE file, exempted the
+// same as -e/--regexp per the task spec, not a target this gate reads for its own content directly.
+const GREP_PATTERN_FLAG_RE = /^(?:-e|--regexp|-f|--file)$/;
+const GREP_PATTERN_FLAG_ATTACHED_RE = /^(?:--regexp|--file)=/;
+// Select-String/sls: ONLY an explicit -Pattern value is ever exempt — deliberately NO positional fallback (see
+// secretPrintPatternExempt()'s own doc for the live false-ALLOW this closes).
+const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
+
+/** splitSegmentWords(segment) -> {words:[{raw,start,end}], mask} | null — a minimal, LOCAL quote-aware word
+ *  split for secretPrintPatternExempt() only (not a general tokenizer — forge-gate-data.cjs's own scanWords()
+ *  is that; this file deliberately never requires a sibling that itself requires this file, so it stays the
+ *  dependency ROOT other files require(), never a dependant of one of them — see this file's own header). A
+ *  fresh per-segment QUOTES.scanQuotes() call is the same "no shared mask -> build one over just this text"
+ *  fallback commandPositionCandidates()/hasLiveCArg() already use elsewhere in this file, safe here because
+ *  every caller already has an INTACT whole segment, never a stump. Splits on whitespace OUTSIDE any quoted
+ *  span, so a quoted argument containing a space is one word, not two. Returns null when the quoting cannot
+ *  be resolved (an unterminated quote) — the caller treats null as "cannot tell, exempt nothing", the same
+ *  fail-toward-blocking direction every other quote-aware check in this file already takes. */
+function splitSegmentWords(segment) {
+  const mask = QUOTES.scanQuotes(segment);
+  if (mask.unterminated) return null;
+  const n = segment.length;
+  const words = [];
+  let i = 0;
+  while (i < n) {
+    while (i < n && !mask.inside(i) && /\s/.test(segment[i])) i++;
+    if (i >= n) break;
+    const start = i;
+    while (i < n && (mask.inside(i) || !/\s/.test(segment[i]))) i++;
+    words.push({ raw: segment.slice(start, i), start, end: i });
+  }
+  return { words, mask };
+}
+
+/** wordText(w, mask) -> w's own text with one outer quote pair removed, but ONLY when w is wholly one quoted
+ *  span (mirrors forge-gate-data.cjs::wholeInert's "start/end exactly match a single span" test, recomputed
+ *  locally since this file never requires that sibling). A bare word, or one only PARTLY quoted (e.g.
+ *  `--regexp=".env"`), is returned exactly as written — this never guesses at a partial unwrap. */
+function wordText(w, mask) {
+  const sp = mask.spans.find((s) => s.start === w.start && s.end === w.end);
+  return sp ? w.raw.slice(1, -1) : w.raw;
+}
+
+/** secretPrintPatternExempt(segment) -> boolean — WP-M1 (2026-09-27). True when EVERY secret-shaped mention in
+ *  this search-tool segment sits in the tool's own PATTERN position, never a FILE argument, so secret-print's
+ *  match for THIS segment should be suppressed. False (never suppress; the base gate match stands) whenever no
+ *  recognised search-tool head is found, the segment's quoting cannot be resolved, or a secret-shaped mention
+ *  sits anywhere OUTSIDE the pattern position — fail-toward-blocking for anything this cannot positively clear.
+ *
+ *  WHY. hard-gates.json's grep/Select-String/findstr arms test "does a secret-shaped token appear ANYWHERE
+ *  after this verb" — right for a FILE argument (`grep SECRET .env` really does read `.env`), wrong for the
+ *  tool's own search PATTERN (`grep -rn "\.env" src/` reads `src/`, not `.env` — the pattern is DATA the tool
+ *  searches WITH, never a file it opens). This is the position-aware veto testCommandGate()/
+ *  testCommandGateRaw() consult right alongside segmentTriggerClears(), for gate id "secret-print" only.
+ *
+ *  POSITION RULES (each closes a real repro, not a hypothetical):
+ *   - grep/egrep/fgrep/rg: the pattern is the value of -e/--regexp/-f/--file wherever ANY of those appear
+ *     (every OTHER positional then counts as a file); otherwise the FIRST non-flag positional is the pattern.
+ *   - findstr: no flag form exists — always the first non-flag positional (`/`-prefixed words are flags).
+ *   - Select-String/sls: ONLY an explicit -Pattern value is ever exempt, with NO positional fallback — closes
+ *     a live false-ALLOW a positional rule would cause: `Select-String -Path .env -Pattern x` has `.env`
+ *     sitting BEFORE `-Pattern` as -Path's own value, and this classifier does not model every cmdlet
+ *     parameter's own arity, so inferring "the first bare word is the pattern" would wrongly exempt the real
+ *     file target. Requiring an explicit -Pattern means a secret-shaped word is only ever exempted when it is
+ *     DEMONSTRABLY that flag's own value.
+ *  Anything not explicitly cleared above (an unrecognised flag's own value, e.g.) is left as a plain candidate
+ *  — tested like a file argument, never exempted — which can only ever over-block, the safe direction. */
+function secretPrintPatternExempt(segment) {
+  const split = splitSegmentWords(String(segment || ''));
+  if (!split) return false;
+  const { words, mask } = split;
+  const texts = words.map((w) => wordText(w, mask));
+
+  let headIdx = -1, tool = null;
+  for (let i = 0; i < words.length; i++) {
+    const base = texts[i].replace(/^["']|["']$/g, '').toLowerCase().split(/[\\/]/).pop().replace(/\.exe$/, '');
+    if (SEARCH_TOOL_HEADS.has(base)) { headIdx = i; tool = 'grep'; break; }
+    if (base === FINDSTR_HEAD) { headIdx = i; tool = 'findstr'; break; }
+    if (SELECT_STRING_HEADS.has(base)) { headIdx = i; tool = 'select-string'; break; }
+  }
+  if (headIdx === -1) return false;
+
+  const rest = words.slice(headIdx + 1);
+  const restTexts = texts.slice(headIdx + 1);
+  const patternIdx = new Set();
+
+  if (tool === 'select-string') {
+    for (let i = 0; i < rest.length; i++) {
+      if (SELECT_STRING_PATTERN_FLAG_RE.test(rest[i].raw) && i + 1 < rest.length) patternIdx.add(i + 1);
+    }
+  } else {
+    let explicitFlag = false;
+    if (tool === 'grep') {
+      for (let i = 0; i < rest.length; i++) {
+        if (GREP_PATTERN_FLAG_RE.test(rest[i].raw)) {
+          explicitFlag = true;
+          if (i + 1 < rest.length) patternIdx.add(i + 1);
+        } else if (GREP_PATTERN_FLAG_ATTACHED_RE.test(rest[i].raw)) {
+          explicitFlag = true;
+          patternIdx.add(i);
+        }
+      }
+    }
+    if (!explicitFlag) {
+      const isFlagShaped = (raw) => (tool === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
+      for (let i = 0; i < rest.length; i++) {
+        if (isFlagShaped(rest[i].raw)) continue;
+        patternIdx.add(i);
+        break; // exactly one implicit positional pattern
+      }
+    }
+  }
+
+  for (let i = 0; i < rest.length; i++) {
+    if (patternIdx.has(i)) continue;
+    if (SECRET_TARGET_RE.test(restTexts[i])) return false;
+  }
+  return true;
+}
+
 /** testCommandGate(gate, text) -> boolean — true when gate.match.pattern_line matches the WHOLE text (outside
  *  any quoted span — see patternLineFires() above), or when the gate's own extra predicate (see
  *  COMMAND_EXTRA_FIRE) fires on the FULL text, or when ANY single command segment of `text` matches
@@ -522,7 +701,14 @@ const DANGER_TRIGGER = {
  *  `entry.segment` itself (never a derived `cands` candidate, which may drop leading text but never adds any,
  *  so a trigger present in any candidate is always present in entry.segment too) with that exact offset. A
  *  gate with no `pattern` trigger (DANGER_TRIGGER[gate.id].pattern undefined) is unaffected — this is a pure
- *  no-op there, identical to before. */
+ *  no-op there, identical to before.
+ *
+ *  2026-09-27 (WP-M1): for gate id "secret-print" only, a segment that otherwise matches is still not fired
+ *  when secretPrintPatternExempt() (see its own doc above) says every secret-shaped mention in that segment
+ *  sits in a search tool's own PATTERN position, never a FILE argument — the position-aware counterpart to
+ *  segmentTriggerClears()'s quote-aware one, consulted the same way and for the same reason: a broad JSON
+ *  regex lookahead has no notion of argument position, so this file supplies it. Every other gate id is
+ *  unaffected (the function itself no-ops unless the segment's head is a recognised search tool). */
 function testCommandGate(gate, text) {
   if (!text) return false;
   const m = gate.match;
@@ -541,6 +727,7 @@ function testCommandGate(gate, text) {
     if (!cands.some((c) => re.test(c))) continue;
     if (entry.intact && isExcusedSegment(m, entry.segment)) continue;
     if (!segmentTriggerClears(trig, entry, mask)) continue;
+    if (gate.id === 'secret-print' && secretPrintPatternExempt(entry.segment)) continue;
     return true;
   }
   return false;
@@ -556,7 +743,9 @@ function testCommandGate(gate, text) {
  *  2026-09-26 (WP-S8): pattern_line goes through the same quote-aware patternLineFires() as testCommandGate().
  *  2026-09-26 (WP-S9): the per-segment `pattern` loop also goes through the same triggerClearsQuotes() check
  *  as testCommandGate() (see that function's own doc) — a quoted, never-executing "shape" is not a real
- *  recursive-delete shape either, so the raw check must not disagree with the classifier's own verdict. */
+ *  recursive-delete shape either, so the raw check must not disagree with the classifier's own verdict.
+ *  2026-09-27 (WP-M1): also consults secretPrintPatternExempt() for gate id "secret-print", same as
+ *  testCommandGate() — see that function's own doc. */
 function testCommandGateRaw(gate, text) {
   if (!text) return false;
   const m = gate.match;
@@ -574,6 +763,7 @@ function testCommandGateRaw(gate, text) {
     const cands = commandPositionCandidates(entry, mask);
     if (!cands.some((c) => re.test(c))) continue;
     if (!segmentTriggerClears(trig, entry, mask)) continue;
+    if (gate.id === 'secret-print' && secretPrintPatternExempt(entry.segment)) continue;
     return true;
   }
   return false;
@@ -657,6 +847,11 @@ const KNOWN_GATES = ['deploy', 'git-push', 'spend', 'dns-change', 'prod-activate
   // interpreter (a pipe into sh/bash/pwsh/powershell, iex/Invoke-Expression/eval, `sh -c "$VAR"`) hides the
   // real command from every other gate; Forge cannot inspect it, so it stops instead of guessing.
   'opaque-exec',
+  // WP-D (2026-09-27) — a FIFTH command gate: printing a secret file's CONTENTS via a shell reader/search
+  // command (cat/type/Get-Content/gc/more/less/head/tail/bat/grep/egrep/fgrep/rg/Select-String/sls/findstr)
+  // reaches the same secrets settings.json's permissions.deny already blocks Claude's own Read tool from,
+  // by a route the deny rules cannot see (a shell command, not a tool call).
+  'secret-print',
   'write-outside-root'];
 
 module.exports = {
@@ -666,6 +861,9 @@ module.exports = {
   // WP-S9 (2026-09-26) — the trigger-vs-quote-mask check and its per-gate table, exported for direct unit
   // testing (see both functions' own doc comments above for the "why").
   triggerClearsQuotes, DANGER_TRIGGER, onlyQuotedAssignmentAtRest, segmentTriggerClears, leadsWithInertSearchTool,
+  // v2.9.0 independent review F1 (WP-J1) — exported for direct unit testing of the $-before-quote drop and the
+  // unresolved-variable-lead-word check underneath leadsWithInertSearchTool.
+  hasExecCapableFlag, hasUnresolvedVarLeadWord,
   // N02 (codex-recheck 2026-09-24, third pass) — the -c argument's genuine two-layer escape read (re-exported
   // from forge-actiongate-position.cjs, see hasLiveCArg above); COMMAND_EXTRA_FIRE exported so a caller/test
   // can see exactly which gate ids have an extra JS predicate beyond their JSON regex.
@@ -678,6 +876,8 @@ module.exports = {
   // V06 command-position widening (codex-recheck 2026-09-24, wave 1+2; lives in forge-actiongate-position.cjs)
   // — exported for direct unit testing
   stripCommandOpeners, commandPositionCandidates, laterBranchStarts, COMMAND_OPENER_STEPS,
+  // WP-M1 (2026-09-27) — secret-print's position-aware pattern-vs-file veto, exported for direct unit testing.
+  secretPrintPatternExempt, SECRET_TARGET_RE, splitSegmentWords, wordText,
   KNOWN_GATES, CONFIG_PATH, EXCEPT_KINDS,
 };
 

@@ -1,6 +1,6 @@
 ---
 name: forge-figma
-description: Forge playbook for design-to-code. Use for figma, design to code, mockup, design tokens, pixel-perfect, responsive, breakpoints, style guide, dev mode, handoff, accessibility.
+description: Forge: design-to-code: figma, design to code, mockup, design tokens, pixel-perfect, responsive, breakpoints, style guide, dev mode, handoff, accessibility.
 ---
 
 # Forge playbook — Design → code (Figma / mockups)

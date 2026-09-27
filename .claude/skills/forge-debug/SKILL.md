@@ -1,6 +1,6 @@
 ---
 name: forge-debug
-description: Forge systematic-debugging playbook. Use for ANY bug, crash, stack trace, failing test, or regression — debug, root cause, bisect, flaky test — before proposing a fix.
+description: Forge systematic-debugging playbook: ANY bug, crash, stack trace, failing test, or regression — debug, root cause, bisect, flaky test — before proposing a fix.
 ---
 
 # Forge playbook — Systematic debugging
@@ -10,11 +10,13 @@ file is the Forge-specific orchestration wrapper: it binds that methodology to t
 which Boss does what.
 
 ## Hard rules
+- **Classify the error first.** Build-blocking, type, configuration, or dependency — fix build-blocking errors first before moving to other issues.
 - **The Iron Law:** no fix without root-cause investigation first. A patch that only makes the symptom go
   away, without an explanation of *why* the bug happened, is not a fix — it is a guess.
 - **Never claim "fixed" without proof.** Per the project honesty core (`CLAUDE.md` → Honesty), a bug is
   only "fixed" when there is a real regression test that failed **before** the change (RED) and passes
   **after** it (GREEN). A verbal claim of "should be fixed now" is not evidence.
+- **Minimal-diff check after each fix.** After each fix, re-run the same diagnostic and confirm only the targeted error changed.
 - Do not silently patch around a failure (swallowed exception, widened try/catch, disabled test,
   loosened assertion) to make a check go green — that is a rework-flag, not a fix.
 - If root cause can't be found within a reasonable number of attempts, say so honestly (`BLOCKED` /
@@ -41,6 +43,7 @@ which Boss does what.
 - Binary-search the input space for input-dependent bugs (halve the input, see which half still fails).
 - Minimal repro: strip the reproduction down to the smallest file/config/call that still triggers it.
 - Targeted logging beats a debugger you can't attach in CI; remove it once root cause is found.
+- For intermittent or environment-dependent bugs: add temporary logging at decision points and module boundaries, run once to gather evidence, form a hypothesis, then remove the logging. Do not fix based on speculation.
 - For flaky/intermittent failures: run N times to get a real failure rate before touching anything — a
   "fix" for a race condition that was never actually reproduced is not credible.
 

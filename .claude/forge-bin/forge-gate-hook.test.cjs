@@ -876,7 +876,7 @@ t('gateHookEnabled: module absent -> ON; value false -> OFF; get() throws -> ON 
 t('commandGateIds() is read from hard-gates.json, not hard-coded: exactly the command-kind gates', () => {
   const fromConfig = gate.listGates().filter((g) => g.kind === 'command').map((g) => g.id).sort();
   assert.deepStrictEqual([...hook.commandGateIds(gate)].sort(), fromConfig);
-  assert.deepStrictEqual(fromConfig, ['destructive-delete', 'git-destructive', 'kill-by-name', 'opaque-exec']);
+  assert.deepStrictEqual(fromConfig, ['destructive-delete', 'git-destructive', 'kill-by-name', 'opaque-exec', 'secret-print']);
   for (const id of fromConfig) assert.ok(hook.WORDS[id], 'no plain-language wording for command gate ' + id);
 });
 
@@ -2416,6 +2416,35 @@ t('wp-v6 M1: direct unit coverage of shellUnescapeForCompare and isLiteralToken 
   assert.strictEqual(SD.shellUnescapeForCompare('of\\f'), 'off');
   assert.strictEqual(SD.isLiteralToken({ v: 'of\\f', quoted: false }), true, 'an escaped off-value has no $/backtick/%/glob after de-escaping -- still literal');
   assert.strictEqual(SD.parseConfigCall('node .claude/forge-bin/forge-config.cjs s\\et gate-hook off').verb, 'set');
+});
+
+// ---------------------------------------------------------------------------
+// v2.9.0 independent review F4 follow-up (WP-L1, 2026-09-27) — forge-gate-data.cjs's segCanRunText() end-of-
+// options boundary only ever recognised an UNQUOTED `--` word (spans.length === 0), so a QUOTED "--"/'--' (the
+// exact same marker once the shell strips it) left a trailing $file still counted as "possibly exec-capable",
+// which stopped git grep's quoted 'rm -rf' pattern from ever being recognised as inert data. Without this fix
+// the first two assertions below fail: regions stays 0 and 'rm -rf' survives unstripped.
+// ---------------------------------------------------------------------------
+console.log('\n4c-quinque) F4 follow-up (WP-L1) — a QUOTED "--"/\'--\' end-of-options marker is recognised the same as the unquoted form');
+
+t('F4 follow-up: a double-quoted "--" voids a trailing $file, same as an unquoted --', () => {
+  const r = data.stripInertData("git grep -e 'rm -rf' \"--\" $file", 'Bash');
+  assert.ok(r.regions >= 1, 'the quoted search pattern must be recognised as inert data: ' + JSON.stringify(r));
+  assert.ok(!r.text.includes('rm -rf'), 'the rm -rf search pattern text must be stripped: ' + r.text);
+});
+t('F4 follow-up: a single-quoted \'--\' voids a trailing $file too', () => {
+  const r = data.stripInertData("git grep -e \"rm -rf\" '--' $file", 'Bash');
+  assert.ok(r.regions >= 1, 'the quoted search pattern must be recognised as inert data: ' + JSON.stringify(r));
+  assert.ok(!r.text.includes('rm -rf'), 'the rm -rf search pattern text must be stripped: ' + r.text);
+});
+t('F4 follow-up counterfactual: a variable BEFORE the (quoted) -- must still count as flag-capable, so nothing is stripped', () => {
+  const r = data.stripInertData("git grep $var 'rm -rf' \"--\" x", 'Bash');
+  assert.strictEqual(r.regions, 0, 'an unresolved variable before the boundary must still block the exemption: ' + JSON.stringify(r));
+  assert.ok(r.text.includes('rm -rf'), 'nothing should have been stripped: ' + r.text);
+});
+t('F4 follow-up: the real spawned hook no longer false-blocks the quoted-"--" git grep repro', () => {
+  const r = spawnHook(bash("git grep -e 'rm -rf' \"--\" $file"));
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ' stderr ' + r.stderr);
 });
 
 for (const d of [TMP, TP_PARENT, SIBLING, TILDE_DIR, WPV4_ROOT]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp cleanup is best effort */ } }

@@ -33,7 +33,9 @@ let fakeNowMs;
 // completion, NOT a fixed real sleep — needed so a successful (202) message-send test doesn't
 // tear down tempDir while the mock child is still mid-write (real, previously-seen failure mode:
 // "ENOENT ... generated asynchronous activity after the test ended").
-async function waitUntilAssistantTurn(convId, { timeoutMs = 2000, intervalMs = 25 } = {}) {
+// 2026-09-27: 2 s was too short right after a long doctor run (one failure: "mock execution must finish before
+// teardown" in a release gate, 4/4 on three re-runs). The loop returns as soon as the turn exists, so 10 s costs nothing when fast.
+async function waitUntilAssistantTurn(convId, { timeoutMs = 10000, intervalMs = 25 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const r = await request(port, '/api/conversations/' + convId);

@@ -38,7 +38,7 @@
  * (`state.activeProjectId`, `''` meaning none selected yet).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import {
   asRecord,
@@ -62,6 +62,13 @@ export interface GatewayFetchState<T> {
    *  `null` when the most recent poll succeeded (or none has run yet). */
   readonly error: string | null;
   readonly data: T;
+  /**
+   * WP-A (v2.9.0): re-fetches this route right now and resets the 15s poll clock, instead of
+   * waiting for the next tick — used after a real write (e.g. `POST /api/config`) so the screen
+   * reflects the value the write actually produced, not a stale pre-write reading for up to
+   * `POLL_MS`. Safe to call from any of this file's hooks; a no-op while `url === null`.
+   */
+  readonly refresh: () => void;
 }
 
 /**
@@ -82,6 +89,10 @@ function useGatewayPoll<T>(
     error: null,
     data: empty,
   });
+  // WP-A: bumping this re-runs the effect below (same dependency-array trick `url` already uses),
+  // which re-fetches immediately AND restarts the setInterval — so a caller's refresh() both
+  // updates the data right away and resets the poll clock, rather than the two drifting apart.
+  const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => {
     if (url === null) return undefined;
@@ -104,9 +115,14 @@ function useGatewayPoll<T>(
       cancelled = true;
       clearInterval(id);
     };
-  }, [url, parse, empty]);
+    // refreshToken is a deliberate "re-run this effect now" trigger, not a value read inside it —
+    // an extra, intentionally-unused dependency is fine for exhaustive-deps (it only flags missing
+    // ones), so no lint suppression is needed here.
+  }, [url, parse, empty, refreshToken]);
 
-  return { loading: !state.resolved, error: state.error, data: state.data };
+  const refresh = useCallback(() => setRefreshToken((token) => token + 1), []);
+
+  return { loading: !state.resolved, error: state.error, data: state.data, refresh };
 }
 
 /* ========================================================================== */
@@ -507,6 +523,14 @@ export interface GatewayForgeSetting {
   readonly flags: readonly string[];
   readonly setAt: string | null;
   readonly setBy: string | null;
+  /** WP-A (v2.9.0): the enum's real allowed values, straight from the schema — `[]` for a
+   *  non-enum setting, never a guess. Lets the Settings editor build a SegmentedControl with no
+   *  separate `explain` call. */
+  readonly allowed: readonly string[];
+  /** WP-A: the bounded numeric range for an `int`/`number`/`int-or-auto` setting, `null` for
+   *  anything else (a bool or an enum has no min/max). */
+  readonly min: number | null;
+  readonly max: number | null;
 }
 
 export interface GatewayForgeGroup {
@@ -590,6 +614,9 @@ function toForgeSetting(row: Record<string, unknown>): GatewayForgeSetting {
     flags: pickStringArray(row, ['flags']),
     setAt: pickString(row, ['set_at']),
     setBy: pickString(row, ['set_by']),
+    allowed: pickStringArray(row, ['allowed']),
+    min: pickNumber(row, ['min']),
+    max: pickNumber(row, ['max']),
   };
 }
 

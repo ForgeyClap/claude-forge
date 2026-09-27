@@ -47,6 +47,7 @@ import type {
 import { nextToastId, selectActiveProject, usePrototype } from '@/prototype/state/prototype-store';
 import type { DockTab } from '@/prototype/state/prototype-store';
 import { liveChipState } from '@/components/shell/claude-code-chip';
+import { ForgeSettingControl } from './ForgeSettingControl';
 import type { AgentLayout, Appearance, Density, TaskLayout } from '@/prototype/types/prototype-types';
 
 import './settings.css';
@@ -1098,8 +1099,11 @@ export default function SettingsView() {
     );
   }
 
-  /** wp12: read-only. Every value comes from GET /api/config; nothing here
-   *  writes — each row shows the command that changes it instead. */
+  /** wp12 + WP-A (v2.9.0): every value comes from GET /api/config; the Value
+   *  column is now a real, editable control (ForgeSettingControl) that POSTs
+   *  through the gateway's own forge-config.cjs set/unset — see that
+   *  component's header for the confirm-modal and gate-hook-off-refusal
+   *  rules. The `/forge config set ...` hint stays too, for chat/terminal use. */
   function renderForgeSettings(): ReactNode {
     const config = forgeConfig.data;
     const showData = !forgeConfig.error && !forgeConfig.loading && config.available;
@@ -1128,9 +1132,9 @@ export default function SettingsView() {
           ) : (
             <>
               <Note>
-                Read-only here. Change a setting with the command on its row — on/off settings show
-                the command that flips them, the others their current value to edit — or just say it
-                in chat.
+                Change a setting right here in the table, or with the command on its row — on/off
+                settings show the command that flips them, the others their current value to edit —
+                or just say it in chat.
               </Note>
               <div className="fw-settings__rows">
                 <Row label="Project settings file" hint="Values saved for this project only.">
@@ -1172,7 +1176,11 @@ export default function SettingsView() {
                             <Machine>{setting.key}</Machine>
                           </td>
                           <td>
-                            <Machine muted>{setting.display ?? '—'}</Machine>
+                            <ForgeSettingControl
+                              projectName={state.activeProjectId}
+                              setting={setting}
+                              onChanged={forgeConfig.refresh}
+                            />
                           </td>
                           <td>
                             <Machine muted>{setting.source ?? '—'}</Machine>

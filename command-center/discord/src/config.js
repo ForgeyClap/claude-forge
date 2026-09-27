@@ -76,12 +76,12 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), envFile = '
   };
 
   if (config.transport === 'discord') {
-    const missing = [];
-    if (!config.botToken) missing.push('DISCORD_BOT_TOKEN');
-    if (!config.guildId) missing.push('DISCORD_GUILD_ID');
-    if (config.ownerUserIds.length === 0) missing.push('OWNER_USER_IDS');
-    if (missing.length) {
-      throw new Error(`TRANSPORT=discord vereist: ${missing.join(', ')} (zie .env.example)`);
+    // WP-v290-B (beginner onboarding, auto-detect): DISCORD_GUILD_ID and OWNER_USER_IDS are no
+    // longer required up front — main.js auto-detects both after the bot logs in (exactly one
+    // server -> pick it; that server's real owner -> the Forge owner) and persists them itself.
+    // Only the token is genuinely required to even attempt a connection.
+    if (!config.botToken) {
+      throw new Error('TRANSPORT=discord vereist: DISCORD_BOT_TOKEN (zie .env.example)');
     }
   }
 

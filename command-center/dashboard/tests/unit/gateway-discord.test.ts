@@ -13,6 +13,8 @@ import {
   parseDiscordService,
   requestDiscordStart,
   requestDiscordStop,
+  requestDiscordConnect,
+  requestDiscordSelectGuild,
   useGatewayDiscordStatus,
 } from '@/prototype/state/gateway-discord';
 import { EXEC_TOKEN_HEADER } from '@/prototype/state/gateway-client';
@@ -77,6 +79,13 @@ describe('parseDiscordService — the real GET /api/discord/status response shap
       ],
       stateDir: '.claude/forge-discord/state',
       logFile: '.claude/forge-discord/discord.log',
+      // WP-v290-B: absent on the wire in this fixture -> the honest null/[] defaults, never guessed.
+      username: null,
+      applicationId: null,
+      guilds: [],
+      inviteUrl: null,
+      setupState: null,
+      loginError: null,
     });
   });
 
@@ -143,6 +152,64 @@ describe('parseDiscordService — the real GET /api/discord/status response shap
     });
     expect(service.ports.manager).toBeNull();
     expect(service.ports.bot).toBe(4501);
+  });
+
+  it('WP-v290-B: username/applicationId/guilds/inviteUrl/setupState/loginError are parsed verbatim when present', () => {
+    const service = parseDiscordService({
+      ok: true,
+      service: {
+        installed: true,
+        running: true,
+        pid: 1,
+        started_at: null,
+        transport: 'discord',
+        ports: { bot: 4501, manager: null },
+        health: null,
+        conflict: null,
+        env_keys: [],
+        state_dir: '',
+        log_file: '',
+        username: 'ForgeBot',
+        application_id: '998877665544332211',
+        guilds: [{ id: '1', name: 'Alpha' }, { id: '2', name: 'Beta' }],
+        invite_url: 'https://discord.com/oauth2/authorize?client_id=998877665544332211&scope=bot%20applications.commands&permissions=12345',
+        setup_state: 'login-failed',
+        login_error: 'Discord rejected the login: bad token.',
+      },
+    });
+    expect(service.username).toBe('ForgeBot');
+    expect(service.applicationId).toBe('998877665544332211');
+    expect(service.guilds).toEqual([{ id: '1', name: 'Alpha' }, { id: '2', name: 'Beta' }]);
+    expect(service.inviteUrl).toBe(
+      'https://discord.com/oauth2/authorize?client_id=998877665544332211&scope=bot%20applications.commands&permissions=12345',
+    );
+    expect(service.setupState).toBe('login-failed');
+    expect(service.loginError).toBe('Discord rejected the login: bad token.');
+  });
+
+  it('WP-v290-B: an absent guilds/username/etc. reads back the honest empty defaults, never fabricated', () => {
+    const service = parseDiscordService({
+      ok: true,
+      service: {
+        installed: true,
+        running: false,
+        pid: null,
+        started_at: null,
+        transport: null,
+        ports: { bot: null, manager: null },
+        health: null,
+        conflict: null,
+        env_keys: [],
+        state_dir: '',
+        log_file: '',
+      },
+    });
+    expect(service.username).toBeNull();
+    expect(service.applicationId).toBeNull();
+    expect(service.guilds).toEqual([]);
+    expect(service.inviteUrl).toBeNull();
+    expect(service.setupState).toBeNull();
+    expect(service.loginError).toBeNull();
   });
 });
 
@@ -297,5 +364,78 @@ describe('requestDiscordStop', () => {
     );
     const result = await requestDiscordStop();
     expect(result).toEqual({ ok: false, stopped: false, error: 'Could not stop the process.' });
+  });
+});
+
+/* ------------------------------------------------------------ WP-v290-B: connect / select-guild */
+
+describe('requestDiscordConnect', () => {
+  it('sends the token in the POST body and extracts the real pid on success', async () => {
+    const fetchSpy = vi.fn(async (_input: unknown, _init?: RequestInit) => ({ ok: true, status: 202, json: async () => ({ ok: true, pid: 42 }) }) as Response);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await requestDiscordConnect('fake.token.value');
+    expect(result).toEqual({ ok: true, pid: 42, error: null });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({ token: 'fake.token.value' });
+  });
+
+  it('includes guildId in the body only when given', async () => {
+    const fetchSpy = vi.fn(async (_input: unknown, _init?: RequestInit) => ({ ok: true, status: 202, json: async () => ({ ok: true, pid: 1 }) }) as Response);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await requestDiscordConnect('fake.token.value', '123456789012345678');
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({ token: 'fake.token.value', guildId: '123456789012345678' });
+  });
+
+  it('a 400 bad-token-format failure returns the gateway\'s own real error text verbatim', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ ok: false, error: 'that does not look like a real Discord bot token' }),
+      }) as Response),
+    );
+    const result = await requestDiscordConnect('not-a-real-token');
+    expect(result).toEqual({ ok: false, pid: null, error: 'that does not look like a real Discord bot token' });
+  });
+
+  it('sends the exec token header when present', async () => {
+    setExecToken('tok-connect');
+    const fetchSpy = vi.fn(async (_input: unknown, _init?: RequestInit) => ({ ok: true, status: 202, json: async () => ({ ok: true, pid: 1 }) }) as Response);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await requestDiscordConnect('fake.token.value');
+    const [, init] = fetchSpy.mock.calls[0];
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    expect(headers[EXEC_TOKEN_HEADER]).toBe('tok-connect');
+  });
+});
+
+describe('requestDiscordSelectGuild', () => {
+  it('sends the chosen guildId and extracts the real pid on success', async () => {
+    const fetchSpy = vi.fn(async (_input: unknown, _init?: RequestInit) => ({ ok: true, status: 202, json: async () => ({ ok: true, pid: 7 }) }) as Response);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await requestDiscordSelectGuild('999888777666555444');
+    expect(result).toEqual({ ok: true, pid: 7, error: null });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({ guildId: '999888777666555444' });
+  });
+
+  it('a failure returns the real error text, never a fabricated success', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ ok: false, error: 'guildId must be a real Discord server ID' }) }) as Response),
+    );
+    const result = await requestDiscordSelectGuild('nope');
+    expect(result).toEqual({ ok: false, pid: null, error: 'guildId must be a real Discord server ID' });
   });
 });

@@ -1,6 +1,6 @@
 ---
 name: forge-agent
-description: Forge playbook for AI agents, LLM apps, and eval harnesses. Use for agent, LLM app, tool-calling, function calling, MCP tool, prompt injection, eval, benchmark, guardrail, fallback.
+description: Forge: AI agents, LLM apps, and eval harnesses: agent, LLM app, tool-calling, function calling, MCP tool, prompt injection, eval, benchmark, guardrail, fallback.
 ---
 
 # Forge playbook — Agent / LLM app + evals

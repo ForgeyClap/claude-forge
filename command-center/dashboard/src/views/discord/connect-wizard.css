@@ -1,0 +1,208 @@
+/*
+ * ConnectWizard — the "Connect Discord" onboarding flow (WP-v290-B, beginner Discord onboarding).
+ *
+ * Same house rules as discord.css: no raw hex/rgb/hsl, every colour a var(--forge-*) token; a
+ * fresh `.fw-wizard*` prefix rather than reusing `.fw-discord__*` (this is its own component, not
+ * a variant of the panels it sits above) matching this codebase's per-component CSS convention.
+ * Status (done/current/upcoming) is never colour-only — the marker also changes shape/border
+ * style (filled circle+check / solid ring / dashed ring), same principle as discord.css's own
+ * Present/Missing chip.
+ */
+
+.fw-wizard {
+  border-color: var(--forge-color-accent-line, var(--forge-color-line-strong));
+}
+
+.fw-wizard__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-wizard__step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  min-inline-size: 0;
+}
+
+.fw-wizard__step--current {
+  border-color: var(--forge-color-line-strong);
+  background: var(--forge-color-surface-3, var(--forge-color-surface-2));
+}
+
+.fw-wizard__step--upcoming {
+  opacity: 0.65;
+}
+
+.fw-wizard__step-head {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-wizard__marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  inline-size: var(--forge-control-xs);
+  block-size: var(--forge-control-xs);
+  border-radius: var(--forge-radius-full, 999px);
+  border: var(--forge-border-hair) solid var(--forge-color-line-strong);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-wizard__marker--done {
+  border-style: solid;
+  background: var(--forge-color-text);
+  color: var(--forge-color-bg);
+}
+
+.fw-wizard__marker--current {
+  border-style: solid;
+  border-color: var(--forge-color-text);
+}
+
+.fw-wizard__marker--upcoming {
+  border-style: dashed;
+}
+
+.fw-wizard__step-eyebrow {
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--forge-color-text-muted);
+  white-space: nowrap;
+}
+
+.fw-wizard__step-title {
+  font-size: var(--forge-text-sm);
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+  min-inline-size: 0;
+}
+
+.fw-wizard__step-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding-inline-start: calc(var(--forge-control-xs) + var(--forge-space-2));
+  min-inline-size: 0;
+}
+
+.fw-wizard__copy {
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-wizard__copy--muted {
+  color: var(--forge-color-text-muted);
+}
+
+.fw-wizard__ui-label {
+  font-weight: var(--forge-weight-semibold);
+  color: var(--forge-color-text);
+}
+
+.fw-wizard__link {
+  align-self: flex-start;
+}
+
+.fw-wizard__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--forge-space-2);
+}
+
+.fw-wizard__input {
+  min-inline-size: min(100%, 22rem);
+}
+
+.fw-wizard__alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-md);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-wizard__guild-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+}
+
+.fw-wizard__guild-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-2);
+}
+
+.fw-wizard__done-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-wizard__done-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  max-inline-size: var(--forge-layout-reading);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-wizard__limits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin-block-start: var(--forge-space-4);
+  padding-block-start: var(--forge-space-3);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-wizard__limit {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--forge-space-2);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-muted);
+}
+
+@media (max-width: 620px) {
+  .fw-wizard__step-body {
+    padding-inline-start: 0;
+  }
+
+  .fw-wizard__form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .fw-wizard__input {
+    min-inline-size: 0;
+  }
+}

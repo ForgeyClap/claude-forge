@@ -21,6 +21,7 @@
     "destructive-delete",
     "git-destructive",
     "opaque-exec",
+    "secret-print",
     "write-outside-root",
     "usage-limit"
   ],

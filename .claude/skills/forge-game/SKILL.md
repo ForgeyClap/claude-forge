@@ -1,6 +1,6 @@
 ---
 name: forge-game
-description: Forge playbook for games — Canvas/WebGL/Phaser/Godot. Use for game, browser game, gameplay, game loop, win/lose state, soft-lock, frame rate, collision, save load, playtest.
+description: Forge: games — Canvas/WebGL/Phaser/Godot: game, browser game, gameplay, game loop, win/lose state, soft-lock, frame rate, collision, save load, playtest.
 ---
 
 # Forge playbook — Games (browser · Godot)

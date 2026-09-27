@@ -1,6 +1,6 @@
 ---
 name: forge-migration
-description: Forge playbook for legacy modernization without a big-bang rewrite. Use for migration, legacy, port, upgrade, strangler fig, characterization test, parity, feature flag, cutover.
+description: Forge: legacy modernization without a big-bang rewrite: migration, legacy, port, upgrade, strangler fig, characterization test, parity, feature flag, cutover.
 ---
 
 # Forge playbook — Legacy modernization / migration
@@ -16,6 +16,8 @@ The governing principle is **Michael Feathers' rule: you cannot safely change co
 - **Parity verified before a slice is trusted.** Old vs new must produce the same result: shadow/diff the new path against the old (GitHub-Scientist-style compare, or replayed inputs) and reconcile every discrepancy **before** the slice takes real traffic. Divergence is investigated, not waved through.
 - **No big-bang rewrite.** No months-long dark rewrite, no "we'll cut over everything on the weekend". If the plan can't be sliced, the first work package is to *find the seams* that make slicing possible.
 - **Data migration is reversible and verified.** Schema/data moves use dual-write or backfill-then-verify with row-count + checksum reconciliation and a rollback path. The old store stays authoritative until parity is proven; **no destructive drop** of the source until the new store is verified and a backup exists.
+- **Live-database schema changes use expand-and-contract.** Renames and type changes on a live database: add the new column, backfill, write both, switch reads, drop the old one later — never a blocking in-place rename on a big table.
+- **Test migrations on a realistic copy first.** A lock that takes milliseconds on a small table can take minutes on a large one. Test the migration on a realistic copy and keep the rollback ready.
 
 ## Team
 Lead: `build-boss` with `head-chef` sequencing the slices (the phasing IS the work). Specialists: `test-boss` (characterization + regression + parity harness — the backbone of this domain), `database-reviewer` (data migration, dual-write, reconciliation), `python-reviewer` / `typescript-reviewer` (by stack, for the ported code), `silent-failure-hunter` (behavior that diverged quietly — the new path returns a subtly different value and nothing screams), `security-boss` / `security-reviewer` (auth/authz and secrets must carry across the cutover intact). `review-boss` is the final QA gate on each slice. Defer the actual rebuild target to its domain playbook (`forge-fullstack` / `forge-website` / `forge-integration`) — this playbook governs *how* you cut over, not what you build.

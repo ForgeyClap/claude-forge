@@ -1,6 +1,6 @@
 ---
 name: forge-bots
-description: Forge playbook for chat bots — Discord, Slack, Telegram. Use for bot, slash command, webhook, signature verification, OAuth scopes, rate limit, dead-letter, interaction handler.
+description: Forge: chat bots — Discord, Slack, Telegram: bot, slash command, webhook, signature verification, OAuth scopes, rate limit, dead-letter, interaction handler.
 ---
 
 # Forge playbook — Chat / messaging bots (Discord · Slack · Telegram)

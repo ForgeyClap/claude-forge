@@ -3,8 +3,12 @@
 // the tool's read command (its own library `list()` never writes), the argv is fixed and never built from
 // request input beyond the already-allowlisted project path (resolved upstream via the trusted project
 // registry, exactly like capabilities.mjs), and this module has no write path at all — the D2 write
-// boundary (paths.mjs: the gateway never writes into .claude/) holds. A setting is changed in chat or with
-// `/forge config set`, never through here.
+// boundary (paths.mjs: the gateway never writes into .claude/) holds. A setting can also be changed in
+// chat, with `/forge config set`, or now for real from the dashboard (WP-A, v2.9.0) — see the SEPARATE
+// config-write.mjs (POST /api/config), which spawns the real forge-config.cjs `set`/`unset` (never
+// writes `.claude/FORGE_CONFIG.json` itself either) and reuses forgeConfigCjsPath()/
+// invalidateForgeConfigCache() exported below. This file's OWN read path stays exactly as
+// read-only as before.
 //
 // SETTINGS, NEVER CODE (wp20 L9, 2026-09-24): this used to execute the selected project's OWN
 // .claude/forge-bin/forge-config.cjs every 30 s — i.e. run code from any repo under Documents just because
@@ -52,6 +56,12 @@ const refreshInFlightByProject = new Map(); // projectPath -> Promise<void>
 // forge-config.cjs. Production code never calls the setter.
 let forgeConfigCjsOverride = null;
 export function _setForgeConfigCjsForTests(p) { forgeConfigCjsOverride = p; }
+
+// WP-A (v2.9.0): the ONE script path both the read probe below and config-write.mjs's real write
+// spawn resolve against — factored out so a single _setForgeConfigCjsForTests() call redirects
+// both a test's reads AND writes to the same fixture, and so config-write.mjs never has to know
+// about (or duplicate) CENTRAL_FORGE_CONFIG_CJS/forgeConfigCjsOverride itself.
+export function forgeConfigCjsPath() { return forgeConfigCjsOverride || CENTRAL_FORGE_CONFIG_CJS; }
 
 function evictIfNeeded(key) {
   if (cacheByProject.has(key)) return;
@@ -104,7 +114,7 @@ function hasClaudeDir(projectPath) {
 
 async function probeForgeConfigLive(projectPath) {
   if (!hasClaudeDir(projectPath)) return unavailable('this project has no .claude/ folder — there are no Forge settings to read');
-  const scriptPath = forgeConfigCjsOverride || CENTRAL_FORGE_CONFIG_CJS;
+  const scriptPath = forgeConfigCjsPath();
   if (!fs.existsSync(scriptPath)) return unavailable('the central forge-config.cjs was not found');
   try {
     const { stdout } = await execFileAsync(process.execPath, [scriptPath, ...LIST_ARGS], {
@@ -156,6 +166,13 @@ export async function buildForgeConfig(projectPath, now = Date.now()) {
   }
   return { ...staleData, provenance: 'CACHED' };
 }
+
+// WP-A (v2.9.0): a real, non-test-only export — config-write.mjs calls this immediately after a
+// successful set/unset so the very next buildForgeConfig() call for this project spawns a fresh
+// `list --json --all` instead of serving the now-stale cached value for up to
+// FORGE_CONFIG_CACHE_TTL_MS. Deleting the entry outright (rather than merely expiring it) also
+// means the following buildForgeConfig() call is a real cold-start DERIVED read, never a STALE one.
+export function invalidateForgeConfigCache(projectPath) { cacheByProject.delete(projectPath); }
 
 // Test-only hooks: never leak cache state across test files.
 export function _resetForgeConfigCacheForTests() { cacheByProject.clear(); refreshInFlightByProject.clear(); }

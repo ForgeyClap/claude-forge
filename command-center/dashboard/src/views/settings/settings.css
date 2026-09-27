@@ -449,6 +449,34 @@
   white-space: nowrap;
 }
 
+/* -------------------------------------------- WP-A: editable Forge config */
+
+.fw-settings__forge-control {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex-wrap: wrap;
+}
+
+.fw-settings__forge-number-field {
+  inline-size: 6.5rem;
+}
+
+.fw-settings__forge-number {
+  text-align: end;
+}
+
+.fw-settings__forge-control-fallback {
+  color: var(--forge-color-text-muted);
+}
+
+.fw-settings__forge-gate-hook-note {
+  color: var(--forge-color-text-muted);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  max-inline-size: 16rem;
+}
+
 /* --------------------------------------------- local Claude Code section */
 
 .fw-link-callout {

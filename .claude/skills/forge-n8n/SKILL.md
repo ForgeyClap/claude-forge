@@ -1,6 +1,6 @@
 ---
 name: forge-n8n
-description: Forge playbook for building and validating n8n automation workflows. Use for n8n, workflow, webhook, trigger, cron, retry, error branch, credentials, validate_workflow.
+description: Forge: building and validating n8n automation workflows: n8n, workflow, webhook, trigger, cron, retry, error branch, credentials, validate_workflow.
 ---
 
 # Forge playbook — n8n / automation
@@ -11,6 +11,8 @@ This domain is **skill + MCP driven, not agent-heavy.** Do **not** spawn a crowd
 - Validate before claiming production-ready: webhook method, input schema, credentials, auth/security, **error branch present**, retry behavior, **test/prod separation**.
 - Credentials live in n8n credential store / env — never hardcoded in nodes.
 - Imported/new workflows stay **inactive** until the owner approves activation.
+- Expressions are null-safe: use optional chaining, `??` for defaults (not `||`, which also replaces 0 and empty text), and `Array.isArray()` before looping.
+- Webhook-triggered workflows answer early with a Respond to Webhook node and do slow work afterwards, so the caller never times out.
 
 ## Workflow
 1. Consult `n8n-mcp-tools-expert` **first** (correct nodeType formats + tool selection).

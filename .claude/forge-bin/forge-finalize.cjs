@@ -352,11 +352,36 @@ function acquireFinalizeLock(root, runId) {
 }
 function releaseFinalizeLock(l) { if (!l) return; try { fs.closeSync(l.fd); } catch { } try { fs.unlinkSync(l.lockPath); } catch { } }
 
-function finalize(root, runId) {
+/** loadVaultModule/maybeUpdateVault (v2.9.0, WP-E) — best-effort, non-blocking knowledge-vault refresh
+ *  after a REAL finalize. Runs OUTSIDE the finalize-lock (already released above) and AFTER `result` is
+ *  final, so it can never affect the finalize verdict, never hold the lock longer, and — critically —
+ *  never writes an event: a consumer that appended anything to events.jsonl after run_finalized would
+ *  make this very receipt STALE on its next check. opts.vaultModule is a test-only injection seam (a
+ *  fake module, or a real one whose updateVault() is made to throw) — every other caller leaves it
+ *  undefined and gets the real .claude/forge-bin/forge-vault.cjs when present. */
+function loadVaultModule(root, opts) {
+  if (opts && opts.vaultModule !== undefined) return opts.vaultModule;
+  try { return require(path.join(__dirname, 'forge-vault.cjs')); } catch { return null; }
+}
+function maybeUpdateVault(root, runId, opts) {
+  try {
+    const vault = loadVaultModule(root, opts);
+    if (!vault || typeof vault.updateVault !== 'function') return;
+    const r = vault.updateVault(root, runId, {});
+    if (r && r.ok === false) console.error('forge-finalize: vault update skipped (' + r.reason + ')');
+  } catch (e) {
+    console.error('forge-finalize: vault update failed (' + (e && e.message ? e.message : String(e)) + ') — finalize itself is unaffected');
+  }
+}
+
+function finalize(root, runId, opts) {
   const flock = acquireFinalizeLock(root, runId);
   if (!flock) return { ok: false, verdict: 'refused', reason: 'finalize-lock niet verkregen (een andere finalizer is bezig of een crash-artefact blokkeert) — probeer opnieuw' };
-  try { return finalizeLocked(root, runId); }
+  let result;
+  try { result = finalizeLocked(root, runId); }
   finally { releaseFinalizeLock(flock); }
+  if (result && result.ok === true) maybeUpdateVault(root, runId, opts);
+  return result;
 }
 function finalizeLocked(root, runId) {
   const file = eventsFileOf(root, runId);

@@ -44,6 +44,7 @@ Load via the Skill tool when relevant: test-driven-development, systematic-debug
 
 ### Testing & verification handoff
 - New behavior has a test written for it (TDD: test first when the change is genuinely new behavior).
+- New tests assert the expected behaviour; a test that only runs code without asserting an outcome is a hollow test.
 - Build/lint/typecheck actually ran and its real output was read, not assumed.
 - Known gaps or follow-up items are named explicitly for Test Boss/Security Boss rather than left implicit.
 

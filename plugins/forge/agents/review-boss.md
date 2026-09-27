@@ -38,6 +38,7 @@ Harvested from the code-reviewer / architect-reviewer analogues.
 - Every changed function's logic matches its stated purpose; edge cases the happy path hides are named, not assumed away.
 - No hardcoded credentials, no unresolved TODO blocking release, no dead or commented-out code left behind.
 - Error handling exists at every boundary the change touches — no empty catch blocks, no silently swallowed failures.
+- Error handling: no empty catch blocks or errors turned into null/[] without context; a fallback that hides a real failure is a finding; network/file/database calls have timeouts and error handling; async errors are caught; stack traces are not lost on re-throw.
 - Naming, structure, and file size stay within this project's own conventions, not a generic external standard.
 
 ### Security & data

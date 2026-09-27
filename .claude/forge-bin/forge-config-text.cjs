@@ -13,6 +13,11 @@
  */
 
 const SET_BY = 'owner /forge config set';
+// WP-A (v2.9.0): the set_by attribution a `set()` write records when the CALLER is the Command
+// Center dashboard (config.mjs spawns forge-config.cjs with FORGE_CONFIG_SET_BY=dashboard) rather
+// than a terminal /forge config set. Never free text — forge-config.cjs's own setByFor() only ever
+// picks this OR the plain SET_BY above, nothing else.
+const SET_BY_DASHBOARD = 'owner via dashboard';
 const ONCE_BY = 'owner one-off approval: '; // set_by prefix of a `set <key> off --once "<quote>"` entry
 const FLAG_ORDER = ['C', 'N', '$', 'U', 'X', 'D'];
 
@@ -433,5 +438,5 @@ function renderHelp(lang, cmd) {
 module.exports = {
   t, toAscii, wrap, relTime, changeLine, statusWord, sourceLabel,
   renderList, renderGet, renderSet, renderUnset, renderReset, renderExplain, renderDiff, renderHelp,
-  SET_BY, ONCE_BY, FLAG_ORDER, USAGE,
+  SET_BY, SET_BY_DASHBOARD, ONCE_BY, FLAG_ORDER, USAGE,
 };

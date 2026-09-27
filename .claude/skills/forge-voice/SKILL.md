@@ -1,6 +1,6 @@
 ---
 name: forge-voice
-description: Forge playbook for AI voice/phone agents — Dutch-first calls, turn-taking, safe handling. Use for voice agent, voicebot, phone, IVR, Twilio, Vapi, ElevenLabs, TTS, STT, barge-in.
+description: Forge: AI voice/phone agents — Dutch-first calls, turn-taking, safe handling: voice agent, voicebot, phone, IVR, Twilio, Vapi, ElevenLabs, TTS, STT, barge-in.
 ---
 
 # Forge playbook — AI voice / phone agent

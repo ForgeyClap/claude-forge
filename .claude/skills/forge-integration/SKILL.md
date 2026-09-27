@@ -1,6 +1,6 @@
 ---
 name: forge-integration
-description: Forge playbook for business automation and API integrations — Gmail, Calendar, CRM, webhooks, Slack, payments. Use for integration, OAuth, sync, notification, automation.
+description: Forge: business automation and API integrations — Gmail, Calendar, CRM, webhooks, Slack, payments: integration, OAuth, sync, notification, automation.
 ---
 
 # Forge playbook — Business automation / API integration
@@ -11,7 +11,7 @@ This is a **secrets + auth domain** — `security-reviewer` is a useful (optiona
 - Secrets in env + `.env.example` placeholders; never in code or logs.
 - Webhook auth / signature verification on every inbound webhook.
 - Input validation on all external data; minimal OAuth scopes.
-- Idempotent writes (no duplicate side effects on retry).
+- Idempotent writes (no duplicate side effects on retry); retries use exponential backoff with jitter so many clients never retry at the same moment.
 - **Outreach drafted only / no auto-send / no bulk** without explicit confirmation (shared with `forge-scraping`).
 - **Dedicated agent identity (2026-07-12, video-research verified):** integrations that READ e-mail/CRM-data or SEND on the owner's behalf SHOULD run under a dedicated agent identity — own mailbox/account, own OAuth grant, own API key — never the owner's personal credentials. Scope-minimization bounds *operations*, not *data*: a readonly token on the owner's mailbox still exposes their entire correspondence to a prompt-injected agent; a dedicated identity gives blast-radius containment + one-step revocation + a clean audit trail. Tiered: required-by-default for e-mail-read + external-send combinations (lethal-trifecta shape), advisory for low-risk one-way notifications. Surface the extra-account setup cost as an owner decision at integration planning and record the identity choice in the integration notes.
 

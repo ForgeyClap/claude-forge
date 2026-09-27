@@ -40,6 +40,7 @@ Harvested from the test-automator / qa-expert analogues.
 
 - Every interactive element in the changed flow is exercised: buttons, forms (valid + invalid input), links, menus, modals, filters — not just the primary action.
 - Multi-step flows are tested end to end, including the abandon/back/retry paths a user could actually take.
+- Every interactive element also gets at least one edge or error-path test — a validation failure, a network error or a boundary value — not only the happy path.
 - Mobile viewport and keyboard-only navigation are both checked for any UI change, not just desktop mouse interaction.
 - Loading and error states are triggered deliberately (slow network, failed request) and verified, not assumed to look fine.
 

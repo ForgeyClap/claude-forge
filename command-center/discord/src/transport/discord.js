@@ -1,5 +1,24 @@
 import { EventEmitter } from 'node:events';
 
+// WP-v290-B: the exact vocabulary discord.js/@discordjs/ws itself uses for these three gateway
+// close codes (verified against the installed package: discord.js/src/errors/Messages.js's
+// DisallowedIntents entry, @discordjs/ws's defaultWorker.js's own "Used disallowed intents" text)
+// — kept here as real, quoted strings rather than re-derived, so login-error.js's classifier
+// (which pattern-matches on this exact wording) stays correct even if this file's OWN copy is
+// ever edited independently.
+const UNRECOVERABLE_CLOSE_CODE_MESSAGES = {
+  4004: 'An invalid token was provided.',
+  4013: 'Invalid intent(s) were provided.',
+  4014: 'Used disallowed intents.',
+};
+
+function describeUnrecoverableCloseCode(code) {
+  if (code !== null && Object.prototype.hasOwnProperty.call(UNRECOVERABLE_CLOSE_CODE_MESSAGES, code)) {
+    return UNRECOVERABLE_CLOSE_CODE_MESSAGES[code];
+  }
+  return `Discord-verbinding afgesloten (close code ${code ?? 'onbekend'}).`;
+}
+
 // Echte Discord-adapter met dezelfde interface als MockTransport.
 // discord.js wordt lazy geïmporteerd zodat de rest van het systeem (mock, tests)
 // zonder deze dependency draait. Activeren is owner-gated: vereist .env met token.
@@ -54,9 +73,32 @@ export class DiscordTransport extends EventEmitter {
       this.#handleInteraction(interaction).catch(() => {});
     });
 
+    // WP-v290-B (beginner onboarding): a bad token or a not-yet-enabled "Message Content Intent"
+    // does NOT reject client.login()'s own promise (verified against @discordjs/ws's real
+    // WebSocketManager: an unrecoverable close code — 4004 AuthenticationFailed, 4013
+    // InvalidIntents, 4014 DisallowedIntents — only ever fires the ONGOING 'shardDisconnect'
+    // EVENT, login() itself resolves once the connection attempt merely STARTS). Without this,
+    // 'ready' never fires and this whole promise hangs forever — no timeout, no error, nothing
+    // the caller could ever act on. A ONE-TIME listener here, scoped to just this connect
+    // attempt (always removed before settling either way), turns that into a real rejection with
+    // the exact discord.js vocabulary login-error.js's classifier already matches against. The
+    // PERMANENT 'shardDisconnect' listener above is untouched — it keeps handling an ordinary
+    // later disconnect (hours into a normal run), which must never reject anything.
     await new Promise((resolve, reject) => {
-      this.client.once(Events?.ClientReady ?? 'ready', resolve);
-      this.client.login(this.botToken).catch(reject);
+      const readyEvent = Events?.ClientReady ?? 'ready';
+      const settle = (fn, arg) => {
+        this.client.off(readyEvent, onReady);
+        this.client.off('shardDisconnect', onEarlyDisconnect);
+        fn(arg);
+      };
+      const onReady = () => settle(resolve);
+      const onEarlyDisconnect = (event) => {
+        const code = event && typeof event.code === 'number' ? event.code : null;
+        settle(reject, new Error(describeUnrecoverableCloseCode(code)));
+      };
+      this.client.once(readyEvent, onReady);
+      this.client.once('shardDisconnect', onEarlyDisconnect);
+      this.client.login(this.botToken).catch((err) => settle(reject, err));
     });
     this.botUserId = this.client.user.id;
     this.connected = true;
@@ -134,6 +176,18 @@ export class DiscordTransport extends EventEmitter {
       .addSubcommand((s) => s.setName('help').setDescription('Commando-overzicht'));
     const set = await this.client.application.commands.set([cmd], this.guildId);
     console.log(`[forge-discord] slash-commands geregistreerd (guild-scoped, ${set.size} command(s))`);
+  }
+
+  // WP-v290-B (auto-detect): connect() may run BEFORE a guild is known (a fresh onboarding — see
+  // main.js's own auto-detect step), in which case #registerSlashCommands() above already ran once
+  // with an empty guildId (discord.js then registers GLOBAL commands, which propagate in up to ~1h
+  // instead of instantly). Once main.js resolves the real guild in the SAME process/tick, it calls
+  // this to re-register the exact same command set scoped to that guild — instant, no restart
+  // needed — and to keep this transport's own `guildId` (used by every message filter/admin call
+  // from this point on) in sync with what was actually detected.
+  async reRegisterSlashCommandsForGuild(guildId) {
+    this.guildId = guildId;
+    await this.#registerSlashCommands();
   }
 
   async #handleInteraction(interaction) {

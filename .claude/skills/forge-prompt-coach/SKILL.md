@@ -1,6 +1,6 @@
 ---
 name: forge-prompt-coach
-description: Makes a vague request buildable (9 ingredients, F1-F13, one 2-3-option question). Use for vague/one-word asks, "maak het beter", a bug without symptom, before intake, or to help users ask better.
+description: Makes a vague request buildable (9 ingredients, F1-F13, one 2-3-option question): vague/one-word asks, "maak het beter", a bug without symptom, before intake, or to help users ask better.
 ---
 
 # forge-prompt-coach — from a vague request to a buildable one

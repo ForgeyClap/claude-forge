@@ -1,6 +1,6 @@
 ---
 name: forge-electron
-description: Forge playbook for Electron desktop apps. Use for electron, desktop app, .exe, installer, IPC, contextBridge, contextIsolation, nodeIntegration, code signing, auto-update.
+description: Forge: Electron desktop apps: electron, desktop app, .exe, installer, IPC, contextBridge, contextIsolation, nodeIntegration, code signing, auto-update.
 ---
 
 # Forge playbook — Electron / desktop app
@@ -13,7 +13,7 @@ The `electron-pro` specialist (`.claude/agents/electron-pro.md`) leads the Elect
 - **`sandbox: true` where feasible; `webSecurity` left enabled; remote module disabled; `allowRunningInsecureContent: false`.**
 - **Validated IPC.** Every IPC channel validates its payload and (where relevant) sender; the exposed API surface is a small allow-list, not the whole `ipcRenderer`.
 - **Strict CSP** — no `'unsafe-eval'`, no wildcard remote script sources. (CSP limits, not cures, XSS — defense in depth on top of context isolation.)
-- **No secrets baked into the bundle.** Sensitive data uses OS-appropriate secure storage (Keychain/DPAPI/libsecret), not plain files; secrets in env / secure store, never in the packaged asar.
+- **No secrets baked into the bundle.** Sensitive data uses OS-appropriate secure storage (Keychain/DPAPI/libsecret — in Electron the built-in `safeStorage` API, no extra package), not plain files; secrets in env / secure store, never in the packaged asar.
 - **A real, signed installer that actually opens.** The build produces the intended artifact (e.g. Windows NSIS), the installer installs and launches on a clean machine (verify — don't assume), and auto-update (if in scope) verifies signatures + supports rollback. Never ship an unsigned silent updater.
 - **No test/demo/mock/placeholder data in the shipped build** (Forge desktop rule).
 

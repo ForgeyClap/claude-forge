@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * forge-gate-hook.cjs — PreToolUse hook (matcher `Bash|PowerShell`): the FOUR command hard gates become a real
+ * forge-gate-hook.cjs — PreToolUse hook (matcher `Bash|PowerShell`): the FIVE command hard gates become a real
  * stop (v2.7.0, WP16, run forge-2026-09-24-config-v250; opaque-exec added in the codex-recheck-2026-09-24
- * remediation, wp-f1). Written rules are advice; a hook runs BEFORE the tool call and exit 2 blocks it and
- * feeds stderr back to Claude. ON by default for beginners (config key `gate-hook`, FORGE_CONFIG_SCHEMA.json)
- * after the beginner sweep (rows A4/B10). Doctrine + honest limits: config/orchestration/HOOKS_OPT_IN.md §6.
+ * remediation, wp-f1; secret-print added WP-D, 2026-09-27). Written rules are advice; a hook runs BEFORE the
+ * tool call and exit 2 blocks it and feeds stderr back to Claude. ON by default for beginners (config key
+ * `gate-hook`, FORGE_CONFIG_SCHEMA.json) after the beginner sweep (rows A4/B10). Doctrine + honest limits:
+ * config/orchestration/HOOKS_OPT_IN.md §6.
  *
  * BLOCKS the match.kind "command" gates of hard-gates.json via the single classifier forge-actiongate.cjs:
- * destructive-delete, kill-by-name, git-destructive, opaque-exec — plus the hook's own `gate-hook-self-disable`
+ * destructive-delete, kill-by-name, git-destructive, opaque-exec, secret-print — plus the hook's own
+ * `gate-hook-self-disable`
  * (security wp9b M3): a Bash/PowerShell forge-config call that sets gate-hook off, unsets it, with a mutating
  * verb, read from a PARSED argv rather than a spelling match (codex-recheck S05). The ONE allowed off-switch is
  * the owner-approved one-off `node .claude/forge-bin/forge-config.cjs set gate-hook off --once "<owner's

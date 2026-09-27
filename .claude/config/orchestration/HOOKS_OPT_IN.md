@@ -1,5 +1,16 @@
 # Forge hooks — mostly opt-in, 5 real hook entries LIVE (3 snapshot entries in section 4, the tool ledger in section 5, the gate hook in section 6)
 
+**Status (updated 2026-09-27, WP-D v2.9.0):** the gate hook (section 6) now BLOCKS **five** command gates,
+not four — `secret-print` joined `destructive-delete`, `kill-by-name`, `git-destructive` and `opaque-exec`.
+`secret-print` fires on a Bash/PowerShell command that PRINTS the CONTENTS of a secret file
+(`.env`-shaped files except `.env.example`/`.env.sample`/`.env.template`, `*.pem`, `*.key`, `id_rsa*`,
+`id_ed25519*`, `.claude/.credentials.json`, `secrets/**`) via a shell reader/search command —
+`cat`/`type`/`Get-Content`/`gc`/`more`/`less`/`head`/`tail`/`bat`, or `grep`/`egrep`/`fgrep`/`rg` (unless the
+command carries `-o`/`--only-matching`, the safe names-only variant this gate itself suggests) or
+`Select-String`/`sls`/`findstr`. This closes the gap that the section 6b `permissions.deny` block already
+stops Claude's own Read tool from these same files, but a shell command run through Bash/PowerShell could
+still print them. Everything else in this section's history below is kept as it was written.
+
 **Status (updated 2026-09-24, v2.7.0 WP16):** `.claude/settings.json` now carries **5 live hook entries
 running 4 hook scripts** — the 3 snapshot entries (section 4), the tool ledger (section 5) and, new, the
 **gate hook** (section 6: a PreToolUse hook that really BLOCKS the four command gates — destructive-delete,
@@ -657,12 +668,14 @@ the owner's `/forge config set gate-hook off`: the entry stays wired and, while 
 - The project `CLAUDE.md` states the security posture explicitly: no mandatory gates, no `secrets-guard`/`prod-deploy-guard` hooks, normal builds not slowed by blocking. A default-on ENFORCEMENT hook (lock/doctor/secret-scrub-as-a-gate) would contradict that, so sections 1-3 stay documented-only.
 - Section 4 is different in kind: it is purely **advisory continuity tooling** (it writes a markdown file and re-injects a short summary; it never blocks, never gates, never enforces anything), and the owner explicitly asked for it to be live, "dit geldt ook voor globaal" — so it was turned on for real, with a backup + a proven-safe merge first.
 - Section 6 (gate hook) IS an enforcement hook, and it departs on purpose from the first bullet — for the
-  four command gates only. The owner decided it (v2.7.0: the `gate-hook` setting, default ON, in
+  five command gates only. The owner decided it (v2.7.0: the `gate-hook` setting, default ON, in
   `FORGE_CONFIG_SCHEMA.json`) after the beginner research showed prose rules do not stop a destructive
   command. It is scoped to Bash/PowerShell calls that trip `destructive-delete`, `kill-by-name`,
-  `git-destructive` or (since the 2026-09-24 codex-recheck) `opaque-exec`; everything else stays advisory. It
+  `git-destructive`, (since the 2026-09-24 codex-recheck) `opaque-exec`, or (since WP-D, 2026-09-27)
+  `secret-print` (printing the CONTENTS of a `.env`/key/`.claude/.credentials.json`/`secrets/**`-shaped file
+  via a shell reader — `cat`/`type`/`Get-Content`/`grep`/etc.); everything else stays advisory. It
   is a classifier, not a proof — what it does not recognise it does not stop (`hard-gates.json` →
   `_not_caught`). The owner switches it off with one command; an agent's own attempt is blocked. CLOSED
-  2026-09-24: the project `CLAUDE.md` security-posture paragraph and `precedence.md` now name this exception
-  with the same four gates and the same caveat.
+  2026-09-24 (and again WP-D, 2026-09-27): the project `CLAUDE.md` security-posture paragraph and
+  `precedence.md` now name this exception with the same five gates and the same caveat.
 - The global governance (`~/.claude` policies) requires **per-item owner approval** before any hook is enabled — pinned purpose, reviewed command, documented disable procedure. This file is that documentation for every hook, live or not.

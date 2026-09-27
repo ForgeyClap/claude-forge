@@ -1854,6 +1854,10 @@ module.exports = {
   // geëxporteerd zodat tests kunnen AFDWINGEN dat elk gebruikt eventtype echt bij de writer geregistreerd
   // staat (F-08) — een magic string die niemand kan loggen is een route die alleen op papier bestaat.
   NON_WORK_EVENT_TYPES, ASSIGNMENT_EVENT_TYPES, IV_DISPATCH_TYPES, isReviewDispatch, isWorkEventType, isWorkEvent, isStalingEvent, isGoedkeuring, knownAgentNames, REVIEW_START_TYPES, REVIEW_DONE_TYPES, resolveHeadCommit, canonicalEvidenceDigest,
+  // v2.9.0 lesson fix (WP-J1, 2026-09-27) — log-event.cjs warns when a dispatch LOOKS like a reviewer role
+  // but isReviewDispatch() still says work (e.g. a task/mission word outside REVIEW_WOORDEN); it must read
+  // the SAME role pattern and field names this file enforces, never a re-typed copy that could drift.
+  REVIEW_ROLE_RE, ROL_VELDEN,
   // WP-S13 (2.1) — the ONE shared, three-way git probe + its env hardening, so gate-evidence.cjs and
   // finalize.cjs can never independently disagree with check() about the same root.
   gitProbe, cleanGitEnv, hasGitEntryInAncestry,
