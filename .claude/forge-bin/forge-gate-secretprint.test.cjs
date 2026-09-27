@@ -281,9 +281,12 @@ t('classify() stays silent for an UNQUOTED pattern argument (no data-stripping l
   assert.strictEqual(gate.classify('grep -rn .env src/').matched.includes('secret-print'), false);
   assert.strictEqual(gate.classify('findstr .env *.js').matched.includes('secret-print'), false);
 });
-t('classify() stays silent for the --regexp=/--file= attached flag form', () => {
+t('classify() stays silent for the --regexp= attached flag form (a pattern)', () => {
   assert.strictEqual(gate.classify("rg --regexp=.env src/").matched.includes('secret-print'), false);
-  assert.strictEqual(gate.classify("grep --file=.env notes.txt").matched.includes('secret-print'), false);
+});
+// v2.9.0 (Lead, after WP-M2): --file= NAMES A FILE the tool reads, so a secret file there must fire.
+t('classify() fires for the --file= attached flag form naming a secret file', () => {
+  assert.strictEqual(gate.classify("grep --file=.env notes.txt").matched.includes('secret-print'), true);
 });
 // 9d — the DANGEROUS direction this fix also closes: quoting a real secret FILE target must never exempt it,
 // whether the pattern comes from an explicit -e/flag or the implicit first-positional fallback, and whether
@@ -333,6 +336,132 @@ t('Select-String never gets an implicit positional pattern from forge-gate-data.
   const segs = data.scanWords("Select-String -Path .env", 'PowerShell');
   const picked = data.searchPatternWords('select-string', segs[0].words);
   assert.strictEqual(picked.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 10) WP-M2 (2026-09-27, Codex stop-gate review of WP-M1) — F1: the search-tool head must be resolved ONLY at
+//     the segment's true command position (never found by scanning every word for a matching name); F2:
+//     -e/--regexp/-f/--file flag detection AND the implicit positional-pattern fallback must both stop at a
+//     standalone `--`, in both the classifier (this file) and the pre-classify stripping layer (gate-data.cjs).
+// ---------------------------------------------------------------------------
+console.log('\n10) WP-M2 — F1 command-position-only head, F2 -- (end of options) boundary');
+
+// 10a — F1: a search-tool NAME appearing later in the segment must never exempt the REAL leading reader verb.
+for (const cmd of ['cat grep .env', 'type rg .env', 'head findstr .env.local']) {
+  t('classify() still fires (F1: a search-tool name later in the segment must not exempt the real leading verb): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+t('classify() still fires across a `;`-separated segment too: echo grep; cat .env', () => {
+  assert.ok(gate.classify('echo grep; cat .env').matched.includes('secret-print'));
+});
+
+// 10b — F2: option parsing stops at a standalone `--`. A `-e`/`-f` flag AFTER `--` is a literal pattern, not a
+// flag, so what follows it is still a plain FILE argument.
+for (const cmd of ['grep -- -e .env', 'grep -- TOKEN .env', 'rg -- -e .env.production', 'grep -e x -- .env']) {
+  t('classify() fires (F2: -- ends OPTION parsing; a word after it is a plain FILE unless it is the positional pattern): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ['grep -rn -- "\\.env" src/', 'grep -rn "\\.env" src/']) {
+  t('classify() stays silent (F2 negative space: a real pattern before/after -- is still just the pattern): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+
+// 10c — F1: the ONLY wrapper commands the head resolver looks past are sudo/command/builtin/env — names
+// forge-gate-quotes.cjs's own matchWrapper()/stripWrapperOptions() already resolves, including each wrapper's
+// OWN flags (sudo's `-u root`, env's own `FOO=bar` assignment), never a naive `/^sudo\s+/`.
+for (const cmd of ['sudo grep -rn "\\.env" src/', 'sudo -u root grep -rn "\\.env" src/', 'env grep -rn "\\.env" src/',
+  'env FOO=bar grep -rn "\\.env" src/', 'command grep -rn "\\.env" src/', 'builtin grep -rn "\\.env" src/',
+  'FOO=1 grep -rn "\\.env" src/']) {
+  t('classify() stays silent (F1: a recognised wrapper/env-assignment in front of a real search tool is still just a pattern): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+for (const cmd of ['sudo cat .env', 'env cat .env', 'command grep SECRET .env']) {
+  t('classify() still fires (a wrapper never turns a REAL reader/file target into an exempt pattern): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+t('classify() still fires for a wrapper OUTSIDE the narrow allow-list (deliberately conservative, not a gap)', () => {
+  // "timeout" is a real wrapper name forge-gate-quotes.cjs knows, but it is NOT in SEARCH_TOOL_WRAPPER_NAMES —
+  // the safe direction is to keep blocking rather than silently widen the exemption to every wrapper shape.
+  assert.ok(gate.classify('timeout 5 grep -rn "\\.env" src/').matched.includes('secret-print'));
+});
+
+// 10d — direct unit coverage of the two new exported helpers.
+t('resolveSearchToolHead() resolves past sudo/env/command/builtin and their own flags, never past an unlisted wrapper', () => {
+  assert.strictEqual(gate.resolveSearchToolHead('sudo -u root grep x').rest, 'grep x');
+  assert.strictEqual(gate.resolveSearchToolHead('env FOO=bar grep x').rest, 'grep x');
+  assert.strictEqual(gate.resolveSearchToolHead('command grep x').rest, 'grep x');
+  assert.strictEqual(gate.resolveSearchToolHead('builtin grep x').rest, 'grep x');
+  assert.strictEqual(gate.resolveSearchToolHead('FOO=1 grep x').rest, 'grep x');
+  assert.strictEqual(gate.resolveSearchToolHead('timeout 5 grep x').rest, 'timeout 5 grep x');
+  assert.strictEqual(gate.resolveSearchToolHead('cat grep x').rest, 'cat grep x');
+});
+t('SEARCH_TOOL_WRAPPER_NAMES is exactly the four documented wrapper names', () => {
+  assert.deepStrictEqual([...gate.SEARCH_TOOL_WRAPPER_NAMES].sort(), ['builtin', 'command', 'env', 'sudo']);
+});
+
+// 10e — forge-gate-data.cjs's own searchPatternWords() must apply the SAME -- boundary (the pre-classify
+// stripping layer, so a real secret FILE argument after -- is never erased as if it were inert pattern data).
+t('forge-gate-data.cjs::searchPatternWords() never picks a FILE positioned after -- as the pattern, even when the explicit flag itself sits after --', () => {
+  const segs = data.scanWords("grep -- -e '.env'", 'Bash');
+  const ws = segs[0].words;
+  const picked = data.searchPatternWords('grep', ws);
+  assert.strictEqual(picked.size, 1);
+  assert.ok(picked.has(ws[2]), '"-e" (the literal pattern text right after --) must be picked');
+  assert.ok(!picked.has(ws[3]), "'.env' (the real FILE after --) must NOT be picked");
+});
+t('forge-gate-data.cjs::stripInertData() leaves a quoted secret FILE target after -- intact', () => {
+  const r = data.stripInertData("grep -- -e '.env'", 'Bash');
+  assert.strictEqual(r.text, "grep -- -e '.env'", 'nothing quoted here is the pattern position, so nothing is stripped');
+});
+
+// 10f — end-to-end, the real spawned hook, for a representative subset of the above (never a probe string on
+// this test's own command line — the same convention section 7 already established).
+t('spawned hook BLOCKS (exit 2, names secret-print): cat grep .env', () => {
+  const r = spawnHook(bash('cat grep .env'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+t('spawned hook BLOCKS (exit 2, names secret-print): grep -- -e .env', () => {
+  const r = spawnHook(bash('grep -- -e .env'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+t('spawned hook ALLOWS (exit 0): grep -rn -- "\\.env" src/ (pattern after --, real file elsewhere)', () => {
+  const r = spawnHook(bash('grep -rn -- "\\.env" src/'));
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ', stderr: ' + r.stderr);
+});
+t('spawned hook ALLOWS (exit 0): sudo grep with a pattern-position secret mention', () => {
+  const r = spawnHook(bash('sudo grep -rn "\\.env" src/'));
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ', stderr: ' + r.stderr);
+});
+t('spawned hook BLOCKS (exit 2): sudo cat .env (a wrapper never exempts a real reader command)', () => {
+  const r = spawnHook(bash('sudo cat .env'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+
+// 11) v2.9.0 (Lead, adversarial probe after WP-M2): -f/--file NAMES A FILE the tool reads (its patterns). It still
+// marks "a pattern was given explicitly" (every remaining positional is a file) but its value is never exempted.
+console.log('\n11) grep/rg -f/--file: the pattern-source file is a file target');
+for (const cmd of ['grep -f .env config.txt', 'grep -o -f .env notes.txt', 'grep --file=.env notes.txt', 'rg -f .env.local src']) {
+  t('classify() fires secret-print (-f names the secret file): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ['grep -f patterns.txt -rn src/', 'grep -e "\\.env" -f patterns.txt src/', 'grep --file=patterns.txt src/']) {
+  t('classify() stays silent (-f names a non-secret file): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('spawned hook BLOCKS (exit 2, names secret-print): grep -o -f .env notes.txt', () => {
+  const r = spawnHook(bash('grep -o -f .env notes.txt'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
 });
 
 fs.rmSync(TMP, { recursive: true, force: true });

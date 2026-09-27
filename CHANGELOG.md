@@ -45,6 +45,7 @@ default, and every setting can now also be changed from the dashboard.
 
   `.env.example` stays readable, and `forge-env-names.cjs .env` shows only the variable NAMES.
   Searching your code for the text `.env` (a grep pattern) is not blocked; only reading the file itself is.
+  A secret file given to `grep -f` (a file of patterns) is stopped like any other read.
 - **Less usage, same quality.** `forge.md` is 8% smaller: rarely used parts moved into reference files, and a test
   proves every rule is still reachable. Command files are now measured, the skill list has a size check, and 27
   skill descriptions are shorter with no trigger words removed. The doctor now gives a Claude Code version advice.
@@ -79,26 +80,29 @@ default, and every setting can now also be changed from the dashboard.
   vault, doctor, error explanations, snapshot.
 
 ### How this release was verified
-- Full source doctor all green: 142 suites, 9,616 tests passing (2.8.1: 136 suites, 9,198). The Command Center in
+- Full source doctor all green: 142 suites, 9,704 tests passing (2.8.1: 136 suites, 9,198). The Command Center in
   its real location: gateway 1,141/1,141, Discord 242/242, dashboard 1,274/1,274, and the production build.
 - An independent adversarial Codex review of the source and Command Center changes found 20 issues (none
   critical). All were fixed with tests. A Codex verification review then checked every fix: its leftovers were
   fixed, except one accepted trade-off (see Known limitations) and one rejected suggestion (`git diff --check`
   stays blocked because it prints the offending lines). Codex's stop-time review found two more secret-exposure
-  paths, also fixed. The installer changes were not reviewed by Codex; they were checked by old-versus-new
-  comparisons and real installs instead.
-- An independent final review (Review Boss) of the end state found a missing Command Center template file and
-  some wording; both are fixed in this release.
+  paths, and later three gaps (two critical) in a final-review fix of the secret gate; a Forge probe then found one
+  more (a secret file given to `grep -f`). All are fixed with tests. The installer changes were not reviewed by
+  Codex; they were checked by old-versus-new comparisons and real installs instead.
+- An independent final review (Review Boss) of the end state found a missing Command Center template file, a case
+  where the names-only helper could print the last line of a multi-line value, and some wording; all are fixed in
+  this release.
 - Real screenshots of the settings editor and the Connect Discord wizard at desktop, tablet and phone sizes, with
   no console errors.
 - `install.sh`: the old and new versions were compared on real installs. The installed files were identical after
   install and after uninstall; the dry-run output was identical. Both installers were run for real on this Windows
   machine with a broken rules file and with a folder path ending in a backslash.
-- The public repository's own CI checks, run locally on Windows: all 8 steps passed (every manifest 2.9.0,
-  executable bits, plugin copies in sync, `node --check` on 265 tools, every test suite, doctor ALL GREEN). A
-  fresh-laptop simulation of this release (install into an empty folder with an empty home, then the doctor)
-  came out all green: 142 suites, 9,577 passing. On that fresh install the new secret gate blocked `cat .env`,
-  `git show HEAD:.env` and a greedy `grep -o`, and allowed `cat .env.example` and the names-only helper.
+- The public repository's own CI checks, run locally on Windows on the release commit: the 7 light steps passed
+  (every manifest 2.9.0, the shipped `.env` templates, executable bits, plugin copies in sync, `node --check` on
+  265 tools). The test-suite and doctor steps ran in a fresh-laptop simulation of commit 9d3472d (install into an
+  empty folder with an empty home, then the doctor): all green, 142 suites, 9,660 passing. On that fresh install
+  the new secret gate blocked `cat .env`, `git show HEAD:.env`, a greedy `grep -o`, `grep -f .env` and a secret
+  file named after a `--`, and allowed `cat .env.example`, a search for the text `.env` and the names-only helper.
 - Still to run before the tag: CI on Linux and Windows (Node 18 and 22) on the release commit, once it is pushed.
 
 ### Known limitations

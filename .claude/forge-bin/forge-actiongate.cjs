@@ -554,6 +554,9 @@ const SELECT_STRING_HEADS = new Set(['select-string', 'sls']);
 // same as -e/--regexp per the task spec, not a target this gate reads for its own content directly.
 const GREP_PATTERN_FLAG_RE = /^(?:-e|--regexp|-f|--file)$/;
 const GREP_PATTERN_FLAG_ATTACHED_RE = /^(?:--regexp|--file)=/;
+// v2.9.0 (Lead, adversarial probe after WP-M2): -f/--file NAMES A FILE the tool reads (its patterns). It still marks
+// "a pattern was given explicitly", but its value is never exempted: `grep -f .env x` reads the secret file.
+const GREP_PATTERN_SOURCE_FILE_RE = /^(?:-f|--file)(?:=|$)/;
 // Select-String/sls: ONLY an explicit -Pattern value is ever exempt — deliberately NO positional fallback (see
 // secretPrintPatternExempt()'s own doc for the live false-ALLOW this closes).
 const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
@@ -593,6 +596,45 @@ function wordText(w, mask) {
   return sp ? w.raw.slice(1, -1) : w.raw;
 }
 
+/** SEARCH_TOOL_WRAPPER_NAMES — WP-M2 (2026-09-27, Codex stop-gate review of WP-M1 finding 1). The ONLY wrapper
+ *  commands secretPrintPatternExempt() below will look PAST to find a search tool at the true command
+ *  position: sudo, command, builtin, env — every one of them already a named entry in
+ *  forge-gate-quotes.cjs::WRAPPER_NAMES (the existing classifier already knows their full per-wrapper option
+ *  grammar via matchWrapper()/stripWrapperOptions(), reused verbatim below rather than a second, looser
+ *  regex). Every OTHER wrapper name that same engine also recognises (time, nohup, nice, timeout, stdbuf,
+ *  doas, exec, …) deliberately stops resolution instead of being treated as transparent — resolveSearchToolHead
+ *  fails toward "not provably the command position" for anything not explicitly named here, mirroring
+ *  leadsWithInertSearchTool's own documented stance that an un-named wrapper in front means the first word is
+ *  the wrapper, not the tool. */
+const SEARCH_TOOL_WRAPPER_NAMES = new Set(['sudo', 'command', 'builtin', 'env']);
+
+/** resolveSearchToolHead(segment) -> { rest, dynamic } — WP-M2. The effective start of `segment` once any
+ *  leading env-var assignment (`FOO=1 …`, via the SAME QUOTES.stripEnvAssignment() stripCommandOpeners()
+ *  itself uses) and/or a SEARCH_TOOL_WRAPPER_NAMES wrapper (with its OWN flags/operand skipped by the existing
+ *  QUOTES.matchWrapper()/QUOTES.stripWrapperOptions() grammar — never a hand-rolled `/^sudo\s+/`, which could
+ *  not skip `sudo -u root grep …`'s own `-u root` correctly) have been peeled off the front. Bounded to the
+ *  same 12-iteration budget stripLeadingPrefixes() itself uses. `dynamic:true` means a wrapper's own option
+ *  grammar could not be resolved, or the budget was exhausted: callers must treat that as "cannot tell", never
+ *  as "safe to skip past". A wrapper matchWrapper() finds that is NOT in SEARCH_TOOL_WRAPPER_NAMES stops the
+ *  loop immediately — that wrapper's own name is returned as `rest`'s first word, so a caller's own head check
+ *  correctly sees it (not a search tool) and stays unexempted, the safe direction. Pure, never throws. */
+function resolveSearchToolHead(segment) {
+  let s = String(segment).replace(/^\s+/, '');
+  for (let i = 0; i < 12; i++) {
+    const before = s;
+    const assigned = QUOTES.stripEnvAssignment(s);
+    if (assigned !== null) s = assigned;
+    const wm = QUOTES.matchWrapper(s);
+    if (wm && SEARCH_TOOL_WRAPPER_NAMES.has(String(wm.name).toLowerCase())) {
+      const stripped = QUOTES.stripWrapperOptions(s.slice(wm.restIndex), wm.name);
+      if (stripped.dynamic) return { rest: '', dynamic: true };
+      s = stripped.rest;
+    }
+    if (s === before) return { rest: s, dynamic: false };
+  }
+  return { rest: '', dynamic: true }; // strip budget exhausted without stabilising
+}
+
 /** secretPrintPatternExempt(segment) -> boolean — WP-M1 (2026-09-27). True when EVERY secret-shaped mention in
  *  this search-tool segment sits in the tool's own PATTERN position, never a FILE argument, so secret-print's
  *  match for THIS segment should be suppressed. False (never suppress; the base gate match stands) whenever no
@@ -607,7 +649,9 @@ function wordText(w, mask) {
  *
  *  POSITION RULES (each closes a real repro, not a hypothetical):
  *   - grep/egrep/fgrep/rg: the pattern is the value of -e/--regexp/-f/--file wherever ANY of those appear
- *     (every OTHER positional then counts as a file); otherwise the FIRST non-flag positional is the pattern.
+ *     BEFORE a standalone `--` (every OTHER positional before or after `--` then counts as a file); otherwise
+ *     (WP-M2) the FIRST word after a standalone `--` is the pattern, or — when there is no `--` at all — the
+ *     first non-flag positional is.
  *   - findstr: no flag form exists — always the first non-flag positional (`/`-prefixed words are flags).
  *   - Select-String/sls: ONLY an explicit -Pattern value is ever exempt, with NO positional fallback — closes
  *     a live false-ALLOW a positional rule would cause: `Select-String -Path .env -Pattern x` has `.env`
@@ -616,24 +660,37 @@ function wordText(w, mask) {
  *     file target. Requiring an explicit -Pattern means a secret-shaped word is only ever exempted when it is
  *     DEMONSTRABLY that flag's own value.
  *  Anything not explicitly cleared above (an unrecognised flag's own value, e.g.) is left as a plain candidate
- *  — tested like a file argument, never exempted — which can only ever over-block, the safe direction. */
+ *  — tested like a file argument, never exempted — which can only ever over-block, the safe direction.
+ *
+ *  WP-M2 (2026-09-27, Codex stop-gate review of WP-M1). TWO fail-open findings closed:
+ *   F1 the head search used to scan EVERY word in the segment for a recognised tool name, so `cat grep .env`
+ *      found "grep" at word index 1 and treated IT as the head — even though `cat` (index 0, the command that
+ *      will actually run) is what really reads `.env`. The head is now resolved ONLY at the true command
+ *      position: resolveSearchToolHead() above (first word, after an optional env assignment and/or a
+ *      SEARCH_TOOL_WRAPPER_NAMES wrapper) — never "anywhere in the segment".
+ *   F2 the explicit -e/--regexp/-f/--file scan used to run across the WHOLE `rest` array, unbounded by a
+ *      standalone `--`, so `grep -- -e .env` treated `.env` (the FILE positional after `--`) as -e's own
+ *      pattern VALUE — real GNU grep parses `--` as end-of-options first, so the literal word `-e` right after
+ *      it is the pattern text itself, and `.env` is a plain file argument. Both the explicit-flag scan and the
+ *      implicit-positional fallback now stop at (or restart cleanly after) the first standalone `--`. */
 function secretPrintPatternExempt(segment) {
-  const split = splitSegmentWords(String(segment || ''));
+  const resolved = resolveSearchToolHead(String(segment || ''));
+  if (resolved.dynamic) return false;
+  const split = splitSegmentWords(resolved.rest);
   if (!split) return false;
   const { words, mask } = split;
+  if (!words.length) return false;
   const texts = words.map((w) => wordText(w, mask));
 
-  let headIdx = -1, tool = null;
-  for (let i = 0; i < words.length; i++) {
-    const base = texts[i].replace(/^["']|["']$/g, '').toLowerCase().split(/[\\/]/).pop().replace(/\.exe$/, '');
-    if (SEARCH_TOOL_HEADS.has(base)) { headIdx = i; tool = 'grep'; break; }
-    if (base === FINDSTR_HEAD) { headIdx = i; tool = 'findstr'; break; }
-    if (SELECT_STRING_HEADS.has(base)) { headIdx = i; tool = 'select-string'; break; }
-  }
-  if (headIdx === -1) return false;
+  const head = texts[0].replace(/^["']|["']$/g, '').toLowerCase().split(/[\\/]/).pop().replace(/\.exe$/, '');
+  let tool = null;
+  if (SEARCH_TOOL_HEADS.has(head)) tool = 'grep';
+  else if (head === FINDSTR_HEAD) tool = 'findstr';
+  else if (SELECT_STRING_HEADS.has(head)) tool = 'select-string';
+  if (!tool) return false;
 
-  const rest = words.slice(headIdx + 1);
-  const restTexts = texts.slice(headIdx + 1);
+  const rest = words.slice(1);
+  const restTexts = texts.slice(1);
   const patternIdx = new Set();
 
   if (tool === 'select-string') {
@@ -642,23 +699,32 @@ function secretPrintPatternExempt(segment) {
     }
   } else {
     let explicitFlag = false;
+    const dashDashIdx = restTexts.findIndex((t) => t === '--');
+    const boundary = dashDashIdx === -1 ? rest.length : dashDashIdx;
     if (tool === 'grep') {
-      for (let i = 0; i < rest.length; i++) {
+      for (let i = 0; i < boundary; i++) {
         if (GREP_PATTERN_FLAG_RE.test(rest[i].raw)) {
           explicitFlag = true;
-          if (i + 1 < rest.length) patternIdx.add(i + 1);
+          if (i + 1 < rest.length && !GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) patternIdx.add(i + 1);
         } else if (GREP_PATTERN_FLAG_ATTACHED_RE.test(rest[i].raw)) {
           explicitFlag = true;
-          patternIdx.add(i);
+          if (!GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) patternIdx.add(i);
         }
       }
     }
     if (!explicitFlag) {
-      const isFlagShaped = (raw) => (tool === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
-      for (let i = 0; i < rest.length; i++) {
-        if (isFlagShaped(rest[i].raw)) continue;
-        patternIdx.add(i);
-        break; // exactly one implicit positional pattern
+      if (dashDashIdx !== -1) {
+        // no pattern given through an explicit flag before `--`: grep/rg read the FIRST word after `--` as
+        // the pattern (real GNU/ripgrep semantics — `--` only ends OPTION parsing, the positional-pattern
+        // rule is unaffected by it), and every other word after that stays a file.
+        if (dashDashIdx + 1 < rest.length) patternIdx.add(dashDashIdx + 1);
+      } else {
+        const isFlagShaped = (raw) => (tool === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
+        for (let i = 0; i < rest.length; i++) {
+          if (isFlagShaped(rest[i].raw)) continue;
+          patternIdx.add(i);
+          break; // exactly one implicit positional pattern
+        }
       }
     }
   }
@@ -878,6 +944,9 @@ module.exports = {
   stripCommandOpeners, commandPositionCandidates, laterBranchStarts, COMMAND_OPENER_STEPS,
   // WP-M1 (2026-09-27) — secret-print's position-aware pattern-vs-file veto, exported for direct unit testing.
   secretPrintPatternExempt, SECRET_TARGET_RE, splitSegmentWords, wordText,
+  // WP-M2 (2026-09-27) — the command-position-only head resolver (F1) and its wrapper allow-list, exported
+  // for direct unit testing.
+  resolveSearchToolHead, SEARCH_TOOL_WRAPPER_NAMES,
   KNOWN_GATES, CONFIG_PATH, EXCEPT_KINDS,
 };
 

@@ -29,6 +29,30 @@ const fs = require('fs');
  *  never matches at all, rather than matching some other substring of the line. */
 const LINE_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 
+/** hasUnescapedQuote(s, q) -> boolean — WP-M2 (2026-09-27, Codex stop-gate review of WP-M1 finding 3). True
+ *  when `s` contains a REAL, unescaped occurrence of quote character `q`, honouring dotenv/shell escaping:
+ *  inside a double-quoted (") value a backslash escapes the very next character (so `\"` never closes the
+ *  string, and `\\"` is a literal backslash followed by a genuine closer); a single-quoted (') value has no
+ *  escape character at all, so every `'` is a real, unescaped closer. The OLD `.includes(q)` check treated
+ *  EVERY occurrence — escaped or not — as a real closer, so a multi-line double-quoted value that merely
+ *  MENTIONED an escaped quote (`\"`) ended quote-tracking early; every physical line after that point was then
+ *  read as a fresh candidate `KEY=` entry, and one that happened to look like one (a base64/PEM fragment
+ *  containing `=`) printed as a fabricated variable name that is really a FRAGMENT of the still-open secret
+ *  value. Escape state is scoped to the ONE line `s` — this function is never handed more than one physical
+ *  line at a time, so a trailing backslash at the very end of a line simply escapes nothing further and never
+ *  reaches into the next one. Pure, never throws. */
+function hasUnescapedQuote(s, q) {
+  if (q !== '"') return s.includes(q); // single-quoted values have no escape character at all
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    if (escaped) { escaped = false; continue; }
+    const c = s[i];
+    if (c === '\\') { escaped = true; continue; }
+    if (c === q) return true;
+  }
+  return false;
+}
+
 /** envNames(text) -> string[] — the variable NAMES only, in file order, duplicates kept (mirrors what a
  *  simple line-oriented name extractor would list). Never returns, logs, or inspects anything that follows
  *  the `=` on any line — including a value that SPANS MULTIPLE LINES inside a quoted string (WP-M1,
@@ -46,13 +70,21 @@ const LINE_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
  *  quote closes. An unterminated quote (never closes before EOF) fails the same direction this project's other
  *  quote-aware scanners already do (forge-gate-quotes.cjs's own header: "any doubt -> stay stricter") — nothing
  *  is ever printed again after the key name that opened it, for the rest of the file, rather than guessing
- *  where an unresolvable value really ends. Pure, never throws. */
+ *  where an unresolvable value really ends. Pure, never throws.
+ *
+ *  WP-M2 (2026-09-27): BOTH the "does this line already close the value" check (right below, on the OPENING
+ *  line) and the "does this continuation line close it" check above used plain `.includes(q)` — escape-BLIND
+ *  in both directions. The opening-line side had the mirror-image bug: a value whose OPENING line contains an
+ *  escaped quote but no REAL closer (`KEY="a \"b`) was wrongly judged "already closed on this line" (an
+ *  escaped `\"` made `.includes('"')` true), so tracking never opened at all and a later genuine continuation
+ *  line of that same value could print as a fabricated entry. Both sides now go through the same
+ *  escape-aware hasUnescapedQuote() above. */
 function envNames(text) {
   const names = [];
   let openQuote = null; // the unterminated quote CHARACTER carried over from a previous line, or null
   for (const rawLine of String(text).split(/\r\n|\n|\r/)) {
     if (openQuote) {
-      if (rawLine.includes(openQuote)) openQuote = null; // this line closes it; nothing on it is ever printed
+      if (hasUnescapedQuote(rawLine, openQuote)) openQuote = null; // this line closes it; nothing on it prints
       continue; // a continuation line is never a candidate KEY= entry, whether it closes the quote or not
     }
     const line = rawLine.trimStart();
@@ -62,7 +94,7 @@ function envNames(text) {
     names.push(m[1]);
     const value = line.slice(m[0].length).trimStart();
     const q = value[0];
-    if ((q === '"' || q === "'") && !value.slice(1).includes(q)) openQuote = q; // opened, not closed on this line
+    if ((q === '"' || q === "'") && !hasUnescapedQuote(value.slice(1), q)) openQuote = q; // opened, not closed here
   }
   return names;
 }
@@ -96,7 +128,7 @@ function run(argv) {
   return 0;
 }
 
-module.exports = { envNames, run, LINE_RE };
+module.exports = { envNames, run, LINE_RE, hasUnescapedQuote };
 
 if (require.main === module) {
   process.exitCode = run(process.argv.slice(2));

@@ -244,6 +244,9 @@ function gitSubcommand(ws) {
 // never a dependant of one of them).
 const GREP_PATTERN_FLAG_RE = /^(?:-e|--regexp|-f|--file)$/;
 const GREP_PATTERN_FLAG_ATTACHED_RE = /^(?:--regexp|--file)=/;
+// v2.9.0 (Lead, adversarial probe after WP-M2): -f/--file NAMES A FILE the tool reads (its patterns). It still marks
+// "a pattern was given explicitly", but its value is never exempted: `grep -f .env x` reads the secret file.
+const GREP_PATTERN_SOURCE_FILE_RE = /^(?:-f|--file)(?:=|$)/;
 const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
 
 /** searchPatternWords(h, ws) -> Set of the word OBJECTS (from `ws`, the segment's full word array including
@@ -251,7 +254,16 @@ const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
  *  literalDataSpans() may still treat as strippable inert data for a SEARCH.has(h) segment. `h` is the
  *  already-lower-cased head. See forge-actiongate.cjs::secretPrintPatternExempt() for the full "why" of each
  *  family's own rule; this function only needs to know WHICH words are the pattern, never whether any of them
- *  looks secret-shaped (that question belongs entirely to the classifier, not this pre-classify data pass). */
+ *  looks secret-shaped (that question belongs entirely to the classifier, not this pre-classify data pass).
+ *
+ *  WP-M2 (2026-09-27, Codex stop-gate review of WP-M1 finding 2): the explicit -e/--regexp/-f/--file scan used
+ *  to run across the WHOLE `rest` array, unbounded by a standalone `--`, so `grep -- -e .env` picked `.env`
+ *  (the real FILE positional after `--`) as -e's own pattern VALUE — a fail-open that let literalDataSpans()
+ *  strip a genuine secret FILE argument as if it were inert pattern data. Real GNU grep treats `--` as
+ *  end-of-options: the literal word `-e` right after it is the pattern text itself, `.env` is a plain file.
+ *  isEndOfOptionsWord (already defined above for segCanRunText, recognising a bare OR quoted `--` word) is
+ *  reused unchanged to find that boundary; the explicit-flag scan now stops there, and the implicit-positional
+ *  fallback restarts cleanly right after it when no explicit flag was found before it. */
 function searchPatternWords(h, ws) {
   const rest = ws.slice(1);
   const picked = new Set();
@@ -261,24 +273,32 @@ function searchPatternWords(h, ws) {
     }
     return picked; // deliberately NO positional fallback — see secretPrintPatternExempt()'s own doc
   }
+  const dashDashIdx = rest.findIndex(isEndOfOptionsWord);
+  const boundary = dashDashIdx === -1 ? rest.length : dashDashIdx;
   let explicit = false;
   if (h !== 'findstr') {
-    for (let i = 0; i < rest.length; i++) {
+    for (let i = 0; i < boundary; i++) {
       if (GREP_PATTERN_FLAG_RE.test(rest[i].raw)) {
         explicit = true;
-        if (rest[i + 1]) picked.add(rest[i + 1]);
+        if (rest[i + 1] && !GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) picked.add(rest[i + 1]);
       } else if (GREP_PATTERN_FLAG_ATTACHED_RE.test(rest[i].raw)) {
         explicit = true;
-        picked.add(rest[i]);
+        if (!GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) picked.add(rest[i]);
       }
     }
   }
   if (!explicit) {
-    const isFlag = (raw) => (h === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
-    for (const w of rest) {
-      if (isFlag(w.raw)) continue;
-      picked.add(w);
-      break; // exactly one implicit positional pattern
+    if (dashDashIdx !== -1) {
+      // no pattern given through an explicit flag before `--`: the first word after it is the pattern (real
+      // GNU/ripgrep semantics — `--` only ends OPTION parsing), every other word after it stays a file.
+      if (rest[dashDashIdx + 1]) picked.add(rest[dashDashIdx + 1]);
+    } else {
+      const isFlag = (raw) => (h === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
+      for (const w of rest) {
+        if (isFlag(w.raw)) continue;
+        picked.add(w);
+        break; // exactly one implicit positional pattern
+      }
     }
   }
   return picked;

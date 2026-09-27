@@ -91,6 +91,43 @@ t('a single-line quoted value that opens and closes on the same line is unaffect
 });
 
 // ---------------------------------------------------------------------------
+// 1c) WP-M2 (2026-09-27, Codex stop-gate review of WP-M1 finding 3) — quote tracking must be ESCAPE-AWARE: a
+//     `\"` inside a double-quoted value is not a real closer, on EITHER the opening line or a continuation
+//     line, and a single-quoted value still has no escape character at all (unaffected by this fix).
+// ---------------------------------------------------------------------------
+console.log('\n1c) WP-M2 — escape-aware quote tracking (an escaped \\" never closes a double-quoted value)');
+
+t('a continuation line that only MENTIONS an escaped quote does not end tracking early (real leak repro)', () => {
+  const text = ['PRIVATE_KEY="-----BEGIN KEY-----', 'some \\"escaped\\" quote here', 'API_KEY=fake-looking-line', '-----END KEY-----"'].join('\n');
+  const names = envNames.envNames(text);
+  assert.deepStrictEqual(names, ['PRIVATE_KEY']);
+  assert.ok(!names.includes('API_KEY'), 'a fragment of the still-open value leaked as a fake key name');
+});
+t('an escaped quote on the OPENING line does not make the value look already-closed (mirror-image repro)', () => {
+  const text = ['KEY="a \\"b', 'FRAGMENT=c"', 'NAME=value'].join('\n');
+  const names = envNames.envNames(text);
+  assert.deepStrictEqual(names, ['KEY', 'NAME']);
+  assert.ok(!names.includes('FRAGMENT'), 'a fragment of the still-open value leaked as a fake key name');
+});
+t('a real unescaped closer on the SAME line as an earlier escaped quote still closes normally', () => {
+  assert.deepStrictEqual(envNames.envNames('KEY="say \\"hi\\" now"\nNEXT=ok'), ['KEY', 'NEXT']);
+});
+t('a real unescaped closer on a LATER line, after an earlier escaped quote on that same line, still closes', () => {
+  const text = ['KEY="a \\"quoted\\" word, then', 'a real close"', 'NEXT=ok'].join('\n');
+  assert.deepStrictEqual(envNames.envNames(text), ['KEY', 'NEXT']);
+});
+t('single-quoted values are unaffected — no escape character exists there at all, still plain non-escape-aware tracking', () => {
+  const text = ["KEY='line one \\ backslash", "line two'", 'NEXT=ok'].join('\n');
+  assert.deepStrictEqual(envNames.envNames(text), ['KEY', 'NEXT']);
+});
+t('hasUnescapedQuote() is exported and escape-aware for double quotes, plain (no escaping) for single quotes', () => {
+  assert.strictEqual(envNames.hasUnescapedQuote('a \\"b', '"'), false, 'an escaped double quote is not a real closer');
+  assert.strictEqual(envNames.hasUnescapedQuote('a \\\\"b', '"'), true, '\\\\ is a literal backslash, so the quote right after it IS real');
+  assert.strictEqual(envNames.hasUnescapedQuote('a "b', '"'), true, 'an unescaped double quote is a real closer');
+  assert.strictEqual(envNames.hasUnescapedQuote("a \\'b", "'"), true, 'single quotes have no escape character at all');
+});
+
+// ---------------------------------------------------------------------------
 // 2) run() — in-process CLI behaviour
 // ---------------------------------------------------------------------------
 console.log('\n2) run() CLI behaviour (in-process, captured console output)');

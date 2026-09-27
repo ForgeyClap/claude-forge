@@ -1679,4 +1679,10 @@ module.exports = {
   scanQuotes, stripHeredocs, findHeredocDelim,
   cArgLiveAfterFlag, scanDoubleQuoteLive, readBareWord, isSubstitutionDollar, hasLiveSubstitution, stripEnvAssignment,
   MARKER_RE, MARKER_AT_RE,
+  // WP-M2 (2026-09-27) — the wrapper-name-and-own-option-grammar primitives stripLeadingPrefixes() already
+  // combines with stripEnvAssignment() above, exported so a caller needing a NARROWER, caller-chosen wrapper
+  // allow-list (secret-print's own search-tool-command-position veto, forge-actiongate.cjs) can reuse the exact
+  // same closed-grammar option skipping instead of a second, looser regex. See matchWrapper()'s and
+  // stripWrapperOptions()'s own doc comments above for the full per-wrapper grammar.
+  matchWrapper, stripWrapperOptions,
 };
