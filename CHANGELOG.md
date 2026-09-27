@@ -24,8 +24,9 @@ below.
   your own `/forge remember` rules into the private `FORGE_STANDING_RULES.user.json` before the shipped rules file is
   replaced. If your private file cannot be read, the old rules file is kept and you are told to fix its JSON (after
   making a copy — never to delete it); nothing is thrown away. (2.8.0 did this only in `forge-sync`; the installer
-  left your rules in a backup file.) A second installer run changes nothing more, and `install.sh` no longer keeps
-  retrying when its temporary manifest folder disappears mid-run.
+  left your rules in a backup file.) A second installer run changes nothing more, and when `install.sh`'s temporary
+  manifest folder disappears mid-run it no longer prints an error for every remaining file (it then skips the
+  uninstall list for that run).
 - **Codex on Windows:** the reviewer now starts the real `codex.exe` from the npm install instead of npm's
   `codex.js` wrapper, so a review that runs too long is really stopped (the wrapper could leave the real process
   running). A timeout is reported as a timeout in the text output too, not as "could not start".
@@ -40,7 +41,8 @@ below.
 
 ### Corrections to the 2.8.0 notes
 - "git grep's pager in any spelling git accepts": not complete in 2.8.0 (the `-NUM` group and mid-word quotes or
-  backslashes still passed); complete from 2.8.1.
+  backslashes still passed); from 2.8.1 the spellings listed above are caught — not yet every spelling (see Known
+  limitations).
 - "existing owner rules are moved there automatically (also during an upgrade from 2.7.x)": true for `forge-sync`
   only; true for the installers from 2.8.1.
 - "reported as timed out, never as a result": true for the JSON output only; the text output said "could not
@@ -54,12 +56,24 @@ below.
   contract and the chat-runs test each gained tests).
 - Both installers were run for real on this Windows machine, in throwaway folders with an empty home: the upgrade
   case (the owner rule is moved), the broken-private-file case (the old file is kept) and a second run.
-- An independent read-only verification review of the 2.8.0 fixes found the items fixed here; a fresh-laptop
-  simulation of this exact commit and CI on Linux and Windows (Node 18 and 22) run before the tag.
+- An independent read-only verification review of the 2.8.0 fixes found the items fixed here. A second
+  independent read-only review of these 2.8.1 changes: PASS, with four low findings, listed under Known limitations.
+- A fresh-laptop simulation of the release contents came out all green (136 suites, 9154 passing), and CI on Linux
+  and Windows (Node 18 and 22) ran on the tagged commit before the tag.
 
 ### Known limitations
 - `install.sh` is slow under Git Bash on Windows (it starts helper programs per file); it finishes, but can take
   several minutes. Windows users should use `install.ps1`, which is fast. A faster `install.sh` is planned.
+- The gate hook does not yet recognise git grep's pager flag written with bash's `$'…'` or `$"…"` quoting, or
+  taken from a variable (`f=-O; git grep $f…`). Planned for the next release.
+- If an existing `FORGE_STANDING_RULES.json` cannot be read (corrupt, locked, or its folder path does not reach
+  node intact), the installers treat it as holding no own rules and replace it. Its old contents stay in the
+  installer's `.forge-bak-<time>` copy, so nothing is lost. Planned: keep the file and explain instead.
+- The installers' dry run does not yet show that a rules file with a pending migration will be kept (the real
+  run keeps it).
+- On Windows, when no `codex.exe` is found, the Codex reviewer falls back to starting `codex` by name, and Windows
+  then also looks in the current folder. Set `FORGE_CODEX_BIN` to choose the program yourself. Planned: report
+  "not found" instead.
 
 ## [2.8.0] - 2026-09-26
 
