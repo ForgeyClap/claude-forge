@@ -466,7 +466,9 @@ t('F7: resolveCodexBin() on Windows skips a non-absolute (relative) PATH entry i
 // runCodex() by actually mutating process.env for the duration of the call (this process really is win32
 // here), never by passing the already-resolved null value as codexBin. Saved/restored like the existing
 // FORGE_CODEX_BIN test above.
-t('F3: runCodex() reports not_found (never spawns) when resolveCodexBin() finds nothing at all on win32', () => {
+// Linux CI 2026-09-29: on POSIX resolveCodexBin() returns the bare name 'codex' by design (PATH lookup), so this
+// Windows-only case runs on Windows only.
+(process.platform === 'win32' ? t : (name) => console.log('  SKIP ' + name + ' — Windows-only: on POSIX resolveCodexBin() returns the bare name codex by design'))('F3: runCodex() reports not_found (never spawns) when resolveCodexBin() finds nothing at all on win32', () => {
   const eff = { review: { model: 'm1', reasoning_effort: 'high', sandbox: 'read-only' } };
   const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-none-'));
   const savedPath = process.env.PATH;

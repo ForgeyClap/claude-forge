@@ -143,8 +143,8 @@ default, and every setting can now also be changed from the dashboard.
   vault, doctor, error explanations, snapshot.
 - **A finalized run whose log changed afterwards no longer shows as finalized.** The Command Center checks the
   finalize receipt against the run log's exact size and sha256, so a run that was reopened or edited, or whose log
-  is missing, reads "not finalized" with the reason. (Codex found that a size-only check missed an edit of the same
-  length.)
+  is missing, reads "not finalized" with the reason, and the Tests & proof panel shows why an existing receipt no
+  longer counts. (Codex found that a size-only check missed an edit of the same length.)
 - **The Discord bot no longer crashes when Discord refuses to create a project channel** (the bot's role lacks
   "Manage Channels"). That project is skipped, you are told once which permission to give, and the bot retries by
   itself with a growing wait; the other projects keep working.

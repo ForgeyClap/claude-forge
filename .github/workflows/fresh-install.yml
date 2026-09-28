@@ -29,6 +29,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        # v2.9.0: full history (fetch-depth 0), like validate.yml. tests/installer/retired-dashboard-prune.{sh,ps1}
+        # rebuild the retired dashboard files from `git log` history; a shallow clone has none (the first CI run of
+        # PR #4 failed with "no git history at all for .claude/forge-dashboard/lenses.js").
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4

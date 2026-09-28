@@ -33,6 +33,11 @@ const t = (name, fn) => { try { fn(); pass++; console.log('  ok  ' + name); } ca
  *  reader of the summary line alone can see something was not checked, rather than it silently
  *  vanishing. Same convention as forge-doctor.test.cjs's own skip(). */
 const skip = (name, reason) => { skipped++; console.log('  SKIP ' + name + ' — ' + reason); };
+// Linux CI 2026-09-29: the exclusive-lock pin (pinCandidateDirWindows) is a Windows mechanism; on POSIX pruneSynthetic
+// uses posixChainIsPrivate instead (its own tests below), so the pin tests run on Windows only.
+const tWin = process.platform === 'win32' ? t : (name) => skip(name, 'Windows-only: the exclusive-lock pin is a Windows mechanism (POSIX uses posixChainIsPrivate, tested below)');
+// A junction (Windows) is removed with rmdir; a symlink elsewhere with unlink — the link itself, never its target.
+function removeLink(p) { if (process.platform !== 'win32' && fs.lstatSync(p).isSymbolicLink()) fs.unlinkSync(p); else fs.rmdirSync(p); }
 function tAsync(name, fn) {
   return fn().then(() => { pass++; console.log('  ok  ' + name); }, (e) => { fail++; console.error('  FAIL ' + name + ' — ' + e.message); });
 }
@@ -504,7 +509,7 @@ t('pruneSynthetic --apply: PRUNE-1 fix — re-verifies identity right before unl
 // grandparent is refused while the pin stays open) — see pinCandidateDirWindows/verifyPinnedCandidate's
 // own doc comments in forge-runinfo.cjs for the full model.
 // ---------------------------------------------------------------------------------------------------------
-t('pinCandidateDirWindows: creates a real, exclusively-held file inside the directory; fstat/lstat agree', () => {
+tWin('pinCandidateDirWindows: creates a real, exclusively-held file inside the directory; fstat/lstat agree', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-pin-basic-'));
   try {
     const pin = S.pinCandidateDirWindows(tmp);
@@ -519,7 +524,7 @@ t('pinCandidateDirWindows: creates a real, exclusively-held file inside the dire
     } finally { try { fs.closeSync(pin.fd); } catch { /* best-effort */ } try { fs.unlinkSync(pin.pinPath); } catch { /* best-effort */ } }
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
-t('pinCandidateDirWindows: the OS itself refuses to rename the pinned directory (or its parent/grandparent) while the pin is held — the actual, measured guarantee this fix relies on', () => {
+tWin('pinCandidateDirWindows: the OS itself refuses to rename the pinned directory (or its parent/grandparent) while the pin is held — the actual, measured guarantee this fix relies on', () => {
   const grandparent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-pin-rename-'));
   const parent = path.join(grandparent, 'parent');
   const candidate = path.join(parent, 'candidate');
@@ -541,7 +546,7 @@ t('pinCandidateDirWindows: the OS itself refuses to rename the pinned directory 
     fs.rmSync(grandparent, { recursive: true, force: true });
   }
 });
-t('pinCandidateDirWindows: once the pin is CLOSED, the rename that was refused a moment ago succeeds — proving the refusal really came from the held pin, not something else', () => {
+tWin('pinCandidateDirWindows: once the pin is CLOSED, the rename that was refused a moment ago succeeds — proving the refusal really came from the held pin, not something else', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-pin-release-'));
   const candidate = path.join(tmp, 'candidate');
   fs.mkdirSync(candidate, { recursive: true });
@@ -556,7 +561,7 @@ t('pinCandidateDirWindows: once the pin is CLOSED, the rename that was refused a
   assert.ok(fs.existsSync(candidate + '-renamed-after-release'));
   fs.rmSync(tmp, { recursive: true, force: true });
 });
-t('verifyPinnedCandidate: passes when nothing has changed since inspection', () => {
+tWin('verifyPinnedCandidate: passes when nothing has changed since inspection', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-verifypin-ok-'));
   const runsDir = path.join(tmp, '.claude', 'forge-runs');
   fs.mkdirSync(runsDir, { recursive: true });
@@ -569,7 +574,7 @@ t('verifyPinnedCandidate: passes when nothing has changed since inspection', () 
     assert.strictEqual(v.ok, true, v.reason);
   } finally { try { fs.closeSync(pin.fd); } catch { /* best-effort */ } try { fs.unlinkSync(pin.pinPath); } catch { /* best-effort */ } fs.rmSync(tmp, { recursive: true, force: true }); }
 });
-t('verifyPinnedCandidate: refuses when a debris file was replaced (different inode) after inspection but before pinning', () => {
+tWin('verifyPinnedCandidate: refuses when a debris file was replaced (different inode) after inspection but before pinning', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-verifypin-fileswap-'));
   const runsDir = path.join(tmp, '.claude', 'forge-runs');
   fs.mkdirSync(runsDir, { recursive: true });
@@ -586,7 +591,7 @@ t('verifyPinnedCandidate: refuses when a debris file was replaced (different ino
   } finally { try { fs.closeSync(pin.fd); } catch { /* best-effort */ } try { fs.unlinkSync(pin.pinPath); } catch { /* best-effort */ } fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
-t('pruneSynthetic --apply: STOP-PRUNE-1 — a rename+junction-plant attack attempted AFTER pin verification (right before the unlinks) is refused by the OS; the debris is removed for real, the outside victim survives untouched, and no pin file remains', () => {
+tWin('pruneSynthetic --apply: STOP-PRUNE-1 — a rename+junction-plant attack attempted AFTER pin verification (right before the unlinks) is refused by the OS; the debris is removed for real, the outside victim survives untouched, and no pin file remains', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-stopprune1-attack-'));
   const runsDir = path.join(tmp, '.claude', 'forge-runs');
   fs.mkdirSync(runsDir, { recursive: true });
@@ -625,7 +630,7 @@ t('pruneSynthetic --apply: STOP-PRUNE-1 — a rename+junction-plant attack attem
   fs.rmSync(victimDir, { recursive: true, force: true });
 });
 
-t('pruneSynthetic --apply: STOP-PRUNE-1 — a swap completed BEFORE pinning (the candidate is already a junction by pin time) fails pin verification, refuses the candidate, and deletes nothing', () => {
+tWin('pruneSynthetic --apply: STOP-PRUNE-1 — a swap completed BEFORE pinning (the candidate is already a junction by pin time) fails pin verification, refuses the candidate, and deletes nothing', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-stopprune1-beforepin-'));
   const runsDir = path.join(tmp, '.claude', 'forge-runs');
   fs.mkdirSync(runsDir, { recursive: true });
@@ -787,6 +792,19 @@ t('pruneSynthetic --apply (opts.platform override): a sticky world-writable ance
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
+t('pathChainIsReal: a FILESYSTEM ROOT as the anchor still accepts a real file below it (the root already ends with a separator)', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-fsroot-'));
+  try {
+    const f = path.join(tmp, 'x.txt');
+    fs.writeFileSync(f, 'x');
+    const fsRoot = path.parse(tmp).root;
+    // Only meaningful when the temp chain itself is real (macOS /tmp is a symlink, for example).
+    if (fs.realpathSync(tmp) === path.resolve(tmp)) {
+      assert.strictEqual(S.pathChainIsReal(fsRoot, f), true, 'a real file under the filesystem root must pass from root ' + fsRoot);
+    }
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
 t('statIdentity/identityMatches: the SAME file lstat-ed twice matches; a replaced file (new inode) does not', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runinfo-identity-'));
   const p = path.join(tmp, 'a.txt');
@@ -795,8 +813,10 @@ t('statIdentity/identityMatches: the SAME file lstat-ed twice matches; a replace
     const s1 = S.statIdentity(fs.lstatSync(p));
     const s2 = S.statIdentity(fs.lstatSync(p));
     assert.strictEqual(S.identityMatches(s1, s2), true);
-    fs.unlinkSync(p);
-    fs.writeFileSync(p, 'replaced');
+    // Linux CI 2026-09-29: unlink-then-recreate may get the SAME inode back on Linux; writing the replacement first
+    // and renaming it over the original guarantees a different file (both existed at once).
+    fs.writeFileSync(p + '.new', 'replaced');
+    fs.renameSync(p + '.new', p);
     const s3 = S.statIdentity(fs.lstatSync(p));
     assert.strictEqual(S.identityMatches(s1, s3), false, 'expected a different inode after unlink+recreate (if this ever fails, the OS reused the exact same file id — not a defect in identityMatches itself)');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
@@ -966,7 +986,7 @@ if (rg1LivePlanted) {
     // than assuming it, so a future platform/Node change that broke it would be caught here too.
     assert.ok(!S.listRunIds().includes(RG1_LIVE_ID), 'a symlinked run directory must never be listed as a real run');
   });
-  fs.rmdirSync(RG1_LIVE_JUNCTION);
+  removeLink(RG1_LIVE_JUNCTION);
 } else {
   skip('readRun(): a symlinked/junction run directory planted in the REAL forge-runs/ is refused, not read',
     'could not plant a junction under the real ' + S.RUNS_DIR + ' (permission or filesystem restriction) — the hermetic classifyRunDir/safeReadContained tests above already cover the same mechanism');
@@ -1174,7 +1194,7 @@ run();
       assert.strictEqual(r.escaped, true);
       assert.ok(/refusing to read/.test(r.reason), r.reason);
     } finally {
-      fs.rmdirSync(RV_RUNS);
+      removeLink(RV_RUNS);
       fs.renameSync(RV_RUNS + '-moved-away', RV_RUNS);
     }
   });

@@ -51,7 +51,7 @@ function realContainmentOk(baseDir, targetPath) {
   let realBase, realTarget;
   try { realBase = fs.realpathSync(baseDir); } catch { return false; }
   try { realTarget = fs.realpathSync(targetPath); } catch { return false; }
-  return realTarget === realBase || realTarget.startsWith(realBase + path.sep);
+  return realTarget === realBase || realTarget.startsWith(withSep(realBase));
 }
 // --- RUN-1 / PRUNE-1 fix, round 2 (Codex adversarial-review, HIGH) ---
 // realContainmentOk() above is real-path-aware for the TARGET, but it trusts baseDir's OWN realpath at
@@ -74,12 +74,16 @@ function realContainmentOk(baseDir, targetPath) {
 // trusted anchor plus its own expected relative sub-path (`path.join(realRoot, relativePartSoFar)`,
 // compared case-insensitively on win32), on top of the existing lstat link check — so a link introduced
 // at ANY point below root is still caught, while root's own path is never second-guessed.
+// Linux CI 2026-09-29: a filesystem root ('/', 'C:\\') already ends with a separator, so `root + path.sep` ('//')
+// prefixed no real path and a project at a root was refused. The prefix of a directory is itself plus ONE separator.
+function withSep(p) { return p.endsWith(path.sep) ? p : p + path.sep; }
+
 function pathChainIsReal(root, targetPath) {
   let realRoot;
   try { realRoot = fs.realpathSync(root); } catch { return false; }
   const rootResolved = path.resolve(root);
   const targetResolved = path.resolve(targetPath);
-  if (targetResolved !== rootResolved && !targetResolved.startsWith(rootResolved + path.sep)) return false;
+  if (targetResolved !== rootResolved && !targetResolved.startsWith(withSep(rootResolved))) return false;
   const rel = path.relative(rootResolved, targetResolved);
   if (!rel) return true; // targetPath IS root itself -- root's own realpath is the trusted anchor, whatever it is
   const eq = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
@@ -321,7 +325,7 @@ function readRun(id) {
   if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
   const dir = path.join(RUNS_DIR, id);
   const base = path.resolve(RUNS_DIR), resolved = path.resolve(dir);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
+  if (resolved !== base && !resolved.startsWith(withSep(base))) return null;
   if (!exists(dir)) return null;
   const EMPTY = { run: {}, events: [], report: null, malformed: 0 };
   // RUN-1 fix, round 2: the runs ROOT itself (.claude, .claude/forge-runs) must be provably real before
