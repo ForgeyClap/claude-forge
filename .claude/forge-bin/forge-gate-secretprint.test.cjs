@@ -27,6 +27,7 @@ const { spawnSync } = require('child_process');
 const gate = require('./forge-actiongate.cjs');
 const hook = require('./forge-gate-hook.cjs');
 const data = require('./forge-gate-data.cjs');
+const quotes = require('./forge-gate-quotes.cjs');
 
 let passed = 0, failed = 0;
 function t(name, fn) {
@@ -460,6 +461,380 @@ for (const cmd of ['grep -f patterns.txt -rn src/', 'grep -e "\\.env" -f pattern
 }
 t('spawned hook BLOCKS (exit 2, names secret-print): grep -o -f .env notes.txt', () => {
   const r = spawnHook(bash('grep -o -f .env notes.txt'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+
+// ---------------------------------------------------------------------------
+// 12) WP-M3 (2026-09-27, independent review RB2-1) — the old exemption only ever recognised the EXACT words
+//     -e/--regexp/-f/--file (or an attached --name= form); every OTHER flag was merely "starts with -/-- so
+//     skip it", with no notion of which flags take a VALUE. classifySearchWords() in forge-gate-quotes.cjs
+//     (shared verbatim by this file's own veto and forge-gate-data.cjs's pre-classify layer) replaces that
+//     with a real, closed, per-tool option-table walk. Regression proof against the ACTUAL pre-fix code (via
+//     `git show HEAD:<path>` into a scratch copy, never git stash — same convention WP-M2's own doc comment
+//     names): every 12b fixture below ALLOWED on pre-fix code (a false ALLOW); "grep -A 3"/"rg -g"/"rg -t"
+//     BLOCKED on pre-fix code (a false BLOCK) — all 14 flip to the correct verdict with this fix.
+// ---------------------------------------------------------------------------
+console.log('\n12) WP-M3 RB2-1 — real per-tool option-table walk (grep/rg/findstr arity, not just exact -e/-f)');
+
+// 12a — must-ALLOW: a value-taking flag's own value must never be mistaken for the implicit pattern (the false
+// BLOCK direction: "-A 3"/"-C2"/"--include="/"-f"/rg's "-g"/"-t" all used to defeat the implicit-pattern rule).
+for (const cmd of ['grep -A 3 "\\.env" src/', 'grep -C2 "\\.env" src/', 'grep -rn --include=*.js "\\.env" src/',
+  'grep -f patterns.txt src/', 'grep -e "\\.env" -rn src/', 'rg -g "*.js" "\\.env"', 'rg -t js "\\.env"',
+  'findstr /s /i ".env" *.js']) {
+  t('classify() stays silent (a flag\'s own value is correctly consumed, the real pattern is picked): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+// 12b — must-BLOCK: a pattern/file flag's value in ANY shape besides the one exact form WP-M1/M2 recognised
+// used to be missed entirely, so the real FILE right after it was wrongly read as the implicit pattern.
+for (const cmd of ['grep -eTOKEN .env', 'grep -vf .env', 'grep -Ff .env', 'grep -wf .env', 'grep -rf .env',
+  'grep --reg=x .env', 'grep --fil .env', 'grep -Q ".env" file', 'findstr /C:TOKEN .env',
+  'findstr /G:secret.key results.txt', 'rg -r .env pattern src', 'grep -vex .env']) {
+  t('classify() fires (a real file target reached via a flag shape the old exact-word check missed): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+// 12c — a non-numeric context/count value fails the WHOLE segment closed (no exemption at all: the base gate's
+// own broad regex is left to decide, which can only ever ADD a block here, never a new allow).
+t('classify() fires when a context flag\'s own value is not numeric (ambiguous -> fail closed, not a guess)', () => {
+  assert.ok(gate.classify('grep -A x .env').matched.includes('secret-print'));
+});
+t('spawned hook BLOCKS (exit 2, names secret-print): grep -vf .env', () => {
+  const r = spawnHook(bash('grep -vf .env'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+t('spawned hook ALLOWS (exit 0): grep -A 3 "\\.env" src/ (numeric context value correctly consumed)', () => {
+  const r = spawnHook(bash('grep -A 3 "\\.env" src/'));
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ', stderr: ' + r.stderr);
+});
+
+// 12d — direct unit coverage of the shared parser itself (forge-gate-quotes.cjs), both tools' own tables.
+console.log('\n12d — classifySearchWords() direct unit coverage');
+t('grep -A 3 consumes the numeric value and picks the real pattern', () => {
+  const r = quotes.classifySearchWords('grep', ['-A', '3', '.env', 'src/']);
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual([...r.patternIdx], [2]);
+});
+t('rg -r takes a value (unlike grep\'s no-value -r) — the exact per-tool arity split this task names', () => {
+  const rg = quotes.classifySearchWords('rg', ['-r', '.env', 'pattern', 'src']);
+  assert.strictEqual(rg.ok, true);
+  assert.ok(!rg.patternIdx.has(1), '.env (rg -r\'s own replacement value) must not be exempted');
+  const grp = quotes.classifySearchWords('grep', ['-r', '.env', 'src/']);
+  assert.strictEqual(grp.ok, true);
+  assert.ok(grp.patternIdx.has(1), '.env (grep -r is no-value, so this is the implicit pattern) must be exempted');
+});
+t('an unknown flag fails the whole segment closed', () => {
+  assert.strictEqual(quotes.classifySearchWords('grep', ['-Q', '.env', 'file']).ok, false);
+});
+t('a dangling value-taking flag with nothing after it fails closed, never throws', () => {
+  assert.strictEqual(quotes.classifySearchWords('grep', ['-A']).ok, false);
+  assert.strictEqual(quotes.classifySearchWords('grep', ['-e']).ok, false);
+});
+t('findstr /C: fills the pattern slot inline, unlike a bare positional', () => {
+  const r = quotes.classifySearchWords('findstr', ['/C:TOKEN', '.env']);
+  assert.strictEqual(r.ok, true);
+  assert.ok(!r.patternIdx.has(1), '.env must not be exempted once /C: already supplied the pattern');
+});
+t('findstr /G:/F: name a FILE findstr reads — never exempted, even though they mark the pattern slot filled', () => {
+  const r = quotes.classifySearchWords('findstr', ['/G:secret.key', 'results.txt']);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.patternIdx.size, 0);
+});
+t('a "--fil"/"--fi=" abbreviation resolves to --file unambiguously (curated table, see forge-gate-quotes.cjs)', () => {
+  assert.strictEqual(quotes.classifySearchWords('grep', ['--fil', '.env']).ok, true);
+  assert.deepStrictEqual([...quotes.classifySearchWords('grep', ['--fil', '.env']).patternIdx], []);
+});
+t('a "--reg="/"--regex" abbreviation resolves to --regexp unambiguously', () => {
+  const r = quotes.classifySearchWords('grep', ['--regex', 'x', '.env']);
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.patternIdx.has(1) && !r.patternIdx.has(2));
+});
+t('an ambiguous long-option abbreviation fails closed rather than guessing', () => {
+  // "--c" is a genuine prefix collision inside grep's own curated table (count/context/...): real GNU
+  // getopt_long would reject it as ambiguous too, so failing closed here matches real tool behaviour.
+  assert.strictEqual(quotes.classifySearchWords('grep', ['--c', '.env']).ok, false);
+});
+
+// 12e — parity: forge-actiongate.cjs and forge-gate-data.cjs must reach the SAME pattern-position verdict for
+// every fixture above — the "one shared parser, used identically by both" design this task asked for, proven
+// by driving each layer through its OWN real, exported entry points (never a hand-rolled re-tokenizer).
+console.log('\n12e — parity: both gate layers agree on the pattern position for every WP-M3 fixture');
+function actiongatePatternRaws(cmd) {
+  const resolved = gate.resolveSearchToolHead(cmd);
+  const split = gate.splitSegmentWords(resolved.rest);
+  const texts = split.words.map((w) => gate.wordText(w, split.mask));
+  const head = texts[0].toLowerCase();
+  const tool = head === 'rg' ? 'rg' : head === 'findstr' ? 'findstr' : 'grep';
+  const restTexts = texts.slice(1);
+  const result = quotes.classifySearchWords(tool, restTexts);
+  return result.ok ? [...result.patternIdx].map((i) => restTexts[i]).sort() : null;
+}
+function gateDataPatternRaws(cmd) {
+  const segs = data.scanWords(cmd, 'Bash');
+  const ws = segs[0].words;
+  const h = (ws[0] && !ws[0].spans.length ? ws[0].raw.toLowerCase() : '').split(/[\\/]/).pop().replace(/\.exe$/, '');
+  return [...data.searchPatternWords(h, ws)].map((w) => w.raw).sort();
+}
+for (const cmd of ['grep -A 3 .env src/', 'grep -C2 .env src/', 'grep -f patterns.txt src/',
+  'rg -g *.js .env', 'rg -t js .env', 'grep -eTOKEN .env', 'grep -vf .env', 'grep --fil .env',
+  'rg -r .env pattern src', 'grep -vex .env', 'grep -rn .env src/']) {
+  t('actiongate and gate-data agree on the pattern position: ' + cmd, () => {
+    assert.deepStrictEqual(gateDataPatternRaws(cmd), actiongatePatternRaws(cmd) || [], cmd);
+  });
+}
+t('parity holds for the fail-closed (ok:false) direction too — gate-data picks nothing either', () => {
+  assert.strictEqual(actiongatePatternRaws('grep -Q .env file'), null);
+  assert.deepStrictEqual(gateDataPatternRaws('grep -Q .env file'), []);
+});
+
+// ---------------------------------------------------------------------------
+// 13) WP-M3 REWORK (2026-09-27, Lead adversarial probe of commit 32ddb16) — two more false-ALLOW groups in the
+//     shared option-table walk itself, both fixed with a design change to classifySearchWords():
+//
+//   GROUP A (argument permutation): real grep/rg use GNU getopt semantics — options and positionals may be
+//     freely interleaved, so `grep .env -e TOKEN` means exactly the same thing as `grep -e TOKEN .env`: TOKEN
+//     is the pattern, ".env" is a real file grep opens. The original single-pass walk decided a positional's
+//     fate the MOMENT it saw it, so a positional appearing BEFORE a later -e/--regexp/-f/--file was wrongly
+//     read as the implicit pattern. Fixed with two passes: pass 1 detects whether an explicit pattern source
+//     exists ANYWHERE in the pre-`--` region; pass 2 pre-arms `patternClaimed` to that result, so no positional
+//     can ever claim the slot once a real source exists, regardless of position.
+//
+//   GROUP B (include-type filters that SELECT secret files): grep's --include and a non-negated rg -g/--glob/
+//     --iglob value genuinely restrict which files get read and printed — `grep -rn --include=.env TOKEN .`
+//     really does search every .env file it finds. The original design treated the whole "filter" bucket
+//     (include AND exclude together) as always exempt, which is only safe for EXCLUSION criteria (a file that
+//     is excluded can never be read). Fixed by splitting the bucket into filterExempt (grep's --exclude/
+//     --exclude-dir/--color/--colour; rg's -t/--type/-T/--type-not, since a "type" is a category name, never a
+//     filename), filterInclude (grep's --include, never exempt), and filterGlob (rg's -g/--glob/--iglob: exempt
+//     ONLY when the value starts with "!", gitignore-style negation — every other value is an inclusion).
+//
+// Every case in the Lead's own probe file (gate-probe-m3-lead.json) is mirrored here as a native classify()
+// fixture, plus one spawned-hook case per group (never a probe string on this test's own command line).
+// ---------------------------------------------------------------------------
+console.log('\n13) WP-M3 rework — argument permutation (group A) + include-vs-exclude filters (group B)');
+
+// 13a — group A: an explicit pattern/file option appearing AFTER the first positional must still win; no
+// positional may claim the implicit-pattern slot once a real source exists anywhere in the region.
+for (const cmd of ['grep .env -e TOKEN', 'grep .env --regexp=TOKEN', 'grep .env -f patterns.txt',
+  'rg .env -e TOKEN', 'grep TOKEN .env -r', 'grep -e TOKEN -- -e .env', 'grep -rnfx .env',
+  'grep -A 3 TOKEN .env', 'grep -m1 TOKEN .env', 'grep -C x .env', 'grep -rn "\\.env" src/ .env',
+  'findstr TOKEN .env', 'findstr /R /C:x .env', 'grep -P TOKEN .env', 'grep --color=always TOKEN .env',
+  'sudo grep -eTOKEN .env', 'egrep -vf .env notes.txt', 'rg -Ff .env notes.txt']) {
+  t('classify() fires (group A: an explicit pattern/file source elsewhere means every positional is a file): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ['grep -- .env notes.txt', 'grep --context=3 "\\.env" src/', 'findstr ".env" notes.txt']) {
+  t('classify() stays silent (group A negative space: no explicit source anywhere, the positional really is the pattern): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('spawned hook BLOCKS (exit 2, names secret-print): grep .env -e TOKEN (group A, argument permutation)', () => {
+  const r = spawnHook(bash('grep .env -e TOKEN'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+
+// 13b — group B: an INCLUSION filter that selects a secret-shaped file must fire; an EXCLUSION filter (or an
+// unrelated criterion like grep's --color or rg's -t/--type) must stay silent/exempt as before.
+for (const cmd of ['grep -rn --include=.env TOKEN .', 'grep -rn --include="*.env" TOKEN src/',
+  'rg -g .env TOKEN', 'rg -g "*.env" TOKEN .', 'rg --glob=.env TOKEN', 'rg --iglob .ENV TOKEN']) {
+  t('classify() fires (group B: an INCLUSION filter selecting a secret-shaped file): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ['grep -rn --include=*.js "\\.env" src/', 'rg -g "*.js" "\\.env"']) {
+  t('classify() stays silent (group B negative space: an inclusion filter that does NOT select a secret file): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('spawned hook BLOCKS (exit 2, names secret-print): rg -g .env TOKEN (group B, include-type filter)', () => {
+  const r = spawnHook(bash('rg -g .env TOKEN'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+
+// 13c — group B counterfactual: an EXCLUSION filter must stay exempt even though it shares a flag/value shape
+// with the inclusion cases above — this is the "keep exempt" half of the fix, not just the "now blocks" half.
+for (const cmd of ['grep --exclude=*.env "\\.env" src/', 'grep --exclude-dir=.env "\\.env" src/',
+  'rg -g "!*.env" "\\.env"', 'rg --type-not js "\\.env"', 'rg -t js "\\.env"']) {
+  t('classify() stays silent (group B counterfactual: an EXCLUSION criterion, or an unrelated type/colour filter, stays exempt): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+
+// 13d — the remaining plain probe cases (already covered indirectly, pinned directly here too so this file
+// alone documents the Lead's full case list without needing the external probe JSON to reconstruct intent).
+for (const cmd of ['git ls-files | grep -i "\\.env"', 'grep -rn "\\.env" src/', 'grep -f patterns.txt src/']) {
+  t('classify() stays silent (plain allow, pinned against regression): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+
+// 13e — parity (both gate layers agree) for a representative case from each group, reusing the SAME real
+// exported entry points section 12e already established.
+for (const cmd of ['grep .env -e TOKEN', 'rg -g .env TOKEN', 'grep --exclude=*.env .env src/']) {
+  t('actiongate and gate-data agree on the pattern position (WP-M3 rework): ' + cmd, () => {
+    assert.deepStrictEqual(gateDataPatternRaws(cmd), actiongatePatternRaws(cmd) || [], cmd);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 14) WP-M3 ROUND 3 (2026-09-27, Codex stop-time review finding M3-1, HIGH) — round 2's group-B fix decided
+//     each exclusion criterion's exemption from its OWN value alone, independent of every other word in the
+//     segment. Both real tools let a LATER inclusion silently override an EARLIER exclusion for the SAME
+//     file: GNU grep's own manual states "if contradictory --include and --exclude options are given, the
+//     last matching one wins"; ripgrep's glob matching is gitignore-style, where a later --glob can
+//     re-include what an earlier one excluded. Live repro: `rg --hidden --glob='!*.env' --glob='.*' TOKEN`
+//     used to exempt "!*.env" (its own value starts with "!") while ".*" (given AFTER it) actually
+//     re-includes every dotfile for real ripgrep, `.env` included — the classifier stayed silent on the
+//     only secret-shaped text in the line. Fixed by making an exclusion criterion's exemption depend on the
+//     WHOLE region, not just its own value: exempt ONLY when NO inclusion filter (grep's --include, or an rg
+//     glob/iglob value that does NOT start with "!") exists ANYWHERE in the pre-`--` region — order-
+//     independent by construction, proven directly below with the order reversed.
+// ---------------------------------------------------------------------------
+console.log('\n14) WP-M3 round 3 (Codex M3-1) — a later inclusion must revoke an earlier exclusion\'s exemption, and vice versa');
+
+// 14a — must-BLOCK: a later inclusion overrides an earlier exclusion (or vice versa — order must not matter).
+for (const cmd of ["rg --hidden --glob='!*.env' --glob='.*' TOKEN", "rg -g '!*.env' -g '*' TOKEN .",
+  "rg -g '.*' -g '!*.env' TOKEN", 'grep -r --exclude=*.env --include=.* TOKEN .']) {
+  t('classify() fires (round 3: an inclusion filter revokes every exclusion\'s exemption in the same region): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+// 14b — must stay ALLOW: a lone exclusion, or only exclusions, with no inclusion anywhere, keeps its exemption.
+for (const cmd of ["rg -g '!*.env' TOKEN src", 'grep -rn --exclude=*.env TOKEN src/',
+  "rg -g '!*.env' -g '!*.pem' TOKEN src", 'rg -g "*.js" "\\.env"', 'grep -rn --include=*.js "\\.env" src/']) {
+  t('classify() stays silent (round 3 negative space: no inclusion filter anywhere, or an inclusion that is not secret-shaped): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('spawned hook BLOCKS (exit 2, names secret-print): a later rg glob overrides an earlier exclusion', () => {
+  const r = spawnHook(bash("rg --hidden --glob='!*.env' --glob='.*' TOKEN"));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+t('spawned hook BLOCKS (exit 2, names secret-print): grep --include after --exclude (GNU grep "last matching wins")', () => {
+  const r = spawnHook(bash('grep -r --exclude=*.env --include=.* TOKEN .'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+t('spawned hook ALLOWS (exit 0): a lone exclusion glob with no inclusion anywhere keeps its exemption', () => {
+  const r = spawnHook(bash("rg -g '!*.env' TOKEN src"));
+  assert.strictEqual(r.status, 0, 'exit ' + r.status + ', stderr: ' + r.stderr);
+});
+
+// 14c — direct unit coverage of the shared parser: order-independence and the "only when no inclusion
+// anywhere" rule, checked directly against classifySearchWords() rather than only through classify().
+t('a later rg glob overriding an earlier exclusion loses the exemption', () => {
+  const r = quotes.classifySearchWords('rg', ['--hidden', "--glob=!*.env", '--glob=.*', 'TOKEN']);
+  assert.strictEqual(r.ok, true);
+  assert.ok(!r.patternIdx.has(1), '"!*.env" must stay visible once a later inclusion glob exists');
+  assert.deepStrictEqual([...r.patternIdx], [3], 'only TOKEN (the real pattern) should be exempt');
+});
+t('order does not matter: an EARLIER inclusion glob also revokes a LATER exclusion\'s exemption', () => {
+  const r = quotes.classifySearchWords('rg', ['-g', '.*', '-g', '!*.env', 'TOKEN']);
+  assert.strictEqual(r.ok, true);
+  assert.ok(!r.patternIdx.has(3), '"!*.env" must stay visible even though the inclusion glob came FIRST');
+});
+t('grep: --include after --exclude also revokes the exclusion\'s exemption', () => {
+  const r = quotes.classifySearchWords('grep', ['-r', '--exclude=*.env', '--include=.*', 'TOKEN', '.']);
+  assert.strictEqual(r.ok, true);
+  assert.ok(!r.patternIdx.has(1), '--exclude=*.env must stay visible once --include is present anywhere');
+});
+t('a lone exclusion glob, or only exclusions, with no inclusion anywhere keeps its exemption', () => {
+  const lone = quotes.classifySearchWords('rg', ['-g', '!*.env', 'TOKEN', 'src']);
+  assert.ok(lone.patternIdx.has(1), '"!*.env" alone (no inclusion anywhere) must stay exempt');
+  const both = quotes.classifySearchWords('rg', ['-g', '!*.env', '-g', '!*.pem', 'TOKEN', 'src']);
+  assert.ok(both.patternIdx.has(1) && both.patternIdx.has(3), 'two exclusions, still no inclusion, both stay exempt');
+});
+t('an unrelated filterExempt (rg -t/--type, grep --color) stays unconditionally exempt even alongside an inclusion filter', () => {
+  const r = quotes.classifySearchWords('rg', ['-t', 'js', '-g', '.env', 'TOKEN']);
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.patternIdx.has(1), '"js" (the -t value) is unconditionally exempt, unaffected by this fix\'s scope');
+  assert.ok(!r.patternIdx.has(3), '".env" (a non-negated glob value) was already never-exempt before this fix, unchanged');
+});
+
+// 14d — the honesty question (Lead, 2026-09-27): a recursive search naming NO secret-shaped filename at all
+// stays silent today — the base regex has nothing to trigger on, a separate, honestly-documented limitation
+// (see hard-gates.json's own _not_caught note) that this round's fix does not and cannot close.
+t('classify() stays silent for a recursive/hidden search with no secret-shaped text anywhere in the line', () => {
+  assert.strictEqual(gate.classify("rg --hidden --glob='.*' TOKEN").matched.includes('secret-print'), false);
+});
+
+// 15) v2.9.0 (Codex stop-time review F1, HIGH): GNU grep's --color[=WHEN] / --colour[=WHEN] take an OPTIONAL value
+// that only counts when glued with "=". The table treated a bare --color as consuming the NEXT word, so in
+// `grep --color API_KEY .env` API_KEY became the colour value and .env the pattern (exempt): a false ALLOW.
+console.log('\n15) grep --color / --colour: optional, attached-only value');
+for (const cmd of ['grep --color API_KEY .env', 'grep --colour API_KEY .env', 'grep --color -r TOKEN .env', 'egrep --color SECRET .env.local']) {
+  t('classify() fires (a bare --color takes no value): ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ['grep --color=always -rn "\\.env" src/', 'grep --color "\\.env" -rn src/', 'grep --colour=never TOKEN src/']) {
+  t('classify() stays silent (the pattern position is still data): ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('classifySearchOptionWord: a bare --color is novalue, --color=always carries an attached value', () => {
+  const table = quotes.SEARCH_TOOL_OPTION_TABLES.grep;
+  assert.strictEqual(quotes.classifySearchOptionWord(table, '--color').category, 'novalue');
+  const glued = quotes.classifySearchOptionWord(table, '--color=always');
+  assert.strictEqual(glued.valueMode, 'attached');
+  assert.strictEqual(glued.attachedValue, 'always');
+});
+t('spawned hook BLOCKS (exit 2, names secret-print): grep --color API_KEY .env', () => {
+  const r = spawnHook(bash('grep --color API_KEY .env'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+
+// 16) v2.9.0 (Lead probe after the --color fix): the target `secrets/` only matched a path INSIDE the folder,
+// so a search of the folder itself, or a git pathspec naming it, read every file in it unseen. `secrets` now also
+// counts when the word ends right there; a file merely named like it (secrets.md, my-secrets.txt) does not.
+console.log('\n16) the secrets folder named without a trailing slash');
+for (const cmd of ['grep -r TOKEN secrets', 'rg TOKEN secrets', 'findstr /D:secrets TOKEN *', 'git log -p -- secrets', 'git diff -- secrets', 'grep -rn TOKEN ./secrets']) {
+  t('classify() fires: ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ['grep -rn "secrets" src/', 'ls secrets', 'mkdir secrets', 'cat secrets.md', 'cat my-secrets.txt', 'git log --oneline -- secrets']) {
+  t('classify() stays silent: ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('spawned hook BLOCKS (exit 2, names secret-print): grep -r TOKEN secrets', () => {
+  const r = spawnHook(bash('grep -r TOKEN secrets'));
+  assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
+  assert.ok(r.stderr.includes('secret-print'), r.stderr);
+});
+
+// 17) v2.9.0 (Codex recheck SEC-1 and GATE-2): words are split on whitespace only, so a redirection glued to a pattern
+// word (grep -e '.*'<.env) was exempted as the pattern while the shell reads .env through "<". A word with an
+// unquoted redirection or command substitution now turns the exemption off in both layers. And the full spellings
+// --fixed-strings / --files-with-matches / --files-without-match are recognised (exact only, no prefix matching).
+console.log('\n17) glued redirections and full fixed-strings spellings');
+for (const cmd of ["grep -e '.*'<.env", 'grep -e x<.env', 'grep TOKEN<.env', 'rg TOKEN<.env.local', 'grep -e "$(cat .env)" src/', 'grep --fixed-strings TOKEN .env', 'grep --fil .env notes.txt']) {
+  t('classify() fires: ' + cmd, () => {
+    assert.ok(gate.classify(cmd).matched.includes('secret-print'), cmd);
+  });
+}
+for (const cmd of ["grep -e '<div' src/", 'grep -rn "<div" src/', "grep --fixed-strings '.env' src/", "grep -r --files-with-matches '.env' src/", "rg --fixed-strings '.env' src"]) {
+  t('classify() stays silent: ' + cmd, () => {
+    assert.strictEqual(gate.classify(cmd).matched.includes('secret-print'), false, cmd);
+  });
+}
+t('hasUnquotedShellSyntax: redirection and substitution outside quotes only', () => {
+  assert.strictEqual(quotes.hasUnquotedShellSyntax("'.*'<.env"), true);
+  assert.strictEqual(quotes.hasUnquotedShellSyntax('"$(cat x)"'), true);
+  assert.strictEqual(quotes.hasUnquotedShellSyntax("'<div'"), false);
+  assert.strictEqual(quotes.hasUnquotedShellSyntax('"<div"'), false);
+  assert.strictEqual(quotes.hasUnquotedShellSyntax('a\\<b'), false);
+});
+t('spawned hook BLOCKS (exit 2, names secret-print): grep -e \'.*\'<.env', () => {
+  const r = spawnHook(bash("grep -e '.*'<.env"));
   assert.strictEqual(r.status, 2, 'exit ' + r.status + ', stderr: ' + r.stderr);
   assert.ok(r.stderr.includes('secret-print'), r.stderr);
 });

@@ -1,0 +1,35 @@
+# v2.9.0 (WP-P3b) -- known shipped content for the 7 dashboard files retired in WP-N1
+# (.claude/forge-dashboard/{server.cjs,index.html,app.js,graph.js,lenses.js,panels.js,styles.css}).
+# Used ONLY by install.ps1/install.sh's pre-2.8.0 (no-manifest) legacy fallback, to migrate a project
+# that never had install-manifest tracking at all -- a 2.8.0+ install is pruned by its own manifest
+# instead (see Remove-ForgeRetiredManifestFiles / forge_prune_retired_manifest_files).
+#
+# Format: <path relative to a directory that has .claude/ directly under it><TAB><sha256, lowercase>
+# Each sha256 is of the file's content with CRLF normalized to LF (a lone CR or LF is left
+# untouched) -- see Get-ForgeNormalizedSha256 / forge_sha256_normalized. One line per historical
+# shipped version of that path; several lines legitimately share the same path.
+#
+# Recomputed straight from this repo's own git history (git log --all -- <path>, then the blob at
+# each commit) by tests/installer/assert-retired-dashboard-hashes.js, which FAILS the build if this
+# table ever drifts from what git actually recorded. 21 lines total, matching that recompute exactly.
+.claude/forge-dashboard/server.cjs	59c30028b568f26fb03dd055a90cf19f131a04382cd105989ca46298c7c2253e
+.claude/forge-dashboard/server.cjs	8da4c355f1e9153a18561bf230586ac9b24ab4f4bf67b65cdb1d1c8cdcac9dc6
+.claude/forge-dashboard/server.cjs	f992f89311658b2c8b7af26459c2c0d58f733088b9cbd06d7a07067b5ec7a3a3
+.claude/forge-dashboard/server.cjs	ff86ce33d9d5ede8de72ad6be5e3f5bc33aca707db3013fdb1a645ae187fdf9c
+.claude/forge-dashboard/index.html	1d65cf4be843a00c7ece26aa0728b9dfbcad83addf51b48c9b3cbd4536f86545
+.claude/forge-dashboard/index.html	ab41d58f32c6b0baba65975686e040aaa99c46fa9dee8186e2598cc48b0c61b5
+.claude/forge-dashboard/app.js	0176f874dc2f340ce32832e6fe65e286b5bb1219abb8fcd51842eb99a7bf4f4d
+.claude/forge-dashboard/app.js	18de5921406491254015ac08301bfb73c4ccc85cb84c047807a2138db3115c29
+.claude/forge-dashboard/app.js	4e7c058a3c07e7ebe0f2f73a487ad8c133fd55e5c574ac3b2b0a6776644d4412
+.claude/forge-dashboard/app.js	623af186b1793db63e61a7385e7198f55b61cc717ed77b84d4c614b4d835923e
+.claude/forge-dashboard/app.js	812e0aa7c80b254acf7cadbdffc626a38a8baf367842ed615cc60d12c663b80c
+.claude/forge-dashboard/app.js	9fefa913402bd5d43a4c8701229277f6c99875171bffeb05fc4ef5daa0f36e7f
+.claude/forge-dashboard/app.js	fdb6ed28f6fb704e917070b675152cf9ee375fa5e3992461c1bc49e7fba7e3ad
+.claude/forge-dashboard/graph.js	5494ae5aa380e610437746a0c5c38e937230988b6eb71332b2818c0ef3c681fc
+.claude/forge-dashboard/graph.js	d77fe59a83de06faa082eeccac5f7713332446081db992e2c67f099fff12e6ed
+.claude/forge-dashboard/lenses.js	b491ef26196e6d5dc985d479c672a4d2599ac0dc7377d8738a3e738808321490
+.claude/forge-dashboard/panels.js	121d783d52087845b2d77dd468e7f33a122ff6af19540b6988610e5e16a90a35
+.claude/forge-dashboard/panels.js	1a31a5b47079c25b4caed33bbc593a80ae70c92a9a5cb4eece6b4dcfc859cb62
+.claude/forge-dashboard/panels.js	aa31895f5d05372ae96aff61ba8d243b3d1063ac0cef22b24c5f373c6d12bfda
+.claude/forge-dashboard/styles.css	5fc840b5fb7009d34c559b2a17d36754a168ed8f5336dae80b2bf2c630a8b3c8
+.claude/forge-dashboard/styles.css	ab034c3be7c3b392f5f05c9f0dde73440e155a534deb15f8d4300d5655f2f40b

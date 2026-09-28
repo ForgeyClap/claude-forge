@@ -124,13 +124,12 @@ once and keeps working without it.
 > **Never trust a "dashboard is running" claim without a health check.** If `/api/health` doesn't answer, it isn't up — restart it and read the printed URL.
 
 <details>
-<summary>Legacy: the retired per-project Control Center</summary>
+<summary>Legacy: the removed per-project Control Center</summary>
 
-Before 2026-07-31, each project ran its own dashboard on a deterministic port derived from the
-project path (range 3737–3999), with `node .claude/forge-dashboard/server.cjs` walking forward to
-the next free port on `EADDRINUSE`. That per-project server is **retired**: it never starts
-automatically any more, only on an explicit `legacy dashboard` request. Its `log-event.cjs` is *not*
-retired and remains the per-project run-event writer that the Command Center reads.
+Before v2.9.0, each project ran its own dashboard on a deterministic port (range 3737–3999) via
+`node .claude/forge-dashboard/server.cjs`. **This per-project server was removed in v2.9.0** and no
+longer exists. Only `log-event.cjs` in `.claude/forge-dashboard/` remains — it stays unchanged as the
+per-project run-event writer that the Command Center reads.
 
 </details>
 
@@ -140,12 +139,12 @@ retired and remains the per-project run-event writer that the Command Center rea
 
 **Problem** — The `.cjs` tools or the dashboard throw syntax/runtime errors, or `doctor` shows a **FAIL** on the Node line.
 
-**Cause** — Forge's zero-dependency tooling requires **Node.js 18+**. Older Node is not supported.
+**Cause** — Forge's zero-dependency tooling requires **Node.js 18+**. The Discord integration requires **Node.js 20+**. Older Node is not supported.
 
 **Fix** — Check your version and upgrade if needed:
 
 ```bash
-node --version   # must print v18.x or newer
+node --version   # must print v18.x or newer (v20+ for Discord)
 ```
 
 `doctor` reports this explicitly, e.g. *"Node v16.x is below the minimum supported v18"*. Install a current LTS from [nodejs.org](https://nodejs.org) (or via `nvm` / `nvm-windows`), then re-run `/setup-forge doctor`.

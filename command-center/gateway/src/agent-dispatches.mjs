@@ -44,6 +44,20 @@
 //     not a failure.
 import { listConversations, readConversation } from './conversations.mjs';
 import { isConversationBusy } from './exec-bridge.mjs';
+// WP-CC1 (item 5): the run-log dispatch view below needs the SAME "which runs are actually live"
+// signal runs.mjs already computes (status/last_work_at) and missions.mjs's own heartbeat window —
+// reused rather than re-derived, so every view of "is this still running" agrees on one answer.
+import { listRuns } from './runs.mjs';
+import { readEvents } from './events.mjs';
+import { STALE_TASK_MS } from './missions.mjs';
+import { buildAgentNameIndex, slugFor } from './agent-names.mjs';
+// WP-CC1 (Lead review, HIGH): the SAME real per-tool-call heartbeat runs.mjs's own liveness fix
+// uses — see toollog.mjs's own header for why an events.jsonl-only signal misses a Boss that works
+// a long stretch without ever emitting a mission event.
+import { readToolLogRows, hasAttributedToolLogActivity } from './toollog.mjs';
+// WP-CC1 (Lead review round 2): a reviewer dispatch closes at its own review_completed (no
+// dispatch_id at all), never at subagent_completed — see reviewer-pairing.mjs's own header.
+import { createReviewerTracker } from './reviewer-pairing.mjs';
 
 // Mirrors chat-runs.mjs's own MAX_CHAT_RUNS_PER_PROJECT convention — a real ceiling, not a guess:
 // this gateway's own dashboard project realistically has a handful to a few dozen conversations,
@@ -173,6 +187,168 @@ function collectUpdatedTasks(events) {
   return updated;
 }
 
+// WP-CC1 (item 5): a run-log dispatch is only ever scanned for the runs that could plausibly still
+// be live — runs.mjs's own current_run plus every row it marks status:'live'. Bounded to a handful
+// of runs in practice (usually 0-1), never every run this project has ever had.
+const MAX_RUN_LOG_CANDIDATE_RUNS = 5;
+const RUN_LOG_START_TYPES = new Set(['subagent_started', 'agent_started']);
+const RUN_LOG_END_TYPES = new Set(['subagent_completed', 'agent_completed', 'subagent_failed', 'agent_failed']);
+const RUN_LOG_FAIL_TYPES = new Set(['subagent_failed', 'agent_failed']);
+
+function candidateLiveRunIds(runsResult) {
+  const ids = [];
+  if (runsResult.current_run) ids.push(runsResult.current_run);
+  for (const row of runsResult.runs) {
+    if (row.status === 'live' && !ids.includes(row.run_id)) ids.push(row.run_id);
+  }
+  return ids.slice(0, MAX_RUN_LOG_CANDIDATE_RUNS);
+}
+
+// WP-CC1 (Lead review, HIGH): "the agent's own tool activity by dispatch id" — true only when a
+// `_toollog` row for THIS exact dispatch id falls inside the last STALE_TASK_MS (10 min). This is
+// what keeps a Boss that works 30+ minutes on real tool calls, without ever emitting a mission
+// event, from reading 'stalled' while it is genuinely still working.
+function dispatchHasRecentToolActivity(toolLogRows, dispatchId, nowMs) {
+  for (const row of toolLogRows) {
+    if (row.agent_id !== dispatchId) continue;
+    const ms = Date.parse(row.ts);
+    if (Number.isFinite(ms) && (nowMs - ms) <= STALE_TASK_MS) return true;
+  }
+  return false;
+}
+
+/**
+ * Every OPEN or recently-resolved `subagent_started`/`agent_started` <-> `subagent_completed`/
+ * `agent_completed`/`*_failed` pair, from the run(s) that could plausibly still be live right now —
+ * `source: 'run-log'`, distinct from listAgentDispatches()'s own conversation-sourced rows (which
+ * only ever see a dispatch made FROM the dashboard's own chat, never one Forge itself ran headless
+ * via `/forge`/the CLI).
+ *
+ * WP-CC1 (Lead review round 2 — "heartbeat fallback"): `running` is `true` for an open dispatch
+ * with its OWN recent `_toollog` activity (checked first; see dispatchHasRecentToolActivity()'s own
+ * header) — and, ONLY when this project's tool-log shows no attribution at ALL (tool logging off,
+ * or an older Claude Code build that never stamps `agent_id`), falls back to the run's own recent
+ * work event (`last_work_at` within STALE_TASK_MS) instead. Once attribution is confirmed working
+ * (`hasAttributedToolLogActivity()`), the run-level fallback is NEVER consulted again — this is
+ * exactly the bug a live sample caught: three different agents' open dispatches all read
+ * `running:true` off of ONE agent's real activity, because the run-level fallback used to apply
+ * unconditionally. Neither signal present -> honestly `stalled: true`, never silently shown running.
+ *
+ * WP-CC1 (Lead review round 2 — reviewer pairing): a `role:'reviewer'` dispatch is never closed by
+ * `subagent_completed`/`agent_completed` — see reviewer-pairing.mjs's own header for why a
+ * reviewing agent legitimately never logs one. It closes at its own `review_completed` (which
+ * carries NO `dispatch_id` at all), matched by AGENT SLUG through the same name index, FIFO per
+ * agent. A `role:'worker'` dispatch is never registered with the reviewer tracker at all, so a
+ * review_completed can structurally never close one, even from the very same agent.
+ *
+ * F-05 dedup (item 5/7): a resumed dispatch that logs a SECOND `subagent_started` under the exact
+ * same `dispatch_id` never overwrites an already-resolved entry — the first completion stands, and
+ * the duplicate start is counted on `resumed_start_count` instead. A duplicate start while the
+ * dispatch is STILL open is likewise never allowed to reset `started_at`/`task`/`wp_id` — the
+ * original start stands, matching the "keep one entry" rule.
+ */
+export function listRunLogDispatches(projectPath, now = Date.now()) {
+  if (typeof projectPath !== 'string' || projectPath.length === 0) return [];
+  const runsResult = listRuns(projectPath, now);
+  if (!runsResult.ok) return [];
+  const runsById = new Map(runsResult.runs.map((r) => [r.run_id, r]));
+  const candidateRunIds = candidateLiveRunIds(runsResult);
+  if (candidateRunIds.length === 0) return [];
+
+  const nameIndex = buildAgentNameIndex(projectPath);
+  // WP-CC1 (Lead review, HIGH): ONE toollog read for every dispatch below (itself cached ~5s — see
+  // toollog.mjs), reused across every candidate run — never one read per run or per dispatch.
+  const toolLogRows = readToolLogRows(projectPath, now);
+  // WP-CC1 (Lead review round 2): a PROJECT-WIDE property (not per-run, not per-dispatch) — computed
+  // once and reused for every dispatch below.
+  const attributionWorks = hasAttributedToolLogActivity(toolLogRows, now);
+  const rows = [];
+  for (const runId of candidateRunIds) {
+    const eventsResult = readEvents(projectPath, runId, 0);
+    if (!eventsResult.ok) continue;
+    const runRow = runsById.get(runId) || null;
+    const byDispatchId = new Map();
+    // WP-CC1 (Lead review round 2): fresh per run — a reviewer dispatch and its own review_completed
+    // both belong to the SAME run's own events.jsonl, never paired across two different runs.
+    const reviewerTracker = createReviewerTracker();
+    for (const ev of eventsResult.events) {
+      if (!ev || typeof ev !== 'object') continue;
+      const et = ev.event_type;
+
+      // review_completed carries NO dispatch_id at all (self-reported by the reviewing agent) —
+      // handled BEFORE the dispatch_id-based branches below, closed by agent slug alone.
+      if (et === 'review_completed') {
+        const closedDispatchId = reviewerTracker.closeReviewer(nameIndex, ev.agent);
+        if (closedDispatchId !== null) {
+          const existing = byDispatchId.get(closedDispatchId);
+          if (existing && existing.completed_at === null) {
+            existing.completed_at = typeof ev.timestamp === 'string' ? ev.timestamp : null;
+            existing.verdict = typeof ev.verdict === 'string' ? ev.verdict : null;
+          }
+        }
+        continue;
+      }
+
+      const dispatchId = typeof ev.dispatch_id === 'string' && ev.dispatch_id ? ev.dispatch_id : null;
+      if (dispatchId === null) continue; // no id to key by — honestly skipped, never guessed
+      if (RUN_LOG_START_TYPES.has(et)) {
+        const existing = byDispatchId.get(dispatchId);
+        if (existing) {
+          // Either already resolved (a genuine resume — never overwrite the completion) or still
+          // open (a duplicate start under one id — keep the original, never reset it). Either way:
+          // one entry, counted, never overwritten.
+          existing.resumed_start_count += 1;
+          continue;
+        }
+        const role = typeof ev.role === 'string' ? ev.role : null;
+        byDispatchId.set(dispatchId, {
+          run_id: runId,
+          dispatch_id: dispatchId,
+          agent: typeof ev.agent === 'string' ? ev.agent : null,
+          agent_slug: slugFor(nameIndex, ev.agent),
+          role,
+          wp_id: typeof ev.wp_id === 'string' ? ev.wp_id : null,
+          task: typeof ev.task === 'string' ? ev.task : null,
+          started_at: typeof ev.timestamp === 'string' ? ev.timestamp : null,
+          completed_at: null,
+          verdict: null,
+          resumed_start_count: 0,
+        });
+        // A reviewer start is ALSO registered with the tracker, so a later review_completed (which
+        // carries no dispatch_id) can find and close it by agent slug — a worker start never is, so
+        // a review can never close one, even from the same agent.
+        if (role === 'reviewer') reviewerTracker.openReviewer(nameIndex, ev.agent, dispatchId);
+      } else if (RUN_LOG_END_TYPES.has(et)) {
+        const existing = byDispatchId.get(dispatchId);
+        if (!existing || existing.completed_at !== null) continue; // no open start to close, or already closed — first resolution wins
+        existing.completed_at = typeof ev.timestamp === 'string' ? ev.timestamp : null;
+        existing.verdict = typeof ev.verdict === 'string' ? ev.verdict : (RUN_LOG_FAIL_TYPES.has(et) ? 'FAIL' : null);
+        if (existing.wp_id === null && typeof ev.wp_id === 'string') existing.wp_id = ev.wp_id;
+      }
+    }
+    const lastWorkMs = runRow && runRow.last_work_at ? Date.parse(runRow.last_work_at) : NaN;
+    const recentRunWorkEvent = Number.isFinite(lastWorkMs) && (now - lastWorkMs) <= STALE_TASK_MS;
+    for (const dispatch of byDispatchId.values()) {
+      const open = dispatch.completed_at === null;
+      const recentDispatchToolActivity = dispatchHasRecentToolActivity(toolLogRows, dispatch.dispatch_id, now);
+      const running = open && (attributionWorks ? recentDispatchToolActivity : (recentDispatchToolActivity || recentRunWorkEvent));
+      rows.push({
+        source: 'run-log',
+        ...dispatch,
+        running,
+        stalled: open && !running,
+      });
+    }
+  }
+  rows.sort((a, b) => {
+    const aKey = a.started_at || '';
+    const bKey = b.started_at || '';
+    if (aKey === bKey) return 0;
+    return aKey < bKey ? 1 : -1; // newest first
+  });
+  return rows.slice(0, MAX_DISPATCH_ROWS);
+}
+
 /**
  * Every real subagent dispatch recorded for `projectName`'s conversations (bounded to the most
  * recently updated `MAX_CONVERSATIONS_SCANNED` conversations, then to `MAX_DISPATCH_ROWS` rows) —
@@ -182,7 +358,7 @@ function collectUpdatedTasks(events) {
  * name, or a project with no recorded dispatch at all, reads back an honest empty array, never a
  * throw or a fabricated row.
  */
-export function listAgentDispatches(projectName) {
+export function listAgentDispatches(projectName, projectPath = null) {
   if (typeof projectName !== 'string' || projectName.length === 0) return [];
 
   const summaries = listConversations()
@@ -219,6 +395,9 @@ export function listAgentDispatches(projectName) {
       const startsForType = hookTimes.startsByType.get(task.subagentType) ?? [];
       const startAttachable = startsForType.length === 1 && dispatchCountByType.get(task.subagentType) === 1;
       rows.push({
+        // WP-CC1 (item 5): tags this row's real origin — a dashboard-chat dispatch, never one
+        // Forge ran headless via `/forge`/the CLI (see listRunLogDispatches() for those).
+        source: 'conversation',
         subagent_type: task.subagentType,
         conversation_id: summary.id,
         description: task.description,
@@ -234,6 +413,14 @@ export function listAgentDispatches(projectName) {
         hook_ended_at: stopAttachable ? hookTimes.stops[0] : null,
       });
     }
+  }
+
+  // WP-CC1 (item 5): merges in the run-log-sourced dispatches (headless `/forge`/CLI work) — a
+  // SEPARATE real source from the conversation-based rows above, never a replacement for them.
+  // Optional: every existing call site that only ever had `projectName` (no path) keeps working
+  // unchanged, with an honest empty run-log contribution rather than a thrown error.
+  if (typeof projectPath === 'string' && projectPath.length > 0) {
+    rows.push(...listRunLogDispatches(projectPath));
   }
 
   rows.sort((a, b) => {

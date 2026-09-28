@@ -5,10 +5,12 @@
  * makes config/orchestration/precedence.md's ordering VISIBLE at run time instead of merely documented:
  * before intake, forge-router/commands/forge.md compose ONE line summarizing which owner-profile prefs
  * (forge-prefs.cjs, B1) and which active standing-rules (forge-standing.cjs, B2) apply to THIS run, and log
- * it as a single 'owner_prefs_loaded' event — registered in log-event.cjs KNOWN_EVENT_TYPES, forge-verify.cjs's
- * TERMINAL_TYPES (informational/one-shot mirror of profile_loaded/memory_loaded), and forge-dashboard/app.js's
- * SYNTH/taskStatus/actTag mirrors (the same 3-place event-registration discipline every Forge event type
- * follows). Zero-dependency (fs/path/child_process only). REQUIRES forge-prefs.cjs and forge-standing.cjs —
+ * it as a single 'owner_prefs_loaded' event — registered in log-event.cjs KNOWN_EVENT_TYPES and
+ * forge-verify.cjs's TERMINAL_TYPES (informational/one-shot mirror of profile_loaded/memory_loaded) — the
+ * same event-registration discipline every Forge event type follows (a 3rd place, forge-dashboard/app.js's
+ * SYNTH/taskStatus/actTag mirrors, existed at the time this was written but was removed with the rest of
+ * the retired per-project Control Center in v2.9.0). Zero-dependency (fs/path/child_process only). REQUIRES
+ * forge-prefs.cjs and forge-standing.cjs —
  * never re-implements either resolver's logic (same "single source of truth" discipline forge-actiongate.cjs
  * established for hard-gates.json).
  *

@@ -92,10 +92,19 @@
  * S5: adopt REFUSES to replace an already-adopted baseline unless --force is passed (a second adopt would
  * otherwise silently un-protect every previously-drifted file); --force snapshots the pre-adopt receipt first.
  *
- * NOT BUILT (honest gap, not silently ignored): forge-sync has never had a mechanism for the template to
- * DELETE/prune a project's system file (SYSTEM/SYSTEM_GLOB is purely additive). Out of scope here; rollback
- * already supports restoring an ADDED file back to non-existence (oldHash:null), the one deletion-shaped
- * case this tool can actually produce today.
+ * NOT BUILT (honest gap, not silently ignored): forge-sync has no GENERAL mechanism for the template to
+ * DELETE/prune a project's system file (SYSTEM/SYSTEM_GLOB stay purely additive). Rollback already supports
+ * restoring an ADDED file back to non-existence (oldHash:null), the one deletion-shaped case the general
+ * mechanism can produce today. The ONE named exception is pruneRetiredFiles() (v2.9.0, WP-N1): a fixed,
+ * explicit list of exactly the 7 files the removed per-project Control Center used to ship, cleaned out of
+ * an already-synced project when unmodified (hash-gated against receipt.knownHashes — a modified copy is
+ * kept and reported, never deleted), plus its 2 generated runtime-state files (PORT/DASHBOARD_STATE.json,
+ * removed unconditionally — never template-shipped, never user data). Backed up into the SAME batch's
+ * backup dir under its own retired-prune/ subfolder before deletion, with a small separate ledger
+ * (retired-prune-manifest.json) `rollback` restores best-effort (restoreRetiredPruneLedger) — intentionally
+ * simpler than the main manifest.json/journal machinery, since it only ever restores files this same
+ * function proved were unmodified. This does not generalize: a future removed file needs its own equally
+ * explicit, hash-gated list, never a blanket "delete anything the template no longer ships".
  *
  * Usage:
  *   node forge-sync.cjs status [<projectDir>] [--verbose]
@@ -126,7 +135,8 @@
  *   decideValidationOutcome, seedCanaryRun, verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches,
  *   restoreFromManifest, rollbackProject, rollbackBatch, acquireLock, releaseLock, safeSyncProject,
  *   adoptProject, rawInstall, status, findForgeProjects, dedicatedCanaryDir, canaryInit, runSyncAll,
- *   parseArgs, CANARY_DIR_NAME.
+ *   parseArgs, CANARY_DIR_NAME, pruneRetiredFiles, restoreRetiredPruneLedger, RETIRED_TEMPLATE_FILES,
+ *   RETIRED_STATE_FILES.
  */
 const fs = require('fs');
 const os = require('os');
@@ -170,8 +180,11 @@ const SYSTEM = [
   // shrink the always-loaded command payload — commands/forge.md now points at these by path (see
   // forge-md-coverage.test.cjs), so a synced project needs the files those pointers name, same discipline
   // as the docs/ pins immediately above. docs/ carries no SYSTEM_GLOB (see the commands/ note below).
+  // legacy-dashboard.md itself was REMOVED (v2.9.0, WP-N1, 2026-09-27), not just moved: the feature it
+  // documented (`/forge legacy dashboard` starting the retired server.cjs) no longer exists at all, so
+  // there is nothing left to ship a reference doc for — forge.md no longer links to it either.
   'docs/forge-reference/paperclip.md', 'docs/forge-reference/resume.md',
-  'docs/forge-reference/learn-harvest.md', 'docs/forge-reference/legacy-dashboard.md',
+  'docs/forge-reference/learn-harvest.md',
   'docs/forge-reference/tournament-secondbrain-codemodel-briefing.md',
   // forge-md-coverage.test.cjs itself is forge-bin/*.cjs and already SYSTEM_GLOB-covered; its frozen fixture
   // is forge-bin/*.json, which is OUTSIDE the forge-bin glob's extension list (same precedent as the
@@ -617,6 +630,71 @@ const CANARY_DIR_NAME = '.forge-canary'; // dot-prefixed -> structurally exclude
 // normalization below is for CLASSIFICATION ONLY, never for the actual bytes on disk).
 const TEXT_EXTS_FOR_EOL = new Set(['.md', '.json', '.cjs', '.js', '.css', '.html', '.ps1', '.sh', '.txt']);
 
+// ---- v2.9.0 (WP-N1): retired per-project Control Center cleanup --------------------------------------
+// The old Control Center (server.cjs + its static UI) was removed from the template — it is simply no
+// longer in listSystemFiles()'s output, so an install/sync-all naturally stops SHIPPING it. That alone
+// does not clean up a project that already HAS a copy from an earlier sync: SYSTEM/SYSTEM_GLOB stay
+// purely additive (see the header doc's "NOT BUILT" note above), so a genuinely general delete mechanism
+// still does not exist. This is a narrow, NAMED, one-time exception — see pruneRetiredFiles() below —
+// scoped to exactly these files, with two different safety rules:
+//  - RETIRED_TEMPLATE_FILES were shipped BY THE TEMPLATE (SYSTEM_GLOB used to cover forge-dashboard's
+//    .js/.cjs/.html/.css) — removed ONLY when the on-disk hash still matches the LAST hash this tool
+//    itself shipped (receipt.knownHashes), i.e. genuinely unmodified since the last sync. A project that
+//    edited one of these keeps its copy; it is reported, never silently deleted.
+//  - RETIRED_STATE_FILES were NEVER template-shipped (PROTECT-listed above, generated at runtime by the
+//    now-deleted server.cjs) — removed when present UNLESS RETIRED_SERVER_FILE_REL itself is being kept
+//    (WP-Q3/SYNC-2: a kept, owner-modified server.cjs may still read/write this state — see the
+//    `serverKept` gate in pruneRetiredFiles). There is no "last shipped hash" to check state against, and
+//    it is not user data, but it is no longer removed unconditionally, and it is now ALWAYS added to the
+//    ledger when it IS removed, so rollback can bring it back like any other pruned file.
+const RETIRED_TEMPLATE_FILES = [
+  'forge-dashboard/server.cjs', 'forge-dashboard/index.html', 'forge-dashboard/app.js',
+  'forge-dashboard/graph.js', 'forge-dashboard/lenses.js', 'forge-dashboard/panels.js', 'forge-dashboard/styles.css',
+];
+const RETIRED_STATE_FILES = ['forge-dashboard/PORT', 'forge-dashboard/DASHBOARD_STATE.json'];
+// the ONLY retired file that actually reads/writes RETIRED_STATE_FILES at runtime (WP-Q3/SYNC-2 gate).
+const RETIRED_SERVER_FILE_REL = RETIRED_TEMPLATE_FILES[0]; // 'forge-dashboard/server.cjs'
+const RETIRED_PRUNE_SUBDIR = 'retired-prune'; // namespaced backup subfolder inside a batch's backup dir
+const RETIRED_PRUNE_MANIFEST_NAME = 'retired-prune-manifest.json';
+
+/** isSafeBatchId — WP-Q3/SYNC-4: a strict allow-list on the ONE untrusted string backupDirFor() joins
+ *  straight into a filesystem path for this retired-prune subsystem (pruneRetiredFiles /
+ *  restoreRetiredPruneLedger). Letters, digits, `-` and `_` only, 1-100 chars: covers every batchId this
+ *  tool itself ever generates ('sync-'+Date.now(), 'unsafe-'+Date.now()) and every batchId already used
+ *  across --batch-id/--batch and this suite's own fixtures, while rejecting '.', '..', '/', '\\', and any
+ *  other traversal/separator character outright — before path.join() ever sees it. Deliberately scoped to
+ *  this subsystem only; the main backup/rollback manifest flow's batchId handling is a separate, already
+ *  independently-audited trust model this work package does not touch (see loadTrustedManifest, which
+ *  only ever READS a hash-verified manifest — it never blindly deletes based on the resolved path, unlike
+ *  pruneRetiredFiles). */
+function isSafeBatchId(batchId) {
+  return typeof batchId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(batchId);
+}
+/** retiredPruneDirsFor(projectDir, batchId) -> {ok:true, dst, bdir, pruneDir} | {ok:false, reason}.
+ *  WP-Q3/SYNC-4: centralizes the batch-id allow-list PLUS the symlink/junction + containment refusal for
+ *  the retired-prune backup dir, so pruneRetiredFiles (write/delete) and restoreRetiredPruneLedger
+ *  (read/restore) apply the exact same gate before ever touching it. Purely a check — never creates
+ *  anything; callers mkdirSync when they actually intend to write. */
+function retiredPruneDirsFor(projectDir, batchId) {
+  if (!isSafeBatchId(batchId)) return { ok: false, reason: 'unsafe --batch-id (' + JSON.stringify(batchId) + ') for the retired-file backup path — must be 1-100 characters, letters/digits/-/_ only' };
+  const dst = claudeDirOf(projectDir);
+  const bdir = backupDirFor(projectDir, batchId);
+  const pruneDir = path.join(bdir, RETIRED_PRUNE_SUBDIR);
+  if (isSymlinkPath(bdir) || isSymlinkPath(pruneDir) || !containmentSafe(dst, pruneDir)) {
+    return { ok: false, reason: 'the retired-file backup directory for batch ' + batchId + ' is a symlink/junction, or resolves outside the project (' + pruneDir + ') — refusing' };
+  }
+  return { ok: true, dst, bdir, pruneDir };
+}
+/** describeRetiredPruneFailure(r) — one-line, human-readable summary of why a retired-prune restore/
+ *  ledger step was not fully ok, shared by rollbackProject's two retired-prune call sites (the normal
+ *  path and the WP-Q3/SYNC-1 ledger-only fallback) so both report the same shape of message. */
+function describeRetiredPruneFailure(r) {
+  if (!r) return 'unknown reason';
+  if (r.error) return r.error;
+  const parts = (r.failed || []).concat(r.conflicts || []).map((f) => f.rel + ' (' + f.reason + ')');
+  return parts.length ? parts.join('; ') : 'unknown reason';
+}
+
 function listSystemFiles(templateDir) {
   const files = new Set(SYSTEM);
   for (const g of SYSTEM_GLOB) {
@@ -804,6 +882,103 @@ function receiptLastTemplateHashMap(receipt) {
   const map = {};
   if (receipt && Array.isArray(receipt.filesChanged)) for (const f of receipt.filesChanged) if (f && f.rel) map[f.rel] = f.newHash;
   return map;
+}
+
+/** pruneRetiredFiles(projectDir, opts) -> {removable, kept, removed, failed, applied}.
+ *  Classification is ALWAYS computed (removable/kept), even in preview mode — so `status`/`--dry-run`
+ *  can honestly report what would happen. A real removal additionally needs opts.batchId != null AND
+ *  opts.dryRun falsy AND opts.write !== false; without a batchId this stays preview-only (never deletes
+ *  without somewhere to back the bytes up to first).
+ *
+ *  Backup: every real removal is backed up to <project>/.claude/forge-backups/<batchId>/retired-prune/<rel>
+ *  BEFORE the live file is deleted — the SAME per-project backup root every other change in this batch
+ *  already uses (backupDirFor), just namespaced under its own subfolder so this never collides with or
+ *  needs to be understood by the main manifest.json's toChange-shaped entries (resume-batch/central-mirror/
+ *  divergence-check logic is untouched by this — see the header doc's module API list for what those cover).
+ *  A separate, deliberately SIMPLE ledger (retired-prune-manifest.json, LOCAL backup dir only — never
+ *  mirrored centrally) records exactly what was removed so `rollback` can restore it; see rollbackProject's
+ *  own best-effort restore step for that half.
+ *
+ *  WP-Q3 hardening (independent Codex adversarial review):
+ *   - SYNC-2: a RETIRED_STATE_FILES entry is only classified removable when RETIRED_SERVER_FILE_REL is NOT
+ *     itself being kept (a kept, owner-modified server.cjs may still depend on that state) — see the
+ *     `serverKept` gate below. Every state file actually removed is now ALSO written to the ledger (no
+ *     longer excluded), so rollback can restore it like any other pruned file.
+ *   - SYNC-4: opts.batchId is validated (isSafeBatchId) and the resolved backup directory is checked for
+ *     symlink/junction + containment (retiredPruneDirsFor) BEFORE anything is written or deleted, and each
+ *     backup is written via copyNoFollow (no-follow + containment-checked, not a bare fs.copyFileSync) and
+ *     re-verified by hash immediately before the matching original is deleted — a hostile --batch-id (e.g.
+ *     path traversal) or a pre-planted symlinked/junctioned backup dir now refuses the whole operation
+ *     instead of silently backing up outside the project while still deleting the original in place. */
+function pruneRetiredFiles(projectDir, opts) {
+  opts = opts || {};
+  const dst = claudeDirOf(projectDir);
+  const receipt = readReceipt(projectDir);
+  const lastTemplateHash = receiptLastTemplateHashMap(receipt);
+  const removable = [], kept = [];
+  for (const rel of RETIRED_TEMPLATE_FILES) {
+    const out = safeJoin(dst, rel);
+    if (out == null || isSymlinkPath(out) || !containmentSafe(dst, out)) continue; // same guards as every other write path — never touch anything outside .claude/
+    if (!fs.existsSync(out)) continue; // already gone — the healthy post-2.9.0 state, nothing to report
+    const outStatus = fileStatus(out);
+    if (outStatus.kind === 'unreadable') { kept.push({ rel, reason: 'unreadable: ' + outStatus.error }); continue; }
+    const outHash = outStatus.kind === 'ok' ? outStatus.hash : null;
+    if (!Object.prototype.hasOwnProperty.call(lastTemplateHash, rel)) {
+      kept.push({ rel, reason: 'no last-shipped hash on record for this file — cannot verify it is unmodified, left in place' });
+      continue;
+    }
+    if (outHash !== lastTemplateHash[rel]) { kept.push({ rel, reason: 'modified since the last sync — kept, not deleted' }); continue; }
+    removable.push({ rel, oldHash: outHash, generatedState: false });
+  }
+  // WP-Q3/SYNC-2: a state file is only safe to remove when the ONE retired file that actually reads/writes
+  // it (server.cjs) is not itself being kept — a kept, owner-modified server.cjs may still depend on it.
+  const serverKept = kept.some((k) => k.rel === RETIRED_SERVER_FILE_REL);
+  for (const rel of RETIRED_STATE_FILES) {
+    const out = safeJoin(dst, rel);
+    if (out == null || isSymlinkPath(out) || !containmentSafe(dst, out)) continue;
+    if (!fs.existsSync(out)) continue;
+    const outStatus = fileStatus(out);
+    if (outStatus.kind === 'unreadable') { kept.push({ rel, reason: 'unreadable: ' + outStatus.error }); continue; }
+    if (serverKept) {
+      kept.push({ rel, reason: 'the retired server.cjs that reads/writes this file is still present (kept, modified since last sync) — may still be in use, kept alongside it' });
+      continue;
+    }
+    removable.push({ rel, oldHash: outStatus.kind === 'ok' ? outStatus.hash : null, generatedState: true });
+  }
+  if (!removable.length || opts.dryRun || opts.write === false) return { removable, kept, removed: [], failed: [], applied: false };
+  if (!opts.batchId) return { removable, kept, removed: [], failed: [], applied: false, error: 'batchId required to actually remove files (none given — treated as preview-only)' };
+  const dirs = retiredPruneDirsFor(projectDir, opts.batchId); // WP-Q3/SYNC-4
+  if (!dirs.ok) return { removable, kept, removed: [], failed: [], applied: false, error: dirs.reason };
+  const { bdir, pruneDir } = dirs;
+  const removed = [], failed = [];
+  try { fs.mkdirSync(pruneDir, { recursive: true }); }
+  catch (e) { return { removable, kept, removed: [], failed: [], applied: false, error: 'could not create the retired-file backup dir: ' + e.message }; }
+  for (const entry of removable) {
+    const out = safeJoin(dst, entry.rel);
+    try {
+      if (entry.oldHash !== null) {
+        const backupTarget = path.join(pruneDir, entry.rel);
+        fs.mkdirSync(path.dirname(backupTarget), { recursive: true });
+        copyNoFollow(out, backupTarget, pruneDir); // WP-Q3/SYNC-4: no-follow + containment-checked write, not a bare fs.copyFileSync
+        if (sha256(backupTarget) !== entry.oldHash) throw new Error('backup for ' + entry.rel + ' could not be verified after writing — refusing to delete the original'); // SYNC-4: never delete without a verified-correct backup in hand
+      }
+      fs.rmSync(out, { force: true });
+      if (fs.existsSync(out)) throw new Error('file still present after delete attempt'); // H1-style post-step verification
+      removed.push(entry.rel);
+    } catch (e) { failed.push({ rel: entry.rel, reason: e.message }); }
+  }
+  const ledgerEntries = removed
+    .map((rel) => removable.find((r) => r.rel === rel))
+    .filter((e) => e && e.oldHash !== null) // WP-Q3/SYNC-2: state files are ledgered too now (no longer excluded)
+    .map((e) => ({ rel: e.rel, oldHash: e.oldHash }));
+  if (ledgerEntries.length) {
+    try {
+      writeAtomic(path.join(bdir, RETIRED_PRUNE_MANIFEST_NAME), JSON.stringify({ batchId: opts.batchId, projectPath: path.resolve(projectDir), files: ledgerEntries }, null, 2) + '\n');
+    } catch (e) {
+      failed.push({ rel: '(retired-prune ledger)', reason: 'file(s) removed but the rollback ledger could not be written: ' + e.message });
+    }
+  }
+  return { removable, kept, removed, failed, applied: true, backupDir: pruneDir };
 }
 
 // ---- project-declared "I own this file on purpose" allow-list ----
@@ -1892,19 +2067,140 @@ function restoreFromManifest(projectDir, manifestDir, manifest, opts) {
     scaffoldAction,
   };
 }
+/** batchRecency(bdir, id) -> epoch-millis number, or null when `id` is not a real batch at all.
+ *  SYNC-6 fix (Codex adversarial-review, MEDIUM): the pre-fix latestBatchId() only ever considered a
+ *  batch directory that has a main manifest.json — but safeSyncProject's no-op path can call
+ *  pruneRetiredFiles() with a real batchId WITHOUT ever calling takeBackup() (there is nothing else to
+ *  back up), leaving that batch with ONLY its own retired-prune-manifest.json (see rollbackProject's own
+ *  doc comment for the full "ledger-only batch" model). Such a batch was invisible to "the latest batch",
+ *  so `forge-sync rollback <project>` with no explicit --batch could silently skip a newer ledger-only
+ *  batch and roll back an older one instead.
+ *  manifest.json's own `ts` (an ISO-8601 string, recorded once by takeBackup() and never touched again)
+ *  remains the AUTHORITATIVE recency signal when present — converted to epoch millis via Date.parse() so
+ *  it is directly comparable against the fallback below, rather than relying on ISO-string lexical
+ *  ordering (still correct for valid ISO strings, but numeric comparison is what lets a ledger-only
+ *  batch's mtime-based recency be compared on equal footing). A manifest.json that exists but is
+ *  unreadable/unparseable for a reason OTHER than ENOENT keeps the pre-fix "skip, do not trust" posture
+ *  (returns null) — this fix only reaches a batch that has genuinely NO main manifest.json at all.
+ *  For that ledger-only case, retired-prune-manifest.json carries no `ts` field of its own (see
+ *  pruneRetiredFiles' writeAtomic call) — the ledger FILE's own mtime is the best available recency
+ *  signal: still real evidence of when this project's sync actually ran, never a guess, and the only
+ *  reason this batch would otherwise be silently invisible to "the latest batch". A batch directory with
+ *  NEITHER file is not a real batch at all (e.g. an empty or foreign directory) and returns null. */
+function batchRecency(bdir, id) {
+  let manifestRaw;
+  try { manifestRaw = fs.readFileSync(path.join(bdir, id, 'manifest.json'), 'utf8'); }
+  catch (e) {
+    if (!e || e.code !== 'ENOENT') return null; // present but unreadable for another reason — skip, do not trust
+    try { return fs.statSync(path.join(bdir, id, RETIRED_PRUNE_MANIFEST_NAME)).mtimeMs; }
+    catch { return null; } // neither file exists — not a real batch
+  }
+  try {
+    const m = JSON.parse(manifestRaw);
+    const t = Date.parse(m && m.ts);
+    return Number.isFinite(t) ? t : 0; // present but no/malformed ts — treat as very old, never throw
+  } catch { return null; } // present but unparseable manifest.json — same "skip unreadable" posture as before
+}
 function latestBatchId(projectDir) {
   const bdir = path.join(claudeDirOf(projectDir), 'forge-backups');
   let entries = [];
   try { entries = fs.readdirSync(bdir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return null; }
-  let best = null, bestTs = '';
+  let best = null, bestTs = -Infinity;
   for (const id of entries) {
-    try { const m = JSON.parse(fs.readFileSync(path.join(bdir, id, 'manifest.json'), 'utf8')); if (!best || (m.ts || '') > bestTs) { best = id; bestTs = m.ts || ''; } } catch { /* skip unreadable */ }
+    const t = batchRecency(bdir, id);
+    if (t === null) continue;
+    if (best === null || t > bestTs) { best = id; bestTs = t; }
   }
   return best;
 }
+/** verifyRetiredPruneLedger(ledger, batchId, projectDir, pruneDir) -> {entries[], dropped[]}.
+ *  WP-Q3/SYNC-5: validates a retired-prune-manifest.json ledger is trustworthy BEFORE any restore touches
+ *  disk, mirroring loadTrustedManifest's "refuse rather than restore something unverified" posture for the
+ *  main manifest:
+ *   1. the ledger's own batchId/projectPath must match the batch/project actually being restored — a
+ *      forged or copied-in ledger for a DIFFERENT batch or project is rejected outright, not honored;
+ *   2. every entry's `rel` must be EXACTLY one of RETIRED_TEMPLATE_FILES/RETIRED_STATE_FILES — an entry
+ *      naming any other path (however it got there) is dropped, never restored, regardless of what
+ *      safeJoin/containmentSafe alone would have allowed;
+ *   3. each surviving entry's backup source must resolve inside pruneDir and its bytes must hash-match
+ *      the recorded oldHash — a missing/corrupt backup payload is dropped, never restored blind. */
+function verifyRetiredPruneLedger(ledger, batchId, projectDir, pruneDir) {
+  if (!ledger || typeof ledger !== 'object' || !Array.isArray(ledger.files)) return { entries: [], dropped: [{ rel: null, reason: 'ledger has no files array' }] };
+  if (ledger.batchId !== batchId) return { entries: [], dropped: [{ rel: null, reason: 'ledger batchId (' + ledger.batchId + ') does not match the batch being restored (' + batchId + ') — refusing to trust it' }] };
+  if (ledger.projectPath !== path.resolve(projectDir)) return { entries: [], dropped: [{ rel: null, reason: 'ledger projectPath (' + ledger.projectPath + ') does not match this project (' + path.resolve(projectDir) + ') — refusing to trust it' }] };
+  const knownRels = new Set(RETIRED_TEMPLATE_FILES.concat(RETIRED_STATE_FILES));
+  const entries = [], dropped = [];
+  for (const f of ledger.files) {
+    if (!f || typeof f.rel !== 'string' || typeof f.oldHash !== 'string') { dropped.push({ rel: f && f.rel, reason: 'malformed ledger entry' }); continue; }
+    if (!knownRels.has(f.rel)) { dropped.push({ rel: f.rel, reason: 'not a known retired-file path — ignored' }); continue; }
+    const backupSrc = path.join(pruneDir, f.rel);
+    if (!containmentSafe(pruneDir, backupSrc)) { dropped.push({ rel: f.rel, reason: 'backup source resolves outside the prune backup directory — refusing' }); continue; }
+    if (sha256(backupSrc) !== f.oldHash) { dropped.push({ rel: f.rel, reason: 'backup payload missing or hash mismatch — refusing to restore unverified content' }); continue; }
+    entries.push(f);
+  }
+  return { entries, dropped };
+}
+/** restoreRetiredPruneLedger(projectDir, batchId) -> {ok, restored[], failed[], conflicts[], skipped?, error?}.
+ *  Deliberately SIMPLE compared to restoreFromManifest (no journal/resume, no central-mirror lookup) —
+ *  proportionate to what it restores: inert legacy dashboard files pruneRetiredFiles() removed because
+ *  they were UNMODIFIED. Absent ledger (nothing was ever pruned for this batch, or the local backup dir
+ *  itself is gone) is a silent, honest no-op (`skipped`) — never an error, since most batches never touch
+ *  retired files at all.
+ *
+ *  WP-Q3 hardening (independent Codex adversarial review):
+ *   - SYNC-4: batchId + the resolved backup dir are validated (retiredPruneDirsFor) before any read.
+ *   - SYNC-5: the ledger itself is validated (verifyRetiredPruneLedger) before any write — a dropped entry
+ *     is reported via `failed`, never silently vanished, and never restored.
+ *   - SYNC-3: a destination that was RECREATED since the prune (a fresh sync re-shipped it, or a new file
+ *     landed there) is a rollback CONFLICT — kept as-is, reported in `conflicts`, never overwritten. */
+function restoreRetiredPruneLedger(projectDir, batchId) {
+  const dirs = retiredPruneDirsFor(projectDir, batchId); // SYNC-4
+  if (!dirs.ok) return { ok: false, restored: [], failed: [], conflicts: [], error: dirs.reason };
+  const { dst, bdir, pruneDir } = dirs;
+  const ledgerPath = path.join(bdir, RETIRED_PRUNE_MANIFEST_NAME);
+  let ledger;
+  try { ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')); }
+  catch (e) { return { ok: true, restored: [], failed: [], conflicts: [], skipped: e && e.code === 'ENOENT' ? 'no retired files were pruned for this batch' : ('ledger unreadable: ' + e.message) }; }
+  if (!ledger || !Array.isArray(ledger.files) || !ledger.files.length) return { ok: true, restored: [], failed: [], conflicts: [], skipped: 'empty ledger' };
+  const { entries, dropped } = verifyRetiredPruneLedger(ledger, batchId, projectDir, pruneDir); // SYNC-5
+  const restored = [], failed = [], conflicts = [];
+  for (const f of entries) {
+    const out = safeJoin(dst, f.rel);
+    const backupSrc = path.join(pruneDir, f.rel);
+    try {
+      if (out == null || isSymlinkPath(out) || !containmentSafe(dst, out)) throw new Error('containment guard tripped');
+      // SYNC-3: never overwrite a path that was recreated since the prune — report it, keep it, move on.
+      // A re-run of an ALREADY-completed restore (no journal here, so a second call re-examines every
+      // entry) hits this same existsSync check too; a byte-identical match is the restore's own prior
+      // work, not a foreign recreation, so it is treated as done rather than a conflict — only content
+      // that genuinely differs from the retired backup counts as recreated.
+      if (fs.existsSync(out)) {
+        if (sha256(out) === f.oldHash) { restored.push(f.rel); continue; }
+        conflicts.push({ rel: f.rel, reason: 'a file already exists at this path (created/recreated after the prune) — not overwritten; move it aside yourself if you want the retired copy restored' });
+        continue;
+      }
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      copyNoFollow(backupSrc, out, dst);
+      const h = sha256(out);
+      if (h !== f.oldHash) throw new Error('hash mismatch after restore (expected ' + f.oldHash + ', got ' + h + ')');
+      restored.push(f.rel);
+    } catch (e) { failed.push({ rel: f.rel, reason: e.message }); }
+  }
+  for (const d of dropped) failed.push({ rel: d.rel || '(ledger)', reason: d.reason }); // SYNC-5: never silently vanish a dropped entry
+  return { ok: failed.length === 0 && conflicts.length === 0, restored, failed, conflicts, partial: failed.length > 0 || conflicts.length > 0 };
+}
 /** rollbackProject — `node forge-sync.cjs rollback <projectDir> [--batch <batchId>]`. An interruption
  *  (thrown by restoreFromManifest) is caught and reported as ok:false, interrupted:true — the journal already
- *  on disk means a SECOND call to this function resumes and completes it. */
+ *  on disk means a SECOND call to this function resumes and completes it.
+ *
+ *  WP-Q3/SYNC-1: safeSyncProject's no-op path can call pruneRetiredFiles() with a real batchId WITHOUT ever
+ *  calling takeBackup() (there is nothing else to back up), so that batch has no main manifest.json for
+ *  loadTrustedManifest to trust — yet it DID leave its own retired-prune-manifest.json ledger. Rather than
+ *  inventing a fake/empty main manifest just to satisfy loadTrustedManifest's shape, this teaches rollback
+ *  to validate and restore a LEDGER-ONLY batch on its own terms (restoreRetiredPruneLedger already carries
+ *  its own SYNC-4/SYNC-5 trust checks) — chosen because it reuses that one already-hardened ledger path
+ *  instead of growing the much bigger, more sensitive main-manifest machinery (resume/central-mirror/
+ *  divergence) to cover a case that never has any of those files to begin with. */
 function rollbackProject(projectDir, batchId, opts) {
   opts = opts || {};
   if (!fs.existsSync(projectDir)) return { ok: false, reason: 'project path missing: ' + projectDir };
@@ -1924,7 +2220,23 @@ function rollbackProject(projectDir, batchId, opts) {
     } catch { /* no project-local manifest available (or none recorded pre-S3) -> keep the caller-supplied value */ }
   }
   const trusted = loadTrustedManifest(projectDir, targetBatch, centralBackupRoot);
-  if (!trusted.ok) return { ok: false, reason: trusted.reason, batchId: targetBatch };
+  if (!trusted.ok) {
+    // WP-Q3/SYNC-1 fallback: no main manifest — but maybe a real, validatable retired-prune ledger exists
+    // for this exact batch. `skipped` on the result means there was genuinely nothing there (unknown or
+    // empty batch); only THEN does the original no-manifest refusal below apply, unchanged.
+    const ledgerOnly = restoreRetiredPruneLedger(projectDir, targetBatch);
+    if (!ledgerOnly.skipped) {
+      return Object.assign(
+        {
+          ok: ledgerOnly.ok, batchId: targetBatch, source: 'retired-prune-ledger-only', restored: [],
+          versionAction: 'not-applicable (ledger-only batch)', receiptAction: 'not-applicable (ledger-only batch)',
+          retiredPruneRestore: ledgerOnly,
+        },
+        ledgerOnly.ok ? {} : { reason: 'retired-file-only rollback did not fully succeed: ' + describeRetiredPruneFailure(ledgerOnly) },
+      );
+    }
+    return { ok: false, reason: trusted.reason, batchId: targetBatch };
+  }
   if (!opts.forceRollbackNewer) {
     const overlaps = findNewerOverlappingBatches(projectDir, targetBatch, trusted.manifest, centralBackupRoot);
     if (overlaps.length) {
@@ -1948,7 +2260,23 @@ function rollbackProject(projectDir, batchId, opts) {
         reason: 'PARTIAL — MANUAL RECOVERY REQUIRED: ' + result.failed.length + ' file(s) failed to restore/verify (backup at ' + trusted.manifestDir + '): ' + result.failed.map((f) => f.rel + ' (' + f.reason + ')').join('; '),
       };
     }
-    return { ok: true, batchId: targetBatch, source: trusted.source, restored: result.restored, versionAction: result.versionAction, receiptAction: result.receiptAction };
+    // v2.9.0 (WP-N1), hardened WP-Q3/SYNC-5: best-effort restore of anything pruneRetiredFiles() removed
+    // for this SAME batch (see that function's own doc comment). The main, heavily-guarded restore above
+    // already fully succeeded on its own files; a retired legacy file failing to come back no longer stays
+    // silently folded into an unconditional ok:true — it now propagates into this result's own `ok`/
+    // `reason` (SYNC-5), so a caller (and the CLI, via the existing `if (!r.ok)` branch) can see and act on
+    // a partial retired-file recovery instead of it being invisible. LOCAL-backup-only (never mirrored
+    // centrally) — a central-only recovery (project-local backups wiped) genuinely cannot recover these;
+    // that gap is reported, not hidden.
+    const retiredPruneRestore = restoreRetiredPruneLedger(projectDir, targetBatch);
+    const retiredPruneOk = retiredPruneRestore.ok !== false;
+    return Object.assign(
+      {
+        ok: retiredPruneOk, batchId: targetBatch, source: trusted.source, restored: result.restored,
+        versionAction: result.versionAction, receiptAction: result.receiptAction, retiredPruneRestore,
+      },
+      retiredPruneOk ? {} : { reason: 'the main rollback succeeded, but restoring retired legacy file(s) did not: ' + describeRetiredPruneFailure(retiredPruneRestore) },
+    );
   } catch (e) {
     return { ok: false, interrupted: true, batchId: targetBatch, reason: 'rollback interrupted: ' + e.message + ' (re-run rollback to resume/complete — journal is on disk)' };
   }
@@ -2078,16 +2406,31 @@ function safeSyncProject(templateDir, projectDir, opts) {
     };
   }
 
-  if (opts.dryRun) return { ok: true, dryRun: true, projectDir, plan, templateVersion: templateVer, settingsMerge: syncProjectSettings(templateDir, projectDir, { dryRun: true }) };
+  if (opts.dryRun) {
+    return {
+      ok: true, dryRun: true, projectDir, plan, templateVersion: templateVer,
+      settingsMerge: syncProjectSettings(templateDir, projectDir, { dryRun: true }),
+      retiredPrune: pruneRetiredFiles(projectDir, { dryRun: true }),
+    };
+  }
 
   if (plan.toChange.length === 0) { // H2: distinguish a clean no-op from a project BLOCKED by unresolved drift
     const blocked = plan.unknownDrift.length > 0 || plan.conflicts.length > 0;
     // WP22: even when the FILE plan is a no-op, settings.json may still be behind the template (a project
     // synced before wp22 shipped, or hand-edited) — the settings merge is independent of the file plan.
     const settingsMergeNoop = blocked ? null : syncProjectSettings(templateDir, projectDir, {});
+    // v2.9.0 (WP-N1): a project can be fully up to date on every regular SYSTEM/SYSTEM_GLOB file (a real
+    // toChange no-op) while STILL carrying a retired dashboard file from an older sync — that file is no
+    // longer in listSystemFiles() at all, so preflight()/buildPlan() never see it. Cleaning it up must not
+    // wait for some OTHER file to need a real sync first, so it runs here too, using the same real batchId
+    // (creating this batch's backup dir only when there is actually something to remove).
+    const retiredPrune = blocked ? { removable: [], kept: [], removed: [], failed: [], applied: false, skippedBlocked: true } : pruneRetiredFiles(projectDir, { batchId: opts.batchId });
     // SUCCESS-WITHOUT-SETTINGS (wp-f2): a file-plan no-op must not report ok:true when the required gate
     // (settings.json merge) itself failed/was refused — the caller would otherwise see a plain success.
-    return { ok: !blocked && !settingsMergeFailed(settingsMergeNoop), noop: !blocked, blocked, projectDir, plan, templateVersion: templateVer, settingsMerge: settingsMergeNoop };
+    return {
+      ok: !blocked && !settingsMergeFailed(settingsMergeNoop) && !(retiredPrune.failed && retiredPrune.failed.length),
+      noop: !blocked, blocked, projectDir, plan, templateVersion: templateVer, settingsMerge: settingsMergeNoop, retiredPrune,
+    };
   }
 
   const nowIso = opts.nowIso || new Date().toISOString();
@@ -2202,6 +2545,12 @@ function safeSyncProject(templateDir, projectDir, opts) {
     };
   }
 
+  // v2.9.0 (WP-N1): the main sync is confirmed good (validation passed above, no unresolved drift blocking
+  // the stamp) — clean up any retired dashboard file this project already carries from an older sync,
+  // backed up into this SAME real batch's backup dir first (see pruneRetiredFiles's own doc comment). A
+  // failure here is reported on the result but never rolls back the (already-validated) main sync.
+  const retiredPrune = pruneRetiredFiles(projectDir, { batchId });
+
   const priorReceipt = readReceipt(projectDir);
   const ver = { forge_version: templateVer, synced_at: nowIso, template: templateDir, system_files: listSystemFiles(templateDir).length };
 
@@ -2265,8 +2614,13 @@ function safeSyncProject(templateDir, projectDir, opts) {
   const settingsMerge = syncProjectSettings(templateDir, projectDir, {});
   // SUCCESS-WITHOUT-SETTINGS (wp-f2): the file sync itself succeeded (receipt/version already committed
   // above, deliberately independent of this step — see syncProjectSettings's own doc comment), but the
-  // OVERALL result must not claim plain success when the settings.json gate failed/was refused.
-  return { ok: !settingsMergeFailed(settingsMerge), projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest, settingsMerge };
+  // OVERALL result must not claim plain success when the settings.json gate failed/was refused. Same
+  // discipline applied to the retired-file prune (v2.9.0, WP-N1): a prune failure never rolls back the
+  // already-committed main sync, but it must not be silently absorbed into a plain ok:true either.
+  return {
+    ok: !settingsMergeFailed(settingsMerge) && !(retiredPrune.failed && retiredPrune.failed.length),
+    projectDir, plan, backup, validation, preValidation, outcome, canarySeed, scaffold, receipt, preManifest, postManifest, settingsMerge, retiredPrune,
+  };
 }
 /** settingsMergeFailed — true only when a settings-merge result explicitly reports ok:false (a genuine
  *  usage-error/refused/skipped-containment/skipped-tool-error) — never true for `null` (blocked before the
@@ -2387,7 +2741,7 @@ function rawInstall(templateDir, projectDir, opts) {
   if (opts.dryRun) {
     toChange.forEach((e) => console.log('  would update ' + e.rel));
     console.log('[dry] ' + path.basename(projectDir) + ': ' + toChange.length + ' would update, ' + same + ' current' + (skippedOverrides.length ? (', ' + skippedOverrides.length + ' expected override(s) preserved') : ''));
-    return { ok: true, exitCode: 0, projectDir, copied: toChange.length, same, skippedOverrides };
+    return { ok: true, exitCode: 0, projectDir, copied: toChange.length, same, skippedOverrides, retiredPrune: pruneRetiredFiles(projectDir, { dryRun: true }) };
   }
   const batchId = opts.batchId || ('unsafe-' + Date.now());
   const nowIso = opts.nowIso || new Date().toISOString();
@@ -2406,8 +2760,11 @@ function rawInstall(templateDir, projectDir, opts) {
   }
   const ver = { forge_version: templateVersion(templateDir), synced_at: nowIso, template: templateDir, system_files: listSystemFiles(templateDir).length };
   writeAtomic(path.join(dst, 'FORGE_VERSION.json'), JSON.stringify(ver, null, 2) + '\n'); // atomic here too (audit #22)
+  // v2.9.0 (WP-N1): --unsafe "STILL takes a real backup" (see the header doc's point 8) — the retired-file
+  // prune reuses that exact same guarantee (backupDirFor/containment guards), just like the safe path.
+  const retiredPrune = pruneRetiredFiles(projectDir, { batchId });
   console.log(path.basename(projectDir) + ': ' + toChange.length + ' updated (UNSAFE — no canary/no validation), ' + same + ' current' + (skippedOverrides.length ? (', ' + skippedOverrides.length + ' expected override(s) preserved') : '') + ' -> version ' + ver.forge_version + ' · backup at ' + backup.backupDir);
-  return { ok: true, exitCode: 0, projectDir, copied: toChange.length, same, backup, skippedOverrides };
+  return { ok: !(retiredPrune.failed && retiredPrune.failed.length), exitCode: 0, projectDir, copied: toChange.length, same, backup, skippedOverrides, retiredPrune };
 }
 
 function status(templateDir, projectDir, verbose) {
@@ -2417,6 +2774,11 @@ function status(templateDir, projectDir, verbose) {
   const drift = listSystemFiles(templateDir).filter((rel) => fs.existsSync(path.join(templateDir, rel)) && sha256(path.join(templateDir, rel)) !== sha256(path.join(dst, rel)));
   console.log(path.basename(projectDir) + ': installed=' + (vf.forge_version || 'none') + ' · template=' + tv + ' · ' + (drift.length ? ('DRIFT (' + drift.length + ' files behind) — run: forge-sync install') : 'up to date ✓'));
   if (drift.length && verbose) drift.forEach((f) => console.log('    behind: ' + f));
+  // v2.9.0 (WP-N1): read-only preview of the retired Control Center cleanup — `status` never writes, so
+  // this is always a dry-run classification; `install`/`sync-all` are what actually remove anything.
+  const rp = pruneRetiredFiles(projectDir, { dryRun: true });
+  if (rp.removable.length) console.log('  ' + rp.removable.length + ' retired dashboard file(s) present and unmodified — `forge-sync install` will remove them: ' + rp.removable.map((e) => e.rel).join(', '));
+  if (rp.kept.length) console.log('  ' + rp.kept.length + ' retired dashboard file(s) present but kept (see reasons): ' + rp.kept.map((k) => k.rel + ' (' + k.reason + ')').join('; '));
   return drift.length ? 1 : 0;
 }
 
@@ -2625,10 +2987,26 @@ function printPlanSummary(plan) {
   if (plan.unreadable && plan.unreadable.length) console.log('  UNREADABLE (refuses the whole sync): ' + plan.unreadable.map((u) => u.rel).join(', '));
   console.log('  unchanged: ' + plan.same);
 }
+/** printRetiredPruneResult — v2.9.0 (WP-N1): "say so in the sync output" for the retired-dashboard
+ *  cleanup (pruneRetiredFiles) — silent when there was nothing to report (the common case: nothing
+ *  retired was ever present, or it was already cleaned up by an earlier sync). In dry-run mode
+ *  pruneRetiredFiles() never populates `removed` (nothing was actually touched) — the preview lives in
+ *  `removable` instead, so dry-run reads THAT list rather than silently printing nothing. */
+function printRetiredPruneResult(projectDir, rp) {
+  if (!rp) return;
+  const name = path.basename(projectDir);
+  if (rp.dryRun) {
+    if (rp.removable && rp.removable.length) console.log('  ' + name + ': would remove retired dashboard file(s) [dry-run]: ' + rp.removable.map((e) => e.rel).join(', '));
+  } else if (rp.removed && rp.removed.length) {
+    console.log('  ' + name + ': removed retired dashboard file(s): ' + rp.removed.join(', '));
+  }
+  if (rp.kept && rp.kept.length) console.log('  ' + name + ': kept retired dashboard file(s) (not verifiably unmodified): ' + rp.kept.map((k) => k.rel + ' (' + k.reason + ')').join('; '));
+  if (rp.failed && rp.failed.length) console.error('  ' + name + ': FAILED to remove retired dashboard file(s): ' + rp.failed.map((f) => f.rel + ' (' + f.reason + ')').join('; '));
+}
 function printSafeSyncResult(projectDir, r) {
   const name = path.basename(projectDir);
   if (!r.ok && r.refused) { console.error(name + ': REFUSED — ' + r.reason); return; }
-  if (r.dryRun) { console.log('[dry-run] ' + name + ':'); printPlanSummary(r.plan); printSettingsMergeResult(projectDir, r.settingsMerge); return; }
+  if (r.dryRun) { console.log('[dry-run] ' + name + ':'); printPlanSummary(r.plan); printSettingsMergeResult(projectDir, r.settingsMerge); printRetiredPruneResult(projectDir, r.retiredPrune && Object.assign({ dryRun: true }, r.retiredPrune)); return; }
   if (r.blocked) { console.error(name + ': BLOCKED: ' + r.plan.unknownDrift.length + ' drifted / ' + r.plan.conflicts.length + ' conflicted (use --force-overwrite or declare .claude/config/forge-overrides.json)'); return; }
   if (r.refusedPartialDrift) { // B3: never silently stamp a partially-synced project
     console.error(name + ': BLOCKED — ' + r.plan.unknownDrift.length + ' drifted / ' + r.plan.conflicts.length + ' conflicted file(s) prevent a full sync (use --force-overwrite or declare .claude/config/forge-overrides.json); safely-syncable file(s) were rolled back, NOT partially stamped');
@@ -2636,12 +3014,13 @@ function printSafeSyncResult(projectDir, r) {
     if (r.plan.conflicts.length) console.error('  CONFLICT: ' + r.plan.conflicts.join(', '));
     return;
   }
-  if (r.noop) { console.log(name + ': up to date (' + r.plan.same + ' unchanged)'); if (r.plan.unknownDrift.length || r.plan.conflicts.length) printPlanSummary(r.plan); printSettingsMergeResult(projectDir, r.settingsMerge); return; }
+  if (r.noop) { console.log(name + ': up to date (' + r.plan.same + ' unchanged)'); if (r.plan.unknownDrift.length || r.plan.conflicts.length) printPlanSummary(r.plan); printSettingsMergeResult(projectDir, r.settingsMerge); printRetiredPruneResult(projectDir, r.retiredPrune); return; }
   if (r.ok) {
     const note = r.outcome && r.outcome.alreadyRedSkipped ? ' [pre-existing unrelated failure(s), not attributed to this sync]' : (r.outcome && r.outcome.degradedAllowed ? ' [DEGRADED validator, --allow-degraded]' : '');
     console.log(name + ': ' + r.plan.toChange.length + ' updated, ' + r.plan.same + ' current -> version ' + r.receipt.templateVersionTo + ' · validation: ' + r.validation.tool + ' OK' + note);
     if (r.plan.expectedOverrides.length) console.log('  expected overrides preserved: ' + r.plan.expectedOverrides.join(', '));
     printSettingsMergeResult(projectDir, r.settingsMerge);
+    printRetiredPruneResult(projectDir, r.retiredPrune);
   } else {
     const failLabel = r.validation ? (r.validation.timedOut ? (r.validation.tool + ' TIMED OUT (blocked, not a confirmed failure)') : (r.validation.tool + ', exit ' + r.validation.exitCode)) : (r.applyError || 'unknown');
     let rbNote;
@@ -2754,13 +3133,15 @@ module.exports = {
   decideValidationOutcome, evidenceOk, condenseDoctorSummary, regressionCheck, seedCanaryRun, seedProjectScaffold, undoScaffold,
   doctorProvenance, installerSyntaxGate, copyNoFollow,
   verifyBackupIntegrity, loadTrustedManifest, findNewerOverlappingBatches, restoreFromManifest, subsetManifest,
-  journalPath, latestBatchId, acquireLock, releaseLock, lockPathFor,
+  journalPath, latestBatchId, batchRecency, acquireLock, releaseLock, lockPathFor,
   rollbackProject, rollbackBatch, safeSyncProject, adoptProject, rawInstall, status, findForgeProjects,
   dedicatedCanaryDir, canaryInit, runSyncAll, parseArgs, CANARY_DIR_NAME,
   syncProjectSettings, printSettingsMergeResult, defaultCentralBackupRoot,
   // R6(b) — exported so a test can exercise the plan-summary labeling directly, same pattern as the other
   // print* helpers above.
   printPlanSummary, STANDING_RULES_REL, STANDING_RULES_USER_REL,
+  // v2.9.0 (WP-N1) — retired per-project Control Center cleanup; see pruneRetiredFiles's own doc comment.
+  pruneRetiredFiles, restoreRetiredPruneLedger, RETIRED_TEMPLATE_FILES, RETIRED_STATE_FILES, printRetiredPruneResult,
 };
 
 // ---- CLI ----

@@ -38,6 +38,7 @@ import type { DockTab, PrototypeState } from '@/prototype/state/prototype-store'
 // WP7b: the real gateway connection, not the intentionally-unused bridge one —
 // see `gateway-adapter.ts`'s header. Same `ConnectionState` shape.
 import { useGatewayConnection as useConnection } from '@/prototype/state/gateway-adapter';
+import { dedupeLatestByKey } from '@/prototype/state/adapter/shared';
 import type { ConnectionState } from '@/prototype/state/bridge-client';
 import type { ActivityEvent, ProofEntry, QualityGate, StatusKey } from '@/prototype/types/prototype-types';
 import './dock.css';
@@ -338,10 +339,31 @@ function connectionNoticeDetail(connection: ConnectionState): string {
  * describe the example dataset, unchanged, so the showcase and tests still read
  * the same copy.
  */
+/** WP-CCD (item 9): a claim's real identity for "was this specific check later resolved" —
+ *  `agent`+`command` mirrors the same identity the adapter's own `dedupeLatestVerdictRows` uses for
+ *  the raw `/api/proof` shape this `ProofEntry` was itself built from. */
+function proofClaimIdentity(entry: ProofEntry): string {
+  return `${entry.agent}::${entry.command}`;
+}
+
+/** WP-CCD (item 9): a bounded, readable "N of these, then +M more" join — the SAME cap style this
+ *  notice's own list can otherwise grow past a sensible glance-length on a run with many rejections. */
+const REJECTED_CLAIMS_SHOWN = 4;
+
+function joinRejectedClaims(entries: readonly ProofEntry[]): string {
+  const shown = entries.slice(0, REJECTED_CLAIMS_SHOWN).map((entry) => entry.claim);
+  const remaining = entries.length - shown.length;
+  return remaining > 0 ? `${shown.join('; ')}; and ${remaining} more` : shown.join('; ');
+}
+
 function buildNotices(state: PrototypeState, connection: ConnectionState): readonly Notice[] {
   const production = isProductionMode();
   const openGates = state.data.gates.filter((gate) => gate.status !== 'completed');
-  const rejected = state.data.proof.filter((entry) => entry.verdict === 'rejected');
+  // WP-CCD (item 9): the LATEST claim per real identity (agent+command) — a claim that was
+  // rejected once and later accepted for the SAME check no longer counts as an open failure here,
+  // matching the "real, readable open failures" this notice is meant to show (never "any rejection
+  // ever", the same "latest result wins" rule `dedupeLatestVerdictRows` already applies to gates).
+  const rejected = dedupeLatestByKey(state.data.proof, proofClaimIdentity).filter((entry) => entry.verdict === 'rejected');
   const blockedTasks = state.data.tasks.filter((task) => task.status === 'blocked');
   const counts = `${state.data.projects.length} projects, ${state.data.agents.length} agents, ${state.data.tasks.length} tasks, ${state.data.events.length} events`;
 
@@ -397,7 +419,10 @@ function buildNotices(state: PrototypeState, connection: ConnectionState): reado
           ? production
             ? 'No completion claim has been recorded for this workspace yet.'
             : 'No claim in the example ledger was rejected.'
-          : `${rejected.map((entry) => entry.taskId).join(', ')} — evidence did not show the claim on the build the claim referred to.`,
+          // WP-CCD (item 9): real, readable claim text (`entry.claim`, e.g. "Build Boss ran npm
+          // test") — a real gateway `ProofEntry.taskId` is always '' (no task-id source exists on
+          // this row yet), which is what turned this into "— , , ," for every real workspace.
+          : `${joinRejectedClaims(rejected)} — evidence did not show the claim on the build the claim referred to.`,
       example: !production,
     },
     {

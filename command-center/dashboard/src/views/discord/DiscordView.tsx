@@ -32,7 +32,10 @@ import {
   useGatewayDiscordStatus,
 } from '@/prototype/state/gateway-discord';
 import type { DiscordService } from '@/prototype/state/gateway-discord';
+import BotActivitySection from './BotActivitySection';
 import ConnectWizard from './ConnectWizard';
+import ProjectsDirSection from './ProjectsDirSection';
+import { formatHealthValue, healthKeyLabel } from './health-format';
 import { computeWizardStep } from './wizard-step';
 import './discord.css';
 
@@ -56,15 +59,77 @@ function transportHint(transport: string | null): string {
   return 'Not reported by the gateway.';
 }
 
-function formatHealthValue(value: unknown): string {
-  if (value === null) return '—';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
+/** v2.9.0 WP-DA: "will the bot come back by itself when the Command Center starts?", in plain words.
+ *  Codex DA-1: "YES" only when the gateway says it will really try (`effective`: setting on, not switched
+ *  off, installed AND connected) and the last automatic start did not fail; every other case names the
+ *  reason. Codex DA-2: a failed save of the owner's choice comes first, because it makes the rest unsure. */
+function autostartText(autostart: DiscordService['autostart']): { value: string; hint: string } {
+  if (autostart === null) return { value: '—', hint: 'Not reported by the gateway.' };
+  const last =
+    autostart.lastOutcome !== null && autostart.lastDetail !== null
+      ? ` Last Command Center start: ${autostart.lastDetail}.`
+      : '';
+  if (autostart.saveError !== null) {
+    return {
+      value: 'UNSURE',
+      hint: `Forge ${autostart.saveError}, so after a restart the bot follows your previous choice. Use the switch once more to save it.${last}`,
+    };
   }
+  if (autostart.setting === false) {
+    return {
+      value: 'NO',
+      hint: `Turned off in Settings ("discord-autostart"). Turn it on there to have the bot start by itself.${last}`,
+    };
+  }
+  if (autostart.desired === 'stopped') {
+    return {
+      value: 'NO',
+      hint: `You switched the bot off, so it stays off after a restart. Switch it on and it comes back by itself.${last}`,
+    };
+  }
+  if (autostart.setting === null) {
+    return {
+      value: 'NO',
+      hint: `Forge's settings could not be read right now, so the bot does not start by itself (the safe choice). This clears up as soon as the settings can be read again.${last}`,
+    };
+  }
+  if (autostart.envOptOut) {
+    return {
+      value: 'NO',
+      hint: `Automatic start is turned off for this Command Center process (CC_DISCORD_AUTOSTART=off), usually a test or temporary copy.${last}`,
+    };
+  }
+  if (autostart.desiredInvalid) {
+    return {
+      value: 'NO',
+      hint: `Your last on/off choice could not be read${autostart.desiredNote !== null ? ` (${autostart.desiredNote})` : ''}, so the bot does not start by itself. Switch it on here to start it and save your choice again.${last}`,
+    };
+  }
+  if (!autostart.ready) {
+    return {
+      value: 'NOT YET',
+      hint: `It will start by itself once it can: ${autostart.readyReason ?? 'Discord is not set up yet'}. Finish connecting Discord first.`,
+    };
+  }
+  if (autostart.conflict !== null) {
+    return {
+      value: 'BLOCKED',
+      hint: `Another program already answers on the bot's port, so the Command Center will not start a second bot: ${autostart.conflict}. Once that program is gone, the bot starts by itself at the next Command Center start.`,
+    };
+  }
+  if (!autostart.effective) {
+    return { value: 'NO', hint: `The gateway says the bot will not start by itself.${last}` };
+  }
+  if (autostart.lastOutcome === 'failed') {
+    return {
+      value: 'FAILED',
+      hint: `The bot is set to start by itself, but the last automatic start failed: ${autostart.lastDetail ?? 'no reason given'}. It tries again at the next Command Center start.`,
+    };
+  }
+  return {
+    value: 'YES',
+    hint: `The bot starts by itself whenever the Command Center starts, also after a reboot. Switch it off here and it stays off.${last}`,
+  };
 }
 
 /* ------------------------------------------------------------------ panels */
@@ -73,13 +138,17 @@ function ServicePanel({
   service,
   pending,
   actionError,
+  actionWarning,
   onToggle,
 }: {
   service: DiscordService;
   pending: 'start' | 'stop' | null;
   actionError: string | null;
+  /** WP-DA (Codex DA-2): the switch worked, but the gateway could not save the choice — shown verbatim. */
+  actionWarning: string | null;
   onToggle: (next: boolean) => void;
 }) {
+  const autostart = autostartText(service.autostart);
   return (
     <Panel
       title="Service"
@@ -107,6 +176,13 @@ function ServicePanel({
         </p>
       ) : null}
 
+      {actionWarning !== null ? (
+        <p className="fw-discord__alert" role="alert">
+          <Icon name="TriangleAlert" size="sm" />
+          <span>{actionWarning}</span>
+        </p>
+      ) : null}
+
       {service.conflict !== null ? (
         <p className="fw-discord__alert" role="alert">
           <Icon name="TriangleAlert" size="sm" />
@@ -117,6 +193,9 @@ function ServicePanel({
       <div className="fw-discord__rows">
         <Row label="Status" hint="From the gateway's own live status check.">
           <Machine>{service.running ? 'RUNNING' : 'STOPPED'}</Machine>
+        </Row>
+        <Row label="Starts automatically" hint={autostart.hint}>
+          <Machine muted>{autostart.value}</Machine>
         </Row>
         <Row label="PID">
           <Machine muted>{service.pid ?? '—'}</Machine>
@@ -173,7 +252,7 @@ function EnvKeysPanel({ envKeys }: { envKeys: DiscordService['envKeys'] }) {
 
 function HealthPanel({ health }: { health: DiscordService['health'] }) {
   return (
-    <Panel title="Bot health" subtitle="Whatever the bot's own health endpoint reports, shown as-is.">
+    <Panel title="Bot health" subtitle="What the bot's own health check reports, in plain words. Hover a label to see the raw field name.">
       {health === null ? (
         <p className="fw-discord__health-empty">
           Bot not reachable — it may be stopped or still starting.
@@ -184,10 +263,10 @@ function HealthPanel({ health }: { health: DiscordService['health'] }) {
         <ul className="fw-discord__health-list">
           {Object.entries(health).map(([key, value]) => (
             <li key={key} className="fw-discord__health-item">
-              <Machine muted className="fw-discord__health-key">
-                {key}
-              </Machine>
-              <span className="fw-discord__health-value">{formatHealthValue(value)}</span>
+              <span className="fw-discord__health-key" title={key}>
+                {healthKeyLabel(key)}
+              </span>
+              <span className="fw-discord__health-value">{formatHealthValue(key, value)}</span>
             </li>
           ))}
         </ul>
@@ -202,16 +281,21 @@ export default function DiscordView() {
   const status = useGatewayDiscordStatus();
   const [pending, setPending] = useState<'start' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionWarning, setActionWarning] = useState<string | null>(null);
 
   async function handleToggle(next: boolean): Promise<void> {
     if (pending !== null) return;
     setActionError(null);
+    setActionWarning(null);
     setPending(next ? 'start' : 'stop');
     const result = next ? await requestDiscordStart() : await requestDiscordStop();
     setPending(null);
     if (!result.ok) {
       setActionError(result.error ?? 'The gateway could not complete this request.');
+      return;
     }
+    // WP-DA (Codex DA-2): the switch worked, but the choice was not saved — never a silent success.
+    if (result.warning !== null) setActionWarning(result.warning);
   }
 
   const service = status.data;
@@ -257,8 +341,14 @@ export default function DiscordView() {
                 service={service}
                 pending={pending}
                 actionError={actionError}
+                actionWarning={actionWarning}
                 onToggle={(next) => void handleToggle(next)}
               />
+              {/* v2.9.0 (audit finding 31): the bot's own jobs and recorded cost, which no view showed before. */}
+              <BotActivitySection />
+              {/* WP-S1: shown regardless of wizard step — before connecting, the folder choice is
+                  simply stored and picked up the next time the bot starts. */}
+              <ProjectsDirSection />
               <EnvKeysPanel envKeys={service.envKeys} />
               <HealthPanel health={service.health} />
             </>

@@ -147,6 +147,74 @@ test('T6c: a run whose events carry no parseable timestamp at all reports null/n
   assert.equal(run.duration_source, null);
 });
 
+// WP-CC1 (item 1 + Lead course-correction): reserved synthetic run-folder names (WP-CC0, commit
+// a977ae0) must be skipped by ranking/current_run even when newer by mtime AND even with real
+// work-shaped events and no run.json declaring itself synthetic — name alone is enough.
+test('a bench-fake-123 folder newer than a real run never becomes current_run (Lead course-correction)', () => {
+  const root = freshTempRoot();
+  const realPath = writeEventsFile(root, 'forge-2026-01-09-real-work', [
+    { event_type: 'run_started', timestamp: '2026-01-09T10:00:00.000Z' },
+    { event_type: 'check_passed', timestamp: '2026-01-09T10:05:00.000Z' },
+  ]);
+  const fakePath = writeEventsFile(root, 'bench-fake-123', [
+    { event_type: 'run_started', timestamp: '2026-01-09T10:00:00.000Z' },
+    { event_type: 'check_passed', timestamp: '2026-01-09T12:00:00.000Z' },
+  ]);
+  const now = Date.now();
+  fs.utimesSync(path.dirname(realPath), new Date(now - 50_000), new Date(now - 50_000));
+  // The reserved-name folder is BOTH more recent by mtime AND has a later real work-event
+  // timestamp — a pure recency comparison would wrongly prefer it.
+  fs.utimesSync(path.dirname(fakePath), new Date(now - 1_000), new Date(now - 1_000));
+
+  const result = listRuns(root);
+  assert.equal(result.ok, true);
+  assert.equal(result.current_run, 'forge-2026-01-09-real-work', 'the real run must stay current, never the reserved-name fixture');
+  const fakeRow = result.runs.find((r) => r.run_id === 'bench-fake-123');
+  assert.ok(fakeRow, 'the reserved-name folder still appears in the full run list');
+  assert.equal(fakeRow.synthetic, true);
+  assert.equal(fakeRow.synthetic_field, 'reserved-run-id-pattern');
+});
+
+test('every reserved synthetic name pattern is caught: bench-canon, bench-canon-2, doctor-selfcheck-4821, nonexistent-run-id', () => {
+  const root = freshTempRoot();
+  for (const runId of ['bench-canon', 'bench-canon-2', 'doctor-selfcheck-4821', 'nonexistent-run-id']) {
+    writeEventsFile(root, runId, [{ event_type: 'run_started', timestamp: '2026-01-09T10:00:00.000Z' }]);
+  }
+  const result = listRuns(root);
+  for (const runId of ['bench-canon', 'bench-canon-2', 'doctor-selfcheck-4821', 'nonexistent-run-id']) {
+    const row = result.runs.find((r) => r.run_id === runId);
+    assert.ok(row, runId + ' must still appear in the full list');
+    assert.equal(row.synthetic, true, runId + ' must be marked synthetic');
+  }
+  assert.equal(result.current_run, null, 'no real work exists in this fixture — current_run must be honestly null');
+});
+
+test('a real run whose name merely CONTAINS a reserved word is NOT caught (whole-name match only)', () => {
+  const root = freshTempRoot();
+  writeEventsFile(root, 'forge-2026-01-09-bench-canon-comparison-writeup', [
+    { event_type: 'run_started', timestamp: '2026-01-09T10:00:00.000Z' },
+    { event_type: 'check_passed', timestamp: '2026-01-09T10:05:00.000Z' },
+  ]);
+  const result = listRuns(root);
+  const row = result.runs.find((r) => r.run_id === 'forge-2026-01-09-bench-canon-comparison-writeup');
+  assert.ok(row);
+  assert.equal(row.synthetic, false, 'a name that merely CONTAINS "bench-canon" must not be treated as synthetic');
+  assert.equal(result.current_run, 'forge-2026-01-09-bench-canon-comparison-writeup');
+});
+
+test('a run.json-declared synthetic:true run is still caught even with a non-reserved name (existing behavior preserved)', () => {
+  const root = freshTempRoot();
+  const runDir = path.join(root, '.claude', 'forge-runs', 'forge-demo-10agents-layout-preview');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({ run_id: 'forge-demo-10agents-layout-preview', synthetic: true, request: 'DEMO' }), 'utf8');
+  writeEventsFile(root, 'forge-demo-10agents-layout-preview', [{ event_type: 'check_passed', timestamp: '2026-01-09T10:05:00.000Z' }]);
+
+  const result = listRuns(root);
+  const row = result.runs.find((r) => r.run_id === 'forge-demo-10agents-layout-preview');
+  assert.equal(row.synthetic, true);
+  assert.equal(row.synthetic_field, 'synthetic');
+});
+
 test('FU1: two runs with the EXACT same mtime fall back to a stable run_id-descending tiebreak', () => {
   const root = freshTempRoot();
   const aPath = writeEventsFile(root, 'forge-2026-01-04-aaa', [{ event_type: 'agent_started' }]);

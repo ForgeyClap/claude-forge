@@ -237,70 +237,42 @@ function gitSubcommand(ws) {
 // secret-print, which reads the FILE argument's own content and must never be defeated merely because that
 // argument is quoted: `grep API_KEY '.env'` used to strip to `grep API_KEY ''`, silently erasing the exact
 // secret target that gate exists to catch, before classify() ever ran. searchPatternWords() below narrows
-// stripping to ONLY the recognised PATTERN position — same three-family position rules as
-// forge-actiongate.cjs::secretPrintPatternExempt() (duplicated on purpose, same documented-duplication
-// convention this file already uses for BARE_VAR_LEAD_RE/segHasExecFlag's own sibling copy: "keep the two in
-// sync" — this file never requires forge-actiongate.cjs, which stays the dependency ROOT other files require(),
-// never a dependant of one of them).
-const GREP_PATTERN_FLAG_RE = /^(?:-e|--regexp|-f|--file)$/;
-const GREP_PATTERN_FLAG_ATTACHED_RE = /^(?:--regexp|--file)=/;
-// v2.9.0 (Lead, adversarial probe after WP-M2): -f/--file NAMES A FILE the tool reads (its patterns). It still marks
-// "a pattern was given explicitly", but its value is never exempted: `grep -f .env x` reads the secret file.
-const GREP_PATTERN_SOURCE_FILE_RE = /^(?:-f|--file)(?:=|$)/;
+// stripping to ONLY the recognised PATTERN position.
+//
+// WP-M3 (2026-09-27, independent review RB2-1): the grep/rg/findstr position rule is now the SAME shared,
+// closed option-table walk forge-actiongate.cjs::secretPrintPatternExempt() calls —
+// QUOTES.classifySearchWords() in forge-gate-quotes.cjs, which BOTH files already require() — rather than two
+// separately-maintained copies of the same three exact-word regexes (the documented-duplication convention
+// this file used before WP-M3, and the one BARE_VAR_LEAD_RE/segHasExecFlag's own sibling copy still uses,
+// stays retired for this one spot specifically because the WP-M1/M2 history of this exact code — two files
+// drifting the same bug in and out of sync across three work packages — is the textbook case for "share it
+// instead"). See classifySearchWords()'s own doc comment for the full per-tool grammar and its fail-closed
+// contract: `ok:false` means picked stays empty, the existing "fail toward strip nothing" convention below.
 const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
 
 /** searchPatternWords(h, ws) -> Set of the word OBJECTS (from `ws`, the segment's full word array including
  *  its own head at index 0) that are this search-tool invocation's own PATTERN argument(s) — the only ones
  *  literalDataSpans() may still treat as strippable inert data for a SEARCH.has(h) segment. `h` is the
- *  already-lower-cased head. See forge-actiongate.cjs::secretPrintPatternExempt() for the full "why" of each
- *  family's own rule; this function only needs to know WHICH words are the pattern, never whether any of them
- *  looks secret-shaped (that question belongs entirely to the classifier, not this pre-classify data pass).
- *
- *  WP-M2 (2026-09-27, Codex stop-gate review of WP-M1 finding 2): the explicit -e/--regexp/-f/--file scan used
- *  to run across the WHOLE `rest` array, unbounded by a standalone `--`, so `grep -- -e .env` picked `.env`
- *  (the real FILE positional after `--`) as -e's own pattern VALUE — a fail-open that let literalDataSpans()
- *  strip a genuine secret FILE argument as if it were inert pattern data. Real GNU grep treats `--` as
- *  end-of-options: the literal word `-e` right after it is the pattern text itself, `.env` is a plain file.
- *  isEndOfOptionsWord (already defined above for segCanRunText, recognising a bare OR quoted `--` word) is
- *  reused unchanged to find that boundary; the explicit-flag scan now stops there, and the implicit-positional
- *  fallback restarts cleanly right after it when no explicit flag was found before it. */
+ *  already-lower-cased head. See forge-actiongate.cjs::secretPrintPatternExempt() and
+ *  forge-gate-quotes.cjs::classifySearchWords() for the full "why" of each family's own rule; this function
+ *  only needs to know WHICH words are the pattern, never whether any of them looks secret-shaped (that
+ *  question belongs entirely to the classifier, not this pre-classify data pass). */
 function searchPatternWords(h, ws) {
   const rest = ws.slice(1);
   const picked = new Set();
+  // v2.9.0 (Codex recheck SEC-1, HIGH): same rule as forge-actiongate.cjs::secretPrintPatternExempt(): a word
+  // with an unquoted redirection or command substitution is shell syntax, so strip nothing from this segment.
+  if (rest.some((w) => QUOTES.hasUnquotedShellSyntax(w.raw))) return picked;
   if (h === 'select-string' || h === 'sls') {
     for (let i = 0; i < rest.length; i++) {
       if (SELECT_STRING_PATTERN_FLAG_RE.test(rest[i].raw) && rest[i + 1]) picked.add(rest[i + 1]);
     }
     return picked; // deliberately NO positional fallback — see secretPrintPatternExempt()'s own doc
   }
-  const dashDashIdx = rest.findIndex(isEndOfOptionsWord);
-  const boundary = dashDashIdx === -1 ? rest.length : dashDashIdx;
-  let explicit = false;
-  if (h !== 'findstr') {
-    for (let i = 0; i < boundary; i++) {
-      if (GREP_PATTERN_FLAG_RE.test(rest[i].raw)) {
-        explicit = true;
-        if (rest[i + 1] && !GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) picked.add(rest[i + 1]);
-      } else if (GREP_PATTERN_FLAG_ATTACHED_RE.test(rest[i].raw)) {
-        explicit = true;
-        if (!GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) picked.add(rest[i]);
-      }
-    }
-  }
-  if (!explicit) {
-    if (dashDashIdx !== -1) {
-      // no pattern given through an explicit flag before `--`: the first word after it is the pattern (real
-      // GNU/ripgrep semantics — `--` only ends OPTION parsing), every other word after it stays a file.
-      if (rest[dashDashIdx + 1]) picked.add(rest[dashDashIdx + 1]);
-    } else {
-      const isFlag = (raw) => (h === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
-      for (const w of rest) {
-        if (isFlag(w.raw)) continue;
-        picked.add(w);
-        break; // exactly one implicit positional pattern
-      }
-    }
-  }
+  const tool = h === 'findstr' ? 'findstr' : h === 'rg' ? 'rg' : 'grep';
+  const result = QUOTES.classifySearchWords(tool, rest.map((w) => w.raw));
+  if (!result.ok) return picked; // ambiguous: pick nothing to strip — the safe, pre-existing default
+  for (const i of result.patternIdx) picked.add(rest[i]);
   return picked;
 }
 

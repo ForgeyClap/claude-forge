@@ -15,6 +15,14 @@ Easier for people who are new to computers, safer by default, and lighter on usa
 default, and every setting can now also be changed from the dashboard.
 
 ### Added
+- **The Command Center works right after installing.** The installer puts it in one central place next to Forge's
+  global files (`~/.claude/forge/template/command-center/`), with the dashboard already built, so nothing needs npm
+  or a build step. Every project you install Forge into is recorded in `~/.claude/forge/projects.json`, so the
+  dashboard finds it wherever it is on your computer. `forge dashboard` (or double-clicking
+  `start-forge-dashboard.bat` in your project's `.claude\forge-dashboard` folder) finds the Command Center, uses the
+  one that is already running, and opens on the project you started from. The Discord part installs its own package
+  the first time you connect Discord. An install, upgrade or uninstall never touches your Discord token, chats or
+  logs.
 - **Change Forge settings from the dashboard.** The Command Center's Settings view lists every Forge setting with its
   current value and lets you change it with a switch, a choice list or a number field. The gate hook can only be
   switched ON there. Switching it off or clearing it is refused, because the dashboard's own key is readable by any
@@ -31,6 +39,36 @@ default, and every setting can now also be changed from the dashboard.
   safely (all at once, locked). A server is only accepted when the bot is really in it, and the wizard only says
   "Done" when the bot reports that setup is finished. Honest limit: Discord does not let a bot make a server that
   you own, and bots are created in the Developer Portal. The wizard walks you through both.
+- **The Discord bot comes back by itself.** Once Discord is connected, the bot starts whenever the Command Center
+  starts, also after a reboot or after the Command Center restarted itself. Switch the bot off in the dashboard and
+  it stays off; `/forge config set discord-autostart off` turns the automatic start off entirely. The Discord view
+  says whether the bot will start by itself, and if not, why (not connected yet, switched off by you, another bot
+  already on its port), and what happened the last time. When Forge cannot read its settings, the bot does not
+  start by itself: a setting that runs unattended is never switched on by accident. Starting and stopping never
+  overlap: a switch-off you click while the bot is starting is carried out right after, and two quick clicks never
+  start two bots.
+- **Choose where your Discord projects live.** The Discord view has a "Projects folder" section: pick a folder with
+  the folder browser, or type a path, and every subfolder in it becomes a Discord project channel. The bot picks it
+  up by restarting itself, and keeps a short history file (`FORGE_GESCHIEDENIS.txt`) in each project folder.
+  Network paths, and links that lead out of your user folder, are refused.
+- **See what the Discord bot did.** A "Bot activity" panel shows the bot's jobs by state, the newest jobs, and the
+  cost Claude Code recorded for them (in total, for the last 7 days and the last 24 hours, and per project), with a
+  plain note that on a Claude subscription that figure estimates what your plan covers. Message text and Discord
+  ids are never shown, not even inside an error. The "Bot health" panel shows plain labels and readable values
+  instead of raw JSON.
+- **A clearer Settings view.** Settings are grouped by topic (Safety and quality, Usage and cost, Working style,
+  Dashboard and tools, Advanced), have plain names and a search box, and explain themselves; the command form is
+  one click away. It works on a phone too.
+- **The Command Center shows what Forge is doing now.** Home lists the runs that are really working, across all
+  your projects, with the agents working on them. A run counts as working only while it shows real activity (a
+  logged step or a tool call in the last 10 minutes); after that it shows as stalled, and after a day as ended.
+  Tasks belong to their work package, a reviewer's task closes when its review is logged, and Tests & proof shows
+  the reviews, the gate evidence, the finalize receipt and the run contract with the recorded test numbers. The
+  usage pill shows the usage guard's session and week percentages, and says so when the guard is not running.
+- **`forge-runinfo prune-synthetic`** lists the empty run folders that older Forge self-tests left behind
+  (`bench-canon-*`, `bench-fake-*`, `doctor-selfcheck-*`, `nonexistent-run-id`) and, with `--apply`, removes exactly
+  those (file by file, never anything else). Forge's own doctor and benchmark no longer create them, and they never
+  count as your latest run.
 - **Knowledge vault, automatic.** After every finished run, Forge writes readable, linked notes in
   `.claude/forge-vault/` (a home page, one note per run, per decision and per topic). This is plain markdown, and you
   can open it in Obsidian for a graph view. Secrets are masked. The idea comes from the claude-obsidian project (MIT),
@@ -62,7 +100,28 @@ default, and every setting can now also be changed from the dashboard.
   is about 1.6x faster. The installed files are byte-identical (compared old versus new: install, second run, dry
   run, uninstall).
 
+### Removed
+- **The old per-project Control Center.** It was retired in favour of the Command Center and is now gone.
+  `.claude/forge-dashboard/` keeps only `log-event.cjs` (every run writes its events with it), a README, and
+  `start-forge-dashboard.bat`, which starts the Command Center. `forge status`, `forge runs` and `forge open-report`
+  now use `forge-runinfo.cjs`, and `forge legacy-dashboard` explains that the old dashboard was removed. When you
+  upgrade, Forge removes the old files from your project and from its global template only if you never changed
+  them. They are moved into a dated backup folder, and a file you changed is kept and named.
+
 ### Fixed
+- **The Command Center's own texts:** the `dashboard` setting no longer says the installer leaves the Command
+  Center out, and the README and AI-INSTALL.md no longer ask for a manual npm build: the installers put it in place
+  with the page already built.
+- **The secret gate reads search commands strictly.** The rule that lets you search code for the text `.env` now
+  reads grep, rg and findstr options with a fixed table, and it stops exempting anything it does not fully
+  understand. None of these can carry a secret file past it any more:
+  - a value attached to `-e`;
+  - a group of short options;
+  - a shortened long option;
+  - `-e` or `-f` placed after the file names;
+  - a filter that picks the files to read (`--include`, `rg -g`).
+
+  Exclusion filters stay allowed, but only when no include filter could add the file back.
 - **The Command Center's `.env` templates now ship.** `command-center/discord/.env.example` (and the dashboard's)
   were never included in the public repo, so its list of Discord settings stayed empty on a fresh install, and the
   new Connect Discord wizard could not finish. They ship now, and CI checks that they stay.
@@ -80,29 +139,37 @@ default, and every setting can now also be changed from the dashboard.
   vault, doctor, error explanations, snapshot.
 
 ### How this release was verified
-- Full source doctor all green: 142 suites, 9,704 tests passing (2.8.1: 136 suites, 9,198). The Command Center in
-  its real location: gateway 1,141/1,141, Discord 242/242, dashboard 1,274/1,274, and the production build.
-- An independent adversarial Codex review of the source and Command Center changes found 20 issues (none
-  critical). All were fixed with tests. A Codex verification review then checked every fix: its leftovers were
-  fixed, except one accepted trade-off (see Known limitations) and one rejected suggestion (`git diff --check`
-  stays blocked because it prints the offending lines). Codex's stop-time review found two more secret-exposure
-  paths, and later three gaps (two critical) in a final-review fix of the secret gate; a Forge probe then found one
-  more (a secret file given to `grep -f`). All are fixed with tests. The installer changes were not reviewed by
-  Codex; they were checked by old-versus-new comparisons and real installs instead.
-- An independent final review (Review Boss) of the end state found a missing Command Center template file, a case
-  where the names-only helper could print the last line of a multi-line value, and some wording; all are fixed in
-  this release.
-- Real screenshots of the settings editor and the Connect Discord wizard at desktop, tablet and phone sizes, with
-  no console errors.
+- Full source doctor all green on the final source commit: 133 suites, 9,902 tests passing, 0 failing (the
+  removed Control Center's own suites are gone; 2.8.1: 136 suites, 9,198). The Command Center in its real
+  location: gateway 1,467 of 1,468 (one test needs a symlink privilege this machine lacks), Discord 242/242,
+  dashboard 1,484/1,484, and the production build. Both gates were recorded with their exact commands, exit codes
+  and output hashes on a clean working tree.
+- Codex reviewed the whole release, read-only and adversarially, in several rounds:
+  - earlier: the source and Command Center changes (20 findings, all fixed), a verification of those fixes, and
+    its stop-time review of the secret gate (fixed, together with one more case a Forge probe found);
+  - a recheck of the whole project (10 findings, all fixed);
+  - run A, the source tools and both installers (9 findings, 3 of them high, all fixed with tests);
+  - run B, the Command Center gateway (12 findings, 1 high, all fixed with tests);
+  - its stop-time review of the Discord autostart and the prune tool (4 findings, all fixed);
+  - a final verification of every fix: 10 confirmed as fixed, 7 more closed right after it (including two new
+    findings), and the remaining ones are the limits described under Known limitations.
+  - Codex ran on its default model (gpt-6-luna at effort xhigh), because the pinned gpt-6-astra model is refused
+    for a ChatGPT account.
+- The live Command Center after a restart on the final code: healthy, the Discord bot back by itself, the usage
+  guard's watcher running, and read-only screenshots of 10 views at desktop and phone size with no overflow and no
+  console errors.
 - `install.sh`: the old and new versions were compared on real installs. The installed files were identical after
   install and after uninstall; the dry-run output was identical. Both installers were run for real on this Windows
-  machine with a broken rules file and with a folder path ending in a backslash.
-- The public repository's own CI checks, run locally on Windows on the release commit: the 7 light steps passed
-  (every manifest 2.9.0, the shipped `.env` templates, executable bits, plugin copies in sync, `node --check` on
-  265 tools). The test-suite and doctor steps ran in a fresh-laptop simulation of commit 9d3472d (install into an
-  empty folder with an empty home, then the doctor): all green, 142 suites, 9,660 passing. On that fresh install
-  the new secret gate blocked `cat .env`, `git show HEAD:.env`, a greedy `grep -o`, `grep -f .env` and a secret
-  file named after a `--`, and allowed `cat .env.example`, a search for the text `.env` and the names-only helper.
+  machine with a broken rules file and with a folder path ending in a backslash. The four installer fixes have
+  their own tests in both shells (sh 144/144, ps1 144/144).
+- The public repository's own CI checks, run locally on Windows on the release commit: the 8 light steps passed
+  (no tracked ignored file, every manifest 2.9.0, the shipped `.env` templates, the prebuilt dashboard, executable
+  bits, plugin copies in sync, `node --check` on 259 tools, the retired dashboard hash table, the plugin manifests).
+  The test-suite and doctor steps ran in a fresh-laptop simulation of the release commit (install into an empty
+  folder with an empty home on Windows PowerShell 5.1, without bash or the claude CLI, then the doctor): all green,
+  133 suites, 9,858 passing. On that install the gate blocked a recursive delete and switching the gate off, and
+  allowed ordinary commands; the Command Center started from the project's own wrapper on a test port, served the
+  page and listed the fresh project.
 - Still to run before the tag: CI on Linux and Windows (Node 18 and 22) on the release commit, once it is pushed.
 
 ### Known limitations
@@ -116,9 +183,26 @@ default, and every setting can now also be changed from the dashboard.
   - a credential file whose name is not on its list.
   One fix (git's `HEAD` no longer counts as the `head` reader) covers only the plain reader form, not the
   `find`/`xargs` forms.
+- A recursive search (`grep -r`, `rg`, especially with `--hidden` or a broad glob such as `.*`) prints matching
+  lines from every file it reaches, secret files included. The gate only sees file names written on the command
+  line, so search the folder you mean (for example `src/`) rather than the whole project.
+- The gate can also stop a command that only writes text: a heredoc whose body quotes a stopped command as a
+  string is stopped, and Forge asks first. This is older than 2.9.0 and applies to all five gates; write such a
+  file with the editor tool instead.
 - Secret masking in the vault, snapshot and doctor output is pattern-based. A secret with no label and no known
   shape can still pass.
 - The Connect Discord wizard was tested with fake tokens and a real bot process, not yet with a real Discord account.
+- A program that already runs on your computer as you could, in the split second between Forge's check and its
+  action, swap a folder for a link during an install, an uninstall or the creation of a projects folder. Forge
+  closes the ways a downloaded project could set this up (planted links, a forged install manifest); the race that
+  remains needs a program that could change those files directly anyway.
+- A mapped network drive letter (for example `Z:`) is not recognised as a network location in the projects-folder
+  picker; opening it talks to the server you mapped yourself. Network paths (`\\server\share`) and links to them
+  are refused.
+- On Linux and macOS, `prune-synthetic --apply` deletes only when no other user can change a folder on the way.
+  That rule was tested on Windows with simulated file systems; it runs for real in CI after the push.
+- The doctor's advisory context-budget line says the loaded skill list is above its size budget on a fresh
+  install. It is advice, not a failure; trimming the descriptions without losing trigger words is planned.
 - `install.sh` under Git Bash on Windows is faster than before but still slower than `install.ps1`, which stays the
   recommended way on Windows.
 - In the Discord bot's log, lines from its normal output and its error output can appear out of order. Each

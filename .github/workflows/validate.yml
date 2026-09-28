@@ -19,8 +19,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      # v2.9.0 (WP-P3b): fetch-depth 0 (full history), not actions/checkout's default shallow
+      # (depth 1). tests/installer/assert-retired-dashboard-hashes.js recomputes the 7 retired
+      # dashboard files' known shipped hashes straight from `git log --all -- <path>` -- on a
+      # shallow clone those historical commits simply are not present, so the check would silently
+      # report "shallow, skipped" (see that script's own header comment) on every single CI run
+      # instead of actually catching drift the way it is meant to.
+      - name: Checkout (full history)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js 18
         uses: actions/setup-node@v4
@@ -67,6 +75,19 @@ jobs:
           for f in .env.example command-center/discord/.env.example command-center/dashboard/.env.example; do
             git ls-files --error-unmatch "$f" > /dev/null 2>&1 || { echo "::error::$f is not tracked, but the product needs it"; exit 1; }
             echo "ok   $f"
+          done
+      # v2.9.0: a fresh install needs no npm and no build because the PREBUILT dashboard ships. This fails when
+      # the build is missing or index.html points at an asset that is not in the repository.
+      - name: Prebuilt dashboard ships
+        run: |
+          set -e
+          d=command-center/dashboard/dist
+          git ls-files --error-unmatch "$d/index.html" > /dev/null 2>&1 || { echo "::error::$d/index.html is not tracked"; exit 1; }
+          refs=$(grep -oE '(src|href)="(\./|/)?assets/[^"?#]+"' "$d/index.html" | sed -E 's/^(src|href)="(\.\/|\/)?//; s/"$//' || true)
+          [ -n "$refs" ] || { echo "::error::$d/index.html references no assets"; exit 1; }
+          for r in $refs; do
+            git ls-files --error-unmatch "$d/$r" > /dev/null 2>&1 || { echo "::error::$d/$r is referenced by index.html but not tracked"; exit 1; }
+            echo "ok   $d/$r"
           done
       - name: Every tracked *.sh carries the executable bit (100755) in git's index
         run: |
@@ -150,6 +171,13 @@ jobs:
             exit 1
           fi
           exit $fail
+
+      # 2b) v2.9.0 (WP-P3b): the shipped forge-retired-dashboard-hashes.tsv (the pre-2.8.0 legacy
+      #     install fallback's known-content table for the 7 retired dashboard files) must always
+      #     match what this repo's own git history actually recorded -- never drift from it. Needs
+      #     the full-history checkout above to be meaningful (see that step's own comment).
+      - name: Retired dashboard hash table matches git history exactly
+        run: node tests/installer/assert-retired-dashboard-hashes.js
 
       # 3) Run forge-doctor. It self-tests, checks the SPA/agents/chain, and runs a
       #    secret leak-scan over git-tracked files (the checkout provides a real .git,

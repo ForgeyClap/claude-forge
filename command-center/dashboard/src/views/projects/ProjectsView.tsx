@@ -279,7 +279,27 @@ export default function ProjectsView() {
                     </span>
 
                     <span className="fw-projects__main">
-                      <span className="fw-projects__name fw-truncate">{project.name}</span>
+                      {/* REVIEW FIX (found via real screenshot verification, WP-CCD item 8): the
+                          kind-tag used to sit INSIDE the truncating `.fw-truncate` name span — for
+                          any project name long enough to fill that span (measured live: real
+                          project names like "Forge-e2e-2026-07-29T03-53-47-830Z" routinely are),
+                          the tag was laid out past the clipped edge and was never actually visible,
+                          silently defeating item 8's own "mark backup and test copies" requirement
+                          for exactly the auto-generated, long-named test/backup folders this is
+                          most needed for. The name now truncates alone, inside its own flex slot;
+                          the tag is a `flex:none` sibling that is never clipped. */}
+                      <span className="fw-projects__name-row">
+                        <span className="fw-projects__name fw-truncate">{project.name}</span>
+                        {/* WP-CCD (item 8): a real backup/test copy, straight from the gateway's
+                            own `kind` field — reuses the existing `fg-machine` text treatment
+                            (no new colour/token), same visual language as `fw-projects__type`
+                            below. Absent for the overwhelming majority (an ordinary project). */}
+                        {project.kind ? (
+                          <span className="fw-projects__kind-tag fg-machine" title={`This project is a real ${project.kind} copy of another project.`}>
+                            {project.kind.toUpperCase()}
+                          </span>
+                        ) : null}
+                      </span>
                       {/* fix-placeholder: honest "—" fallback (this app's existing missing-value
                           convention) instead of blank space or leaked template syntax. */}
                       <span className="fw-projects__description">

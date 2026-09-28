@@ -86,6 +86,12 @@ describe('parseDiscordService — the real GET /api/discord/status response shap
       inviteUrl: null,
       setupState: null,
       loginError: null,
+      // WP-P1: same honesty rule — absent on the wire here -> honest false/null defaults.
+      depsInstalled: false,
+      depsInstallPhase: null,
+      depsInstallError: null,
+      // WP-DA: an absent autostart block (an older gateway) -> null, never a guessed "yes".
+      autostart: null,
     });
   });
 
@@ -211,6 +217,53 @@ describe('parseDiscordService — the real GET /api/discord/status response shap
     expect(service.setupState).toBeNull();
     expect(service.loginError).toBeNull();
   });
+
+  it('WP-P1: deps_installed/deps_install_phase/deps_install_error are parsed verbatim when present', () => {
+    const service = parseDiscordService({
+      ok: true,
+      service: {
+        installed: true,
+        running: false,
+        pid: null,
+        started_at: null,
+        transport: null,
+        ports: { bot: null, manager: null },
+        health: null,
+        conflict: null,
+        env_keys: [],
+        state_dir: '',
+        log_file: '',
+        deps_installed: false,
+        deps_install_phase: 'failed',
+        deps_install_error: 'npm was not found on this machine — install Node.js (which includes npm) and try again',
+      },
+    });
+    expect(service.depsInstalled).toBe(false);
+    expect(service.depsInstallPhase).toBe('failed');
+    expect(service.depsInstallError).toBe('npm was not found on this machine — install Node.js (which includes npm) and try again');
+  });
+
+  it('WP-P1: an absent deps_* triple reads back the honest false/null defaults, never fabricated', () => {
+    const service = parseDiscordService({
+      ok: true,
+      service: {
+        installed: true,
+        running: true,
+        pid: 1,
+        started_at: null,
+        transport: 'discord',
+        ports: { bot: 4501, manager: null },
+        health: null,
+        conflict: null,
+        env_keys: [],
+        state_dir: '',
+        log_file: '',
+      },
+    });
+    expect(service.depsInstalled).toBe(false);
+    expect(service.depsInstallPhase).toBeNull();
+    expect(service.depsInstallError).toBeNull();
+  });
 });
 
 /* ------------------------------------------------------------ useGatewayDiscordStatus */
@@ -316,7 +369,7 @@ describe('requestDiscordStart', () => {
     vi.stubGlobal('fetch', fetchSpy);
 
     const result = await requestDiscordStart();
-    expect(result).toEqual({ ok: true, pid: 99, error: null });
+    expect(result).toEqual({ ok: true, pid: 99, error: null, warning: null });
 
     const [, init] = fetchSpy.mock.calls[0];
     const headers = (init?.headers ?? {}) as Record<string, string>;
@@ -354,7 +407,7 @@ describe('requestDiscordStop', () => {
   it('200 success extracts the real stopped flag', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, stopped: true }) }) as Response));
     const result = await requestDiscordStop();
-    expect(result).toEqual({ ok: true, stopped: true, error: null });
+    expect(result).toEqual({ ok: true, stopped: true, error: null, warning: null });
   });
 
   it('a failure returns the real error text, never a fabricated success', async () => {
@@ -363,7 +416,7 @@ describe('requestDiscordStop', () => {
       vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ ok: false, error: 'Could not stop the process.' }) }) as Response),
     );
     const result = await requestDiscordStop();
-    expect(result).toEqual({ ok: false, stopped: false, error: 'Could not stop the process.' });
+    expect(result).toEqual({ ok: false, stopped: false, error: 'Could not stop the process.', warning: null });
   });
 });
 

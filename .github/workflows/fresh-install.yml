@@ -97,6 +97,48 @@ jobs:
             console.log("ok   PostToolUse hooks all carry a matcher (" + post.length + ")");
           ' "$p"
 
+      # v2.9.0: the Command Center is installed once, centrally, next to the template, and a fresh install can start
+      # it: health, the page, and the project list (the fresh project comes from projects.json; the template host is
+      # never listed). CC_PORT keeps it off the default 4100; the step stops exactly the process it started.
+      - name: The Command Center starts from the fresh install
+        shell: bash
+        env:
+          HOME: ${{ env.FORGE_TEST_HOME }}
+          USERPROFILE: ${{ env.FORGE_TEST_HOME }}
+          CC_PORT: '4199'
+        run: |
+          set -e
+          cc="$FORGE_TEST_HOME/.claude/forge/template/command-center"
+          for f in "$cc/gateway/bin.mjs" "$cc/dashboard/dist/index.html" "$cc/discord/.env.example"; do
+            if [ -f "$f" ]; then echo "ok   $f"; else echo "::error::missing after install: $f"; exit 1; fi
+          done
+          if [ -e "$cc/discord/.env" ]; then echo "::error::the installer created discord/.env"; exit 1; fi
+          node -e '
+            const j = require(process.argv[1]);
+            const norm = (p) => String(p).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+            if (!(j.projects || []).some((p) => norm(p) === norm(process.argv[2]))) { console.error("::error::projects.json does not list the fresh project"); process.exit(1); }
+            console.log("ok   projects.json lists the fresh project");
+          ' "$FORGE_TEST_HOME/.claude/forge/projects.json" "$FORGE_TEST_PROJECT"
+          node "$cc/gateway/bin.mjs" > "$RUNNER_TEMP/cc.log" 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:4199/api/health" > /dev/null 2>&1; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ "$ok" != 1 ]; then cat "$RUNNER_TEMP/cc.log"; kill "$pid" 2>/dev/null || true; echo "::error::the Command Center did not answer /api/health"; exit 1; fi
+          echo "ok   /api/health answers"
+          if curl -fsS "http://127.0.0.1:4199/" | grep -q 'id="root"'; then echo "ok   the dashboard page is served"; else kill "$pid" 2>/dev/null || true; echo "::error::no dashboard page"; exit 1; fi
+          curl -fsS "http://127.0.0.1:4199/api/projects" > "$RUNNER_TEMP/cc-projects.json"
+          kill "$pid" 2>/dev/null || true
+          node -e '
+            const j = require(process.argv[1]);
+            const want = require("path").basename(String(process.argv[2]).replace(/\\/g, "/").replace(/\/+$/, ""));
+            const names = (j.projects || []).map((p) => p.name);
+            if (!names.includes(want)) { console.error("::error::the fresh project is not in /api/projects: " + names.join(", ")); process.exit(1); }
+            if (names.includes("template")) { console.error("::error::the template host is listed as a project"); process.exit(1); }
+            console.log("ok   /api/projects lists " + want + " and not the template host");
+          ' "$RUNNER_TEMP/cc-projects.json" "$FORGE_TEST_PROJECT"
       # Running the installer twice must change nothing: proves merge-safety and idempotence.
       - name: Second install is a no-op (POSIX)
         if: runner.os != 'Windows'
@@ -110,6 +152,23 @@ jobs:
           gi_after=$(wc -l < "$FORGE_TEST_PROJECT/.gitignore")
           [ "$gi_before" = "$gi_after" ] || { echo "::error::.gitignore grew on a second install ($gi_before -> $gi_after)"; exit 1; }
           echo "ok   idempotent (.gitignore stayed at $gi_after lines)"
+
+      # v2.9.0 (WP-P3b): a newer version prunes files it no longer ships, on the very install/upgrade
+      # that stops shipping them -- manifest-driven pruning, the pre-2.8.0 (no-manifest) legacy
+      # dashboard-file fallback, unconditional runtime-state cleanup, stale Command Center asset
+      # pruning, and no *.forge-bak-* litter for an unchanged Command Center file. Fully
+      # self-contained (its own temp HOME/project fixtures) -- see that script's own header comment
+      # for the full scenario list.
+      - name: Retired files are pruned on upgrade, not left behind forever (POSIX)
+        if: runner.os != 'Windows'
+        run: bash tests/installer/retired-dashboard-prune.sh
+
+      - name: Retired files are pruned on upgrade, not left behind forever (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\tests\installer\retired-dashboard-prune.ps1
+          exit $LASTEXITCODE
 
       # The one check that matters: the tool's own full self-test, on the fresh install, with the empty
       # home still in effect. ALL GREEN or the job is red.

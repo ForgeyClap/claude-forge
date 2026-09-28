@@ -30,6 +30,24 @@ export interface AgentDispatchRow {
    *  this machine so far) — `null` while unresolved. Never hardcoded to a fixed English word. */
   readonly resolvedStatus: string | null;
   readonly endedAt: string | null;
+  /**
+   * WP-CCD (item 3): `GET /api/agent-dispatches` is being extended (in-flight gateway work, read
+   * defensively — every field below is `null`/`false` on a gateway build that predates them, or on
+   * a pre-existing chat-tool-use row that never carries them) to ALSO carry real, run-LOG-derived
+   * dispatches alongside the pre-existing chat-tool-use ones (`source: 'run-log'` marks one; an
+   * absent `source` stays the pre-existing chat-tool-use meaning). `agentName`/`agentSlug` are the
+   * run-log row's own display name/registry slug (a Forge Boss, e.g. "Build Boss"/"build-boss") —
+   * a genuinely different identity concept than `subagentType` (a Claude Code Agent-tool subagent
+   * type, e.g. "Explore"/"general-purpose"), never conflated.
+   */
+  readonly source: string | null;
+  readonly agentName: string | null;
+  readonly agentSlug: string | null;
+  readonly wpId: string | null;
+  readonly task: string | null;
+  readonly completedAt: string | null;
+  readonly verdict: string | null;
+  readonly stalled: boolean;
 }
 
 function toAgentDispatchRow(row: Record<string, unknown>): AgentDispatchRow {
@@ -41,7 +59,43 @@ function toAgentDispatchRow(row: Record<string, unknown>): AgentDispatchRow {
     running: pickBool(row, ['running']) ?? false,
     resolvedStatus: pickString(row, ['resolved_status']),
     endedAt: pickString(row, ['ended_at']),
+    // WP-CCD (item 3).
+    source: pickString(row, ['source']),
+    agentName: pickString(row, ['agent']),
+    agentSlug: pickString(row, ['agent_slug']),
+    wpId: pickString(row, ['wp_id']),
+    task: pickString(row, ['task']),
+    completedAt: pickString(row, ['completed_at']),
+    verdict: pickString(row, ['verdict']),
+    stalled: pickBool(row, ['stalled']) ?? false,
   };
+}
+
+/** WP-CCD (item 3): the real identity a "live now" strip should GROUP a dispatch by — a run-log
+ *  row's own agent display name (a Forge Boss) when present, otherwise the pre-existing
+ *  chat-tool-use `subagentType` (a Claude Code Agent-tool subagent type). The two are genuinely
+ *  different concepts and are never merged into one group — this only ensures a run-log row (whose
+ *  `subagentType` is honestly empty, since it never went through the Agent tool at all) still gets
+ *  a real, non-empty group key instead of silently collapsing into the empty-string bucket. */
+export function dispatchGroupKey(row: AgentDispatchRow): string {
+  return row.agentName ?? (row.subagentType !== '' ? row.subagentType : 'agent');
+}
+
+/** The real display label for one dispatch row — same identity `dispatchGroupKey` groups by. */
+export function dispatchLabel(row: AgentDispatchRow): string {
+  return dispatchGroupKey(row);
+}
+
+/** WP-CCD (item 3): the readable description for one dispatch — a run-log row's own real `task`
+ *  text beats the pre-existing chat-tool-use `description`, falling back to it exactly as before. */
+export function dispatchDescription(row: AgentDispatchRow): string | null {
+  return row.task ?? row.description;
+}
+
+/** WP-CCD (item 3): the real end time for one dispatch — a run-log row's own `completedAt` beats
+ *  the pre-existing chat-tool-use `endedAt`, falling back to it exactly as before. */
+export function dispatchEndedAt(row: AgentDispatchRow): string | null {
+  return row.completedAt ?? row.endedAt;
 }
 
 /** Maps `GET /api/agent-dispatches`'s real response 1:1 — a missing/absent `dispatches` field

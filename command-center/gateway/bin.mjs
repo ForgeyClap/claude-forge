@@ -103,4 +103,12 @@ server.listen(PORT, HOST, () => {
   } catch (err) {
     console.error('Forge Command Center gateway: ask boot scan failed (server stays up):', err && err.stack ? err.stack : err);
   }
+  // v2.9.0 WP-DA: bring the owner's Discord bot back by itself (after a reboot, or after this gateway
+  // was restarted by the supervisor, whose drain stops the bot). Off paths are explained in the log and
+  // in GET /api/discord/status; see discord-autostart.mjs for the exact rule. Never blocks startup and
+  // never takes the gateway down. A temp/test gateway sets CC_DISCORD_AUTOSTART=off.
+  import('./src/discord-autostart.mjs')
+    .then((m) => m.autostartDiscordOnBoot())
+    .then((r) => console.log('[discord-autostart] ' + r.outcome + ': ' + r.detail))
+    .catch((err) => console.error('Forge Command Center gateway: Discord autostart failed (server stays up):', err && err.message ? err.message : err));
 });

@@ -475,10 +475,13 @@ function rankByWorkRecency(root, ranked, opts) {
  *  `.claude/FORGE_SNAPSHOT.md` named `.claude/forge-runs/doctor-selfcheck-2480/` as the latest run and told
  *  every resuming session "_No done-type events found in the latest run._" while 30 sibling run dirs held a
  *  full night of work. That is worse than context loss: the file a session reads back after compaction was
- *  actively misleading, which the project's honesty rule forbids. And it recurs BY DESIGN — forge-doctor.cjs
- *  ::strictEventCheck writes `doctor-selfcheck-<pid>/events.jsonl` (one `agent_progress` event, no run.json)
- *  on every single doctor invocation and its rmSync cleanup can lose the race, leaving a brand-new,
- *  newest-by-mtime, work-less run dir behind.
+ *  actively misleading, which the project's honesty rule forbids. And it recurred BY DESIGN — forge-doctor.cjs
+ *  ::strictEventCheck used to write `doctor-selfcheck-<pid>/events.jsonl` (one `agent_progress` event, no
+ *  run.json) on every single doctor invocation, and its rmSync cleanup could lose the race, leaving a
+ *  brand-new, newest-by-mtime, work-less run dir behind (v2.9.0 WP-CC0 later moved that self-check into an
+ *  OS-tmp fixture so it no longer touches a real project's forge-runs/ at all — see strictEventCheck's own
+ *  header comment — but the CRITERION below is content-based precisely so it keeps holding for whatever
+ *  the NEXT throwaway/self-test tool turns out to be, not just this one fixed case).
  *
  *  CRITERION — the newest run that carries >=1 WORK_EVENT_TYPES event AND does not declare itself synthetic.
  *  "Newest" is measured by the run's last real WORK EVENT, not by file mtime (W1a — see rankByWorkRecency

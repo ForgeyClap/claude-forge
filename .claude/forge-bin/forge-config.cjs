@@ -97,7 +97,7 @@ const VERB_BOOL = { aanzetten: 'aan', inschakelen: 'aan', activeren: 'aan', uitz
 // SAFE value — bool false, an enum's first off-like word below, else its default. FAILSAFE_FLAGGED is the last resort
 // when even the schema is unreadable; forge-config.test.cjs pins it to the schema's flagged keys.
 const SAFE_ENUM_WORDS = ['off', 'report', 'on-request'];
-const FAILSAFE_FLAGGED = { 'usage-guard': false, 'codex-review': 'off', nvidia: false, portfolio: false, mcp: false, paperclip: false, cleanup: 'report' };
+const FAILSAFE_FLAGGED = { 'usage-guard': false, 'codex-review': 'off', nvidia: false, portfolio: false, mcp: false, paperclip: false, cleanup: 'report', 'discord-autostart': false };
 
 const hasOwn = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -1060,21 +1060,21 @@ function reset(opts) {
 // this landed; move it there with the next edit of that file.
 const BRIDGE_TEXT = {
   en: {
-    differs: (key, pretty, legacy, now) => 'Note: ' + pretty + ' says ' + legacy + ', but ' + key + ' is ' + now + '. Older parts of Forge (the dashboard, /forge) follow that file. Make them agree with: /forge config set ' + key + ' ' + now,
+    differs: (key, pretty, legacy, now) => 'Note: ' + pretty + ' says ' + legacy + ', but ' + key + ' is ' + now + '. Older parts of Forge (e.g. /forge itself) follow that file directly. Make them agree with: /forge config set ' + key + ' ' + now,
     marker: (key, marker) => 'Note: ' + marker + ' exists and forces ECC test mode ON for older parts of Forge, while ' + key + ' is off. Delete that file, or turn the setting on: /forge config set ' + key + ' on',
     unreadable: (key, pretty, msg) => 'Note: ' + pretty + ' could not be read (' + msg + '), so it was not compared with ' + key + '.',
     failed: (key, pretty, msg) => key + ' was saved, but ' + pretty + ' could not be updated (' + msg + '). Run the same command again.',
     unset: 'off (not set)',
   },
   nl: {
-    differs: (key, pretty, legacy, now) => 'Let op: ' + pretty + ' zegt ' + legacy + ', maar ' + key + ' staat op ' + now + '. Oudere onderdelen van Forge (het dashboard, /forge) volgen dat bestand. Zet ze gelijk met: /forge config set ' + key + ' ' + now,
+    differs: (key, pretty, legacy, now) => 'Let op: ' + pretty + ' zegt ' + legacy + ', maar ' + key + ' staat op ' + now + '. Oudere onderdelen van Forge (bijv. /forge zelf) volgen dat bestand rechtstreeks. Zet ze gelijk met: /forge config set ' + key + ' ' + now,
     marker: (key, marker) => 'Let op: ' + marker + ' bestaat en zet de ECC-testmodus voor oudere onderdelen van Forge altijd AAN, terwijl ' + key + ' op uit staat. Verwijder dat bestand, of zet de instelling aan: /forge config set ' + key + ' aan',
     unreadable: (key, pretty, msg) => 'Let op: ' + pretty + ' is niet leesbaar (' + msg + '), dus niet vergeleken met ' + key + '.',
     failed: (key, pretty, msg) => key + ' is opgeslagen, maar ' + pretty + ' kon niet worden bijgewerkt (' + msg + '). Voer hetzelfde commando nog eens uit.',
     unset: 'uit (niet ingesteld)',
   },
 };
-const BRIDGE_MARKERS = { 'ecc-full-test': ['.claude', 'ECC_TEST_MODE.md'] }; // its presence forces the legacy reader ON (server.cjs eccMode)
+const BRIDGE_MARKERS = { 'ecc-full-test': ['.claude', 'ECC_TEST_MODE.md'] }; // its presence forces ECC-test-mode readers ON — the same precedence the now-removed server.cjs's eccMode() originally implemented (v2.9.0: that per-project dashboard is gone, but the marker-file convention itself is unrelated to which dashboard reads it)
 function bridgeOf(key, schema, P, opts) {
   const spec = schema.settings[key];
   if (!spec || spec.type !== 'bool' || typeof spec.bridge !== 'string') return null;
@@ -1102,7 +1102,7 @@ function bridgeStatus(key, schema, P, opts, value, lang) {
   let cur;
   try { cur = readBridge(b, lang, P); }
   catch (e) { return { file_pretty: b.pretty, field: b.field, legacy: null, marker: false, agrees: null, notes: [T.unreadable(key, b.pretty, e.message)] }; }
-  const legacyOn = cur.raw === 'on' || cur.marker; // exactly what forge-dashboard/server.cjs eccMode() concludes
+  const legacyOn = cur.raw === 'on' || cur.marker; // same field/marker precedence the now-removed server.cjs's eccMode() originally concluded (v2.9.0: that function no longer exists, but the bridge file's own precedence is unchanged)
   const agrees = legacyOn === (value === true);
   const now = shortWord(schema.settings[key], value, lang);
   let notes = [];

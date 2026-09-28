@@ -8,7 +8,7 @@
  *      forge-manifest.cjs::DONE_EVENT_TYPES/FAILED_EVENT_TYPES (L65/66) and forge-briefing.cjs::
  *      RAN_EVENT_TYPES/BLOCKED_EVENT_TYPES (L62/66) both already consume them. Under STRICT mode (the
  *      default) the whole manifest/briefing chain could therefore never receive a single real line.
- *      Registered here per the 3-place discipline + a CONTENT-ORACLE honesty gate on the pass side.
+ *      Registered here per the event-registration discipline + a CONTENT-ORACLE honesty gate on the pass side.
  *  (b) `verify-boss` (a REAL agent file, .claude/agents/verify-boss.md) could not log ANY working event:
  *      log-event.cjs only accepted the 12 permanent Bosses from config/agents/agent-registry.json plus
  *      GENERIC_AGENTS. The independent second witness literally could not record its own verdict. Six
@@ -22,9 +22,15 @@
  * PROOF STYLE (mirrors forge-v9-events.test.cjs / forge-tool-index.test.cjs section 6): place 1 is proven
  * by REALLY spawning the log-event.cjs CLI (it resolves its CLAUDE_DIR from its own __dirname and cannot be
  * redirected, so a throwaway run id under the REAL .claude/forge-runs/ is used and removed in a finally);
- * place 2 by direct membership checks against forge-verify.cjs's exported Sets; place 3 by parsing the real
- * shipped app.js source into its actual taskStatus() bucket lists (comment lines stripped, so a mention in
- * a comment can never fake a pass — the "tiebreak green" trap).
+ * place 2 by direct membership checks against forge-verify.cjs's exported Sets.
+ *
+ * v2.9.0 (WP-N1, 2026-09-27): a 3rd place existed here at the time this file was written — parsing the
+ * real shipped forge-dashboard/app.js source into its actual taskStatus() bucket lists (comment lines
+ * stripped, so a mention in a comment could never fake a pass — the "tiebreak green" trap), plus one
+ * panels.js-specific assertion unrelated to the registration discipline (actTag() labeling config_changed).
+ * app.js/panels.js and the rest of the retired per-project Control Center's static UI were REMOVED from
+ * the template in v2.9.0; every assertion below that read either file was removed with them. The
+ * remaining 2-place discipline (log-event.cjs + forge-verify.cjs) is unchanged and still fully enforced.
  */
 const fs = require('fs');
 const path = require('path');
@@ -40,7 +46,6 @@ function t(name, fn) {
 const ROOT = path.resolve(__dirname, '..', '..');
 const CLAUDE = path.join(ROOT, '.claude');
 const LOG_EVENT = path.join(CLAUDE, 'forge-dashboard', 'log-event.cjs');
-const APP_JS = path.join(CLAUDE, 'forge-dashboard', 'app.js');
 const AGENTS_DIR = path.join(CLAUDE, 'agents');
 const RUN_ID = 'event-wiring-test-' + process.pid + '-' + Date.now();
 const RUN_DIR = path.join(CLAUDE, 'forge-runs', RUN_ID);
@@ -63,19 +68,6 @@ function literals(text) {
   while ((m = re.exec(text)) !== null) out.add(m[1] !== undefined ? m[1] : m[2]);
   return out;
 }
-/** bucketBodies(appSrc) -> [{bucket, members:Set}] — the REAL taskStatus() bucket lists of app.js, in
- *  source order, with comment lines stripped first. A literal that only appears in a comment is therefore
- *  NOT a member: this is what stops a comment mention from faking the 3rd registration place. */
-function bucketBodies(src) {
-  const parts = src.split(/\]\.includes\(t\)\)\s*return\s*'(\w+)';/);
-  const out = [];
-  for (let i = 0; i + 1 < parts.length; i += 2) {
-    const chunk = parts[i];
-    const idx = chunk.lastIndexOf('if ([');
-    out.push({ bucket: parts[i + 1], members: literals(stripComments(idx >= 0 ? chunk.slice(idx + 5) : chunk)) });
-  }
-  return out;
-}
 function objectBody(src, name) {
   const m = src.match(new RegExp('const ' + name + '\\s*=\\s*\\{([\\s\\S]*?)\\n\\s*\\};'));
   return m ? stripComments(m[1]) : null;
@@ -89,9 +81,6 @@ function parseFrontmatterName(text) {
 
 console.log('forge-event-wiring tests (wp_completed/wp_failed · project-agent logging · agent_model_used)');
 
-const appSrc = fs.readFileSync(APP_JS, 'utf8');
-const buckets = bucketBodies(appSrc);
-const bucketHas = (name) => buckets.filter((b) => b.members.has(name)).map((b) => b.bucket);
 const verify = require('./forge-verify.cjs');
 
 try {
@@ -170,25 +159,6 @@ try {
     const body = objectBody(src, 'TASK_PAIRS');
     assert.ok(body, 'could not locate TASK_PAIRS in forge-verify.cjs');
     assert.ok(/wp_resumed:\s*\[[^\]]*'wp_completed'[^\]]*'wp_failed'[^\]]*\]/.test(body), 'wp_resumed is not paired with wp_completed/wp_failed');
-  });
-
-  console.log('\n(a4) forge-dashboard/app.js classification (PLACE 3, comment-stripped)');
-  t('app.js taskStatus() puts wp_completed in a done bucket and nowhere else', () => {
-    assert.deepStrictEqual(bucketHas('wp_completed'), ['done'], 'buckets containing wp_completed: ' + JSON.stringify(bucketHas('wp_completed')));
-  });
-  t('app.js taskStatus() puts wp_failed in the failed bucket and nowhere else', () => {
-    assert.deepStrictEqual(bucketHas('wp_failed'), ['failed'], 'buckets containing wp_failed: ' + JSON.stringify(bucketHas('wp_failed')));
-  });
-  t('app.js SYNTH fallback map has entries for wp_completed and wp_failed', () => {
-    const synth = objectBody(appSrc, 'SYNTH');
-    assert.ok(synth, 'could not locate the SYNTH map in app.js');
-    assert.ok(/wp_completed:\s*'[a-z-]+'/.test(synth), 'wp_completed missing from SYNTH');
-    assert.ok(/wp_failed:\s*'[a-z-]+'/.test(synth), 'wp_failed missing from SYNTH');
-  });
-  t('app.js TASK_PAIRS mirrors forge-verify.cjs for wp_resumed', () => {
-    const body = objectBody(appSrc, 'TASK_PAIRS');
-    assert.ok(body, 'could not locate TASK_PAIRS in app.js');
-    assert.ok(/wp_resumed:\s*\[[^\]]*'wp_completed'[^\]]*'wp_failed'[^\]]*\]/.test(body), 'app.js TASK_PAIRS does not pair wp_resumed');
   });
 
   console.log('\n(a5) the consumers that were dead before this fix can now actually be fed');
@@ -307,19 +277,12 @@ try {
     assert.ok(/unregistered agent/.test(err), 'refusal must cite the unregistered agent, got: ' + err);
   });
 
-  console.log('\n(c2) agent_model_used — places 2 and 3');
+  console.log('\n(c2) agent_model_used — place 2 (forge-verify.cjs)');
   t('forge-verify classifies agent_model_used as terminal/done and nothing else', () => {
     assert.ok(verify.TERMINAL_TYPES.has('agent_model_used'), 'not in TERMINAL_TYPES');
     assert.strictEqual(verify.taskStatus({ event_type: 'agent_model_used' }), 'done');
     assert.ok(!verify.FAILED_TYPES.has('agent_model_used'), 'must not be a failure');
     assert.ok(!verify.BACKBONE.has('agent_model_used'), 'a per-agent fact is not a run-level backbone milestone');
-  });
-  t('app.js taskStatus() puts agent_model_used in a done bucket and nowhere else', () => {
-    assert.deepStrictEqual(bucketHas('agent_model_used'), ['done'], 'buckets containing agent_model_used: ' + JSON.stringify(bucketHas('agent_model_used')));
-  });
-  t('app.js SYNTH fallback map has an entry for agent_model_used', () => {
-    const synth = objectBody(appSrc, 'SYNTH');
-    assert.ok(synth && /agent_model_used:\s*'[a-z-]+'/.test(synth), 'agent_model_used missing from the SYNTH fallback map');
   });
   t('FORGE_MODEL_ROUTING.json _doc names the event it promises, so the promise is checkable', () => {
     const routing = JSON.parse(fs.readFileSync(path.join(CLAUDE, 'FORGE_MODEL_ROUTING.json'), 'utf8'));
@@ -349,7 +312,7 @@ try {
   });
 
   // =====================================================================================================
-  console.log('\n(e) config_changed (v2.7.0, forge-config.cjs diff --run) — writer, verify, app.js, panels.js, doctor, contract');
+  console.log('\n(e) config_changed (v2.7.0, forge-config.cjs diff --run) — writer, verify, doctor, contract');
   // =====================================================================================================
   t('config_changed is ACCEPTED by the real writer (exit 0) and lands without an UNKNOWN-TYPE stamp', () => {
     const r = log('config_changed', { agent: 'orchestrator', role: 'lead', runtime: 'internal', note: 'council: auto -> off', changed: [{ key: 'council', from: 'auto', to: 'off', source: 'project' }], count: 1 });
@@ -363,22 +326,6 @@ try {
   t('forge-verify classifies config_changed as terminal/done and nothing else', () => {
     assert.ok(verify.TERMINAL_TYPES.has('config_changed'), 'not in TERMINAL_TYPES');
     assert.ok(!verify.FAILED_TYPES.has('config_changed') && !verify.RUNNING_TYPES.has('config_changed'), 'must be neither failed nor running');
-  });
-  t('app.js taskStatus() puts config_changed in a done bucket and nowhere else', () => {
-    assert.deepStrictEqual(bucketHas('config_changed'), ['done'], 'buckets containing config_changed: ' + JSON.stringify(bucketHas('config_changed')));
-  });
-  t('app.js SYNTH fallback map has an entry for config_changed', () => {
-    const synth = objectBody(appSrc, 'SYNTH');
-    assert.ok(synth && /config_changed:\s*'[a-z-]+'/.test(synth), 'config_changed missing from the SYNTH fallback map');
-  });
-  t('panels.js actTag() really labels config_changed "config" (the shipped function, evaluated)', () => {
-    const src = fs.readFileSync(path.join(CLAUDE, 'forge-dashboard', 'panels.js'), 'utf8');
-    const start = src.indexOf('function actTag(');
-    const end = src.indexOf('function actMsg(', start);
-    assert.ok(start >= 0 && end > start, 'could not locate actTag() in panels.js');
-    const actTag = new Function(src.slice(start, end) + ';return actTag;')();
-    assert.strictEqual(actTag({ event_type: 'config_changed' }), 'config');
-    assert.strictEqual(actTag({ event_type: 'owner_prefs_loaded' }), 'prefs', 'the neighbouring ECHO label must be unchanged');
   });
   t('forge-doctor.cjs::extractKnownEventTypesFromSource() sees config_changed (the ENFORCED unregistered_event gate)', () => {
     const doctor = require('./forge-doctor.cjs');
@@ -394,7 +341,7 @@ try {
   console.log('\n(f) review_started/review_completed TASK_PAIRS pairing (2026-09-24, loop wp-l1)');
   // Real defect: a verify-boss run ended with 2 "open" review_started tasks although both matching
   // review_completed events were logged — see forge-verify.test.cjs RULE 3 for the behavior-level proof.
-  // This section proves the two required registration places stay wired (3-place discipline).
+  // This section proves both required registration places stay wired.
   // =====================================================================================================
   t('forge-verify.cjs TASK_PAIRS pairs review_started with review_completed', () => {
     const src = fs.readFileSync(path.join(__dirname, 'forge-verify.cjs'), 'utf8');
@@ -402,17 +349,9 @@ try {
     assert.ok(body, 'could not locate TASK_PAIRS in forge-verify.cjs');
     assert.ok(/review_started:\s*\[[^\]]*'review_completed'[^\]]*\]/.test(body), 'review_started is not paired with review_completed in forge-verify.cjs');
   });
-  t('app.js TASK_PAIRS mirrors forge-verify.cjs for review_started/review_completed', () => {
-    const body = objectBody(appSrc, 'TASK_PAIRS');
-    assert.ok(body, 'could not locate TASK_PAIRS in app.js');
-    assert.ok(/review_started:\s*\[[^\]]*'review_completed'[^\]]*\]/.test(body), 'app.js TASK_PAIRS does not pair review_started/review_completed');
-  });
   t('review_started stays RUNNING and review_completed stays TERMINAL/done in forge-verify.cjs (pairing did not move their base classification)', () => {
     assert.ok(verify.RUNNING_TYPES.has('review_started'), 'review_started should stay in RUNNING_TYPES');
     assert.ok(verify.TERMINAL_TYPES.has('review_completed'), 'review_completed should stay in TERMINAL_TYPES');
-  });
-  t('app.js taskStatus() still puts review_completed in a done bucket and nowhere else (pairing did not move its base classification)', () => {
-    assert.deepStrictEqual(bucketHas('review_completed'), ['done'], 'buckets containing review_completed: ' + JSON.stringify(bucketHas('review_completed')));
   });
   t('forge-verify.cjs verifyRun() end-to-end: a review_completed with the SAME review_id closes its review_started', () => {
     const tmpRunId = 'event-wiring-review-pair-' + process.pid + '-' + Date.now();

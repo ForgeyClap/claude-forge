@@ -19,7 +19,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { containmentOk, anyContainmentOk } from './security.mjs';
-import { SYNC_SCAN_ROOTS } from './paths.mjs';
+// Codex run B F-12: the DYNAMIC admitted-roots boundary — see admitted-roots.mjs's own header.
+import { getContainmentRoots } from './admitted-roots.mjs';
 // sec-delta F1: this module was the ONE reader that never imported the redaction control.
 //
 // Every sibling reader (events, conversations, exec-bridge, models, capabilities) runs its output
@@ -65,8 +66,61 @@ function readJsonSafe(filePath) {
   }
 }
 
+// WP-CC1 (item 9): mirrors `.claude/forge-bin/forge-manifest.cjs`'s own PURE `projectManifest(wps,
+// events)` (verified by reading that file, ~line 130 for the two event-type sets and ~line 334 for
+// the projection loop) — reimplemented here as a read-only, no-disk-write equivalent (this gateway
+// never writes into a project's `.claude/`, so it can never call the real `reconcile()`, which
+// persists the projected manifest back to disk). Without this, `buildCheckpoints()` below showed
+// the RAW, un-reconciled manifest.json — every work package frozen at its ARM-time `"armed"` status
+// forever, even for a WP that a later `wp_completed`/`check_passed`/`subagent_completed` event
+// (or `wp_failed`/`check_failed`/`subagent_failed`) already proved done or failed.
+const DONE_EVENT_TYPES = new Set(['wp_completed', 'check_passed', 'subagent_completed']);
+const FAILED_EVENT_TYPES = new Set(['wp_failed', 'check_failed', 'subagent_failed']);
+
+// log-event.cjs's own CONTENT ORACLE stamp — a disproven claim is not evidence and must never flip
+// a WP's status, exactly like forge-manifest.cjs's own eventIsDisproven().
+function eventIsDisproven(ev) {
+  return !!(ev && ev._forge_verify && ev._forge_verify.proof_verified === false);
+}
+
+// PURE function of (wps, events) — never mutates its inputs, never writes anything. For each wp,
+// the LAST qualifying event (matching wp_id, not disproven, DONE or FAILED) wins, so a real later
+// retry can flip a WP from failed back to done within the same run. No qualifying event at all
+// leaves the WP's status exactly as the manifest itself recorded it (normally "armed") — the "never
+// fabricate a completed WP" invariant forge-manifest.cjs's own tests already lock down.
+function reconcileManifestReadOnly(wps, events) {
+  if (!Array.isArray(wps)) return wps;
+  return wps.map((wp) => {
+    if (!wp || typeof wp !== 'object' || wp.wp_id == null) return wp;
+    let status = wp.status || 'armed';
+    let lastProof = wp.last_proof != null ? wp.last_proof : null;
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (!ev || typeof ev !== 'object') continue;
+      if (ev.wp_id == null || String(ev.wp_id) !== String(wp.wp_id)) continue;
+      if (eventIsDisproven(ev)) continue;
+      const et = ev.event_type;
+      if (DONE_EVENT_TYPES.has(et)) { status = 'done'; lastProof = { event_type: et, evIdx: i, ts: ev.timestamp || null }; }
+      else if (FAILED_EVENT_TYPES.has(et)) { status = 'failed'; lastProof = { event_type: et, evIdx: i, ts: ev.timestamp || null }; }
+    }
+    return { ...wp, status, last_proof: lastProof };
+  });
+}
+
+function readEventsJsonlSafe(eventsPath) {
+  let raw;
+  try { raw = fs.readFileSync(eventsPath, 'utf8'); } catch { return []; }
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    try { out.push(JSON.parse(s)); } catch { /* malformed line — skip, never crash */ }
+  }
+  return out;
+}
+
 export function buildRecovery(projectPath) {
-  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
+  if (!anyContainmentOk(getContainmentRoots(), projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const capturedAt = new Date();
@@ -127,7 +181,7 @@ export function buildRecovery(projectPath) {
 }
 
 export function buildCheckpoints(projectPath) {
-  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
+  if (!anyContainmentOk(getContainmentRoots(), projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const capturedAt = new Date();
@@ -159,7 +213,26 @@ export function buildCheckpoints(projectPath) {
     if (!containmentOk(runsDir, runDir)) continue; // should be impossible, kept as a hard guard
     const manifest = readJsonSafe(path.join(runDir, 'manifest.json'));
     if (manifest !== null) {
-      runsWithManifest.push({ run_id: runId, manifest_present: true, manifest: redactDeep(manifest) });
+      // WP-CC1 (item 9): reconcile against this SAME run's own events.jsonl before this ever
+      // reaches a client — the raw on-disk manifest.json only ever reflects the moment it was
+      // armed. `manifest_raw_status_counts` is kept alongside for anyone auditing the
+      // reconciliation itself; the primary `manifest` field is now the honest, reconciled view.
+      const events = readEventsJsonlSafe(path.join(runDir, 'events.jsonl'));
+      const reconciled = reconcileManifestReadOnly(manifest, events);
+      const rawStatusCounts = {};
+      if (Array.isArray(manifest)) {
+        for (const wp of manifest) {
+          const s = wp && typeof wp === 'object' && wp.status ? wp.status : 'armed';
+          rawStatusCounts[s] = (rawStatusCounts[s] || 0) + 1;
+        }
+      }
+      runsWithManifest.push({
+        run_id: runId,
+        manifest_present: true,
+        manifest: redactDeep(reconciled),
+        manifest_reconciled: true,
+        manifest_raw_status_counts: rawStatusCounts,
+      });
     }
   }
 

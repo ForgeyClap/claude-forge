@@ -72,10 +72,26 @@ function normalizeForCompare(p) {
   return process.platform === 'win32' ? p.toLowerCase() : p;
 }
 
+// WP-P1 (Forge v2.9.0): exported so other modules (projects.mjs) never have to re-derive the
+// win32 case-insensitivity rule themselves — a plain resolved-path identity check, deliberately
+// NOT the heavier realpath/symlink resolution `validateExtraScanRoot` below applies. That extra
+// rigor exists there because an operator-supplied extra scan root WIDENS a security-relevant trust
+// boundary; comparing a discovered project path against the well-known template-install location
+// (or one candidate path against another) is not a trust-boundary decision, so the lighter,
+// proportionate check already used throughout this file is enough here too.
+export function isSameResolvedPath(a, b) {
+  return normalizeForCompare(path.resolve(a)) === normalizeForCompare(path.resolve(b));
+}
+
 // Resolves symlinks/junctions to their real, on-disk target. Returns null (never throws) when the
 // path cannot be resolved (e.g. a broken/circular link) — treated the same as "does not exist",
 // which is the safe default for a security-relevant check like this one.
-function realpathOrNull(p) {
+// Codex run B F-12 (2026-09-28): exported — projects.mjs/installed-projects.mjs/admitted-roots.mjs
+// all need this SAME real-path primitive to canonicalize a discovered or registered project path
+// before it is ever admitted, so a junction that is lexically inside a scan root but resolves
+// outside it (or a registered path that resolves somewhere entirely different) is judged by where
+// it REALLY lives, never by its typed/linked text alone.
+export function realpathOrNull(p) {
   try {
     return fs.realpathSync.native(p);
   } catch {
@@ -89,6 +105,112 @@ function realpathOrNull(p) {
 // folder while typed, yet resolve to a drive root or a network share) — shared here so both call
 // sites use the exact same rule.
 const UNC_RE = /^[\\/]{2}/;
+
+// Codex run B F-01 (2026-09-28): the same rule, exported for every place that takes a path from a
+// request, a setting or the central project registry. It is a pure text check and must run BEFORE
+// any filesystem call: on Windows even a stat of `\\host\share\...` (or of a device path such as
+// `\\?\UNC\host\share` or `\\.\pipe\x`) can make the OS contact that host and send the user's
+// NTLM credentials.
+export function isNetworkOrDevicePath(p) {
+  return typeof p === 'string' && UNC_RE.test(p);
+}
+
+// CR, LF, NUL and the other control characters never belong in a folder path, and in a value
+// written into a line-based file (.env) they can add a line of their own (Codex run B F-03).
+const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
+export function hasControlChars(p) {
+  return typeof p === 'string' && CONTROL_CHAR_RE.test(p);
+}
+
+// Codex run B F-01 (2026-09-28): a bounded, hop-by-hop safe replacement for
+// fs.realpathSync.native() -- that single native call happily follows an ENTIRE symlink/junction
+// chain (including through a link that targets a network share or a Windows device path) before
+// any caller ever gets a chance to inspect what it is about to touch. This walks the path one
+// component at a time instead: an ordinary (non-link) component is simply appended and lstat'd to
+// confirm it exists; a symlink/junction component has its RAW target text (fs.readlinkSync --
+// never resolved further by the OS) checked with isNetworkOrDevicePath/hasControlChars BEFORE that
+// target is ever joined in and walked into. Only once a whole pass finds zero remaining links does
+// it call fs.realpathSync.native() on the now-proven-link-free path, purely to pick up the
+// OS-canonical case/8.3-name form -- by that point every component has already been lstat'd
+// individually, so that final call has nothing left to traverse.
+//
+// `inputPath` must already be absolute (callers resolve with path.resolve() first, same
+// precondition fs.realpathSync.native() itself has). Returns `{ ok:true, real }` on success, or
+// `{ ok:false, code, error }` on any problem -- including the ordinary "does not exist" case
+// (code 'ENOENT'), which every existing caller already handled as a plain "not found", not a
+// security condition. `code` is `'EUNSAFE_LINK'`/`'EUNSAFE_CHARS'` specifically when a network/
+// device path or a control character was found (in the input itself, or in a link's own target),
+// `'ELOOP'` for a symlink chain longer than MAX_SYMLINK_HOPS (mirrors Node's own ELOOP for a
+// symlink cycle), and the real fs error code otherwise (ENOENT, EACCES, ...).
+const MAX_SYMLINK_HOPS = 40;
+
+export function safeRealpathSync(inputPath) {
+  let current = inputPath;
+  let hops = 0;
+  for (;;) {
+    if (isNetworkOrDevicePath(current)) {
+      return { ok: false, code: 'EUNSAFE_LINK', error: 'that is a network or device location, which is not allowed' };
+    }
+    if (hasControlChars(current)) {
+      return { ok: false, code: 'EUNSAFE_CHARS', error: 'that path contains characters that are not allowed' };
+    }
+
+    const root = path.parse(current).root;
+    const rest = current.slice(root.length);
+    const segments = rest.length > 0 ? rest.split(path.sep).filter((s) => s.length > 0) : [];
+    let accum = root;
+    let substituted = false;
+
+    for (let i = 0; i < segments.length; i += 1) {
+      accum = path.join(accum, segments[i]);
+      let lst;
+      try {
+        lst = fs.lstatSync(accum);
+      } catch (err) {
+        return { ok: false, code: (err && err.code) || 'ENOENT', error: err && err.message ? err.message : String(err) };
+      }
+      if (!lst.isSymbolicLink()) continue;
+
+      hops += 1;
+      if (hops > MAX_SYMLINK_HOPS) {
+        return { ok: false, code: 'ELOOP', error: 'too many levels of symbolic links' };
+      }
+      let target;
+      try {
+        target = fs.readlinkSync(accum);
+      } catch (err) {
+        return { ok: false, code: (err && err.code) || 'EIO', error: err && err.message ? err.message : String(err) };
+      }
+      if (isNetworkOrDevicePath(target)) {
+        return { ok: false, code: 'EUNSAFE_LINK', error: `"${accum}" links to a network or device location, which is not allowed` };
+      }
+      if (hasControlChars(target)) {
+        return { ok: false, code: 'EUNSAFE_CHARS', error: `"${accum}" links to a path with characters that are not allowed` };
+      }
+      const targetAbs = path.isAbsolute(target) ? path.resolve(target) : path.resolve(path.dirname(accum), target);
+      const remaining = segments.slice(i + 1);
+      current = remaining.length > 0 ? path.join(targetAbs, ...remaining) : targetAbs;
+      substituted = true;
+      break;
+    }
+
+    if (!substituted) {
+      try {
+        return { ok: true, real: fs.realpathSync.native(accum) };
+      } catch {
+        // Every component above was already proven to exist and be link-free -- this can only
+        // fail for a genuinely transient reason (e.g. removed between the loop and here). Fall
+        // back to the already-verified `accum` rather than reporting a confusing error for a path
+        // this function itself just finished confirming is real.
+        return { ok: true, real: accum };
+      }
+    }
+    // else: loop again from the top with the substituted `current` -- re-checks it (and every one
+    // of ITS OWN ancestors) from scratch, so a target that is itself another unsafe link is caught
+    // exactly the same way, however many hops deep.
+  }
+}
+
 function isDriveRoot(p) {
   return path.parse(p).root === p;
 }
@@ -193,6 +315,18 @@ export const SYNC_SCAN_ROOTS = Array.from(new Set(
     .map((p) => path.resolve(p)),
 ));
 
+// Codex run B F-12 (2026-09-28): a discovered/registered project's own REAL path must be checked
+// for containment against the REAL (symlink/junction-resolved) form of every scan root, so a scan
+// root that is itself a link, or a candidate project path resolving somewhere other than where it
+// lexically appears to be, is judged against where things REALLY are on disk, never against
+// typed/linked text alone (the lexical-only gap Codex's F-12 finding names). Deliberately NOT a
+// precomputed constant here: SYNC_SCAN_ROOTS above is a real, mutable exported Array, and at least
+// one existing test (config.test.mjs's pushScanRoot()/popScanRoot()) deliberately mutates it live to
+// widen containment for one test — a snapshot taken once at import time would stop seeing that
+// mutation. projects.mjs's own activeScanRootsReal() and admitted-roots.mjs's getContainmentRoots()
+// each recompute the real form of the (possibly test-overridden, possibly live-mutated) scan roots
+// fresh on every call instead — see either one's own header for the full reasoning.
+
 // WP3 additions. These three are genuinely GLOBAL to *this gateway's own* install (not scoped by
 // a `?project=` query) — matching the literal T3.6/T3.9 endpoint shapes, which carry no project
 // param: the model-capability matrix + NVIDIA provider CLI live under THIS project's own
@@ -209,6 +343,9 @@ export const FORGE_USAGE_PRESSURE_FILE = path.join(os.homedir(), '.claude', 'FOR
 // are actually PAUSED right now, which the pressure file does not). Same account-wide, no
 // `?project=` shape.
 export const FORGE_USAGE_GUARD_STATE_FILE = path.join(os.homedir(), '.claude', 'FORGE_USAGE_GUARD_STATE.json');
+// The guard's watcher writes its pid here (usage-guard.cjs PID_FILE: {pid, startedAt, script}, or a bare
+// number from older builds). Read only, to tell a running watcher from a guard whose state merely says "ok".
+export const FORGE_USAGE_GUARD_PID_FILE = path.join(os.homedir(), '.claude', 'forge-usage-guard.pid');
 
 // WP4 addition: the conversation store lives ONLY under command-center/.data/ (D2 "write boundary"
 // hard rule — the gateway never writes into .claude/). `.data/` is already `.gitignore`d.
@@ -240,3 +377,23 @@ export const DISCORD_ENV_EXAMPLE_FILE = path.join(DISCORD_DIR, '.env.example');
 export const DISCORD_DATA_DIR = path.join(COMMAND_CENTER_DATA_DIR, 'discord');
 export const DISCORD_STATE_DIR = path.join(DISCORD_DATA_DIR, 'state');
 export const DISCORD_LOG_FILE = path.join(DISCORD_DATA_DIR, 'discord-bot.log');
+
+// WP-P1 (Forge v2.9.0, "the Command Center works after a fresh install"): the installer copies
+// this whole command-center/ next to a fresh ~/.claude/forge/template/.claude/ — i.e. on a
+// centrally-installed machine THIS gateway's own COMMAND_CENTER_DIR/PROJECT_ROOT (computed above,
+// purely from this file's own on-disk location — never from request input) IS
+// FORGE_TEMPLATE_DIR. That template host is a Forge install artifact, never a real project: see
+// projects.mjs's computeProjectsAsync() for where every discovery source (scan roots AND the
+// installer's own recorded list below) is filtered against this exact path before a project list
+// is ever built, so it can never appear in `GET /api/projects` and therefore never be chosen as a
+// default project either. On a normal source/dev checkout (this repo) PROJECT_ROOT is never this
+// path, so the filter is a guaranteed no-op there — existing behaviour is unchanged.
+export const FORGE_HOME_DIR = path.join(os.homedir(), '.claude', 'forge');
+export const FORGE_TEMPLATE_DIR = path.join(FORGE_HOME_DIR, 'template');
+
+// WP-P1: the installer's own append-only record of every real project it has set up on this
+// machine — `{ "schema": 1, "projects": ["<absolute path>", ...] }`. Read defensively by
+// installed-projects.mjs (this constant only names WHERE; that module owns the actual read/parse/
+// validate). A missing file (every dev/source checkout, and any machine whose installer predates
+// this WP or has simply never recorded a project yet) is the ordinary case, not an error.
+export const FORGE_INSTALLED_PROJECTS_FILE = path.join(FORGE_HOME_DIR, 'projects.json');

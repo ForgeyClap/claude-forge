@@ -6,32 +6,25 @@ $c = Get-Command node -ErrorAction SilentlyContinue
 if ($c) { $node = $c.Source }
 elseif (Test-Path 'C:\Program Files\nodejs\node.exe') { $node = 'C:\Program Files\nodejs\node.exe' }
 else {
-  Write-Host 'Node.js LTS is required for Forge Control Center. Install Node.js LTS, close and reopen your terminal, then run node -v.'
+  Write-Host 'Node.js LTS is required to run Forge. Install Node.js LTS, close and reopen your terminal, then run node -v.'
   exit 1
 }
 $dash = "$PSScriptRoot\..\forge-dashboard"
-$ccGateway = "$PSScriptRoot\..\..\command-center\gateway\bin.mjs"
-$ccDistIndex = "$PSScriptRoot\..\..\command-center\dashboard\dist\index.html"
 $cmd = if ($args.Count -ge 1) { $args[0] } else { 'help' }
 
-# WP7d: if THIS project has a Command Center (command-center/gateway/bin.mjs), it is now the real
-# dashboard — start it (port 4100) instead of the old Control Center. If it exists but
-# dashboard/dist hasn't been built yet, say so honestly rather than failing silently. If
-# command-center/ doesn't exist at all (most projects today, no command-center yet), fall back to
-# the original per-project Control Center exactly as before. This fallback is MANDATORY: this
-# wrapper syncs to every other Forge project via the template, most of which have no
-# command-center. The old Control Center stays reachable regardless via 'legacy-dashboard'.
+# WP-P2 (v2.9.0, "forge dashboard works after a fresh install, with no manual steps"): ALL the decision
+# logic (already-running reuse, project-local vs. central lookup, on-demand build, supervisor-vs-bin.mjs
+# entry) now lives in forge-cc-launch.cjs — exactly like every other non-trivial subcommand below already
+# delegates to its own tool (forge-runinfo.cjs, forge-config.cjs, ...). This wrapper just resolves node and
+# hands off; see that file's own header comment for the full behaviour and exit-code contract.
 function Start-DashboardOrFallback {
-  if (Test-Path $ccGateway) {
-    if (Test-Path $ccDistIndex) {
-      & $node $ccGateway
-    } else {
-      Write-Host 'Command Center found but not built yet. Run: cd command-center/dashboard && npm install && npm run build'
-    }
-  } else {
-    # AUDIT G7 (2026-08-06): auto-fallback naar de retired server.cjs verwijderd (forge-canon.json)
-    Write-Host 'Forge Command Center niet aanwezig in dit project. De oude per-project Control Center (server.cjs) is RETIRED en start NOOIT automatisch (forge-canon.json). Vraag de owner expliciet om een legacy dashboard, of gebruik het centrale Command Center op 127.0.0.1:4100.'
-  }
+  & $node "$PSScriptRoot\forge-cc-launch.cjs"
+}
+# v2.9.0 (WP-N1): the old per-project Control Center (server.cjs + its static UI) was REMOVED from
+# .claude/forge-dashboard/ - there is nothing left to start here. log-event.cjs is the only file that
+# remains in that folder, and it is not a dashboard.
+function Show-LegacyDashboardRemoved {
+  Write-Host 'De oude per-project Forge Control Center is verwijderd in v2.9.0. Gebruik "forge dashboard" voor het Forge Command Center (http://127.0.0.1:4100).'
 }
 # Pre-existing bug found+fixed while wiring `learn` (2026-07-18): when exactly ONE trailing arg exists,
 # `$args[1..($args.Count-1)]` is a 1-element array, but PowerShell's `if`-as-expression enumerates a
@@ -47,12 +40,11 @@ $rest = if ($args.Count -gt 1) { , $args[1..($args.Count - 1)] } else { @() }
 switch ($cmd) {
   'dashboard'   { Start-DashboardOrFallback }
   'start'       { Start-DashboardOrFallback }
-  'legacy-dashboard' { & $node "$dash\server.cjs" }
-  'status'      { & $node "$dash\server.cjs" --status }
-  'runs'        { & $node "$dash\server.cjs" --runs }
-  'open-report' { & $node "$dash\server.cjs" --open-report }
-  'health'      { & $node "$dash\server.cjs" --health }
-  'assign-only' { & $node "$dash\server.cjs" --assign-only }
+  'legacy-dashboard' { Show-LegacyDashboardRemoved }
+  'status'      { & $node "$PSScriptRoot\forge-runinfo.cjs" status }
+  'runs'        { & $node "$PSScriptRoot\forge-runinfo.cjs" runs }
+  'open-report' { & $node "$PSScriptRoot\forge-runinfo.cjs" open-report }
+  'health'      { & $node "$PSScriptRoot\forge-runinfo.cjs" status }
   'log-event'   {
     # Windows PowerShell 5.1 strips the quotes off a JSON argument when it calls a native executable, so
     # `.\forge.ps1 log-event <run> <type> '{"note":"x"}'` reached log-event.cjs as {note:x} and failed with
@@ -87,7 +79,7 @@ switch ($cmd) {
   # Prompt Master dispatch-prompt linter, advisory only (forge-promptcheck.cjs); the ask subcommand scores
   # the raw owner request before Forge plans anything. Usage: .\forge.ps1 promptcheck <promptFile|-> [args]
   'promptcheck' { & $node "$PSScriptRoot\forge-promptcheck.cjs" @rest }
-  default       { Write-Host 'Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn | config | sweep | promptcheck' }
+  default       { Write-Host 'Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | log-event | resume | learn | config | sweep | promptcheck' }
 }
 # WP-S4 (v2.8.0 laptop-audit Part V-F): `powershell -File forge.ps1 ...` does NOT propagate $LASTEXITCODE to
 # the process's own exit code on its own — PowerShell 5.1 silently returns 0 no matter what the last native

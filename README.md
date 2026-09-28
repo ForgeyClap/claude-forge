@@ -86,6 +86,11 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/For
 | Verify | `node .claude\forge-bin\forge-doctor.cjs` → `⇒ ALL GREEN` | `node .claude/forge-bin/forge-doctor.cjs` → `⇒ ALL GREEN` |
 | Terminal wrappers | `.claude\forge-bin\*.cmd` (prefer `.cmd`; `.ps1` may be blocked by execution policy) | `bash .claude/forge-bin/*.sh` |
 
+**Then open the dashboard:** from your project run `.claude\forge-bin\forge-dashboard.cmd` (Windows) or
+`bash .claude/forge-bin/forge-dashboard.sh` (macOS/Linux), or double-click
+`.claude\forge-dashboard\start-forge-dashboard.bat`. The Forge Command Center opens on
+http://127.0.0.1:4100. Nothing needs to be built first.
+
 *(The `-ExecutionPolicy Bypass` prefix is required for `irm | iex` and for blocked `.ps1` files; it applies to that one command only. Never run `install.sh` in PowerShell/cmd.exe or `install.ps1` in bash. The full step-by-step table an AI assistant follows is in [AI-INSTALL.md §2a](AI-INSTALL.md).)*
 
 ### Path C — Manual copy *(no scripts — PARTIAL install)*
@@ -204,8 +209,17 @@ Honest and non-adversarial — only rows that actually ship.
 ## 🆕 What's new in v2.9.0 (see [CHANGELOG.md](CHANGELOG.md) for every release)
 
 <details>
-<summary><b>A fifth safety gate for secrets, an editable dashboard, a Discord setup wizard, a knowledge vault, and a lighter footprint</b> — click to expand</summary>
+<summary><b>The Command Center works right after installing, the old dashboard is gone, a fifth safety gate for secrets, an editable dashboard, a Discord setup wizard, a knowledge vault, and a lighter footprint</b> — click to expand</summary>
 
+- **The Command Center works right after installing.** The installer puts it in one central place
+  (`~/.claude/forge/template/command-center/`) with the dashboard already built, so there is no npm and no
+  build step, and it records each project you install into so the dashboard finds it anywhere. Open it
+  with `forge dashboard` or by double-clicking `.claude\forge-dashboard\start-forge-dashboard.bat`:
+  it reuses a Command Center that is already running and opens on your project. The Discord part installs
+  its own package the first time you connect Discord.
+- **The old per-project Control Center is gone.** `.claude/forge-dashboard/` now holds only the run-event
+  writer, a README and the start script. Upgrading removes the old files only if you never changed them
+  (they go into a dated backup folder).
 - **A fifth gate: `secret-print`.** The safety-stop hook now also asks before a shell command prints
   the contents of a secret file — a `.env` file (except `.env.example`/`.env.sample`/`.env.template`),
   a private key, or a credentials file. The safe way to see just a `.env` file's variable *names*:
@@ -377,15 +391,16 @@ Keys are **optional** — Forge runs fine without any.
 
 The **Forge Command Center** is the dashboard — one local app on `http://127.0.0.1:4100` that auto-discovers your Forge projects and shows strictly per-project data. It is **optional**: Forge works fully without it.
 
-**You never type the setup yourself.** The dashboard ships as source in this repository's `command-center/` folder (the installers do not copy it into your project). Its web page needs a one-time build — the only npm step anywhere in Forge. When an AI assistant installs Forge from a clone, it does that build and starts the dashboard for you ([AI-INSTALL.md §6](AI-INSTALL.md)). After that, `/forge dashboard` in any project checks it and gives you the address. If no dashboard is running, Forge says so in one line and keeps working.
+**You never type the setup yourself.** Both installers put the Command Center in one central place next to Forge's global files (`~/.claude/forge/template/command-center/`), with its web page already built, so there is no build step and no npm. `/forge dashboard` (or double-clicking `start-forge-dashboard.bat` in your project's `.claude\forge-dashboard` folder) finds it, reuses one that is already running, and gives you the address. If it cannot start, Forge says so in one line and keeps working. The Discord part installs its own package the first time you connect Discord; after that the bot starts by itself whenever the Command Center starts (setting `discord-autostart`), unless you switch it off in the dashboard.
 
 <details>
 <summary>What gets run for you (for the curious)</summary>
 
 ```bash
-cd command-center/dashboard && npm install && npm run build   # build the web page once
-cd ../.. && node command-center/gateway/supervisor.mjs        # start it (restarts the gateway if it dies)
-# then http://127.0.0.1:4100 — GET /api/health must answer before anyone calls it "running"
+node .claude/forge-bin/forge-cc-launch.cjs   # what `forge dashboard` runs: checks http://127.0.0.1:4100/api/health first,
+                                             # otherwise starts this project's own or the central Command Center (with its supervisor)
+# the page is served from command-center/dashboard/dist, which ships prebuilt; only when it is missing
+# does Forge build it itself (npm ci, then npm run build, inside command-center/dashboard)
 ```
 
 </details>
@@ -394,7 +409,7 @@ The **Settings** view lists every Forge setting for the active project and, sinc
 
 The gateway is zero-dependency Node and is the **only** layer allowed to spawn the real `claude` CLI. Run events stay per-project: every run writes `.claude/forge-runs/<run_id>/events.jsonl` via `.claude/forge-dashboard/log-event.cjs`, and the Command Center reads those **read-only**. It shows **real activity only** — never fabricated, never shared across projects.
 
-> **The old per-project Control Center is retired.** `.claude/forge-dashboard/server.cjs` still exists and still works on an explicit `legacy dashboard` request, but nothing starts it automatically any more. Its `log-event.cjs` is *not* retired — that remains the run-event writer described above.
+> **The old per-project Control Center (`.claude/forge-dashboard/server.cjs`, ports 3737–3999) was removed in v2.9.0.** Only `log-event.cjs` remains in `.claude/forge-dashboard/` — it stays unchanged as the per-project run-event writer described above.
 
 ---
 
@@ -489,7 +504,7 @@ If Forge saves you time, a star helps others find it.
 ## Requirements
 
 - **[Claude Code](https://claude.com/claude-code)** — Forge is a configuration layer for it. Claude Code needs either a **paid Claude plan** (Pro, Max, Team or Enterprise) or a **Claude Console account with API billing** — the free consumer plan does not include it; see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md).
-- **Node.js 18+** — for Forge's `.cjs` tools (no packages to install). Claude Code itself does not need Node; Forge's doctor tells you when it is missing. **Building the dashboard yourself** needs Node **20.19+ or 22.12+** (its build tool, Vite 7, refuses older versions); the installer ships the tools without that step.
+- **Node.js 18+** — for Forge's `.cjs` tools (no packages to install). Claude Code itself does not need Node; Forge's doctor tells you when it is missing. The dashboard ships already built. Only if you rebuild it from a clone (Forge does that itself when needed) does its build tool, Vite 7, need Node **20.19+ or 22.12+**. The Discord part needs Node **20+**.
 - **Git** — recommended (leak-scan and safe key setup use it), not strictly required.
 
 ---

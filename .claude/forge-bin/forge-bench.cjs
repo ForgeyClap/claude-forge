@@ -37,9 +37,22 @@ const { projectRunState } = require('./forge-run-state.cjs');
 const doctor = require('./forge-doctor.cjs');
 
 // Each case exercises a shipped capability end-to-end and returns true on healthy behavior.
+//
+// JUNK-RUN FIX (v2.9.0 WP-CC0, Command Center audit): the two honesty.* cases below used to spawn THIS
+// project's real log-event.cjs directly against PROJECT_ROOT — writing a real 'bench-canon-<pid>'/
+// 'bench-fake-<pid>' directory straight into the REAL project's .claude/forge-runs/ and relying on a
+// best-effort fs.rmSync to remove it again. On Windows that rm can lose a race (the file the child
+// process just wrote can still be momentarily locked), so a forge-bench run repeated many times over a
+// project's life leaves debris behind every time the race is lost — measured as real litter across
+// multiple projects. Fix: both cases now copy the SAME script bytes (never a reimplementation — see the
+// file header's CONTAMINATION-PROOF note) into a throwaway OS-tmp '.claude/forge-dashboard/log-event.cjs'
+// and run the COPY there, exactly the idiom the 'learning.*' cases below already use for forge-cost.cjs/
+// forge-reflect.cjs. This still proves the real shipped script's real behavior; it just never touches the
+// project being benchmarked, so a lost cleanup race can only litter the OS temp folder, never a real
+// project's forge-runs/.
 const CASES = [
-  { id: 'honesty.canonical-name', cap: 'honesty', fn: () => { const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), 'bench-canon-' + process.pid, 'agent_progress', JSON.stringify({ agent: 'build-boss', note: 'b' })], { encoding: 'utf8' }); const f = path.join(PROJECT_ROOT, '.claude', 'forge-runs', 'bench-canon-' + process.pid, 'events.jsonl'); let ok = false; try { const last = fs.readFileSync(f, 'utf8').trim().split('\n').pop(); ok = JSON.parse(last).agent === 'Build Boss'; } catch {} try { fs.rmSync(path.dirname(f), { recursive: true, force: true }); } catch {} return ok; } },
-  { id: 'honesty.reject-fake-pass', cap: 'honesty', fn: () => { const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), 'bench-fake-' + process.pid, 'check_passed', JSON.stringify({ agent: 'Build Boss', command: 'x', output: 'y', exit_code: 1 })], { encoding: 'utf8' }); try { fs.rmSync(path.join(PROJECT_ROOT, '.claude', 'forge-runs', 'bench-fake-' + process.pid), { recursive: true, force: true }); } catch {} return r.status === 2; } },
+  { id: 'honesty.canonical-name', cap: 'honesty', fn: () => { const os = require('os'); const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-canon-')); try { const cd = path.join(tmp, '.claude'); fs.mkdirSync(path.join(cd, 'forge-dashboard'), { recursive: true }); fs.mkdirSync(path.join(cd, 'config', 'agents'), { recursive: true }); fs.copyFileSync(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), path.join(cd, 'forge-dashboard', 'log-event.cjs')); fs.writeFileSync(path.join(cd, 'config', 'agents', 'agent-registry.json'), JSON.stringify({ agents: { 'build-boss': { name: 'Build Boss' } } })); require('child_process').spawnSync(process.execPath, [path.join(cd, 'forge-dashboard', 'log-event.cjs'), 'bench-canon', 'agent_progress', JSON.stringify({ agent: 'build-boss', note: 'b' })], { encoding: 'utf8' }); const f = path.join(cd, 'forge-runs', 'bench-canon', 'events.jsonl'); let ok = false; try { const last = fs.readFileSync(f, 'utf8').trim().split('\n').pop(); ok = JSON.parse(last).agent === 'Build Boss'; } catch {} return ok; } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} } } },
+  { id: 'honesty.reject-fake-pass', cap: 'honesty', fn: () => { const os = require('os'); const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-fake-')); try { const cd = path.join(tmp, '.claude', 'forge-dashboard'); fs.mkdirSync(cd, { recursive: true }); fs.copyFileSync(path.join(__dirname, '..', 'forge-dashboard', 'log-event.cjs'), path.join(cd, 'log-event.cjs')); const r = require('child_process').spawnSync(process.execPath, [path.join(cd, 'log-event.cjs'), 'bench-fake', 'check_passed', JSON.stringify({ agent: 'Build Boss', command: 'x', output: 'y', exit_code: 1 })], { encoding: 'utf8' }); return r.status === 2; } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} } } },
   { id: 'chain.tamper-evident', cap: 'integrity', fn: () => { const rep = doctor.chainCheck(PROJECT_ROOT); return rep && rep.ok === true; } },
   { id: 'security.rebind-guard', cap: 'security', fn: () => { const rep = doctor.rebindingGuard(PROJECT_ROOT); return rep && rep.ok === true; } },
   { id: 'mcp.tool-surface', cap: 'interop', fn: () => mcp.TOOLS.length === 4 } ,

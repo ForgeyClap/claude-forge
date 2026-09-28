@@ -20,10 +20,12 @@
 import { spawn, execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   DISCORD_DIR, DISCORD_MAIN_JS, DISCORD_ENV_FILE, DISCORD_ENV_EXAMPLE_FILE,
   DISCORD_STATE_DIR, DISCORD_LOG_FILE,
+  isNetworkOrDevicePath, hasControlChars, safeRealpathSync,
 } from './paths.mjs';
 import { redact, redactDeep, createStreamRedactor, DISCORD_BOT_TOKEN_CORE_SOURCE } from './redact.mjs';
 
@@ -56,6 +58,27 @@ export function isValidSnowflake(id) {
   return typeof id === 'string' && SNOWFLAKE_RE.test(id);
 }
 
+// Codex run B F-03 (2026-09-28): a value written via the JSON-quoted form below (needsEnvQuoting/
+// encodeEnvValue) round-trips back to its EXACT original text — including one that contains a
+// literal newline — instead of that newline being read as the start of a brand-new `KEY=...` line.
+// A value that does NOT start-and-end with `"` (every value ever written before this fix, and
+// every ordinary value written after it — see encodeEnvValue's own comment) is returned exactly as
+// before: unmodified, bare text. A value that merely LOOKS quoted but is not valid JSON (e.g. a
+// human hand-typed `"C:\Users\me\My Projects"`, which uses single backslashes, not JSON's `\\`)
+// falls back to the literal raw text, quotes included — identical to this parser's behaviour
+// before this fix, never a new failure mode for an existing hand-edited .env.
+function decodeEnvValue(raw) {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      // Not valid JSON after all -- fall through and treat it as a literal bare value.
+    }
+  }
+  return raw;
+}
+
 // Minimal, read-only .env parser — mirrors command-center/discord/src/config.js's own
 // parseEnvFile() shape (KEY=VALUE, '#'-comments, blank lines skipped) closely enough to read the
 // same file correctly. Deliberately NOT importing the bot's own module graph into the gateway —
@@ -73,9 +96,34 @@ function parseEnvFile(filePath) {
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
     if (eq === -1) continue;
-    out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    out[key] = decodeEnvValue(value);
   }
   return out;
+}
+
+// Codex run B F-03 (2026-09-28): a value written BARE (unquoted) into a line-based `KEY=VALUE`
+// file can smuggle in an entirely new line -- e.g. a projects-dir value of
+// `C:\evil\nRUNNER=claude` (a real newline, not the two characters "\" "n") turns into TWO lines
+// on disk, and the bot's own parser (discord/src/config.js) then reads `RUNNER=claude` as if it
+// were a second, independent setting. The PRIMARY defence is refusing such a value outright before
+// it ever reaches this function (see setProjectsDirSetting's own hasControlChars check) -- this is
+// the DEFENCE IN DEPTH layer: even a value that somehow arrives here already containing a
+// newline/CR/NUL/quote is never written as raw bytes that could start a new line. `needsEnvQuoting`
+// is deliberately narrow (CR, LF, NUL, other control chars, a literal `"`, or leading/trailing
+// whitespace) so every value ever written by this codebase today (a bot token, a snowflake id, an
+// ordinary Windows/POSIX folder path -- none of which contain any of those) is written EXACTLY as
+// before: bare, unquoted, byte-for-byte identical to the pre-fix output.
+function needsEnvQuoting(value) {
+  return /[\r\n\u0000-\u001f\u007f"]/.test(value) || value !== value.trim();
+}
+
+// JSON string syntax already escapes every character that would otherwise corrupt a line-based
+// format (a real newline becomes the two-character sequence `\n`, a `"` becomes `\"`, ...) and
+// JSON.parse reverses it exactly -- reused here rather than hand-rolling a second escaping scheme.
+function encodeEnvValue(value) {
+  return needsEnvQuoting(value) ? JSON.stringify(value) : value;
 }
 
 // WP-v290-B (beginner onboarding, B1): a small, gateway-local merge-writer for discord/.env —
@@ -96,15 +144,23 @@ function mergeEnvText(raw, updates) {
     const key = trimmed.slice(0, eq).trim();
     if (Object.prototype.hasOwnProperty.call(updates, key)) {
       seen.add(key);
-      return `${key}=${updates[key]}`;
+      return `${key}=${encodeEnvValue(String(updates[key]))}`;
     }
     return line;
   });
   for (const [key, value] of Object.entries(updates)) {
-    if (!seen.has(key)) merged.push(`${key}=${value}`);
+    if (!seen.has(key)) merged.push(`${key}=${encodeEnvValue(String(value))}`);
   }
   while (merged.length > 0 && merged[merged.length - 1] === '') merged.pop();
   return merged.length > 0 ? merged.join('\n') + '\n' : '';
+}
+
+// Test-only seam (same `_set*ForTests` / `_xForTests` convention as every other test hook in this
+// file) — lets a test exercise the encode/merge shape directly (including a defence-in-depth
+// injection attempt) without needing to race the full writeEnvUpdates()/setProjectsDirSetting()
+// path, which already refuses such a value before it would ever reach here.
+export function _mergeEnvTextForTests(raw, updates) {
+  return mergeEnvText(raw, updates);
 }
 
 // Codex finding K3-5: writeFileSync(envFilePath, ...) truncates the REAL file first, then writes —
@@ -340,6 +396,13 @@ export function _setDiscordPathsForTests(paths) {
   pathsOverride = paths;
 }
 
+/** The bot's state folder, honoring the test seam above. GET /api/discord/activity
+ *  (discord-activity.mjs) reads from here, so it always reads the same folder GET /api/discord/status
+ *  reports as `state_dir`. */
+export function getDiscordStateDir() {
+  return activePaths().stateDir;
+}
+
 // Test-only seams for spawn/fetch/extra-env, same shape as exec-lifecycle.mjs/supervisor.mjs's own
 // injectable-function conventions — never used in production (a real gateway process always uses
 // the real `spawn`/global `fetch` and no extra env overrides).
@@ -376,6 +439,8 @@ export function _resetDiscordServiceForTests() {
   fetchFnOverride = null;
   extraEnvOverrides = null;
   killFnOverride = null;
+  homeDirOverride = null; // WP-S1
+  projectCountScanBudgetOverride = null; // Codex run B F-04
   childProcess = null;
   childPid = null;
   startedAtIso = null;
@@ -387,6 +452,7 @@ export function _resetDiscordServiceForTests() {
     }
   }
   logStream = null;
+  _resetDiscordDepsInstallStateForTests(); // WP-P1: keep this ONE reset call the full-state reset every test file already relies on
 }
 
 function envExampleKeyNames() {
@@ -415,6 +481,187 @@ async function probeHealth(port) {
 
 function isInstalled() {
   return fs.existsSync(activePaths().mainJs);
+}
+
+// WP-P1 (Forge v2.9.0, "the Command Center works after a fresh install"): command-center/discord/
+// declares discord.js as a real npm dependency (see discord/package.json) but nothing installs it
+// on a fresh machine or a freshly-copied central template install — without this, the very first
+// "Connect Discord" click (connectDiscordService() -> startDiscordService(), below) would fail
+// with a raw "Cannot find module 'discord.js'" the moment the real bot tries to start. This
+// installs it ONCE, automatically, the first time it is actually needed.
+const NPM_INSTALL_TIMEOUT_MS = 180_000; // a real first-time npm install can genuinely take a while
+const NPM_INSTALL_MAX_BUFFER = 10 * 1024 * 1024; // discord.js pulls in enough transitive deps that npm's default 1MB stdout/stderr buffer is not always enough
+
+let npmRunnerOverride = null;
+/** Test-only: replaces the real `execFile` call used to run `npm ci`/`npm install` — mirrors this
+ *  file's own `_setSpawnFnForTests` convention. Never used in production. */
+export function _setNpmInstallRunnerForTests(fn) {
+  npmRunnerOverride = fn;
+}
+
+// At most ONE real npm install may be in flight for this gateway process: two callers that both
+// find deps missing near the same moment (two clicks of "Connect Discord", or the wizard's own
+// status poll racing the connect click) share the SAME in-flight promise rather than each
+// spawning their own `npm ci` against the same node_modules, which would corrupt one another.
+let depsInstallInFlight = null;
+// The last known outcome — kept ONLY so GET /api/discord/status can report an honest phase even
+// to a caller that did not itself trigger the install. Never holds stdout/stderr/paths/secrets,
+// just a short, already-plain-language message.
+let lastDepsInstallOutcome = null; // { ok: boolean, message: string } | null
+
+/** Test-only: fully resets this feature's module state — mirrors `_resetDiscordServiceForTests`. */
+export function _resetDiscordDepsInstallStateForTests() {
+  npmRunnerOverride = null;
+  depsInstallInFlight = null;
+  lastDepsInstallOutcome = null;
+}
+
+function discordDepsInstalled() {
+  try {
+    return fs.existsSync(path.join(activePaths().discordDir, 'node_modules', 'discord.js', 'package.json'));
+  } catch {
+    return false;
+  }
+}
+
+/** `'installed'` | `'installing'` | `'failed'` | `'not-installed'` — GET /api/discord/status's
+ *  own honest, human-readable phase (never a raw boolean the wizard would have to interpret). */
+function discordDepsInstallPhase() {
+  if (depsInstallInFlight) return 'installing';
+  if (discordDepsInstalled()) return 'installed';
+  if (lastDepsInstallOutcome && !lastDepsInstallOutcome.ok) return 'failed';
+  return 'not-installed';
+}
+
+function appendInstallLogBestEffort(logFilePath, text) {
+  try {
+    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+    fs.appendFileSync(logFilePath, text);
+  } catch {
+    // A log problem must never take down the gateway (same stance this file's own bot-log
+    // stream already applies) — the install itself still succeeds or fails on its own merits.
+  }
+}
+
+/** Turns a real npm failure into one honest, plain-language sentence — never tells the user to
+ *  type a command themselves (this whole feature exists so they never have to).
+ *
+ *  `timedOut` is checked FIRST and separately from `rawError`'s own text — a timeout is detected
+ *  structurally (see `runNpmInstallCommand` below: `err.killed`/`err.signal`, exactly the same
+ *  check exec-lifecycle.mjs's own timeout handling already uses), never by pattern-matching
+ *  Node's own timeout error message. Passing an already-humanized string back through a second
+ *  round of pattern-matching here would be a mistake — a message like "the install did not finish
+ *  in time" does not itself contain "ETIMEDOUT", so a naive two-layer humanize would silently fall
+ *  through to the generic fallback and lose the specific reason. Kept as one single layer instead:
+ *  this is the ONLY place raw npm/exec failures become user-facing text. */
+function describeNpmFailure(rawError, { timedOut = false } = {}) {
+  if (timedOut) return 'the install did not finish in time — check your internet connection and try again';
+  const text = typeof rawError === 'string' ? rawError : '';
+  if (/ENOENT/.test(text) || /is not recognized/i.test(text) || /command not found/i.test(text)) {
+    return 'npm was not found on this machine — install Node.js (which includes npm) and try again';
+  }
+  if (/ENOTFOUND|ECONNRESET|EAI_AGAIN|network/i.test(text)) {
+    return 'could not reach the npm registry — check your internet connection and try again';
+  }
+  return 'the automatic install failed — try again in a moment';
+}
+
+// Real-machine finding (WP-P1, reproduced standalone before shipping this): `execFile('npm.cmd',
+// args, ...)` throws a SYNCHRONOUS `spawn EINVAL` on Windows — a `.cmd` file is a shell script the
+// OS cannot CreateProcess directly; Node normally papers over this only when `shell: true` is set,
+// which in turn prints a Node DEP0190 deprecation warning for passing args alongside `shell: true`
+// (real concern in general — an attacker-influenced arg could break out of the shell's own
+// concatenation — but not applicable here since every arg below is a fixed literal, never
+// user/request input). The fix that avoids BOTH problems: spawn the genuinely native `cmd.exe`
+// directly, with `npm ...` as its OWN argv (Node still does its normal, safe argv-array handling —
+// nothing is shell-concatenated) — `/d` skips any AutoRun registry command, `/s` fixes how the
+// remaining quoting is stripped, `/c` runs the command and exits. POSIX `npm` is a directly
+// executable script/symlink and needs none of this.
+function buildNpmSpawnTarget(npmArgs) {
+  if (process.platform === 'win32') return { command: 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...npmArgs] };
+  return { command: 'npm', args: npmArgs };
+}
+
+/** One real `npm ci --omit=dev` (or `npm install --omit=dev` when there is no lockfile yet) run
+ *  in `discordDir`. Never throws — always resolves to `{ ok, error, stdout, stderr }`. Output is
+ *  captured for the caller to log; NEVER printed to this process's own console (matches this
+ *  file's existing "never let a spawned child's output reach the gateway's own stdout unfiltered"
+ *  stance). */
+function runNpmInstallCommand(discordDir) {
+  const hasLockfile = fs.existsSync(path.join(discordDir, 'package-lock.json'));
+  const npmArgs = hasLockfile ? ['ci', '--omit=dev'] : ['install', '--omit=dev'];
+  const { command, args } = buildNpmSpawnTarget(npmArgs);
+  const runner = npmRunnerOverride || execFile;
+  return new Promise((resolve) => {
+    let settled = false;
+    try {
+      runner(
+        command,
+        args,
+        { cwd: discordDir, timeout: NPM_INSTALL_TIMEOUT_MS, windowsHide: true, maxBuffer: NPM_INSTALL_MAX_BUFFER },
+        (err, stdout, stderr) => {
+          if (settled) return; // execFile's own contract calls back exactly once, but a test double must never be trusted to
+          settled = true;
+          if (err) {
+            resolve({
+              ok: false,
+              error: errorMessage(err), // raw — describeNpmFailure() is the one place this becomes user-facing text
+              timedOut: err.killed === true || err.signal != null, // structural check, same shape exec-lifecycle.mjs already uses for its own timeout detection
+              stdout: typeof stdout === 'string' ? stdout : '',
+              stderr: typeof stderr === 'string' ? stderr : '',
+            });
+          } else {
+            resolve({ ok: true, error: null, timedOut: false, stdout: typeof stdout === 'string' ? stdout : '', stderr: typeof stderr === 'string' ? stderr : '' });
+          }
+        },
+      );
+    } catch (err) {
+      // execFile throws synchronously for some spawn errors (e.g. an invalid options object) —
+      // treated identically to an async callback failure so the caller has only one shape to
+      // handle.
+      if (!settled) {
+        settled = true;
+        resolve({ ok: false, error: errorMessage(err), timedOut: false, stdout: '', stderr: '' });
+      }
+    }
+  });
+}
+
+/**
+ * Ensures command-center/discord/'s own real npm dependencies (discord.js) are present,
+ * installing them ONCE via a real `npm ci`/`npm install` when missing. Never throws; always
+ * resolves to `{ ok, message }`. Serialized: a second call while an install is already running
+ * returns the SAME in-flight promise rather than starting a second npm process against the same
+ * node_modules (two clicks of "Connect Discord" must never race each other).
+ */
+export function ensureDiscordDepsInstalled() {
+  if (discordDepsInstalled()) return Promise.resolve({ ok: true, message: 'already installed' });
+  if (depsInstallInFlight) return depsInstallInFlight;
+
+  const paths = activePaths();
+  depsInstallInFlight = runNpmInstallCommand(paths.discordDir)
+    .then((result) => {
+      if (result.stdout.length > 0 || result.stderr.length > 0) {
+        appendInstallLogBestEffort(
+          paths.logFile,
+          '\n--- discord deps install (' + new Date().toISOString() + ') ---\n' + result.stdout + result.stderr + '\n',
+        );
+      }
+      const outcome = result.ok
+        ? { ok: true, message: 'installed' }
+        : { ok: false, message: describeNpmFailure(result.error, { timedOut: result.timedOut }) };
+      lastDepsInstallOutcome = outcome;
+      return outcome;
+    })
+    .catch((err) => {
+      const outcome = { ok: false, message: describeNpmFailure(errorMessage(err)) };
+      lastDepsInstallOutcome = outcome;
+      return outcome;
+    })
+    .finally(() => {
+      depsInstallInFlight = null;
+    });
+  return depsInstallInFlight;
 }
 
 /** For every key NAME declared in .env.example, whether a non-empty value is present in the real
@@ -491,6 +738,12 @@ export async function getDiscordStatus() {
     invite_url: inviteUrl,
     setup_state: setupState,
     login_error: loginError,
+    // WP-P1: an honest, plain-language install phase the wizard can show WHILE a connect click's
+    // own POST is still in flight (the two are independent — this is the same live module state
+    // ensureDiscordDepsInstalled() itself updates, not a value derived from this one request).
+    deps_installed: discordDepsInstalled(),
+    deps_install_phase: discordDepsInstallPhase(),
+    deps_install_error: lastDepsInstallOutcome && !lastDepsInstallOutcome.ok ? lastDepsInstallOutcome.message : null,
   };
 }
 
@@ -546,6 +799,17 @@ export async function startDiscordService() {
         `refusing to start: another instance is already answering on port ${port} (pid ${otherPid}) — ` +
         'never start a second bot on the same Discord token',
     };
+  }
+
+  // WP-P1: on a fresh machine (or a freshly-copied central template install) discord.js has never
+  // been installed — ensure it is, ONCE, before ever attempting the real spawn below. Placed AFTER
+  // the cheap already-running/conflict checks above (no reason to spend up to
+  // NPM_INSTALL_TIMEOUT_MS on a start that would fail those anyway), but BEFORE any directory
+  // prep/spawn — a beginner's first "Connect Discord" click waits through this once, never sees a
+  // raw "Cannot find module" crash, and is never told to type a command themselves.
+  const depsResult = await ensureDiscordDepsInstalled();
+  if (!depsResult.ok) {
+    return { ok: false, status: 503, error: 'Discord bot software could not be installed automatically: ' + depsResult.message };
   }
 
   try {
@@ -851,6 +1115,377 @@ export async function selectDiscordGuild({ guildId } = {}) {
   const result = await startDiscordService();
   if (!result.ok) return result;
   return { ok: true, status: result.status, pid: result.pid };
+}
+
+/**
+ * WP-S1 (owner request 2026-09-27) — "the user must be able to set the project folder too, via
+ * the Command Center". Mirrors `command-center/discord/src/config.js`'s own DEFAULT_PROJECTS_DIR
+ * computation (`<home>/Documents/ForgeProjects`) — a deliberate duplicate, not an import, per this
+ * file's own "never import the bot's own module graph" header rule. `project-sync.js` (the bot's
+ * own file-watcher) reads this same env var name at boot; nothing else in the bot reads it.
+ */
+const PROJECTS_DIR_ENV_KEY = 'FORGE_PROJECTS_DIR';
+
+// Test-only seam (same `_set*ForTests` convention as every other override in this file) — lets a
+// test exercise the "create:true only works INSIDE home" rule against an isolated temp directory
+// instead of ever writing under the real developer/owner's actual home folder. A real gateway
+// process never sets this; `homeDir()` then falls through to the genuine `os.homedir()`.
+let homeDirOverride = null;
+export function _setHomeDirForTests(dir) {
+  homeDirOverride = dir;
+}
+function homeDir() {
+  return homeDirOverride || os.homedir();
+}
+
+function defaultProjectsDir() {
+  return path.join(homeDir(), 'Documents', 'ForgeProjects');
+}
+
+function normalizeForCompare(p) {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
+function isDriveRootPath(p) {
+  return path.parse(p).root === p;
+}
+
+/** Real, on-this-machine Windows system folders, read from the SAME environment variables
+ *  Windows itself sets (never a hardcoded, maintainer-specific path — same principle
+ *  config.js's own DEFAULT_PROJECTS_DIR comment already documents for this exact reason). An
+ *  absent/empty variable is skipped, never guessed at. win32-only: these env vars are simply
+ *  absent elsewhere, so this naturally returns [] on every other platform. */
+function windowsSystemRoots() {
+  const roots = [];
+  const add = (raw) => {
+    if (typeof raw === 'string' && raw.trim().length > 0) roots.push(path.resolve(raw.trim()));
+  };
+  add(process.env.WINDIR);
+  add(process.env.SystemRoot);
+  add(process.env.ProgramFiles);
+  add(process.env['ProgramFiles(x86)']);
+  add(process.env.ProgramW6432);
+  add(process.env.ProgramData);
+  return roots;
+}
+
+/** Returns a plain-language rejection reason, or `null` when `resolved` is safe to save as the
+ *  projects root. Exact-match only (never an ancestry/containment check) — this deliberately
+ *  mirrors the WP's own literal instruction ("not a drive root and not a system folder: the
+ *  Windows directory, Program Files, the user profile root itself"), not a broader guess at every
+ *  possible unwise choice. A real subfolder INSIDE one of these (e.g. a folder a user genuinely
+ *  made under Program Files) is not rejected here — that is a deliberately narrower scope than
+ *  paths.mjs's own validateExtraScanRoot(), which guards a DIFFERENT, wider trust boundary (which
+ *  folders this gateway scans for ANY project), not a single beginner-chosen settings value. */
+function validateProjectsDirCandidate(resolved) {
+  if (isDriveRootPath(resolved)) {
+    return 'that is a whole drive — pick (or make) a specific folder inside it instead';
+  }
+  const home = path.resolve(homeDir());
+  if (normalizeForCompare(resolved) === normalizeForCompare(home)) {
+    return 'that is your whole user profile folder — pick (or make) a specific folder inside it instead';
+  }
+  if (process.platform === 'win32') {
+    for (const sysRoot of windowsSystemRoots()) {
+      if (normalizeForCompare(resolved) === normalizeForCompare(sysRoot)) {
+        return 'that is a Windows system folder — pick (or make) an ordinary folder instead';
+      }
+    }
+  }
+  return null;
+}
+
+/** True when `resolved` is the user's home folder itself, or a real descendant of it — the ONLY
+ *  place a brand-new folder may be auto-created (`create:true`), never anywhere wider. */
+function isInsideHome(resolved) {
+  const home = path.resolve(homeDir());
+  const a = normalizeForCompare(home);
+  const b = normalizeForCompare(resolved);
+  if (a === b) return true;
+  const rel = path.relative(a, b);
+  return rel !== '' && !rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel);
+}
+
+/** Reads `FORGE_PROJECTS_DIR` straight from discord/.env (never the bot's own config.js — this
+ *  file never imports the bot's module graph, see its own header) — `'setting'` when a non-empty
+ *  value is present, `'default'` (this file's own DEFAULT_PROJECTS_DIR, matching the bot's own
+ *  default) otherwise. */
+function resolveProjectsDirSetting() {
+  const env = parseEnvFile(activePaths().envFile);
+  const raw = typeof env[PROJECTS_DIR_ENV_KEY] === 'string' ? env[PROJECTS_DIR_ENV_KEY].trim() : '';
+  if (raw.length > 0) return { dir: raw, source: 'setting' };
+  return { dir: defaultProjectsDir(), source: 'default' };
+}
+
+// Codex run B F-04 (2026-09-28): bounds the raw directory scan this route performs on every
+// no-token GET, independent of any result cap — mirrors folder-browse.mjs's own collectSubfolder-
+// Names() budget shape (opendirSync/readSync instead of one readdirSync() that reads everything
+// before anyone gets to look at it).
+const PROJECT_COUNT_SCAN_BUDGET = 5000;
+
+// Test-only override seam (same `_set*ForTests` convention as every other test hook in this file,
+// e.g. `_setHomeDirForTests`) — lets a test prove the scan genuinely stops at the budget using a
+// handful of fixture folders instead of manufacturing thousands of real ones.
+let projectCountScanBudgetOverride = null;
+export function _setProjectCountScanBudgetForTests(n) {
+  projectCountScanBudgetOverride = n;
+}
+export function _resetProjectCountScanBudgetForTests() {
+  projectCountScanBudgetOverride = null;
+}
+
+/** Counts real, non-dot-prefixed subfolders of `dir` with a hard scan budget. Returns
+ *  `{ count, truncated }` — `truncated:true` means `count` is a LOWER BOUND (at least this many),
+ *  never a silently-wrong exact number, because the scan stopped before finishing the directory. */
+function countProjectSubfolders(dir) {
+  const budget = typeof projectCountScanBudgetOverride === 'number' ? projectCountScanBudgetOverride : PROJECT_COUNT_SCAN_BUDGET;
+  const d = fs.opendirSync(dir);
+  let count = 0;
+  let scanned = 0;
+  let truncated = false;
+  try {
+    let dirent = d.readSync();
+    while (dirent !== null) {
+      scanned += 1;
+      if (scanned > budget) {
+        truncated = true;
+        break;
+      }
+      if (dirent.isDirectory() && !dirent.name.startsWith('.')) count += 1;
+      dirent = d.readSync();
+    }
+  } finally {
+    d.closeSync();
+  }
+  return { count, truncated };
+}
+
+/**
+ * `GET /api/discord/projects-dir` — the current setting, its source, whether it exists on disk
+ * right now, and an honest project-folder count (same "real subfolder, not dot-prefixed" filter
+ * `project-sync.js`'s own `listProjectDirs()` uses, so this count matches what the bot itself
+ * would actually turn into channels). Never throws — a missing/unreadable folder simply reports
+ * `exists:false, projectCount:null`, never a fabricated number.
+ */
+export function getProjectsDirStatus() {
+  const { dir, source } = resolveProjectsDirSetting();
+  let exists = false;
+  let projectCount = null;
+  let projectCountTruncated = false;
+
+  // Codex run B F-01: the PERSISTED setting is checked the same way a fresh request is — a
+  // hand-edited `.env` (or one saved by a pre-fix version of this code) could already hold a
+  // network or device path, and this route is a no-token GET that fires on every dashboard load.
+  if (!isNetworkOrDevicePath(dir) && !hasControlChars(dir)) {
+    const safe = safeRealpathSync(dir);
+    if (safe.ok) {
+      try {
+        exists = fs.statSync(safe.real).isDirectory();
+      } catch {
+        exists = false;
+      }
+      if (exists) {
+        try {
+          const scan = countProjectSubfolders(safe.real);
+          projectCount = scan.count;
+          projectCountTruncated = scan.truncated;
+        } catch {
+          projectCount = null; // a race (folder removed between the two calls) — honest unknown, not 0
+        }
+      }
+    }
+    // safe.ok === false for any other reason (ENOENT, a broken link, ...) leaves exists:false,
+    // projectCount:null — the same honest "does not exist / can't be read" shape this route
+    // already reported for those cases before this fix.
+  }
+  return { dir, source, exists, projectCount, projectCountTruncated };
+}
+
+/** Walks UP from `p` until it finds a component that already exists, returning that ancestor and
+ *  the ordered list of missing path-segment NAMES between it and `p` — Codex run B F-02's first
+ *  step ("resolve ... the nearest existing ancestor"). Returns `{ ok:false, error }` only for a
+ *  genuine, unexpected fs error (e.g. a permission problem partway up); reaching the filesystem
+ *  root without finding anything is not expected in practice (a root always exists) but is still
+ *  reported honestly rather than looping forever. */
+function nearestExistingAncestor(p) {
+  let current = p;
+  const missingSegments = [];
+  for (;;) {
+    let lst;
+    try {
+      lst = fs.lstatSync(current);
+    } catch (err) {
+      if (err.code !== 'ENOENT') return { ok: false, error: errorMessage(err) };
+      const parent = path.dirname(current);
+      if (parent === current) return { ok: false, error: 'no existing ancestor directory could be found' };
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+      continue;
+    }
+    if (!lst.isDirectory() && !lst.isSymbolicLink()) {
+      return { ok: false, error: `"${current}" exists but is not a folder` };
+    }
+    return { ok: true, existingAncestor: current, missingSegments };
+  }
+}
+
+/**
+ * Codex run B F-02 — creates every missing component of `resolved` ONE LEVEL AT A TIME, starting
+ * from the REAL, symlink-resolved location of the nearest already-existing ancestor. Never a
+ * single `fs.mkdirSync(resolved, { recursive: true })`: when some ancestor that LEXICALLY looks
+ * like it is inside home is actually a symlink/junction pointing elsewhere (e.g. `<home>/link` ->
+ * an outside folder), a recursive mkdir silently creates the final folder wherever that link's
+ * target really is — outside home, despite the lexical "inside home" check passing. Every newly
+ * created component is verified (via fs.lstatSync) to really be an ordinary directory, never a
+ * link, immediately after creation; the fully-created result is verified to still resolve inside
+ * home before this function reports success.
+ */
+function createMissingDirInsideHome(resolved) {
+  const found = nearestExistingAncestor(resolved);
+  if (!found.ok) return { ok: false, status: 500, error: found.error };
+
+  // The nearest EXISTING ancestor is itself resolved hop-by-hop (never trusted lexically) — this
+  // is exactly the check the lexical isInsideHome() above cannot make: a component that reads like
+  // an ordinary folder name can still BE a link to somewhere else entirely.
+  const safeAncestor = safeRealpathSync(found.existingAncestor);
+  if (!safeAncestor.ok) {
+    const isUnsafe = safeAncestor.code === 'EUNSAFE_LINK' || safeAncestor.code === 'EUNSAFE_CHARS';
+    return {
+      ok: false,
+      status: isUnsafe ? 400 : 500,
+      error: 'could not verify the existing part of that folder path: ' + safeAncestor.error,
+    };
+  }
+  if (!isInsideHome(safeAncestor.real)) {
+    return { ok: false, status: 400, error: 'a brand-new folder can only be created inside your own user folder' };
+  }
+
+  let current = safeAncestor.real;
+  for (const segment of found.missingSegments) {
+    current = path.join(current, segment);
+    try {
+      fs.mkdirSync(current);
+    } catch (err) {
+      if (err.code !== 'EEXIST') return { ok: false, status: 500, error: 'could not create that folder: ' + errorMessage(err) };
+      // EEXIST here means a race created it between our ancestor check and this call — fall
+      // through to the verification below, which confirms it is a real, link-free, inside-home
+      // directory regardless of who created it.
+    }
+    let lst;
+    try {
+      lst = fs.lstatSync(current);
+    } catch (err) {
+      return { ok: false, status: 500, error: 'could not verify the created folder: ' + errorMessage(err) };
+    }
+    if (lst.isSymbolicLink() || !lst.isDirectory()) {
+      return { ok: false, status: 500, error: `"${current}" is not an ordinary directory` };
+    }
+  }
+
+  const finalSafe = safeRealpathSync(resolved);
+  if (!finalSafe.ok || !isInsideHome(finalSafe.real)) {
+    return { ok: false, status: 500, error: 'the created folder could not be verified as inside your user folder' };
+  }
+  return { ok: true };
+}
+
+/**
+ * `POST /api/discord/projects-dir` — saves a new projects folder via the exact SAME atomic,
+ * locked env writer `connectDiscordService()`/`selectDiscordGuild()` already use for the bot
+ * token (`writeEnvUpdates`, this file's own atomic-write-plus-lock implementation above), then
+ * restarts the bot ONLY when this gateway has it tracked as actually running right now — an owner
+ * who has not connected yet simply has the CHOICE stored for whenever they do connect (per this
+ * WP's own "before Discord is connected: the choice is stored and used when the bot starts"
+ * contract). `create:true` makes a missing folder, but ONLY inside the user's own home directory
+ * — never anywhere wider, regardless of what `create` says.
+ */
+export async function setProjectsDirSetting({ dir, create = false } = {}) {
+  if (typeof dir !== 'string' || dir.trim().length === 0) {
+    return { ok: false, status: 400, error: 'dir is required' };
+  }
+  const trimmed = dir.trim();
+  // Codex run B F-03: the PRIMARY defence against a `.env` newline-injection attempt — refused
+  // outright before any further processing. (See mergeEnvText's own comment for the defence-in-
+  // depth layer that also protects the raw write itself, independent of this check.)
+  if (hasControlChars(trimmed)) {
+    return { ok: false, status: 400, error: 'that path contains characters that are not allowed' };
+  }
+  if (!path.isAbsolute(trimmed)) {
+    return { ok: false, status: 400, error: 'that must be a full, absolute folder path' };
+  }
+  const resolved = path.resolve(trimmed);
+  // Codex run B F-01: reject a literal network/device path BEFORE any filesystem call.
+  if (isNetworkOrDevicePath(resolved)) {
+    return { ok: false, status: 400, error: 'network and device paths are not allowed' };
+  }
+  const validationError = validateProjectsDirCandidate(resolved);
+  if (validationError) return { ok: false, status: 400, error: validationError };
+
+  // Codex run B F-01: resolved hop-by-hop (paths.mjs's safeRealpathSync), never a direct
+  // fs.statSync(resolved) — a local-LOOKING path can still sit under (or itself be) a symlink/
+  // junction that targets a network share or a device path, which a bare stat would otherwise
+  // silently follow.
+  const safe = safeRealpathSync(resolved);
+  let stat = null;
+  if (safe.ok) {
+    try {
+      stat = fs.statSync(safe.real);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        return { ok: false, status: 400, error: 'could not check that folder: ' + errorMessage(err) };
+      }
+    }
+  } else if (safe.code === 'EUNSAFE_LINK' || safe.code === 'EUNSAFE_CHARS') {
+    return { ok: false, status: 400, error: 'that folder is not allowed: ' + safe.error };
+  } else if (safe.code !== 'ENOENT') {
+    return { ok: false, status: 400, error: 'could not check that folder: ' + safe.error };
+  }
+  // safe.code === 'ENOENT' leaves `stat` at its initial `null` — exactly the "does not exist yet"
+  // case the create branch below already handles.
+
+  if (stat === null) {
+    if (!create) {
+      return {
+        ok: false,
+        status: 404,
+        error: 'that folder does not exist yet — pick an existing folder, or ask to create it',
+      };
+    }
+    if (!isInsideHome(resolved)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'a brand-new folder can only be created inside your own user folder',
+      };
+    }
+    const createResult = createMissingDirInsideHome(resolved);
+    if (!createResult.ok) {
+      return { ok: false, status: createResult.status, error: createResult.error };
+    }
+  } else if (!stat.isDirectory()) {
+    return { ok: false, status: 400, error: 'that path exists but is not a folder' };
+  }
+
+  const paths = activePaths();
+  try {
+    writeEnvUpdates(paths.envFile, { [PROJECTS_DIR_ENV_KEY]: resolved });
+  } catch (err) {
+    return { ok: false, status: 500, error: 'could not save this setting: ' + errorMessage(err) };
+  }
+
+  // Same "is it really running" truth every other route on this module already uses (see
+  // getDiscordStatus()'s own `running` field) — never a guess, never the bot's OWN separately-run
+  // instance that this gateway does not track.
+  const running = childProcess !== null && childPid !== null;
+  if (!running) {
+    return { ok: true, status: 200, dir: resolved, restarted: false, restartError: null, pid: null };
+  }
+  await stopDiscordService();
+  const startResult = await startDiscordService();
+  if (!startResult.ok) {
+    return { ok: true, status: 200, dir: resolved, restarted: false, restartError: startResult.error, pid: null };
+  }
+  return { ok: true, status: 200, dir: resolved, restarted: true, restartError: null, pid: startResult.pid };
 }
 
 function errorMessage(err) {

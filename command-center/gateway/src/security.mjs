@@ -1,14 +1,15 @@
 // Security primitives for the Forge Compatibility Gateway.
-// Zero-dependency (node:* only). Mirrors the proven pattern already reviewed and running in
-// .claude/forge-dashboard/server.cjs (DNS-rebinding guard + path containment) — reused here
-// rather than re-invented, per this project's "follow existing conventions" rule.
+// Zero-dependency (node:* only). Adapted from the proven pattern that ran in the retired
+// per-project Control Center (DNS-rebinding guard + path containment, removed in Forge 2.9.0 —
+// see WP-N2) — reused here rather than re-invented, per this project's "follow existing
+// conventions" rule.
 import path from 'node:path';
 import crypto from 'node:crypto';
 
 // A malicious web page whose domain re-resolves to 127.0.0.1 (DNS-rebinding) could still fetch
 // this gateway's /api/* routes if only the bind address were checked. Two independent checks:
 // (1) Host header must name a localhost host; (2) cross-site browser fetches are rejected via
-// Sec-Fetch-Site / Origin. Same two-check shape as the existing Control Center server.
+// Sec-Fetch-Site / Origin. Same two-check shape as the retired per-project Control Center server.
 export const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 // Origins allowed to call the gateway's API: the gateway's own served origin (4100) and the

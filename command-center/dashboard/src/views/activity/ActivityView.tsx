@@ -31,12 +31,17 @@ import {
   ToolbarGroup,
 } from '@/components/primitives';
 import { usePrototype } from '@/prototype/state/prototype-store';
-import { useGatewayEventsMeta, useGatewayRunScanErrors } from '@/prototype/state/gateway-adapter';
+import { useGatewayEvents, useGatewayEventsMeta, useGatewayRunScanErrors } from '@/prototype/state/gateway-adapter';
+import { toGatewayActivityEvent } from '@/prototype/state/adapter/mappers';
 import { isProductionMode } from '@/config/mode';
 import { STATUS_KEYS } from '@/prototype/types/prototype-types';
 import type { ActivityEvent, EventKind, StatusKey } from '@/prototype/types/prototype-types';
 import { RecoveryPanel } from './RecoveryPanel';
 import './activity.css';
+
+/** WP-CCD (item 5): `null` means "the default run" (today's pre-existing behaviour — the current/
+ *  newest run this project has) — a real, picked run id switches the whole timeline to it. */
+const CURRENT_RUN_OPTION = '';
 
 /* ------------------------------------------------------------- event kinds */
 
@@ -166,7 +171,6 @@ function EventRow({ event, showRun, expanded, selected, onActivate }: EventRowPr
 
 export default function ActivityView() {
   const { state, dispatch } = usePrototype();
-  const events = state.data.events;
   const runs = state.data.runs;
 
   // cc-fix-events-honesty (P1-1): the same "newest run" convention
@@ -174,7 +178,32 @@ export default function ActivityView() {
   // populated for this one run, so its truncated/malformed-line honesty
   // belongs to this run specifically, not to Activity as a whole.
   const currentRunId = runs[0]?.id ?? null;
-  const eventsMeta = useGatewayEventsMeta(state.activeProjectId, currentRunId);
+
+  // WP-CCD (item 5): "a way to pick another run" — `''` (CURRENT_RUN_OPTION) stays the honest
+  // pre-existing default (the current/newest run, `state.data.events`); picking a real run id
+  // switches the WHOLE timeline (and the truncated/malformed-line honesty line below) to it via a
+  // second, independent `/api/events` poll — the same "second independent poll for a concept
+  // outside `PrototypeDataset`" tradeoff `useGatewayEventsMeta` itself already documents.
+  // Codex verification NEW-2: the pick belongs to the project it was made in. After a project switch
+  // the timeline shows that project's current run again, instead of asking the new project for a run
+  // id it does not have (an empty timeline).
+  const [pick, setPick] = useState<{ readonly projectId: typeof state.activeProjectId; readonly runId: string }>({
+    projectId: state.activeProjectId,
+    runId: CURRENT_RUN_OPTION,
+  });
+  const pickedRunId = pick.projectId === state.activeProjectId ? pick.runId : CURRENT_RUN_OPTION;
+  const setPickedRunId = (runId: string) => setPick({ projectId: state.activeProjectId, runId });
+  const effectiveRunId = pickedRunId === CURRENT_RUN_OPTION ? currentRunId : pickedRunId;
+  const pickedEvents = useGatewayEvents(state.activeProjectId, pickedRunId === CURRENT_RUN_OPTION ? null : pickedRunId);
+  const events = useMemo(
+    () =>
+      pickedRunId === CURRENT_RUN_OPTION
+        ? state.data.events
+        : pickedEvents.events.map((row, i) => toGatewayActivityEvent(row, pickedRunId, i)),
+    [pickedRunId, state.data.events, pickedEvents.events],
+  );
+
+  const eventsMeta = useGatewayEventsMeta(state.activeProjectId, effectiveRunId);
   // cc-fix-dash-latency (#3): `runs.mjs`'s honest `event_scan_error` signal, keyed by run — unlike
   // `eventsMeta` above (scoped to the one run `/api/events` is polled for), this covers every run
   // this project has, so a group header can show it regardless of which run is "current".
@@ -321,6 +350,24 @@ export default function ActivityView() {
       </header>
 
       <div className="fw-activity__filters">
+        {/* WP-CCD (item 5): a real way to pick another run — every run this project has, newest
+            first (the same order `state.data.runs` already sorts in), never just the current one. */}
+        <Field label="Run" htmlFor="fw-activity-run" className="fw-activity__filter">
+          <select
+            id="fw-activity-run"
+            className="fw-activity__select fg-machine"
+            value={pickedRunId}
+            onChange={(event) => setPickedRunId(event.target.value)}
+          >
+            <option value={CURRENT_RUN_OPTION}>Current run{currentRunId !== null ? ` (${currentRunId})` : ''}</option>
+            {runs.map((run) => (
+              <option key={run.id} value={run.id}>
+                {run.id}
+              </option>
+            ))}
+          </select>
+        </Field>
+
         <Field label="Search" htmlFor="fw-activity-search" className="fw-activity__filter fw-activity__filter--search">
           <span className="fw-activity__search">
             <Icon name="Search" size="sm" className="fw-activity__search-icon" />

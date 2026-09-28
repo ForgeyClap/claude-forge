@@ -28,8 +28,10 @@ import {
   ToolbarGroup,
 } from '@/components/primitives';
 import { usePrototype } from '@/prototype/state/prototype-store';
+import { useGatewayProofExtras } from '@/prototype/state/gateway-adapter';
 import { isProductionMode } from '@/config/mode';
 import type { ProofEntry, QualityGate } from '@/prototype/types/prototype-types';
+import { RunHealthPanel } from './RunHealthPanel';
 import './tests.css';
 
 /* ------------------------------------------------------------------ verdict */
@@ -263,6 +265,12 @@ export default function TestsView() {
   const gates = state.data.gates;
   const proof = state.data.proof;
 
+  // WP-CCD (item 6): the same "newest run" convention `ActivityView.tsx` already uses —
+  // `RunHealthPanel` reads a SECOND, independent `/api/proof` poll for the four net-new fields
+  // `PrototypeDataset` does not carry (mirrors `useGatewayRunScanErrors`'s own precedent).
+  const currentRunId = state.data.runs[0]?.id ?? null;
+  const proofExtras = useGatewayProofExtras(state.activeProjectId, currentRunId);
+
   const [openGates, setOpenGates] = useState<ReadonlySet<string>>(() => new Set<string>());
   // The rejections are the reason this screen exists, so they start open.
   const [openProof, setOpenProof] = useState<ReadonlySet<string>>(
@@ -463,6 +471,9 @@ export default function TestsView() {
             </ul>
           </div>
         </Panel>
+
+        {/* ------------------------------------------------------ run health */}
+        <RunHealthPanel extras={proofExtras} />
 
         {/* ----------------------------------------------------- proof ledger */}
         <Panel

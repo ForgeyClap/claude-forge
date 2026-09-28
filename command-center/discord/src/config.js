@@ -22,6 +22,30 @@ import path from 'node:path';
 // keeps projects elsewhere.
 const DEFAULT_PROJECTS_DIR = path.join(os.homedir(), 'Documents', 'ForgeProjects');
 
+// Codex run B F-03 (2026-09-28): the gateway's env writer (gateway/src/discord-service.mjs's
+// mergeEnvText/encodeEnvValue) wraps a value that would otherwise corrupt this line-based format
+// (a real newline, a CR, a NUL, a literal `"`, or leading/trailing whitespace) in JSON-string
+// quoting BEFORE writing it — e.g. `FORGE_PROJECTS_DIR="C:\\evil\nRUNNER=claude"` stays ONE line on
+// disk, with the embedded newline as the two literal characters `\` `n`, never a real line break.
+// decodeEnvValue() reverses that exactly. A value that does not start-and-end with `"` (every
+// value ever written before this fix, and every ordinary bot-token/guild-id/plain-path value
+// written after it) is returned exactly as before: unmodified, bare text. A value that merely
+// LOOKS quoted but is not valid JSON (e.g. a human hand-typed `"C:\Users\me\My Projects"`, which
+// uses single backslashes, not JSON's `\\`) falls back to the literal raw text, quotes included —
+// identical to this parser's behaviour before this fix, never a new failure mode for an existing
+// hand-edited `.env`.
+function decodeEnvValue(raw) {
+  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      // Not valid JSON after all -- fall through and treat it as a literal bare value.
+    }
+  }
+  return raw;
+}
+
 function parseEnvFile(filePath) {
   let raw;
   try {
@@ -36,7 +60,9 @@ function parseEnvFile(filePath) {
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
     if (eq === -1) continue;
-    out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    out[key] = decodeEnvValue(value);
   }
   return out;
 }

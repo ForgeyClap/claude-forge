@@ -115,3 +115,85 @@ describe('parseAccountUsage — honest fallbacks', () => {
     expect(result.guard.available).toBe(false);
   });
 });
+
+/**
+ * WP-CCD (item 10, review fix): the guard's own real session/week percentages, reset times,
+ * pending-checkup flag and last error — field names verified live against
+ * `_scratch/wt-cc1-snap/gateway/src/usage.mjs::readGuardState()`, which sends a FLAT
+ * `session_pct`/`week_pct`/`session_reset_at`/`week_reset_at`/`pending_checkup`/`last_error` shape,
+ * NOT the nested `percents.session`/`percents.week`/`resets.*` (nor `session_percent`/
+ * `week_percent`) shape this WP's own doc comment previously assumed — that mismatch meant
+ * `sessionPercent`/`weekPercent` never actually read a real value from this gateway.
+ */
+describe('parseAccountUsage — guard session_pct/week_pct (WP-CCD item 10, review fix)', () => {
+  it('reads the REAL flat session_pct/week_pct/reset/checkup/error fields straight off the guard object', () => {
+    const result = parseAccountUsage({
+      ok: true,
+      provenance: 'REPORTED',
+      level: 'normal',
+      week: 40,
+      guard: {
+        available: true,
+        mode: 'ok',
+        session_pct: 62,
+        week_pct: 71,
+        session_reset_at: '2026-09-28T18:00:00.000Z',
+        week_reset_at: '2026-10-03T00:00:00.000Z',
+        pending_checkup: true,
+        last_error: 'usage endpoint HTTP 429',
+      },
+    });
+    expect(result.guard.sessionPercent).toBe(62);
+    expect(result.guard.weekPercent).toBe(71);
+    expect(result.guard.sessionResetAt).toBe('2026-09-28T18:00:00.000Z');
+    expect(result.guard.weekResetAt).toBe('2026-10-03T00:00:00.000Z');
+    expect(result.guard.pendingCheckup).toBe(true);
+    expect(result.guard.lastError).toBe('usage endpoint HTTP 429');
+  });
+
+  it('a guard object that predates these fields reads back an honest null/false, never a guess', () => {
+    const result = parseAccountUsage({
+      ok: true,
+      provenance: 'REPORTED',
+      level: 'normal',
+      week: 40,
+      guard: { available: true, mode: 'ok' },
+    });
+    expect(result.guard.sessionPercent).toBeNull();
+    expect(result.guard.weekPercent).toBeNull();
+    expect(result.guard.sessionResetAt).toBeNull();
+    expect(result.guard.weekResetAt).toBeNull();
+    expect(result.guard.pendingCheckup).toBe(false);
+    expect(result.guard.lastError).toBeNull();
+    expect(result.guard.watcher).toBeNull();
+    expect(result.guard.watcherStaleSec).toBeNull();
+  });
+
+  it('reads the watcher health the gateway reports (2026-09-28)', () => {
+    const down = parseAccountUsage({
+      ok: true,
+      provenance: 'REPORTED',
+      guard: { available: true, mode: 'ok', watcher: 'not-running', watcher_stale_sec: null },
+    });
+    expect(down.guard.watcher).toBe('not-running');
+    const stale = parseAccountUsage({
+      ok: true,
+      provenance: 'REPORTED',
+      guard: { available: true, mode: 'ok', watcher: 'stale', watcher_stale_sec: 1200 },
+    });
+    expect(stale.guard.watcherStaleSec).toBe(1200);
+  });
+
+  it('FALLBACK: the old speculative nested percents/resets shape still parses, for a differently-shaped build', () => {
+    const result = parseAccountUsage({
+      ok: true,
+      provenance: 'REPORTED',
+      level: 'normal',
+      week: 40,
+      guard: { available: true, mode: 'ok', percents: { session: 10, week: 20 }, resets: { session: '2026-09-28T12:00:00.000Z', week: null } },
+    });
+    expect(result.guard.sessionPercent).toBe(10);
+    expect(result.guard.weekPercent).toBe(20);
+    expect(result.guard.sessionResetAt).toBe('2026-09-28T12:00:00.000Z');
+  });
+});

@@ -175,6 +175,15 @@ function accountUsage(overrides: Partial<GatewayAccountUsage> = {}): GatewayAcco
       lastCheckAt: '2026-07-26T13:41:16.137Z',
       ageMs: 12344,
       note: null,
+      // WP-CCD (item 10).
+      sessionPercent: null,
+      weekPercent: null,
+      sessionResetAt: null,
+      weekResetAt: null,
+      pendingCheckup: false,
+      lastError: null,
+      watcher: 'running',
+      watcherStaleSec: 30,
     },
     ...overrides,
   };
@@ -202,9 +211,36 @@ describe('formatGuardTooltip — real values only, never a plausible-looking num
 
   it('an absent guard-state file never claims "guard ok" — real n/a instead', () => {
     const text = formatGuardTooltip(
-      accountUsage({ guard: { available: false, mode: null, pauseAt: null, resumeAt: null, pausedAgentCount: null, lastCheckAt: null, ageMs: null, note: null } }),
+      accountUsage({
+        guard: {
+          available: false,
+          mode: null,
+          pauseAt: null,
+          resumeAt: null,
+          pausedAgentCount: null,
+          lastCheckAt: null,
+          ageMs: null,
+          note: null,
+          sessionPercent: null,
+          weekPercent: null,
+          sessionResetAt: null,
+          weekResetAt: null,
+          pendingCheckup: false,
+          lastError: null,
+          watcher: null,
+          watcherStaleSec: null,
+        },
+      }),
     );
     expect(text).toContain('guard n/a');
+  });
+
+  it('a guard whose watcher is not running never reads "guard ok" (found live 2026-09-28)', () => {
+    const down = formatGuardTooltip(accountUsage({ guard: { ...accountUsage().guard, watcher: 'not-running' } }));
+    expect(down).toContain('guard not running');
+    expect(down).not.toContain('guard ok');
+    const stale = formatGuardTooltip(accountUsage({ guard: { ...accountUsage().guard, watcher: 'stale' } }));
+    expect(stale).toContain('guard not checking');
   });
 });
 

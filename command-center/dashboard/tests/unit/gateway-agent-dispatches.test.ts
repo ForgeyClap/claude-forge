@@ -38,6 +38,16 @@ describe('parseAgentDispatchRows — the real GET /api/agent-dispatches response
         running: false,
         resolvedStatus: 'completed',
         endedAt: '2026-07-30T08:03:23.843Z',
+        // WP-CCD (item 3): a chat-tool-use row (no `source`/run-log fields at all on the raw
+        // response) reads back an honest null/false for every one of the new run-log fields.
+        source: null,
+        agentName: null,
+        agentSlug: null,
+        wpId: null,
+        task: null,
+        completedAt: null,
+        verdict: null,
+        stalled: false,
       },
     ]);
   });

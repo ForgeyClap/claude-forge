@@ -152,10 +152,47 @@
   min-inline-size: 0;
 }
 
+/*
+ * REVIEW FIX (found via real screenshot verification, WP-CCD item 8): `.fw-projects__name` used to
+ * BE the truncating element AND contain the kind-tag as its last child — for a long project name
+ * that already fills the row (measured live: real auto-generated test/backup folder names routinely
+ * do), the tag was laid out past the clipped edge and was never actually visible. `.fw-projects__name`
+ * now truncates alone inside this flex row; the tag is a `flex:none` sibling of it, so it is always
+ * on-screen regardless of how long the name is.
+ */
+.fw-projects__name-row {
+  display: flex;
+  align-items: center;
+  min-inline-size: 0;
+}
+
 .fw-projects__name {
+  min-inline-size: 0;
+  flex: 1 1 auto;
   font-size: var(--forge-text-md);
   font-weight: var(--forge-weight-semibold);
   color: var(--forge-color-text);
+}
+
+/*
+ * WP-CCD (item 8): a real backup/test copy marker — mirrors `.fw-example-tag`'s own dashed,
+ * secondary "needs a second look" treatment (`primitives.css`) token-for-token (same border style,
+ * same muted colour, same radius), never a new colour or shape. Sits inline with the name at its
+ * own (smaller) size so it never inherits `.fw-projects__name`'s larger semibold styling.
+ */
+.fw-projects__kind-tag {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-inline-start: var(--forge-space-2);
+  padding-inline: var(--forge-space-1);
+  border: var(--forge-border-hair) dashed var(--forge-color-line-strong);
+  border-radius: var(--forge-radius-xs);
+  font-size: var(--forge-text-2xs);
+  font-weight: var(--forge-weight-medium);
+  letter-spacing: var(--forge-tracking-wide);
+  color: var(--forge-color-text-secondary);
+  vertical-align: middle;
 }
 
 .fw-projects__description {

@@ -37,10 +37,13 @@
  *    mean loading the 123 KB `forge-doctor.cjs` in every hook process. Partitioning by `session_id` is O(1)
  *    and needs no filesystem scan at all.
  * 3. CORRECTNESS. That same mtime-based run picker is documented in `forge-snapshot.cjs` as having actively
- *    misrouted to a throwaway `doctor-selfcheck-<pid>/` directory. Doctor creates those constantly — and
- *    this hook fires DURING a doctor run — so a write-time run guess would demonstrably scatter the ledger
- *    into throwaway dirs. Reproducing a known-broken heuristic at 1000x the frequency is a regression by
- *    design.
+ *    misrouted to a throwaway `doctor-selfcheck-<pid>/` directory. Doctor used to create those constantly
+ *    (v2.9.0 WP-CC0 moved that self-check into an OS-tmp fixture so it no longer writes into the real
+ *    project at all — see forge-doctor.cjs::strictEventCheck) — but this hook still fires DURING a doctor
+ *    run, so a write-time run guess would still have demonstrably scattered the ledger into throwaway
+ *    dirs for as long as that debris existed, and could again for any FUTURE throwaway/self-test dir this
+ *    hook has no way to predict. Reproducing a heuristic that is only ever one such tool away from being
+ *    broken again, at 1000x the frequency, is a regression by design.
  * 4. TRUST. The partition key comes from the hook payload, the same untamperable source as the rest of the
  *    line. An agent can create a run directory; it cannot change its own `session_id`.
  * 5. JOINING IS A READ-TIME PROBLEM, AND IT IS EXACT. `tool_use_id` is the SAME id that appears as
@@ -55,9 +58,9 @@
  *    in the codebase skips it by its existing filter (forge-doctor.cjs::rankRunCandidates, the Command
  *    Center's runs.mjs, the chain check). `.hotspot-locks` is the existing precedent for exactly this.
  *
- * NO NEW EVENT TYPE is introduced, so the 3-place registration rule (log-event.cjs KNOWN_EVENT_TYPES +
- * forge-verify.cjs classification set + forge-dashboard/app.js taskStatus/SYNTH) does not apply here.
- * Test G1 enforces that claim statically: this file must never reference `log-event` or `events.jsonl`.
+ * NO NEW EVENT TYPE is introduced, so the event-registration rule (log-event.cjs KNOWN_EVENT_TYPES +
+ * forge-verify.cjs classification set) does not apply here. Test G1 enforces that claim statically: this
+ * file must never reference `log-event` or `events.jsonl`.
  *
  * ---------------------------------------------------------------------------------------------------
  * WHAT IT RECORDS — behaviour, never content

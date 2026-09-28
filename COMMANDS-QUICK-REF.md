@@ -72,7 +72,7 @@ Once the full system is installed in a project, `/forge <sub-command>` drives th
 | `/forge config` | **Every Forge setting in one command** — `list [--all]` · `get <setting>` · `set <setting> <value> [--global]` · `unset <setting>` · `reset` · `explain <setting>` · `diff` · `parse "<sentence>"`. Everything is on by default. Forge runs the tool itself (`node .claude/forge-bin/forge-config.cjs …`) and repeats its OK line; `reset` asks you once first; locked rules (hard gates, honesty, isolation, …) are refused. See [docs/SETTINGS.md](docs/SETTINGS.md). |
 | `/forge help me ask` | Shows the short guide on how to ask Forge for something (Dutch first, then English) — the same text as [docs/HOW-TO-ASK.md](docs/HOW-TO-ASK.md). |
 | `/forge interview` | The full intake questionnaire, one question at a time. By default Forge answers the intake itself and asks at most one question (setting `intake`). |
-| `/forge dashboard` | Find/start the **Command Center** (`node command-center/gateway/supervisor.mjs`), health-check `GET http://127.0.0.1:4100/api/health`, and report `http://127.0.0.1:4100`. Never claims a start it can't prove, and never hands you a command to type. |
+| `/forge dashboard` | Find/start the **Command Center** (`node command-center/gateway/bin.mjs` or `node command-center/gateway/supervisor.mjs` for auto-restart), health-check `GET http://127.0.0.1:4100/api/health`, and report `http://127.0.0.1:4100`. Never claims a start it can't prove, and never hands you a command to type. |
 | `/forge start` | Same as `dashboard`, then begin a new run. |
 | `/forge use` | Load project memory/profile, start (or show how to start) the dashboard, then continue the task. |
 | `/forge status` | Summarize project status, the latest run, and the dashboard URL (reads `FORGE_MEMORY.md` + `DASHBOARD_STATE.json` + newest `run.json`). |
@@ -80,7 +80,7 @@ Once the full system is installed in a project, `/forge <sub-command>` drives th
 | `/forge open-report` | Print this project's newest `final-report.md`. |
 
 > [!TIP]
-> One Command Center on **127.0.0.1:4100** serves every project — it auto-discovers them and shows strictly per-project data. Run events stay per-project (`.claude/forge-runs/<run_id>/events.jsonl`, written by `.claude/forge-dashboard/log-event.cjs`). Forge never reads another project's `.claude/` for anything else. The retired per-project Control Center (ports 3737–3999) starts only on an explicit `legacy dashboard` request.
+> One Command Center on **127.0.0.1:4100** serves every project — it auto-discovers them and shows strictly per-project data. Run events stay per-project (`.claude/forge-runs/<run_id>/events.jsonl`, written by `.claude/forge-dashboard/log-event.cjs`). Forge never reads another project's `.claude/` for anything else. The old per-project Control Center (ports 3737–3999) was removed in v2.9.0; only `log-event.cjs` in `.claude/forge-dashboard/` remains.
 
 ---
 
@@ -191,30 +191,34 @@ Forge maps the sentence to a setting itself (`forge-config.cjs parse` names the 
 
 ## Dashboard commands
 
-The Command Center gateway is a zero-dependency Node server that reads each run's event log **read-only** and shows **real activity only**. (The retired per-project Control Center below still works on request.)
+The **Command Center** is a single zero-dependency Node gateway that reads run logs **read-only** and shows **real activity only** across all your projects. Start it, then open `http://127.0.0.1:4100/` in a browser.
 
 ```bash
-# Start (foreground) — prints the real http://localhost:<port>
-node .claude/forge-dashboard/server.cjs
+# Easiest: from your project, let Forge find and start it (it reuses one that is already running)
+.claude\forge-bin\forge-dashboard.cmd           # Windows
+bash .claude/forge-bin/forge-dashboard.sh        # macOS / Linux
 
-# One-shot CLI projections (no server, no browser)
-node .claude/forge-dashboard/server.cjs --status        # project + latest-run status
-node .claude/forge-dashboard/server.cjs --runs          # list runs newest-first
-node .claude/forge-dashboard/server.cjs --open-report   # print newest final-report.md
-node .claude/forge-dashboard/server.cjs --health        # health-check output
-node .claude/forge-dashboard/server.cjs --assign-only   # dashboard assignment only
+# From a clone of this repository: start the gateway yourself (foreground)
+node command-center/gateway/bin.mjs
+
+# Start the gateway with automatic restart on crash (recommended for long sessions)
+node command-center/gateway/supervisor.mjs
+
+# One-shot CLI projections (no server, no browser — via forge-runinfo)
+node .claude/forge-bin/forge-runinfo.cjs status        # project + latest-run status
+node .claude/forge-bin/forge-runinfo.cjs runs          # list runs newest-first
+node .claude/forge-bin/forge-runinfo.cjs open-report   # print newest final-report.md
 
 # Append a REAL event to the current run's event log
 node .claude/forge-dashboard/log-event.cjs <run_id> <event_type> "<json>"
-node .claude/forge-dashboard/log-event.cjs '<json>'
 ```
 
 | Endpoint / control | Purpose |
 |---|---|
 | `http://127.0.0.1:4100/` | Live Command Center SPA (projects, runs, agents, missions, proof). |
 | `GET /api/health` | Health probe — Forge never claims the dashboard is up unless this passes. |
-| `.claude/forge-dashboard/PORT` | Port of the RETIRED per-project Control Center (3737–3999) — only used by `legacy dashboard`. |
-| `start-forge-dashboard.bat` | Windows one-click start. |
+| `command-center/gateway/bin.mjs` | Gateway entry point (zero dependencies, localhost:4100 only). |
+| `.claude/forge-dashboard/start-forge-dashboard.bat` | Windows one-click start (runs `forge dashboard`). On macOS/Linux use `bash .claude/forge-bin/forge-dashboard.sh`. |
 
 ---
 

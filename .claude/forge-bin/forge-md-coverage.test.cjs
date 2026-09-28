@@ -14,6 +14,11 @@
  * `.claude/docs/forge-reference/*.md` file that the current forge.md actually links to. A rule that is
  * neither still inline nor reachable through a real link is a rule that got lost, not moved.
  *
+ * ONE DOCUMENTED EXCEPTION (v2.9.0, WP-N1, 2026-09-27): legacy-dashboard.md and the two frozen titles it
+ * covered were REMOVED, not moved — the retired per-project Control Center (server.cjs) the whole block
+ * described was itself deleted from Forge, so there is no longer any text to move or link to. See
+ * REMOVED_WITH_LEGACY_DASHBOARD below for the explicit, provable exception this adds to the rule above.
+ *
  * WHY A FROZEN FIXTURE, NOT A LIVE `git show`. A CI runner or a shallow clone may not have the
  * `feat/v290-f2` ref at all, and a fixture that depends on git history existing is not a fixture that
  * runs everywhere. The titles are a ONE-TIME snapshot, committed as data alongside this test.
@@ -119,11 +124,16 @@ t('every reference file forge.md links to actually exists on disk (no dangling p
   assert(missing.length === 0, 'forge.md links to a reference file that does not exist: ' + missing.join(', '));
 });
 
+// v2.9.0 (WP-N1, 2026-09-27): of the original five WP-C moved blocks, legacy-dashboard.md is no longer
+// "moved, not deleted" — the FEATURE it documented (`/forge legacy dashboard` starting the retired
+// server.cjs) was itself removed from Forge entirely, so there is nothing left to move text FROM or link
+// a reference doc TO. It is intentionally excluded here (see REMOVED_WITH_LEGACY_DASHBOARD below for the
+// matching, explicitly-proven title exception) rather than silently dropped from this list.
 const REQUIRED_REFERENCE_FILES = [
-  'paperclip.md', 'resume.md', 'learn-harvest.md', 'legacy-dashboard.md',
+  'paperclip.md', 'resume.md', 'learn-harvest.md',
   'tournament-secondbrain-codemodel-briefing.md',
 ];
-t('all five WP-C moved-block reference files exist AND are linked from forge.md (a file nobody is told to read is dead weight)', () => {
+t('the four STILL-ACTIVE WP-C moved-block reference files exist AND are linked from forge.md (a file nobody is told to read is dead weight)', () => {
   const linkedNames = new Set(linked.map((f) => f.name));
   const notLinked = REQUIRED_REFERENCE_FILES.filter((n) => !linkedNames.has(n));
   assert(notLinked.length === 0, 'not linked from forge.md: ' + notLinked.join(', '));
@@ -131,11 +141,36 @@ t('all five WP-C moved-block reference files exist AND are linked from forge.md 
   assert(notOnDisk.length === 0, 'missing on disk: ' + notOnDisk.join(', '));
 });
 
-t('every frozen pre-trim title is still reachable — inline in forge.md, or in a reference file forge.md links to', () => {
-  const missing = fixture.titles.filter((title) => !haystack.includes(normalizeWs(title)));
+t('legacy-dashboard.md was deliberately REMOVED (git rm), not silently left dangling or forgotten', () => {
+  assert(!fs.existsSync(path.join(REFERENCE_DIR, 'legacy-dashboard.md')), 'legacy-dashboard.md still exists on disk — it should have been removed in v2.9.0');
+  assert(!/legacy-dashboard\.md/.test(forgeMdText), 'forge.md still links to the removed legacy-dashboard.md');
+});
+
+// v2.9.0 (WP-N1): these two frozen pre-trim titles were specifically ABOUT the retired per-project Control
+// Center / `/forge legacy dashboard` command, a feature that was itself removed (not reworded, not moved)
+// once server.cjs and its UI were deleted from the template. Excluding them from the general
+// "still reachable" check below is the DOCUMENTED, provable exception the general rule's own header
+// comment asks for ("a rule that is neither still inline nor reachable... is a rule that got lost, not
+// moved" — this is the one class of rule that was correctly REMOVED, on purpose, together with its
+// feature). The dedicated test right after this proves they are genuinely gone, not just ignored.
+const REMOVED_WITH_LEGACY_DASHBOARD = [
+  'Do NOT auto-start the retired per-project Control Center as a fallback',
+  '`legacy dashboard`',
+];
+
+t('every frozen pre-trim title is still reachable — inline in forge.md, in a reference file forge.md links to, or documented as intentionally removed with the legacy dashboard feature', () => {
+  const missing = fixture.titles
+    .filter((title) => !REMOVED_WITH_LEGACY_DASHBOARD.includes(title))
+    .filter((title) => !haystack.includes(normalizeWs(title)));
   assert(missing.length === 0,
     missing.length + ' of ' + fixture.titles.length + ' pre-trim title(s) are no longer reachable:\n    - '
     + missing.join('\n    - '));
+});
+
+t('the excluded legacy-dashboard titles are PROVABLY gone (an intentional removal, never a silent one)', () => {
+  const stillPresent = REMOVED_WITH_LEGACY_DASHBOARD.filter((title) => haystack.includes(normalizeWs(title)));
+  assert(stillPresent.length === 0,
+    'these titles were assumed removed with the legacy dashboard feature but are STILL reachable — update REMOVED_WITH_LEGACY_DASHBOARD or investigate: ' + stillPresent.join(', '));
 });
 
 // --- forge.md itself really shrank (the point of WP-C) — a before/after size check, not just coverage -----

@@ -88,3 +88,6 @@ _itest/
 
 # runtime marker written by the precompact hook and consumed by SessionStart (holds a local transcript path)
 .claude/.forge-snapshot-due.json
+
+# Command Center runtime data (conversations, attachments, edit logs, Discord state): per machine, never shipped
+command-center/.data/

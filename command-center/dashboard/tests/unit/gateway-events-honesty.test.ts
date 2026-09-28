@@ -20,6 +20,7 @@ import {
   foldGatewayEventsResponse,
   formatDurationWithSource,
   formatRelativeTime,
+  parseCurrentRunId,
   type GatewayEventsState,
   type MissionPayload,
 } from '@/prototype/state/gateway-adapter';
@@ -28,6 +29,9 @@ import {
 // the Z1 passthrough tests at the bottom of this file address it directly rather than widening that
 // façade for a test.
 import { parseMissionPayload } from '@/prototype/state/adapter/rows';
+// WP-CCD (item 5, review fix): `toGatewayActivityEvent` is imported the SAME direct way
+// `ActivityView.tsx` itself already imports it — not part of the smaller public barrel above.
+import { toGatewayActivityEvent } from '@/prototype/state/adapter/mappers';
 
 /* ============================================================== P1-1 / P1-3 */
 
@@ -262,9 +266,17 @@ describe('buildGatewayRuns / deriveRunStatus — P3-13: a real failed task wins 
  * using two statuses that are deliberately NOT 'completed': `ended_unknown` (the run logged a
  * terminal event, so the task cannot still be running, but nothing says it succeeded) and
  * `stalled` (its agent has been silent past the stale window). These tests pin the two properties
- * the UI depends on: such a task must stop forcing the run to 'running', and must never on its own
- * make the run look 'completed'. No UI change is involved — `toStatusKey` already folds any
- * unrecognized status into the existing neutral `idle` key.
+ * `deriveRunStatus` (a RUN-level decision, straight string comparisons against `t.status`, never
+ * routed through `toStatusKey`) depends on: such a task must stop forcing the run to 'running', and
+ * must never on its own make the run look 'completed'.
+ *
+ * UPDATE (WP-CCD, review fix, 2026-09-28): the stale claim this comment used to make — that
+ * `toStatusKey` folds `'stalled'`/`'ended_unknown'` into the neutral `idle` key — described a real
+ * bug: a TASK's own displayed status (`toGatewayTask`, a genuinely different, per-task concept from
+ * this describe block's RUN-level `deriveRunStatus`) rendered identically to a task that never
+ * started at all. `toStatusKey` now maps both to `'blocked'` instead — see
+ * `gateway-adapter-antifabrication.test.ts`'s own `'toStatusKey — …'` describe block for that fix's
+ * direct tests. Nothing in THIS describe block changes: it never called `toStatusKey` at all.
  */
 describe('deriveRunStatus — ended_unknown / stalled tasks', () => {
   const runRow = (hasFinalReport: boolean) => [
@@ -378,5 +390,81 @@ describe('parseMissionPayload — the pairing-ambiguity signal survives the pars
     });
     expect(payload.orphanCompletions[0].pairingAmbiguous).toBe(true);
     expect(payload.orphanCompletions[0].unmatchedReason).toMatch(/ambiguous/i);
+  });
+});
+
+/* ========================================================================== */
+/*  WP-CCD (item 1) — parseCurrentRunId                                       */
+/* ========================================================================== */
+
+describe('parseCurrentRunId — the gateway\'s own honest "current run" pick, never guessed from runs[0]', () => {
+  it('a plain string current_run is read back verbatim', () => {
+    expect(parseCurrentRunId({ runs: [], current_run: 'forge-2026-09-27-resume' })).toBe('forge-2026-09-27-resume');
+  });
+
+  it('a nested {run_id} shape is also accepted, since the exact shape was still in flight', () => {
+    expect(parseCurrentRunId({ runs: [], current_run: { run_id: 'forge-2026-09-27-resume' } })).toBe('forge-2026-09-27-resume');
+  });
+
+  it('an explicit null current_run reads back null, never falling back to a guess', () => {
+    expect(parseCurrentRunId({ runs: [], current_run: null })).toBeNull();
+  });
+
+  it('an absent field (a gateway build that predates it) reads back null', () => {
+    expect(parseCurrentRunId({ runs: [] })).toBeNull();
+  });
+});
+
+/* ========================================================================== */
+/*  WP-CCD (item 5) — readableEventMessage / activityStatus / review_completed */
+/* ========================================================================== */
+
+/**
+ * WP-CCD (item 5): a real, human-readable activity row — tries `summary`/`decision_summary`/
+ * `check`+`verdict` FIRST, and only falls back to the pre-existing `note`/`task`/bare-event-type
+ * chain when none exist. `review_completed` is special-cased so a real `"changes_required"` verdict
+ * never paints green (the generic `/_completed$/` rule used to do exactly that).
+ */
+describe('toGatewayActivityEvent — a readable message, never a bare event_type (WP-CCD item 5)', () => {
+  it('a real "summary" field wins over the bare event_type', () => {
+    const event = toGatewayActivityEvent({ event_type: 'check_passed', timestamp: 't', summary: 'Doctor: 42 passed, 0 failed' }, 'run-1', 0);
+    expect(event.message).toBe('Doctor: 42 passed, 0 failed');
+  });
+
+  it('a "decision_summary" field wins when no "summary" exists', () => {
+    const event = toGatewayActivityEvent({ event_type: 'decision_logged', timestamp: 't', decision_summary: 'Chose forge-website over forge-fullstack' }, 'run-1', 0);
+    expect(event.message).toBe('Chose forge-website over forge-fullstack');
+  });
+
+  it('a "check"+"verdict" pair joins into one readable line when neither summary field exists', () => {
+    const event = toGatewayActivityEvent({ event_type: 'check_passed', timestamp: 't', check: 'npm test', verdict: 'PASS' }, 'run-1', 0);
+    expect(event.message).toBe('npm test: PASS');
+  });
+
+  it('FALLBACK: with none of the new fields, the pre-existing note/task/event_type chain is unchanged', () => {
+    expect(toGatewayActivityEvent({ event_type: 'agent_started', timestamp: 't', note: 'Starting build' }, 'run-1', 0).message).toBe('Starting build');
+    expect(toGatewayActivityEvent({ event_type: 'agent_started', timestamp: 't', task: 'build hero' }, 'run-1', 0).message).toBe('build hero');
+    expect(toGatewayActivityEvent({ event_type: 'run_started', timestamp: 't' }, 'run-1', 0).message).toBe('run_started');
+  });
+
+  it('a "review_completed" with an explicit PASSING verdict reads completed/green', () => {
+    const event = toGatewayActivityEvent({ event_type: 'review_completed', timestamp: 't', verdict: 'approved' }, 'run-1', 0);
+    expect(event.status).toBe('completed');
+  });
+
+  it('REGRESSION: a "review_completed" with "changes_required" must NOT read completed/green', () => {
+    const event = toGatewayActivityEvent({ event_type: 'review_completed', timestamp: 't', verdict: 'changes_required' }, 'run-1', 0);
+    expect(event.status).not.toBe('completed');
+    expect(event.status).toBe('review');
+  });
+
+  it('a "review_completed" with no verdict at all is an honest unknown, never assumed green', () => {
+    const event = toGatewayActivityEvent({ event_type: 'review_completed', timestamp: 't' }, 'run-1', 0);
+    expect(event.status).toBe('idle');
+  });
+
+  it('a review_* event gets the dedicated "review" kind, not the generic "system" bucket', () => {
+    const event = toGatewayActivityEvent({ event_type: 'review_requested', timestamp: 't' }, 'run-1', 0);
+    expect(event.kind).toBe('review');
   });
 });

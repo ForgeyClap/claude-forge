@@ -541,24 +541,20 @@ const DANGER_TRIGGER = {
  *  Used ONLY by secretPrintPatternExempt() below to test whether a candidate FILE argument (never the pattern
  *  argument) looks secret-shaped — it never decides whether the gate fires in the first place, which stays
  *  entirely hard-gates.json's own job. */
-const SECRET_TARGET_RE = /\.env\b(?!\.(?:example|sample|template)\b)|\.pem\b|\.key\b|\bid_rsa|\bid_ed25519|[\w.-]*credentials[\w.-]*\.json\b|\bsecrets[\\/]|\bservice-account[\w.-]*\.json\b|\.p12\b|\.pfx\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\.git-credentials\b|\.docker[\\/]config\.json\b|\.aws[\\/]credentials\b/i;
+const SECRET_TARGET_RE = /\.env\b(?!\.(?:example|sample|template)\b)|\.pem\b|\.key\b|\bid_rsa|\bid_ed25519|[\w.-]*credentials[\w.-]*\.json\b|\bsecrets(?:[\\/]|(?=[\s"';|&)<>]|$))|\bservice-account[\w.-]*\.json\b|\.p12\b|\.pfx\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\.git-credentials\b|\.docker[\\/]config\.json\b|\.aws[\\/]credentials\b/i;
 
 // secretPrintPatternExempt()'s three search-tool families — split because each has a DIFFERENT rule for where
 // its pattern argument sits (see that function's own doc for why).
 const SEARCH_TOOL_HEADS = new Set(['grep', 'egrep', 'fgrep', 'rg']);
 const FINDSTR_HEAD = 'findstr';
 const SELECT_STRING_HEADS = new Set(['select-string', 'sls']);
-// grep/egrep/fgrep/rg: GNU/ripgrep semantics — once ANY -e/--regexp/-f/--file is given, EVERY remaining
-// positional is a FILE, never also "the" pattern (closes `grep -e x .env.local`: the positional after an
-// explicit -e must still be read as the file). -f/--file's own value is a pattern-SOURCE file, exempted the
-// same as -e/--regexp per the task spec, not a target this gate reads for its own content directly.
-const GREP_PATTERN_FLAG_RE = /^(?:-e|--regexp|-f|--file)$/;
-const GREP_PATTERN_FLAG_ATTACHED_RE = /^(?:--regexp|--file)=/;
-// v2.9.0 (Lead, adversarial probe after WP-M2): -f/--file NAMES A FILE the tool reads (its patterns). It still marks
-// "a pattern was given explicitly", but its value is never exempted: `grep -f .env x` reads the secret file.
-const GREP_PATTERN_SOURCE_FILE_RE = /^(?:-f|--file)(?:=|$)/;
+// grep/egrep/fgrep/rg and findstr: the full per-tool option-table walk (WP-M3, forge-gate-quotes.cjs's own
+// classifySearchWords()/SEARCH_TOOL_OPTION_TABLES — see that module's doc comment for the complete grammar and
+// the fail-closed contract) replaces what used to be a plain exact-word check for -e/--regexp/-f/--file here.
 // Select-String/sls: ONLY an explicit -Pattern value is ever exempt — deliberately NO positional fallback (see
-// secretPrintPatternExempt()'s own doc for the live false-ALLOW this closes).
+// secretPrintPatternExempt()'s own doc for the live false-ALLOW this closes). This one stays a local, exact
+// regex (never routed through the shared table above) because it is simple enough, and different enough from
+// the grep/rg/findstr grammar, that WP-M3 leaves it exactly as WP-M1 wrote it.
 const SELECT_STRING_PATTERN_FLAG_RE = /^-pattern$/i;
 
 /** splitSegmentWords(segment) -> {words:[{raw,start,end}], mask} | null — a minimal, LOCAL quote-aware word
@@ -672,7 +668,27 @@ function resolveSearchToolHead(segment) {
  *      standalone `--`, so `grep -- -e .env` treated `.env` (the FILE positional after `--`) as -e's own
  *      pattern VALUE — real GNU grep parses `--` as end-of-options first, so the literal word `-e` right after
  *      it is the pattern text itself, and `.env` is a plain file argument. Both the explicit-flag scan and the
- *      implicit-positional fallback now stop at (or restart cleanly after) the first standalone `--`. */
+ *      implicit-positional fallback now stop at (or restart cleanly after) the first standalone `--`.
+ *
+ *  WP-M3 (2026-09-27, independent review RB2-1): the grep/rg/findstr position rule above is now computed by
+ *  forge-gate-quotes.cjs::classifySearchWords() — a real, per-tool, closed OPTION-TABLE walk — instead of the
+ *  plain exact-word check this function used to run inline. That old check only ever recognised the EXACT
+ *  words `-e`/`--regexp`/`-f`/`--file` (or their attached `--name=` form): every other flag was merely
+ *  "starts with -, so skip it while scanning for the first bare word", with no notion of which flags take a
+ *  VALUE. Two failure directions followed: (1) a value-taking flag's OWN value could be mistaken for the
+ *  implicit pattern — `grep -A 3 "\.env" src/` skipped "-A" then wrongly read "3" as the pattern, leaving the
+ *  REAL pattern ".env" to be tested as a file and falsely BLOCKED; (2) a pattern/file flag's value that was
+ *  not spelled in the one exact form this function knew — an attached short value (`-eTOKEN`), a value-taking
+ *  letter anywhere but the front of a cluster (`-vf`, `-Ff`, `-wf`, `-rf`, `-vex`), an abbreviated long option
+ *  (`--reg=`, `--fil`), or an unrecognised flag (`-Q`) — was never recognised as consuming anything, so the
+ *  FILE right after it was wrongly read as the implicit pattern and falsely ALLOWED. findstr had the mirror
+ *  gap: `/C:TOKEN` supplies the search string inline, so old code's blind "starts with / is a flag" check
+ *  never noticed the pattern slot was already filled, and the real file right after it was falsely ALLOWED
+ *  too. classifySearchWords() closes both directions by modelling real flag arity per tool (see its own doc
+ *  comment in forge-gate-quotes.cjs for the full table and the fail-closed contract: `ok:false` — an unknown
+ *  flag, an ambiguous abbreviation, a dangling value, or a non-numeric context/count value — means NO
+ *  exemption at all, never a new false ALLOW). Select-String/sls is deliberately UNCHANGED (still the local
+ *  exact-word check right below), per this task's own "keep all earlier behaviour" instruction. */
 function secretPrintPatternExempt(segment) {
   const resolved = resolveSearchToolHead(String(segment || ''));
   if (resolved.dynamic) return false;
@@ -684,49 +700,32 @@ function secretPrintPatternExempt(segment) {
 
   const head = texts[0].replace(/^["']|["']$/g, '').toLowerCase().split(/[\\/]/).pop().replace(/\.exe$/, '');
   let tool = null;
-  if (SEARCH_TOOL_HEADS.has(head)) tool = 'grep';
+  // WP-M3: "rg" gets its OWN tool name (not just "grep") so classifySearchWords() below can pick ripgrep's own
+  // option table — grep and rg share a lot of letters, but not their ARITY (e.g. "-r" — see that function's
+  // own doc comment in forge-gate-quotes.cjs for the exact "rg -r" divergence this distinction exists for).
+  if (SEARCH_TOOL_HEADS.has(head)) tool = head === 'rg' ? 'rg' : 'grep';
   else if (head === FINDSTR_HEAD) tool = 'findstr';
   else if (SELECT_STRING_HEADS.has(head)) tool = 'select-string';
   if (!tool) return false;
 
   const rest = words.slice(1);
   const restTexts = texts.slice(1);
-  const patternIdx = new Set();
+  // v2.9.0 (Codex recheck SEC-1, HIGH): a word with an unquoted redirection or command substitution is shell
+  // syntax (`grep -e '.*'<.env` reads .env through `<`), so the whole segment gets no pattern exemption.
+  if (rest.some((w) => QUOTES.hasUnquotedShellSyntax(w.raw))) return false;
+  let patternIdx;
 
   if (tool === 'select-string') {
+    patternIdx = new Set();
     for (let i = 0; i < rest.length; i++) {
       if (SELECT_STRING_PATTERN_FLAG_RE.test(rest[i].raw) && i + 1 < rest.length) patternIdx.add(i + 1);
     }
   } else {
-    let explicitFlag = false;
-    const dashDashIdx = restTexts.findIndex((t) => t === '--');
-    const boundary = dashDashIdx === -1 ? rest.length : dashDashIdx;
-    if (tool === 'grep') {
-      for (let i = 0; i < boundary; i++) {
-        if (GREP_PATTERN_FLAG_RE.test(rest[i].raw)) {
-          explicitFlag = true;
-          if (i + 1 < rest.length && !GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) patternIdx.add(i + 1);
-        } else if (GREP_PATTERN_FLAG_ATTACHED_RE.test(rest[i].raw)) {
-          explicitFlag = true;
-          if (!GREP_PATTERN_SOURCE_FILE_RE.test(rest[i].raw)) patternIdx.add(i);
-        }
-      }
-    }
-    if (!explicitFlag) {
-      if (dashDashIdx !== -1) {
-        // no pattern given through an explicit flag before `--`: grep/rg read the FIRST word after `--` as
-        // the pattern (real GNU/ripgrep semantics — `--` only ends OPTION parsing, the positional-pattern
-        // rule is unaffected by it), and every other word after that stays a file.
-        if (dashDashIdx + 1 < rest.length) patternIdx.add(dashDashIdx + 1);
-      } else {
-        const isFlagShaped = (raw) => (tool === 'findstr' ? raw.startsWith('/') : raw.startsWith('-'));
-        for (let i = 0; i < rest.length; i++) {
-          if (isFlagShaped(rest[i].raw)) continue;
-          patternIdx.add(i);
-          break; // exactly one implicit positional pattern
-        }
-      }
-    }
+    // tool is exactly 'grep', 'rg' or 'findstr' here (never 'select-string', handled above) — already the
+    // exact name classifySearchWords() expects.
+    const result = QUOTES.classifySearchWords(tool, restTexts);
+    if (!result.ok) return false;
+    patternIdx = result.patternIdx;
   }
 
   for (let i = 0; i < rest.length; i++) {

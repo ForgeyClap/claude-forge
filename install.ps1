@@ -137,6 +137,152 @@ try {
 }
 '@
 
+# v2.9.0 (WP-P3, coordinator follow-up): the Command Center gateway only auto-discovers projects
+# under <home>\Documents, <home>\Desktop and its own parent folder (command-center\gateway\src\
+# paths.mjs SYNC_SCAN_ROOTS) -- a project living anywhere else (a custom drive/folder) never shows
+# up in the dashboard. Every project install/uninstall records (or removes) this project's absolute
+# path in $HOME\.claude\forge\projects.json, a small { schema, projects: [...] } file the gateway
+# reads (WP-P1, a separate work package -- this installer only writes the file). Real JSON
+# read-modify-write via `node` (same discipline as $ForgeStandingMigrateJs above: never a hand-rolled
+# regex edit of a user-owned file); when node is unavailable this warns once and continues -- it
+# NEVER fails the install over this file. Written atomically (temp file + rename) and merged like
+# settings.json: never added to the install manifest, so a global --uninstall/-Uninstall never
+# deletes the whole file -- only a project uninstall removes that ONE project's own entry.
+# process.argv.slice(-4) mirrors $ForgeStandingMigrateJs's own argv trick -- see that constant's
+# header comment for why a fixed index would silently read the wrong thing on one of the two
+# installers.
+$ForgeProjectsRegistryJs = @'
+try {
+  var args = process.argv.slice(-4);
+  var projectsPath = args[0];
+  var projectPath = args[1];
+  var dryRun = args[2] === "1";
+  var action = args[3];
+  var fs = require("fs");
+  var path = require("path");
+  var isWin = process.platform === "win32";
+  var norm = function (p) {
+    p = String(p);
+    if (isWin) { p = p.replace(/\\/g, "/").toLowerCase(); }
+    if (p.length > 1) { p = p.replace(/\/+$/, ""); }
+    return p;
+  };
+
+  // WP-9B-INST (Codex adversarial review, INSTALL-4 LOW): two installs racing on the SAME
+  // projects.json (e.g. two terminals installing/uninstalling different projects at once) can each
+  // read the file before the other's rename lands, so the second writer's own temp-file+rename
+  // silently discards the first writer's change -- a lost-update race, even though each individual
+  // write is itself atomic. fs.mkdirSync is atomic (EEXIST when the directory already exists, exactly
+  // like a Unix `mkdir` used as a lockfile) and serializes the whole read-modify-rename section below
+  // across concurrent installer processes.
+  var lockPath = projectsPath + ".lock";
+  fs.mkdirSync(path.dirname(projectsPath), { recursive: true });
+  var haveLock = false;
+  var STALE_MS = 2 * 60 * 1000;   // a lock older than ~2 minutes is treated as abandoned (a crashed
+                                   // installer, or a machine that lost power mid-write) and removed
+  var RETRY_MS = 50;
+  var MAX_WAIT_MS = 5000;         // "a short wait, up to a few seconds" per the fix's own wording
+  var deadline = Date.now() + MAX_WAIT_MS;
+  while (!haveLock) {
+    try {
+      fs.mkdirSync(lockPath);
+      haveLock = true;
+    } catch (eLock) {
+      if (eLock.code !== "EEXIST") { throw eLock; }
+      var isStale = false;
+      try {
+        isStale = (Date.now() - fs.statSync(lockPath).mtime.getTime()) > STALE_MS;
+      } catch (eStat) {
+        // the lock vanished between our mkdir attempt and this stat (the other installer finished and
+        // cleaned up) -- just retry the mkdir immediately, no need to treat this as a stale lock.
+      }
+      if (isStale) {
+        try { fs.rmdirSync(lockPath); } catch (eRm) { /* another process may already have removed it, or we lack permission */ }
+        if (Date.now() >= deadline) {
+          process.stderr.write("forge: " + lockPath + " looks stale but could not be removed -- proceeding without a lock (a concurrent update to the projects registry could be lost)\n");
+          break;
+        }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        process.stderr.write("forge: " + lockPath + " is still held by another install after " + MAX_WAIT_MS + "ms -- proceeding without it (a concurrent update to the projects registry could be lost)\n");
+        break;
+      }
+      // Node has no synchronous sleep primitive without extra dependencies -- a short busy-wait is the
+      // simplest thing that works identically on every Node version this installer supports.
+      var until = Date.now() + RETRY_MS;
+      while (Date.now() < until) { /* busy-wait */ }
+    }
+  }
+
+  var exitCode = (function run() {
+    try {
+      var data = { schema: 1, projects: [] };
+      if (fs.existsSync(projectsPath)) {
+        var raw = fs.readFileSync(projectsPath, "utf8");
+        var parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (eParse) {
+          process.stderr.write("forge: " + projectsPath + " could not be read or parsed (" + eParse.message + ") -- left untouched\n");
+          return 3;
+        }
+        if (!parsed || !Array.isArray(parsed.projects)) {
+          process.stderr.write("forge: " + projectsPath + " does not have the expected { projects: [...] } shape -- left untouched\n");
+          return 3;
+        }
+        data = parsed;
+      }
+      if (typeof data.schema !== "number") { data.schema = 1; }
+
+      var idx = -1;
+      for (var i = 0; i < data.projects.length; i++) {
+        if (norm(data.projects[i]) === norm(projectPath)) { idx = i; break; }
+      }
+
+      if (action === "remove") {
+        if (idx === -1) {
+          process.stdout.write((dryRun ? "[dry-run] " : "") + "no entry for this project in " + projectsPath + " -- nothing to remove\n");
+          return 0;
+        }
+        if (dryRun) {
+          process.stdout.write("[dry-run] would remove the entry for this project from " + projectsPath + "\n");
+          return 0;
+        }
+        data.projects.splice(idx, 1);
+      } else {
+        if (idx !== -1) {
+          process.stdout.write((dryRun ? "[dry-run] " : "") + "this project is already recorded in " + projectsPath + "\n");
+          return 0;
+        }
+        if (dryRun) {
+          process.stdout.write("[dry-run] would add this project to " + projectsPath + " so the Command Center dashboard can find it\n");
+          return 0;
+        }
+        data.projects.push(projectPath);
+      }
+
+      var dir = path.dirname(projectsPath);
+      fs.mkdirSync(dir, { recursive: true });
+      var tmp = projectsPath + ".tmp-" + process.pid + "-" + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+      fs.renameSync(tmp, projectsPath);
+      process.stdout.write((action === "remove" ? "removed this project from " : "added this project to ") + projectsPath + "\n");
+      return 0;
+    } finally {
+      if (haveLock) {
+        try { fs.rmdirSync(lockPath); } catch (eRelease) { /* best effort -- a missing lock dir at cleanup time is not an error */ }
+      }
+    }
+  })();
+
+  process.exit(exitCode);
+} catch (e) {
+  process.stderr.write("forge: could not update the projects registry (" + e.message + ")\n");
+  process.exit(2);
+}
+'@
+
 function Write-ForgeLog {
   param([string]$Message)
   Write-Host $Message
@@ -190,6 +336,10 @@ function Copy-ForgeFile {
   $destDir = Split-Path -Parent -Path $DestFile
 
   if ($IsDryRun) {
+    if ((Test-Path -LiteralPath $DestFile) -and -not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+      Write-ForgeLog "  [dry-run] SKIP (a directory already exists at this file's destination): $DestFile"
+      return $true
+    }
     if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
       $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
       $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
@@ -201,19 +351,30 @@ function Copy-ForgeFile {
     } else {
       Write-ForgeLog "  [dry-run] would create: $DestFile"
     }
-    return
+    return $true
+  }
+
+  # WP-9B-INST (Codex adversarial review, INSTALL-3 MEDIUM): $DestFile existing as anything OTHER than
+  # a regular file (almost always a directory left behind by an older release, or planted deliberately)
+  # must never be silently treated as "does not exist yet" -- Test-Path -PathType Leaf returns $false
+  # for BOTH cases, but Copy-Item -Force against an existing DIRECTORY copies the source INSIDE it
+  # (DestFile\SourceFileName), not AS DestFile -- reporting "wrote: $DestFile" while the real bytes
+  # landed one level deeper. Treated as an explicit failure, never a silent success.
+  if ((Test-Path -LiteralPath $DestFile) -and -not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+    Write-ForgeError "cannot write $DestFile -- a directory (or other non-file item) already exists at that exact path"
+    return $false
   }
 
   if (-not (Test-Path -LiteralPath $destDir -PathType Container)) {
     New-Item -ItemType Directory -Path $destDir -Force | Out-Null
   }
 
+  $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
   if (Test-Path -LiteralPath $DestFile -PathType Leaf) {
-    $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
     $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
     if ($srcHash -eq $dstHash) {
       # identical, no-op
-      return
+      return $true
     }
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $bakFile = "$DestFile.forge-bak-$stamp"
@@ -222,7 +383,112 @@ function Copy-ForgeFile {
   }
 
   Copy-Item -LiteralPath $SourceFile -Destination $DestFile -Force
+  # WP-9B-INST (INSTALL-3): verify the copy actually produced a regular file matching the source's
+  # hash, before ever reporting success -- catches a destination that silently became a
+  # directory-nested copy, or any other post-copy mismatch, instead of trusting Copy-Item's own lack
+  # of a thrown exception alone.
+  if (-not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+    Write-ForgeError "copy to $DestFile did not produce a regular file (a directory may exist at that path) -- treating this as a failure"
+    return $false
+  }
+  $verifyHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
+  if ($verifyHash -ine $srcHash) {
+    Write-ForgeError "copy to $DestFile did not match the source's hash after copying -- treating this as a failure"
+    return $false
+  }
   Write-ForgeLog "  wrote: $DestFile"
+  return $true
+}
+
+# Copy-ForgeManifestAwareFile -- v2.9.0 (WP-P3b, point 3): the SAME create/no-op/overwrite shape as
+# Copy-ForgeFile, except the overwrite branch's backup decision is manifest-aware instead of "always
+# back up when the new payload differs". $OldHash is what THIS exact path hashed to at the end of the
+# PREVIOUS install (from the old global manifest); when the file on disk still matches that, this
+# installer itself is the only thing that ever touched it, and the new version can simply replace it.
+# Only a hash mismatch (edited since install, or no recorded hash at all -- an unknown provenance this
+# function is not in a position to guess at) still takes the normal timestamped backup. This is scoped
+# to the Command Center ONLY: nobody hand-edits shipped gateway/dashboard/discord code the way they
+# routinely edit project-side skills/agents, so routine upgrades no longer litter it with a
+# *.forge-bak-<stamp> copy of its own previous shipped code on every single release.
+function Copy-ForgeManifestAwareFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourceFile,
+    [Parameter(Mandatory = $true)][string]$DestFile,
+    [Parameter(Mandatory = $true)][bool]$IsDryRun,
+    [string]$OldHash = $null
+  )
+  $destDir = Split-Path -Parent -Path $DestFile
+
+  # WP-9B-INST (Codex adversarial review, INSTALL-3 MEDIUM): see Copy-ForgeFile's identical comment --
+  # a DIRECTORY (or other non-file item) at $DestFile must never fall into the "does not exist yet,
+  # create it" branch below, where Copy-Item -Force would copy the source INSIDE it instead of AS it.
+  if ((Test-Path -LiteralPath $DestFile) -and -not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+    if ($IsDryRun) {
+      Write-ForgeLog "  [dry-run] SKIP (a directory already exists at this file's destination): $DestFile"
+      return $true
+    }
+    Write-ForgeError "cannot write $DestFile -- a directory (or other non-file item) already exists at that exact path"
+    return $false
+  }
+
+  if (-not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+    if ($IsDryRun) {
+      Write-ForgeLog "  [dry-run] would create: $DestFile"
+      return $true
+    }
+    if (-not (Test-Path -LiteralPath $destDir -PathType Container)) {
+      New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    }
+    $newSrcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
+    Copy-Item -LiteralPath $SourceFile -Destination $DestFile -Force
+    if (-not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+      Write-ForgeError "copy to $DestFile did not produce a regular file (a directory may exist at that path) -- treating this as a failure"
+      return $false
+    }
+    if ((Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash -ine $newSrcHash) {
+      Write-ForgeError "copy to $DestFile did not match the source's hash after copying -- treating this as a failure"
+      return $false
+    }
+    Write-ForgeLog "  wrote: $DestFile"
+    return $true
+  }
+
+  $srcHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
+  $dstHash = (Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash
+  if ($srcHash -ieq $dstHash) {
+    if ($IsDryRun) { Write-ForgeLog "  [dry-run] unchanged: $DestFile" }
+    return $true
+  }
+
+  $userModified = (-not $OldHash) -or ($dstHash -ine $OldHash)
+  if ($IsDryRun) {
+    if ($userModified) {
+      Write-ForgeLog "  [dry-run] would back up + overwrite: $DestFile"
+    } else {
+      Write-ForgeLog "  [dry-run] would update (unchanged since install, no backup needed): $DestFile"
+    }
+    return $true
+  }
+
+  if ($userModified) {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $bakFile = "$DestFile.forge-bak-$stamp"
+    Move-Item -LiteralPath $DestFile -Destination $bakFile -Force
+    Write-ForgeLog "  backed up: $DestFile -> $bakFile"
+  }
+  Copy-Item -LiteralPath $SourceFile -Destination $DestFile -Force
+  # WP-9B-INST (INSTALL-3): verify the copy actually produced a regular file matching the source's
+  # hash, before ever reporting success.
+  if (-not (Test-Path -LiteralPath $DestFile -PathType Leaf)) {
+    Write-ForgeError "copy to $DestFile did not produce a regular file (a directory may exist at that path) -- treating this as a failure"
+    return $false
+  }
+  if ((Get-FileHash -LiteralPath $DestFile -Algorithm SHA256).Hash -ine $srcHash) {
+    Write-ForgeError "copy to $DestFile did not match the source's hash after copying -- treating this as a failure"
+    return $false
+  }
+  Write-ForgeLog "  wrote: $DestFile"
+  return $true
 }
 
 # Test-ForgeReparsePoint -- true when $Path itself (no ancestor walk, not the target it points at) is a
@@ -238,6 +504,33 @@ function Test-ForgeReparsePoint {
   } catch {
     return $false
   }
+}
+
+# Test-ForgePathHasReparseAncestor -- WP-9B-INST (Codex adversarial review, INSTALL-1/INSTALL-2): true
+# the moment any EXISTING component of $Rel (each '\'/'/' -separated segment, including the final
+# leaf), walked from $RootDir down, is itself a symlink/junction/reparse point
+# (Test-ForgeReparsePoint). Copy-Item/Move-Item both follow a reparse point exactly like a real
+# directory or file, so a link planted anywhere in that chain lets a write or move meant for $RootDir
+# land somewhere else entirely. A component that does not exist yet is not a reparse point (nothing to
+# follow yet). -IncludeRoot also checks $RootDir itself -- used by the Command Center destination-tree
+# check (Copy-ForgeCommandCenterTree), where "the template root down" includes the root; the
+# manifest-retirement path-safety check (Test-ForgeManifestPathIsContained) deliberately leaves
+# $RootDir itself unchecked, since $RootDir there is the caller's own project/home directory, not
+# something a manifest entry could ever redirect.
+function Test-ForgePathHasReparseAncestor {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$Rel,
+    [switch]$IncludeRoot
+  )
+  if ($IncludeRoot -and (Test-ForgeReparsePoint -Path $RootDir)) { return $true }
+  $current = $RootDir
+  foreach ($part in ($Rel -split '[\\/]')) {
+    if ([string]::IsNullOrEmpty($part)) { continue }
+    $current = Join-Path $current $part
+    if (Test-ForgeReparsePoint -Path $current) { return $true }
+  }
+  return $false
 }
 
 # New-ForgeGuardedFile -- creates a NEW $DestFile (no existing file yet) from $SourceFile without following
@@ -573,8 +866,13 @@ function Copy-ForgeTree {
       if (-not $fileOk) { $allOk = $false }
       # never manifested: settings.json is merged, not owned — an uninstall must never delete it
     } else {
-      Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
-      if (-not $IsDryRun -and $ManifestScope) {
+      # WP-9B-INST (INSTALL-3): Copy-ForgeFile's return value is now meaningful (it can fail -- e.g. a
+      # directory sitting at $dest) and must be captured, exactly like the Copy-ForgeSettingsFile branch
+      # above already does, or this call's own $allOk would stay $true no matter what Copy-ForgeFile
+      # reports.
+      $fileOk = Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+      if (-not $fileOk) { $allOk = $false }
+      if (-not $IsDryRun -and $ManifestScope -and $fileOk) {
         Add-ForgeManifestEntry -Scope $ManifestScope -RootDir $ManifestRoot -AbsPath $dest
       }
     }
@@ -596,6 +894,22 @@ function Copy-ForgeTree {
 # Copy-ForgeSettingsFile/forge-settings-merge.cjs already use for settings.json.
 # ---------------------------------------------------------------------------
 
+# Get-ForgeManifestRel -- $AbsPath relative to $RootDir, forward-slash, the SAME convention every
+# manifest entry (old or new) uses. $null when $AbsPath is not actually under $RootDir. Factored out
+# of Add-ForgeManifestEntry (WP-P3b) so the retirement-pruning code below can compute the identical
+# relative form for an EXISTING destination file (e.g. inside Copy-ForgeManifestAwareFile) without
+# duplicating this substring arithmetic a second time.
+function Get-ForgeManifestRel {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$AbsPath
+  )
+  $rootFull = Resolve-ForgeFullPath $RootDir
+  $absFull = Resolve-ForgeFullPath $AbsPath
+  if ($absFull.Length -le $rootFull.Length) { return $null }
+  return ($absFull.Substring($rootFull.Length).TrimStart('\', '/')) -replace '\\', '/'
+}
+
 # Add-ForgeManifestEntry — records one written file (by its sha256 at THIS moment) into
 # $script:ForgeManifest[$Scope], relative to $RootDir (forward-slash, so the same manifest reads
 # identically on POSIX and Windows). A no-op if the file does not exist (e.g. a dry-run path, or
@@ -607,12 +921,110 @@ function Add-ForgeManifestEntry {
     [Parameter(Mandatory = $true)][string]$AbsPath
   )
   if (-not (Test-Path -LiteralPath $AbsPath -PathType Leaf)) { return }
-  $rootFull = Resolve-ForgeFullPath $RootDir
-  $absFull = Resolve-ForgeFullPath $AbsPath
-  if ($absFull.Length -le $rootFull.Length) { return }
-  $rel = ($absFull.Substring($rootFull.Length).TrimStart('\', '/')) -replace '\\', '/'
+  $rel = Get-ForgeManifestRel -RootDir $RootDir -AbsPath $AbsPath
+  if (-not $rel) { return }
   $hash = (Get-FileHash -LiteralPath $AbsPath -Algorithm SHA256).Hash
   [void] $script:ForgeManifest[$Scope].Add([ordered]@{ path = $rel; sha256 = $hash })
+}
+
+# Test-ForgeSafeManifestRelPath -- WP-9B-INST (Codex adversarial review, INSTALL-1): true when $Rel is
+# a normalized, forward-slash RELATIVE path with no drive letter, UNC, or \\?\ prefix, no leading
+# slash/backslash, and no '.'/'..'/empty path components, using only characters this installer's own
+# payload ever produces (verified against every path this repo actually ships under global-install\,
+# .claude\ and command-center\). An install manifest is attacker-influenced input the moment its
+# project is cloned or shared -- a forged ".forge-install-manifest.json" entry like
+# "../../victim.txt" (with a sha256 that happens to match a REAL file outside the project) must never
+# be trusted just because it parses; that hash is exactly as forgeable as the path. Lexical validation
+# only -- filesystem containment/symlink checks happen separately, at the point a concrete $RootDir is
+# actually about to be written to (see Test-ForgeManifestPathIsContained).
+function Test-ForgeSafeManifestRelPath {
+  param([string]$Rel)
+  if ([string]::IsNullOrWhiteSpace($Rel)) { return $false }
+  if ($Rel.IndexOf('\') -ge 0) { return $false }
+  if ($Rel.StartsWith('/')) { return $false }
+  if ($Rel -match '^[A-Za-z]:') { return $false }
+  $parts = $Rel -split '/'
+  foreach ($part in $parts) {
+    if ($part.Length -eq 0) { return $false }
+    if ($part -eq '.' -or $part -eq '..') { return $false }
+    if ($part -notmatch '^[A-Za-z0-9._ -]+$') { return $false }
+  }
+  return $true
+}
+
+# Test-ForgeManifestPathIsContained -- WP-9B-INST (Codex adversarial review, INSTALL-1): filesystem-level
+# defense-in-depth for a manifest-recorded relative path that already passed
+# Test-ForgeSafeManifestRelPath. Even a lexically clean relative path (no "..") can still resolve
+# outside $RootDir if an ANCESTOR directory component is a symlink/junction planted after the fact --
+# Join-Path does not care, and Move-Item follows a reparse point exactly like a real directory. Refuses
+# the moment any EXISTING component is a reparse point (Test-ForgePathHasReparseAncestor); once both
+# checks hold, $RootDir\$Rel cannot resolve outside $RootDir (the lexical check rules out any '..'/
+# absolute escape in the string itself, and this rules out a symlink redirecting any component of it).
+function Test-ForgeManifestPathIsContained {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$Rel
+  )
+  if (-not (Test-ForgeSafeManifestRelPath -Rel $Rel)) { return $false }
+  if (Test-ForgePathHasReparseAncestor -RootDir $RootDir -Rel $Rel) { return $false }
+  return $true
+}
+
+# Get-ForgeOldManifestEntries — v2.9.0 (WP-P3b): reads a PREVIOUS install's manifest (the file this
+# same run is about to overwrite via Write-ForgeManifestFile) into a plain path->sha256 hashtable, so
+# the retirement-pruning step below can tell which of a prior install's files this run's payload no
+# longer ships. Returns $null when the manifest does not exist (a pre-2.8.0 install, or a genuinely
+# first-ever install -- either way, nothing to diff against) or cannot be read/parsed (corrupt or
+# locked -- treated the same as "no prior manifest" rather than guessing at partial content: pruning
+# is skipped for this scope this run, never a reason to fail the install).
+function Get-ForgeOldManifestEntries {
+  param([Parameter(Mandatory = $true)][string]$ManifestPath)
+  if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { return $null }
+  try {
+    $raw = Get-Content -LiteralPath $ManifestPath -Raw -ErrorAction Stop
+    $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    Write-ForgeLog "  could not read or parse $ManifestPath -- treating this scope as having no prior manifest to prune against this run"
+    return $null
+  }
+  $map = @{}
+  if ($parsed -and $parsed.files) {
+    foreach ($f in @($parsed.files)) {
+      if (-not ($f.path -and $f.sha256)) { continue }
+      $p = [string]$f.path
+      # WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH): reject a manifest entry whose path is
+      # not a normal, safe relative path BEFORE it is ever hashed or moved. Skipped with a plain
+      # warning; this never aborts the install, it only means this ONE entry is not considered for
+      # retirement-pruning this run.
+      if (-not (Test-ForgeSafeManifestRelPath -Rel $p)) {
+        Write-ForgeLog "  ignoring unsafe path in $ManifestPath -- '$p' is not a normal relative path"
+        continue
+      }
+      $map[$p] = [string]$f.sha256
+    }
+  }
+  return $map
+}
+
+# Get-ForgeNormalizedSha256 -- sha256 of $Path's bytes after normalizing CRLF -> LF (a lone CR or LF
+# is left untouched). Used ONLY by the pre-2.8.0 (no-manifest) legacy dashboard fallback below, so a
+# Windows checkout/extraction that turned a shipped LF file into CRLF still matches the historical
+# hash recorded from the original (LF) git blob. Bytes are round-tripped through the Latin-1/ISO-8859-1
+# codepage, which maps every byte value 0-255 to exactly one character and back losslessly -- unlike
+# UTF-8, it can never throw or silently substitute on content that is not valid UTF-8, so this is safe
+# for arbitrary file bytes, not just clean ASCII text.
+function Get-ForgeNormalizedSha256 {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $latin1 = [System.Text.Encoding]::GetEncoding('ISO-8859-1')
+  $normalized = $latin1.GetBytes(($latin1.GetString($bytes) -replace "`r`n", "`n"))
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hashBytes = $sha.ComputeHash($normalized)
+  } finally {
+    $sha.Dispose()
+  }
+  return (($hashBytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
 # Write-ForgeManifestFile — writes the accumulated manifest for one scope to disk. A no-op when
@@ -715,10 +1127,21 @@ function Remove-ForgeManifestFiles {
     [Parameter(Mandatory = $true)]$Entries,
     [bool]$IsDryRun = $false
   )
-  $removed = 0; $kept = 0; $missing = 0
+  $removed = 0; $kept = 0; $missing = 0; $rejected = 0
   $touchedDirs = New-Object 'System.Collections.Generic.List[string]'
   foreach ($e in $Entries) {
-    $relWin = ($e.path -replace '/', '\')
+    $rel = [string]$e.path
+    # WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH -- same untrusted-manifest-path class,
+    # reachable here via -Uninstall on a forged/shared project's own manifest): never trust a manifest
+    # path enough to hash-then-delete it without the same safety check the retirement-pruning path
+    # (Remove-ForgeRetiredManifestFiles) already applies. Rejected with a plain line, never an error
+    # that aborts the uninstall.
+    if (-not (Test-ForgeManifestPathIsContained -RootDir $RootDir -Rel $rel)) {
+      Write-ForgeLog "  skipped (unsafe path in the install manifest, refusing to trust it): $rel"
+      $rejected++
+      continue
+    }
+    $relWin = ($rel -replace '/', '\')
     $abs = Join-Path $RootDir $relWin
     if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { $missing++; continue }
     $curHash = (Get-FileHash -LiteralPath $abs -Algorithm SHA256).Hash
@@ -741,7 +1164,7 @@ function Remove-ForgeManifestFiles {
       Remove-ForgeEmptyDirs -StartDir $d -StopAt $RootDir
     }
   }
-  return [ordered]@{ removed = $removed; kept = $kept; missing = $missing }
+  return [ordered]@{ removed = $removed; kept = $kept; missing = $missing; rejected = $rejected }
 }
 
 # Remove-ForgePayloadFallback — the pre-2.8.0 (no-manifest) fallback: removes a file under
@@ -789,6 +1212,197 @@ function Remove-ForgePayloadFallback {
     }
   }
   return [ordered]@{ removed = $removed; kept = $kept }
+}
+
+# ---------------------------------------------------------------------------
+# Retirement pruning (v2.9.0, WP-P3b) -- files a NEWER version stops shipping, removed on the very
+# INSTALL/upgrade that stops shipping them, not just on -Uninstall. Before this, install.ps1 only ever
+# ADDED files: a version that removed a file from the payload left the old copy on disk forever,
+# because the fresh manifest this run writes simply never mentions a path it did not just copy -- the
+# OLD manifest (still on disk at this point, not yet overwritten by Write-ForgeManifestFile) is the
+# only place that "used to ship, not anymore" information still exists.
+#
+# Three independent pieces, matched to the three states a real install can be in:
+#   1. Remove-ForgeRetiredManifestFiles   -- a 2.8.0+ install: diff the OLD manifest against what THIS
+#      run just (re)recorded for the same scope; a path only on the OLD side is retired.
+#   2. Remove-ForgeRetiredLegacyDashboardFiles -- a pre-2.8.0 install (no manifest at all): the ONE
+#      concrete case this release needs to migrate is .claude\forge-dashboard\{7 files} -- matched by
+#      a small embedded table of every historical shipped content hash (never by trusting the path
+#      alone), so a same-named file the installer itself never shipped is left alone.
+#   3. Remove-ForgeLegacyDashboardStateFiles -- PORT/DASHBOARD_STATE.json are runtime state the OLD
+#      dashboard SERVER wrote (never something Copy-ForgeTree copied), so they never appear in ANY
+#      manifest and need this one unconditional, always-run step instead.
+# All three MOVE (never delete) into a dated backup folder, preserving the relative path, exactly like
+# the rest of this installer's "never destroy, always back up" discipline for anything that might be
+# the user's own data.
+# ---------------------------------------------------------------------------
+
+# Move-ForgeFileToBackup -- moves $AbsPath (known to exist) to $BackupDir\<the same path relative to
+# $RootDir>, creating the backup's parent directory first. Shared by all three retirement-pruning
+# functions below so "how a retired file is archived" is defined exactly once.
+function Move-ForgeFileToBackup {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$AbsPath,
+    [Parameter(Mandatory = $true)][string]$BackupDir
+  )
+  $rel = Get-ForgeManifestRel -RootDir $RootDir -AbsPath $AbsPath
+  if (-not $rel) { $rel = Split-Path -Leaf $AbsPath }
+  $backupAbs = Join-Path $BackupDir ($rel -replace '/', '\')
+  $backupParent = Split-Path -Parent $backupAbs
+  if (-not (Test-Path -LiteralPath $backupParent -PathType Container)) {
+    New-Item -ItemType Directory -Path $backupParent -Force | Out-Null
+  }
+  Move-Item -LiteralPath $AbsPath -Destination $backupAbs -Force
+  return $backupAbs
+}
+
+# Remove-ForgeRetiredManifestFiles -- point 1 (2.8.0+ installs). $OldEntries (path -> sha256, from
+# Get-ForgeOldManifestEntries, or $null) is diffed against $NewRelSet (every path THIS run's copy step
+# just recorded for the same scope, see $script:ForgeManifest). A path present only on the OLD side is
+# no longer shipped; it is moved to $BackupDir ONLY when its CURRENT hash still matches what was
+# recorded (unmodified since Forge itself wrote it) -- a file you edited yourself differs and is kept,
+# reported in one plain line, exactly like Remove-ForgeManifestFiles already reports a kept file on
+# -Uninstall.
+function Remove-ForgeRetiredManifestFiles {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [hashtable]$OldEntries,
+    [Parameter(Mandatory = $true)]$NewRelSet,
+    [Parameter(Mandatory = $true)][string]$BackupDir,
+    [bool]$IsDryRun = $false
+  )
+  $result = [ordered]@{ retired = 0; kept = 0; missing = 0; rejected = 0 }
+  if (-not $OldEntries -or $OldEntries.Count -eq 0) { return $result }
+  $touchedDirs = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rel in @($OldEntries.Keys | Sort-Object)) {
+    if ($NewRelSet.Contains($rel)) { continue }
+    # WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH): re-validated here, right before this old
+    # manifest path is ever joined to $RootDir, hashed, or moved -- Get-ForgeOldManifestEntries already
+    # dropped anything with an unsafe SHAPE, but only a live filesystem check (from $RootDir, one
+    # ancestor at a time) can catch a legitimately-shaped relative path that a symlink/junction planted
+    # somewhere under $RootDir would otherwise redirect outside it.
+    if (-not (Test-ForgeManifestPathIsContained -RootDir $RootDir -Rel $rel)) {
+      Write-ForgeLog "  skipped (this old manifest path does not safely resolve inside $RootDir): $rel"
+      $result.rejected++
+      continue
+    }
+    $abs = Join-Path $RootDir ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { $result.missing++; continue }
+    $curHash = (Get-FileHash -LiteralPath $abs -Algorithm SHA256).Hash
+    if ($curHash -ieq $OldEntries[$rel]) {
+      if ($IsDryRun) {
+        $backupAbs = Join-Path $BackupDir ($rel -replace '/', '\')
+        Write-ForgeLog "  [dry-run] would retire (no longer shipped by this version): $abs -> $backupAbs"
+      } else {
+        $backupAbs = Move-ForgeFileToBackup -RootDir $RootDir -AbsPath $abs -BackupDir $BackupDir
+        Write-ForgeLog "  retired (no longer shipped by this version): $abs -> $backupAbs"
+        [void] $touchedDirs.Add((Split-Path -Parent $abs))
+      }
+      $result.retired++
+    } else {
+      Write-ForgeLog "  kept (you edited this file, no longer shipped by this version): $abs"
+      $result.kept++
+    }
+  }
+  if (-not $IsDryRun) {
+    foreach ($d in @($touchedDirs | Select-Object -Unique)) {
+      Remove-ForgeEmptyDirs -StartDir $d -StopAt $RootDir
+    }
+  }
+  return $result
+}
+
+# Get-ForgeRetiredDashboardHashTable -- parses the shipped forge-retired-dashboard-hashes.tsv
+# (path<TAB>sha256 per line, '#'-prefixed comments skipped) into path -> string[] of known hashes.
+# Recomputed straight from this repo's git history by
+# tests\installer\assert-retired-dashboard-hashes.js, so the two can never silently drift apart.
+function Get-ForgeRetiredDashboardHashTable {
+  param([Parameter(Mandatory = $true)][string]$HashTablePath)
+  $map = @{}
+  if (-not (Test-Path -LiteralPath $HashTablePath -PathType Leaf)) { return $map }
+  foreach ($line in (Get-Content -LiteralPath $HashTablePath -ErrorAction SilentlyContinue)) {
+    if (-not $line -or $line.StartsWith('#')) { continue }
+    $parts = $line -split "`t"
+    if ($parts.Count -lt 2) { continue }
+    $p = $parts[0].Trim()
+    $h = $parts[1].Trim().ToLowerInvariant()
+    if (-not $p -or -not $h) { continue }
+    if (-not $map.ContainsKey($p)) { $map[$p] = New-Object 'System.Collections.Generic.List[string]' }
+    [void] $map[$p].Add($h)
+  }
+  return $map
+}
+
+# Remove-ForgeRetiredLegacyDashboardFiles -- point 2 (pre-2.8.0, no-manifest installs). Removes EXACTLY
+# the paths listed in $HashTablePath (the 7 retired dashboard files, never anything else) when the
+# file's CRLF-normalized sha256 matches one of that path's known historical shipped hashes. Content
+# that matches none of them is left in place -- it might be your own file at that same path, and this
+# function's job is migrating known Forge history, not guessing at unknown content.
+function Remove-ForgeRetiredLegacyDashboardFiles {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$HashTablePath,
+    [Parameter(Mandatory = $true)][string]$BackupDir,
+    [bool]$IsDryRun = $false
+  )
+  $result = [ordered]@{ retired = 0; kept = 0 }
+  $known = Get-ForgeRetiredDashboardHashTable -HashTablePath $HashTablePath
+  $touchedDirs = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($rel in @($known.Keys | Sort-Object)) {
+    $abs = Join-Path $RootDir ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { continue }
+    $curHash = Get-ForgeNormalizedSha256 -Path $abs
+    if ($known[$rel] -contains $curHash) {
+      if ($IsDryRun) {
+        $backupAbs = Join-Path $BackupDir ($rel -replace '/', '\')
+        Write-ForgeLog "  [dry-run] would retire (pre-2.8.0 install, known shipped content): $abs -> $backupAbs"
+      } else {
+        $backupAbs = Move-ForgeFileToBackup -RootDir $RootDir -AbsPath $abs -BackupDir $BackupDir
+        Write-ForgeLog "  retired (pre-2.8.0 install, known shipped content): $abs -> $backupAbs"
+        [void] $touchedDirs.Add((Split-Path -Parent $abs))
+      }
+      $result.retired++
+    } else {
+      Write-ForgeLog "  kept (content does not match a known shipped version -- may be your own file): $abs"
+      $result.kept++
+    }
+  }
+  if (-not $IsDryRun) {
+    foreach ($d in @($touchedDirs | Select-Object -Unique)) {
+      Remove-ForgeEmptyDirs -StartDir $d -StopAt $RootDir
+    }
+  }
+  return $result
+}
+
+# Remove-ForgeLegacyDashboardStateFiles -- point 2's other half: PORT and DASHBOARD_STATE.json are
+# runtime state the retired dashboard SERVER wrote while running, never a file Copy-ForgeTree itself
+# copied -- so they never have a manifest entry (old or new) to diff against, and always need
+# checking, independent of whether a manifest exists for this project at all. Unconditional (no hash
+# check): both are pure generated state (see templates\gitignore.snippet, which already ignores them
+# for exactly that reason), never something worth asking "did the user edit this" about.
+function Remove-ForgeLegacyDashboardStateFiles {
+  param(
+    [Parameter(Mandatory = $true)][string]$RootDir,
+    [Parameter(Mandatory = $true)][string]$BackupDir,
+    [bool]$IsDryRun = $false
+  )
+  $retired = 0
+  foreach ($rel in @('.claude/forge-dashboard/PORT', '.claude/forge-dashboard/DASHBOARD_STATE.json')) {
+    $abs = Join-Path $RootDir ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { continue }
+    if ($IsDryRun) {
+      $backupAbs = Join-Path $BackupDir ($rel -replace '/', '\')
+      Write-ForgeLog "  [dry-run] would retire (generated runtime state, not user data): $abs -> $backupAbs"
+    } else {
+      $backupAbs = Move-ForgeFileToBackup -RootDir $RootDir -AbsPath $abs -BackupDir $BackupDir
+      Write-ForgeLog "  retired (generated runtime state, not user data): $abs -> $backupAbs"
+      Remove-ForgeEmptyDirs -StartDir (Split-Path -Parent $abs) -StopAt $RootDir
+    }
+    $retired++
+  }
+  return $retired
 }
 
 # Remove-ForgeGitignoreLines — removes ONLY the exact lines templates\gitignore.snippet added
@@ -1023,6 +1637,167 @@ function Write-ForgeVersionMarker {
   }
 }
 
+# Update-ForgeProjectsRegistry -- see $ForgeProjectsRegistryJs's own header comment for the full
+# contract. -ProjectDirFull must already be a fully-resolved absolute path (Resolve-ForgeFullPath) --
+# this function never resolves it itself, so a not-yet-existing project directory (GetFullPath works
+# without the target existing) is recorded correctly too. A missing `node` is never a hard failure:
+# one plain log line, then Main/Invoke-ForgeUninstall continue exactly as if this call had not been
+# made.
+function Update-ForgeProjectsRegistry {
+  param(
+    [Parameter(Mandatory = $true)][string] $ProjectDirFull,
+    [Parameter(Mandatory = $true)][string] $ForgeHome,
+    [bool] $IsDryRun = $false,
+    [ValidateSet('add', 'remove')][string] $Action = 'add'
+  )
+  $registryPath = Join-Path $ForgeHome '.claude\forge\projects.json'
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $nodeCmd) {
+    Write-ForgeLog "  node was not found on PATH -- could not update $registryPath (the Command Center dashboard may not auto-discover this project); this does not affect the rest of the install"
+    return
+  }
+  $tmpJs = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-projects-registry-" + [guid]::NewGuid().ToString('N') + '.js')
+  $dryRunFlag = if ($IsDryRun) { '1' } else { '0' }
+  try {
+    [System.IO.File]::WriteAllText($tmpJs, $ForgeProjectsRegistryJs, (New-Object System.Text.UTF8Encoding($false)))
+    # $ErrorActionPreference is 'Stop' script-wide; relaxed for this one call so a non-zero exit
+    # (3 = malformed existing file, 2 = other error) is read back via $LASTEXITCODE instead of
+    # aborting the whole installer -- same pattern Test-ForgeStandingRulesMigration already uses.
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $out = & node $tmpJs $registryPath $ProjectDirFull $dryRunFlag $Action 2>&1 }
+    finally { $ErrorActionPreference = $prevEap }
+  } finally {
+    Remove-Item -LiteralPath $tmpJs -Force -ErrorAction SilentlyContinue
+  }
+  $outText = "$out"
+  if ($outText) { Write-ForgeLog "  $outText" }
+  if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) {
+    Write-ForgeError "could not update $registryPath -- this does not affect the rest of the install"
+  }
+}
+
+# Test-ForgeCommandCenterSkip -- true when $RelPath (forward-slash, relative to command-center\)
+# must NEVER be shipped into a fresh install or clobbered on a re-install: node_modules/build
+# output, coverage/test artefacts, and per-user runtime data/secrets. Everything else (including
+# dashboard/dist, the prebuilt SPA) is copied normally. Mirrors forge_cc_should_skip in install.sh --
+# keep both in sync.
+#
+# Beyond the exact list WP-P3 named (node_modules, .data, .claude-flow, discord/.env, discord/
+# transcripts/, *.log, dashboard/test-results|playwright-report|reports/, coverage/), this also
+# skips two things flagged in the WP-P3 report rather than silently added:
+#   - discord/state/  -- the documented STATE_DIR default (command-center\discord\.gitignore treats
+#     it identically to transcripts/); the gateway always overrides STATE_DIR to its own
+#     .data\discord\state\ when it spawns the bot, so this only matters for a standalone dev run.
+#   - any *.env file besides *.env.example -- generalizes the named "discord/.env" rule to the exact
+#     secret-file convention command-center\dashboard\.gitignore already documents for its own .env.
+function Test-ForgeCommandCenterSkip {
+  param([Parameter(Mandatory = $true)][string] $RelPath)
+  foreach ($seg in ($RelPath -split '/')) {
+    if ($seg -eq 'node_modules' -or $seg -eq '.data' -or $seg -eq '.claude-flow' -or $seg -eq 'coverage') {
+      return $true
+    }
+  }
+  if ($RelPath -eq 'discord/.env') { return $true }
+  if ($RelPath -match '^discord/transcripts(/|$)') { return $true }
+  if ($RelPath -match '^discord/state(/|$)') { return $true }
+  if ($RelPath -match '^dashboard/test-results(/|$)') { return $true }
+  if ($RelPath -match '^dashboard/playwright-report(/|$)') { return $true }
+  if ($RelPath -match '^dashboard/reports(/|$)') { return $true }
+  if ($RelPath -like '*.log') { return $true }
+  $base = ($RelPath -split '/')[-1]
+  if ($base -eq '.env.example') { return $false }
+  if ($base -eq '.env' -or $base -eq '.env.local' -or $base -eq '.env.forge-setup') { return $true }
+  if ($base -like '.env.*.local' -or $base -like '.env.tmp-*') { return $true }
+  return $false
+}
+
+# Copy-ForgeCommandCenterTree -- like Copy-ForgeTree, but walks $SourceDir (command-center\)
+# skipping every Test-ForgeCommandCenterSkip match instead of copying everything; the Command
+# Center ships no settings.json of its own, so this never needs -ProtectSettings. Every copied file
+# is manifested exactly like the canonical template's own files (global scope, root $ManifestRoot),
+# so an uninstall removes it automatically through the SAME manifest-driven path
+# Remove-ForgeManifestFiles already runs -- a skipped (runtime/build) path is never even considered,
+# so it can never be deleted OR overwritten by a later install/uninstall.
+function Copy-ForgeCommandCenterTree {
+  param(
+    [Parameter(Mandatory = $true)][string]$SourceDir,
+    [Parameter(Mandatory = $true)][string]$DestDir,
+    [Parameter(Mandatory = $true)][bool]$IsDryRun,
+    [string]$ManifestRoot = $null,
+    # v2.9.0 (WP-P3b, point 3): path(rel to $ManifestRoot) -> sha256 from the PREVIOUS install's global
+    # manifest (Get-ForgeOldManifestEntries), or $null when there is none. When supplied, an existing
+    # destination file that still matches its previously-recorded hash is replaced without a
+    # *.forge-bak-<stamp> copy -- see Copy-ForgeManifestAwareFile's own header comment.
+    [hashtable]$OldHashByRel = $null
+  )
+  if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+    Write-ForgeError "source directory missing: $SourceDir"
+    return $false
+  }
+  $files = Get-ChildItem -LiteralPath $SourceDir -Recurse -File -Force
+
+  # WP-9B-INST (Codex adversarial review, INSTALL-2 HIGH): a symlink/junction planted anywhere under
+  # the live Command Center destination tree (e.g. $DestDir\gateway pointing outside the template)
+  # would otherwise be followed transparently by Copy-Item/Move-Item -- both treat a reparse point
+  # exactly like a real directory. Validate the FULL destination tree's ancestry, for every file this
+  # run would touch, BEFORE copying anything; the moment one is unsafe, the whole Command Center
+  # install for this run is skipped (never partially copied), with a clear message telling the owner to
+  # remove the link themselves. This never aborts the rest of the installer -- exactly like a missing
+  # command-center\ source directory above is not fatal either.
+  foreach ($file in $files) {
+    $rel = ($file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')) -replace '\\', '/'
+    if (Test-ForgeCommandCenterSkip -RelPath $rel) { continue }
+    if (Test-ForgePathHasReparseAncestor -RootDir $DestDir -Rel $rel -IncludeRoot) {
+      # WP-9B-INST follow-up (found by self-review, not by tracing the finding alone -- confirmed by a
+      # real local run of the new command-center-symlink test below): refusing here BEFORE this run
+      # records anything for the Command Center means $script:ForgeManifest['global'] ends this run
+      # with NO Command Center paths at all -- the retirement-pruning step that runs right after this
+      # call (Remove-ForgeRetiredManifestFiles, back in Main) would then see every path the OLD global
+      # manifest already listed under this Command Center as "no longer shipped this run" and MOVE each
+      # one to backup, even though every real file is still sitting there untouched. Carrying every OLD
+      # entry under this Command Center's own manifest prefix forward into THIS run's manifest (with
+      # its unchanged hash -- the file itself was never touched) tells that step "still shipped, leave
+      # it alone" instead, without pretending a copy that did not happen actually happened.
+      if ($ManifestRoot -and $OldHashByRel -and $OldHashByRel.Count -gt 0) {
+        $ccPrefix = Get-ForgeManifestRel -RootDir $ManifestRoot -AbsPath $DestDir
+        if ($ccPrefix) {
+          $ccPrefixSlash = $ccPrefix.TrimEnd('/') + '/'
+          foreach ($oldRel in @($OldHashByRel.Keys)) {
+            if ($oldRel.StartsWith($ccPrefixSlash, [System.StringComparison]::OrdinalIgnoreCase)) {
+              [void] $script:ForgeManifest['global'].Add([ordered]@{ path = $oldRel; sha256 = $OldHashByRel[$oldRel] })
+            }
+          }
+        }
+      }
+      Write-ForgeError "refusing to install the Command Center: a symlink or junction was found on the way to '$rel' under $DestDir -- remove that link, then re-run the installer"
+      return $false
+    }
+  }
+
+  $skipped = 0
+  $allOk = $true
+  foreach ($file in $files) {
+    $rel = ($file.FullName.Substring($SourceDir.Length).TrimStart('\', '/')) -replace '\\', '/'
+    if (Test-ForgeCommandCenterSkip -RelPath $rel) { $skipped++; continue }
+    $dest = Join-Path -Path $DestDir -ChildPath ($rel -replace '/', '\')
+    if ($OldHashByRel -and $ManifestRoot) {
+      $manifestRel = Get-ForgeManifestRel -RootDir $ManifestRoot -AbsPath $dest
+      $oldHash = if ($manifestRel -and $OldHashByRel.ContainsKey($manifestRel)) { $OldHashByRel[$manifestRel] } else { $null }
+      $fileOk = Copy-ForgeManifestAwareFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun -OldHash $oldHash
+    } else {
+      $fileOk = Copy-ForgeFile -SourceFile $file.FullName -DestFile $dest -IsDryRun $IsDryRun
+    }
+    # WP-9B-INST (INSTALL-3): captured and folded into this call's own return value, exactly like
+    # Copy-ForgeTree already does for its own per-file copy calls.
+    if (-not $fileOk) { $allOk = $false }
+    if (-not $IsDryRun -and $ManifestRoot -and $fileOk) {
+      Add-ForgeManifestEntry -Scope 'global' -RootDir $ManifestRoot -AbsPath $dest
+    }
+  }
+  Write-ForgeLog "  (Command Center: skipped $skipped runtime/build file(s) -- node_modules, .data, logs, and similar)"
+  return $allOk
+}
+
 function Main {
   # F2b fix: trimmed once here (see ConvertTo-ForgeCleanProjectPath's own comment) so every later use
   # of $projectDir -- including every node argument -- already has the clean value. (A raw variable is
@@ -1031,6 +1806,12 @@ function Main {
   # external command there and silently passes an empty string, found by a real local run.)
   $rawProjectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
   $projectDir = ConvertTo-ForgeCleanProjectPath $rawProjectDir
+  # v2.9.0 (WP-P3 addition): a fully-resolved absolute form of $projectDir, for the ONE thing that
+  # genuinely needs it -- the projects registry (Update-ForgeProjectsRegistry) records a real,
+  # absolute path the Command Center dashboard can use directly as a filesystem root. GetFullPath
+  # resolves relative segments against the current directory WITHOUT requiring the target to exist
+  # yet, so this stays correct even on a brand-new -ProjectDir the copy step has not created yet.
+  $projectDirFull = Resolve-ForgeFullPath $projectDir
   # ONE home for every global path: the USERPROFILE/HOME environment (what Node's os.homedir() uses, so the
   # installer and the tools agree). PowerShell's automatic $HOME may follow HOMEDRIVE/HOMEPATH instead of an
   # overridden USERPROFILE, which is exactly the situation in a CI job that redirects the home.
@@ -1055,6 +1836,16 @@ function Main {
     global  = New-Object 'System.Collections.Generic.List[object]'
     project = New-Object 'System.Collections.Generic.List[object]'
   }
+
+  # v2.9.0 (WP-P3b): snapshot the PREVIOUS install's manifest(s) now, before Write-ForgeManifestFile
+  # overwrites either file further down -- see Get-ForgeOldManifestEntries's own header comment. Read
+  # unconditionally (even for a -GlobalOnly/-ProjectOnly run touching only one scope, and even under
+  # -DryRun) -- it is a pure read, and the retirement-pruning calls below already gate on $doGlobal/
+  # $doProject themselves. One shared timestamp for both scopes' backup folders, so a single run never
+  # produces two differently-stamped "retired-*" folders.
+  $oldGlobalEntries = Get-ForgeOldManifestEntries -ManifestPath (Join-Path $forgeHome '.claude\forge\install-manifest.json')
+  $oldProjectEntries = Get-ForgeOldManifestEntries -ManifestPath (Join-Path $projectDir '.claude\.forge-install-manifest.json')
+  $pruneStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
 
   # ---------------------------------------------------------------------------
   # 0. refuse a HOME target (review HIGH #3): a one-liner run from %USERPROFILE%
@@ -1201,8 +1992,13 @@ function Main {
     # named as such rather than left implicit.
     if ($doGlobal) { Write-ForgeLog "  - $forgeHome\.claude                  [OUTSIDE this project -- global, shared by every project] (global core: forge-core skill, /forge, /setup-forge)" }
     if ($doGlobal) { Write-ForgeLog "  - $forgeHome\.claude\forge\template   [OUTSIDE this project -- global] (canonical template: used by forge-sync and the auto-installer)" }
+    # v2.9.0 (WP-P3): the Command Center (local dashboard + gateway) is installed ONCE, centrally,
+    # next to the canonical template -- never per-project -- so every project shares the same
+    # dashboard at http://127.0.0.1:4100.
+    if ($doGlobal) { Write-ForgeLog "  - $forgeHome\.claude\forge\template\command-center   [OUTSIDE this project -- global] (Command Center: the local dashboard + gateway at http://127.0.0.1:4100)" }
     if ($doProject) { Write-ForgeLog "  - $projectDir\.claude           (per-project payload: skills, agents, dashboard, config)" }
     if ($doProject) { Write-ForgeLog "  - $projectDir\CLAUDE.md         (only if missing) and $projectDir\.gitignore (Forge lines appended)" }
+    if ($doProject) { Write-ForgeLog "  - $forgeHome\.claude\forge\projects.json   [OUTSIDE this project -- global] (records this project's path so the Command Center dashboard can find it)" }
     Write-ForgeLog ''
     Write-ForgeLog 'Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced -- except .claude\settings.json, which is MERGED (your own hooks/rules kept, a backup taken first); when a merge is not possible, a settings.forge-recommended-<timestamp>.json is written next to it instead and settings.json itself is left untouched.'
     Write-ForgeLog 'Identical files are left untouched. This installer never deletes your existing .claude tree.'
@@ -1285,6 +2081,52 @@ function Main {
         Write-ForgeError 'canonical template copy had failures (project installs still work; forge-sync update checks will not)'
         $globalOk = $false
       }
+
+      # v2.9.0 (WP-P3): the Command Center (command-center\gateway + command-center\discord +
+      # command-center\dashboard) is installed ONCE, centrally, next to the canonical template --
+      # never per-project (see Test-ForgeCommandCenterSkip/Copy-ForgeCommandCenterTree's own header
+      # comments for exactly what is skipped and why). A source checkout without a
+      # command-center\ directory at all (an old release, or a stripped-down archive) is not an
+      # error -- this installer's own job is copying whatever the payload actually ships.
+      $ccSourceDir = Join-Path $sourceDir 'command-center'
+      if (Test-Path -LiteralPath $ccSourceDir -PathType Container) {
+        $ccDestDir = Join-Path $templateDir 'command-center'
+        Write-ForgeLog ''
+        Write-ForgeLog "Installing Command Center -> $ccDestDir (local dashboard + gateway, http://127.0.0.1:4100)"
+        # Requirement 1 (WP-P3): dashboard\dist is the PREBUILT dashboard the gateway serves as
+        # static files. When this download does not ship it (an older archive, or a stripped release
+        # before the dashboard build step is wired in), this says so ONCE, plainly -- it never tells
+        # a beginner to run a build command themselves; everything else in the Command Center still
+        # installs normally.
+        if (-not (Test-Path -LiteralPath (Join-Path $ccSourceDir 'dashboard\dist') -PathType Container)) {
+          Write-ForgeLog '  NOTE: command-center\dashboard\dist is missing from this download -- the dashboard''s built files were not included. Everything else in the Command Center was still installed; the dashboard page itself will not load until a build that includes dashboard\dist is installed.'
+        }
+        $ccOk = Copy-ForgeCommandCenterTree -SourceDir $ccSourceDir -DestDir $ccDestDir -IsDryRun $isDryRun -ManifestRoot $forgeHome -OldHashByRel $oldGlobalEntries
+        if (-not $ccOk) {
+          Write-ForgeError 'Command Center copy had failures (project installs still work; the dashboard may not start correctly)'
+          $globalOk = $false
+        }
+      }
+
+      # v2.9.0 (WP-P3b): retirement pruning for the 'global' scope -- runs AFTER every global copy
+      # above, so $script:ForgeManifest['global'] already holds every path this run really shipped
+      # (core + template + Command Center, all one scope, all rooted at $forgeHome), and BEFORE
+      # Write-ForgeManifestFile overwrites the manifest this read $oldGlobalEntries from.
+      $globalBackupDir = Join-Path $forgeHome ".claude\forge\backups\retired-$pruneStamp"
+      if ($oldGlobalEntries) {
+        $newGlobalRelSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($e in $script:ForgeManifest['global']) { [void] $newGlobalRelSet.Add([string]$e.path) }
+        $null = Remove-ForgeRetiredManifestFiles -RootDir $forgeHome -OldEntries $oldGlobalEntries -NewRelSet $newGlobalRelSet -BackupDir $globalBackupDir -IsDryRun $isDryRun
+      } elseif ($templateDir) {
+        # Pre-2.8.0 global install (no manifest at all yet): the one concrete migration this release
+        # needs is the canonical template's own copy of the retired dashboard files. Backed up under
+        # the SAME relative path a 2.8.0+ manifest would have recorded it at (".claude\forge\template\...")
+        # so a legacy and a manifest-driven retirement land in a consistent shape under
+        # $globalBackupDir, even though this fallback never reads/writes a manifest itself.
+        $legacyHashTable = Join-Path $sourceDir '.claude\forge-bin\forge-retired-dashboard-hashes.tsv'
+        $templateBackupDir = Join-Path $globalBackupDir '.claude\forge\template'
+        $null = Remove-ForgeRetiredLegacyDashboardFiles -RootDir $templateDir -HashTablePath $legacyHashTable -BackupDir $templateBackupDir -IsDryRun $isDryRun
+      }
     }
 
     if ($doProject) {
@@ -1324,6 +2166,42 @@ function Main {
       # already-resolved home Main uses everywhere else (HOME-RESOLUTION-DRIFT fix) -- passed explicitly,
       # never recomputed inside the function.
       Write-ForgeVersionMarker -ProjectDir $projectDir -Version $forgeVersion -ForgeHome $forgeHome -IsDryRun $isDryRun
+      # v2.9.0 (WP-P3, coordinator follow-up): record this project so the Command Center dashboard
+      # can find it even outside its default scan roots (Documents/Desktop/its own parent folder).
+      # See $ForgeProjectsRegistryJs's own header comment for the file contract and why a missing
+      # `node` only warns, never fails the install.
+      Update-ForgeProjectsRegistry -ProjectDirFull $projectDirFull -ForgeHome $forgeHome -IsDryRun $isDryRun -Action 'add'
+
+      # v2.9.0 (WP-P3b): retirement pruning for the 'project' scope -- same shape as the 'global'
+      # block above, rooted at $projectDir. Runs AFTER the project copy, so $script:ForgeManifest
+      # ['project'] already holds every path this run really shipped, and BEFORE Write-ForgeManifestFile
+      # overwrites the manifest this read $oldProjectEntries from.
+      $projectBackupDir = Join-Path $projectDir ".claude\forge-backups\retired-$pruneStamp"
+      if ($oldProjectEntries) {
+        $newProjectRelSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($e in $script:ForgeManifest['project']) { [void] $newProjectRelSet.Add([string]$e.path) }
+        # BUG (found by self-review, not by the test suite): $script:ForgeStandingMigrationSkip (e.g.
+        # FORGE_STANDING_RULES.json with a pending owner-rule migration) is deliberately left
+        # completely untouched by Copy-ForgeTree this run -- neither copied NOR manifested. Without
+        # this line it would still be a KEY in $oldProjectEntries but absent from $newProjectRelSet,
+        # making it look exactly like "the new version no longer ships this file" and moving it to
+        # backup -- the opposite of "leave my existing file in place this run". PATH-PREFIX TRAP
+        # (found immediately after, by re-deriving this same value independently rather than trusting
+        # the first pass): $script:ForgeStandingMigrationSkip is relative to .claude\ itself (that is
+        # what Copy-ForgeTree's own per-file loop compares it against), but every manifest path
+        # (old and new alike) is relative to the PROJECT ROOT -- ".claude/" has to be prepended here
+        # or this exemption silently never matches anything at all.
+        if ($script:ForgeStandingMigrationSkip) { [void] $newProjectRelSet.Add('.claude/' + $script:ForgeStandingMigrationSkip) }
+        $null = Remove-ForgeRetiredManifestFiles -RootDir $projectDir -OldEntries $oldProjectEntries -NewRelSet $newProjectRelSet -BackupDir $projectBackupDir -IsDryRun $isDryRun
+      } else {
+        # Pre-2.8.0 project install (no manifest at all yet): migrate the retired dashboard files by
+        # their known historical content hash instead.
+        $legacyHashTable = Join-Path $sourceDir '.claude\forge-bin\forge-retired-dashboard-hashes.tsv'
+        $null = Remove-ForgeRetiredLegacyDashboardFiles -RootDir $projectDir -HashTablePath $legacyHashTable -BackupDir $projectBackupDir -IsDryRun $isDryRun
+      }
+      # Unconditional either way (point 2's other half): PORT/DASHBOARD_STATE.json are runtime state
+      # the OLD dashboard SERVER wrote, never something any manifest (old or new) ever recorded.
+      $null = Remove-ForgeLegacyDashboardStateFiles -RootDir $projectDir -BackupDir $projectBackupDir -IsDryRun $isDryRun
     }
 
     # v2.8.0: persist the manifest(s) an uninstall will read back — see Add-ForgeManifestEntry's
@@ -1380,6 +2258,14 @@ function Main {
     Write-ForgeLog '  /setup-forge'
     Write-ForgeLog '  /forge <task>'
     Write-ForgeLog ''
+    # Requirement 5 (WP-P3): one plain line telling a beginner how to open the dashboard this
+    # install just set up. Only printed when this run actually installed/ensured the Command Center
+    # ($doGlobal) -- a -ProjectOnly run against a machine that never ran a full install would
+    # otherwise point at a dashboard that is not there yet.
+    if ($doGlobal) {
+      Write-ForgeLog "Dashboard: open http://127.0.0.1:4100 (run `"forge dashboard`" in a project, or double-click start-forge-dashboard.bat in a project's .claude\forge-dashboard folder)"
+      Write-ForgeLog ''
+    }
     Write-ForgeLog "Docs: https://github.com/$RepoOwner/$RepoName#readme"
   } finally {
     if ($tempDir -and (Test-Path -LiteralPath $tempDir -PathType Container)) {
@@ -1396,6 +2282,9 @@ function Invoke-ForgeUninstall {
   # F2b fix: same trim as Main -- see ConvertTo-ForgeCleanProjectPath's and Main's own comments.
   $rawProjectDir = if ($ProjectDir) { $ProjectDir } else { (Get-Location).Path }
   $projectDir = ConvertTo-ForgeCleanProjectPath $rawProjectDir
+  # v2.9.0 (WP-P3 addition): see Main's own identical comment -- the projects registry needs a
+  # genuinely absolute path, resolved the same way on both the install and uninstall side.
+  $projectDirFull = Resolve-ForgeFullPath $projectDir
   $forgeHome = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { $HOME }
   $assumeYes = [bool]$Yes -or ($env:FORGE_YES -eq '1')
   $isDryRun = [bool]$DryRun
@@ -1412,8 +2301,8 @@ function Invoke-ForgeUninstall {
 
   Write-ForgeLog 'claude-forge uninstaller'
   Write-ForgeLog ''
-  if ($doProject) { Write-ForgeLog "This will remove Forge's own files from: $projectDir\.claude (only files the installer itself wrote, verified by hash)" }
-  if ($doGlobal) { Write-ForgeLog "This will remove Forge's global core from: $forgeHome\.claude (forge-core skill, /forge, /setup-forge, the canonical template)" }
+  if ($doProject) { Write-ForgeLog "This will remove Forge's own files from: $projectDir\.claude (only files the installer itself wrote, verified by hash) and this project's own entry from $forgeHome\.claude\forge\projects.json" }
+  if ($doGlobal) { Write-ForgeLog "This will remove Forge's global core from: $forgeHome\.claude (forge-core skill, /forge, /setup-forge, the canonical template, the Command Center)" }
   Write-ForgeLog 'A file you edited yourself, and your own data (memory, run logs, CLAUDE.md, .env), are left in place.'
   Write-ForgeLog ''
   if ($isDryRun) { Write-ForgeLog '(dry-run mode -- nothing will actually be removed)' }
@@ -1471,6 +2360,12 @@ function Invoke-ForgeUninstall {
       } else {
         Write-ForgeLog '  skipped: .gitignore -- no payload gitignore.snippet available to identify Forge''s own lines'
       }
+
+      # v2.9.0 (WP-P3, coordinator follow-up): remove ONLY this project's own entry from the shared
+      # projects registry -- never the whole file (it is merged/user data, like settings.json; a
+      # -GlobalOnly uninstall never reaches this branch at all, so it can never touch another
+      # project's entry).
+      Update-ForgeProjectsRegistry -ProjectDirFull $projectDirFull -ForgeHome $forgeHome -IsDryRun $isDryRun -Action 'remove'
 
       Write-ForgeLog ''
       Write-ForgeLog '  left in place (your own data): CLAUDE.md (if it predates Forge or you edited it), .env, FORGE_MEMORY*.md, .claude/forge-runs/, .claude/agent-memory/, and .claude/settings.json (unmerged above, never deleted)'

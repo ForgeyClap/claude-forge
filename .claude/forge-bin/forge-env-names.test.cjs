@@ -128,6 +128,47 @@ t('hasUnescapedQuote() is exported and escape-aware for double quotes, plain (no
 });
 
 // ---------------------------------------------------------------------------
+// 1d) WP-M3 (2026-09-27, independent review RB2-3) — a backtick-quoted value is dotenv's THIRD multi-line
+//     quote form; its own continuation lines must never leak as fabricated entries either, and (unlike a
+//     double-quoted value) a backtick has no escape character at all, same as a single-quoted value.
+// ---------------------------------------------------------------------------
+console.log('\n1d) WP-M3 RB2-3 — backtick-quoted multi-line values never leak a continuation-line fragment');
+
+t('a multi-line backtick value prints exactly the one real key, no fragment of the value', () => {
+  const text = ['PRIVATE_KEY=`-----BEGIN KEY-----', 'API_KEY=fake-looking-line', '-----END KEY-----`'].join('\n');
+  const names = envNames.envNames(text);
+  assert.deepStrictEqual(names, ['PRIVATE_KEY']);
+  assert.ok(!names.includes('API_KEY'), 'a fragment of the still-open backtick value leaked as a fake key name');
+});
+t('a real entry AFTER the closing backtick of a multi-line value is still read normally', () => {
+  const text = ['MULTI=`line one', 'line two', 'line three`', 'NEXT_ONE=value'].join('\n');
+  assert.deepStrictEqual(envNames.envNames(text), ['MULTI', 'NEXT_ONE']);
+});
+t('an UNTERMINATED backtick multi-line value prints nothing after the key name that opened it, and never crashes', () => {
+  const text = ['FIRST=ok', 'BROKEN=`unterminated value', 'API_KEY=fake-looking-line', 'ANOTHER_KEY=also-hidden'].join('\n');
+  assert.deepStrictEqual(envNames.envNames(text), ['FIRST', 'BROKEN']);
+});
+t('a single-line backtick value that opens and closes on the same line is unaffected (no false multi-line state)', () => {
+  assert.deepStrictEqual(envNames.envNames('FOO=`bar`\nBAZ=qux'), ['FOO', 'BAZ']);
+});
+t('a backtick value has no escape character at all — a backslash inside it never hides the real closer', () => {
+  const text = ['KEY=`line one \\` still open', 'line two`', 'NEXT=ok'].join('\n');
+  // the FIRST literal backtick after the backslash IS the real closer (backticks have no escaping in dotenv),
+  // so "still open" through end-of-line-1 plus " line two" up to ITS OWN backtick belongs to the value, and
+  // "NEXT=ok" is a normal, separate entry read after that close.
+  const names = envNames.envNames(text);
+  assert.deepStrictEqual(names, ['KEY', 'NEXT']);
+});
+t('a normal file mixing double, single, backtick and unquoted values still lists every real name', () => {
+  const text = ['A="double"', "B='single'", 'C=`backtick`', 'D=plain', 'E=`multi', 'line`', 'F=ok'].join('\n');
+  assert.deepStrictEqual(envNames.envNames(text), ['A', 'B', 'C', 'D', 'E', 'F']);
+});
+t('hasUnescapedQuote() treats a backtick like a single quote — plain, non-escape-aware containment', () => {
+  assert.strictEqual(envNames.hasUnescapedQuote('a \\`b', '`'), true, 'backticks have no escape character at all');
+  assert.strictEqual(envNames.hasUnescapedQuote('a b', '`'), false, 'no backtick present at all');
+});
+
+// ---------------------------------------------------------------------------
 // 2) run() — in-process CLI behaviour
 // ---------------------------------------------------------------------------
 console.log('\n2) run() CLI behaviour (in-process, captured console output)');

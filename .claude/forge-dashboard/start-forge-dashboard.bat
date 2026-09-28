@@ -1,14 +1,14 @@
 @echo off
-REM Forge Control Center - project-local dashboard launcher (Windows)
-REM Each project gets its own stable port (3737-3999, from the project path).
+REM Forge dashboard launcher (Windows). v2.9.0: the old per-project Control Center that used to live
+REM in this folder was removed - this now starts the Forge Command Center (the one dashboard shared by
+REM every Forge project, default http://127.0.0.1:4100) via the forge-bin wrapper, which finds/builds
+REM it and prints the real URL to use.
 setlocal
 cd /d "%~dp0"
-echo Starting Forge Control Center for this project...
-echo The actual URL (http://localhost:PORT) is printed below and stored in .claude\forge-dashboard\PORT
-node "%~dp0server.cjs"
+call "%~dp0..\forge-bin\forge-dashboard.cmd"
 if errorlevel 1 (
   echo.
-  echo Could not start the dashboard. Is Node.js installed? Try: node --version
+  echo Could not start the Forge Command Center. Is Node.js installed? Try: node --version
   pause
 )
 endlocal

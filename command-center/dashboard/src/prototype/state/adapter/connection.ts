@@ -306,6 +306,34 @@ export interface GatewayGuardState {
   readonly lastCheckAt: string | null;
   readonly ageMs: number | null;
   readonly note: string | null;
+  /**
+   * WP-CCD (item 10): `GET /api/usage`'s `guard` object forwards this project's own
+   * `usage-guard.cjs` on-disk state (`~/.claude/FORGE_USAGE_GUARD_STATE.json`) — the real, live
+   * session/week usage percentages (distinct from the pressure file's own `week`, which this strip
+   * already showed), when each resets, a "resumed — go verify the agents actually came back" flag,
+   * and the guard's own last real fetch error (e.g. "usage endpoint HTTP 429").
+   *
+   * REVIEW FIX: the field names below were verified live against
+   * `_scratch/wt-cc1-snap/gateway/src/usage.mjs::readGuardState()`, which sends a FLAT shape —
+   * `session_pct`/`week_pct`/`session_reset_at`/`week_reset_at`/`pending_checkup`/`last_error` —
+   * never the nested `percents.session`/`percents.week`/`resets.*` shape (nor `session_percent`/
+   * `week_percent`) this WP's own doc comment previously assumed. `session_pct`/`week_pct` are the
+   * REAL keys; the other candidates are kept as harmless, purely defensive extra fallbacks in case a
+   * future gateway build renames them again.
+   */
+  readonly sessionPercent: number | null;
+  readonly weekPercent: number | null;
+  readonly sessionResetAt: string | null;
+  readonly weekResetAt: string | null;
+  readonly pendingCheckup: boolean;
+  readonly lastError: string | null;
+  /**
+   * Is the guard's watcher really checking usage? 'running' | 'stale' (alive but no heartbeat for three
+   * check intervals) | 'not-running' | 'unknown' (alive, no heartbeat yet) — usage.mjs's watcherHealth,
+   * the same rule as `usage-guard.cjs status`. Null on a gateway build that does not send it yet.
+   */
+  readonly watcher: string | null;
+  readonly watcherStaleSec: number | null;
 }
 
 /** The account-wide usage-pressure snapshot the new strip renders. Every field mirrors
@@ -333,6 +361,14 @@ const EMPTY_GUARD_STATE: GatewayGuardState = {
   lastCheckAt: null,
   ageMs: null,
   note: null,
+  sessionPercent: null,
+  weekPercent: null,
+  sessionResetAt: null,
+  weekResetAt: null,
+  pendingCheckup: false,
+  lastError: null,
+  watcher: null,
+  watcherStaleSec: null,
 };
 
 const EMPTY_ACCOUNT_USAGE: GatewayAccountUsage = {
@@ -360,16 +396,31 @@ export function parseAccountUsage(data: Record<string, unknown>): GatewayAccount
   const guard: GatewayGuardState =
     guardRaw === null
       ? EMPTY_GUARD_STATE
-      : {
-          available: pickBool(guardRaw, ['available']) ?? false,
-          mode: pickString(guardRaw, ['mode']),
-          pauseAt: pickNumber(guardRaw, ['pause_at']),
-          resumeAt: pickNumber(guardRaw, ['resume_at']),
-          pausedAgentCount: pickNumber(guardRaw, ['paused_agent_count']),
-          lastCheckAt: pickString(guardRaw, ['last_check_at']),
-          ageMs: pickNumber(guardRaw, ['age_ms']),
-          note: pickString(guardRaw, ['note']),
-        };
+      : ((): GatewayGuardState => {
+          // REVIEW FIX — see `GatewayGuardState`'s own doc comment: `session_pct`/`week_pct` are the
+          // REAL, verified-live flat keys and are tried FIRST; the nested `percents.*`/`resets.*`
+          // shape and the `*_percent` spelling are kept only as defensive extra fallbacks.
+          const percents = pickRecord(guardRaw, ['percents']);
+          const resets = pickRecord(guardRaw, ['resets']);
+          return {
+            available: pickBool(guardRaw, ['available']) ?? false,
+            mode: pickString(guardRaw, ['mode']),
+            pauseAt: pickNumber(guardRaw, ['pause_at']),
+            resumeAt: pickNumber(guardRaw, ['resume_at']),
+            pausedAgentCount: pickNumber(guardRaw, ['paused_agent_count']),
+            lastCheckAt: pickString(guardRaw, ['last_check_at']),
+            ageMs: pickNumber(guardRaw, ['age_ms']),
+            note: pickString(guardRaw, ['note']),
+            sessionPercent: pickNumber(guardRaw, ['session_pct', 'session_percent', 'sessionPercent']) ?? (percents !== null ? pickNumber(percents, ['session']) : null),
+            weekPercent: pickNumber(guardRaw, ['week_pct', 'week_percent', 'weekPercent']) ?? (percents !== null ? pickNumber(percents, ['week']) : null),
+            sessionResetAt: pickString(guardRaw, ['session_reset_at']) ?? (resets !== null ? pickString(resets, ['session']) : null),
+            weekResetAt: pickString(guardRaw, ['week_reset_at']) ?? (resets !== null ? pickString(resets, ['week']) : null),
+            pendingCheckup: pickBool(guardRaw, ['pending_checkup', 'pendingCheckup']) ?? false,
+            lastError: pickString(guardRaw, ['last_error', 'lastError']),
+            watcher: pickString(guardRaw, ['watcher']),
+            watcherStaleSec: pickNumber(guardRaw, ['watcher_stale_sec']),
+          };
+        })();
 
   return {
     ok: pickBool(data, ['ok']) ?? false,

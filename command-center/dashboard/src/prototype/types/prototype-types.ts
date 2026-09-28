@@ -131,7 +131,14 @@ export type ProjectType =
 
 export interface ProjectHealth {
   readonly tests: { readonly passed: number; readonly failed: number; readonly skipped: number };
-  readonly openTickets: number;
+  /**
+   * WP-CCD: widened from a non-nullable `number` — this was hardcoded to `0` for every project
+   * (no ticket registry was ever integrated), which read as a genuinely-measured "no open tickets"
+   * rather than "never measured". `null` is the honest "not measured" state, matching the
+   * `taskCount`/`score` precedent below; a real ticket count (`.claude/forge-tickets`, when the
+   * gateway exposes it) reads as a real number, never coerced back to a fabricated `0`.
+   */
+  readonly openTickets: number | null;
   readonly blockers: number;
   /**
    * 0–100 composite score shown as a thin meter, never a coloured dial. `null` when this
@@ -187,6 +194,13 @@ export interface Project extends Prototyped {
    * is the gateway's own honest "not available" reading for a row it could not stat.
    */
   readonly dirMtimeMs?: number | null;
+  /**
+   * WP-CCD: a real backup or test copy of another project, straight through from the gateway's own
+   * `GET /api/projects` row `kind` field — `null`/absent means an ordinary project (the overwhelming
+   * majority, and everything this app has ever shown before this field existed). Never guessed from
+   * the project's name.
+   */
+  readonly kind?: 'backup' | 'test' | null;
 }
 
 /* ----------------------------------------------------------- conversations */
@@ -311,6 +325,22 @@ export interface Task extends Prototyped {
   /** Only on a `Task` built from an `orphanCompletions` row: why that completion was left
    *  unmatched. `null` on an ordinary task. */
   readonly unmatchedReason?: string | null;
+  /**
+   * WP-CCD: the run's own verdict text for this task's completion (e.g. `"PASS-WITH-NOTES"`),
+   * straight through from the gateway's new per-task `verdict` field — `null` when the gateway
+   * did not report one (an older gateway build, or a task with no verdict yet). Never derived or
+   * guessed from `status` — a task can be `'completed'` with no verdict text at all.
+   */
+  readonly verdict?: string | null;
+  /**
+   * WP-CCD: the gateway's own literal status string for this task, kept ALONGSIDE the derived
+   * `status: StatusKey` above — `StatusKey` is a closed, frozen union with no room for `'stalled'`/
+   * `'ended_unknown'` (real states `missions.mjs` reports), so those were silently folded into the
+   * generic `'idle'`/backlog bucket. This field carries the real string verbatim so a view can show
+   * "stalled" or "ended unknown" as such rather than as indistinguishable-from-never-started. `null`
+   * when the gateway did not report a status at all for this task.
+   */
+  readonly rawStatus?: string | null;
 }
 
 export interface WorkPackage extends Prototyped {
@@ -335,6 +365,24 @@ export interface Run extends Prototyped {
   readonly duration: string;
   readonly workPackageIds: readonly string[];
   readonly agentIds: readonly string[];
+  /**
+   * WP-CCD: the gateway's own literal run status (`'finalized'|'completed'|'running'|'stalled'|
+   * 'failed'|'unknown'`), kept alongside the derived `status: StatusKey` above for the same reason
+   * `Task.rawStatus` is — `'finalized'`/`'stalled'` have no room in the closed `StatusKey` union.
+   * `null` when the gateway did not report one (an older gateway build) — `status` above still
+   * carries an honest best-effort derivation in that case.
+   */
+  readonly rawStatus?: string | null;
+  /** Whether this run has a written `run-finalized.json` digest-receipt — `null` when the gateway
+   *  did not report it (never guessed from `hasFinalReport`, a materially different, weaker fact). */
+  readonly finalized?: boolean | null;
+  /** Whether this run has real gate-evidence recorded (`gate-evidence.json`) — `null` when the
+   *  gateway did not report it. */
+  readonly hasGateEvidence?: boolean | null;
+  /** A synthetic/example run the gateway itself flagged as not real activity — `false` when the
+   *  gateway did not report the field at all (the honest default: every run seen before this field
+   *  existed was real). Views that count "real" runs/missions must exclude a `true` here. */
+  readonly synthetic?: boolean;
 }
 
 /* ------------------------------------------------------------ mission graph */

@@ -17,22 +17,40 @@
   "dashboard": {
     "authoritative": "command-center (Forge Command Center, 127.0.0.1:4100, supervisor.mjs als enige herstart-autoriteit)",
     "control_center_server_cjs": {
-      "status": "retired",
-      "auto_start": "forbidden",
+      "status": "removed",
+      "removed_in": "v2.9.0 (WP-N1, 2026-09-27)",
+      "note": "server.cjs + zijn statische UI (index.html/app.js/graph.js/lenses.js/panels.js/styles.css) bestaan niet meer in .claude/forge-dashboard/ — dit is geen 'retired, blijft op schijf' meer maar echt verwijderd uit de template; forge-sync's pruneRetiredFiles() ruimt een ouder, nog-niet-gesyncte install ook op (alleen als het bestand zelf ongewijzigd is).",
+      "auto_start": "impossible — er bestaat geen startroute meer, niet eens een expliciete",
       "wrapper_fallback": "forbidden — een wrapper mag server.cjs NOOIT automatisch starten als command-center ontbreekt; hij meldt eerlijk dat het Command Center niet aanwezig is",
-      "explicit_owner_request_only": "een expliciete owner-vraag ('legacy dashboard') is de ENIGE toegestane startroute",
-      "log_event_cjs": "blijft de per-project event-writer (in actieve dienst, geen onderdeel van de retirement)"
+      "legacy_dashboard_command": "de 'legacy-dashboard'/'legacy dashboard'-opdracht in de wrappers start NIETS meer — hij toont alleen een boodschap dat de oude Control Center in 2.9.0 is verwijderd en verwijst naar 'forge dashboard' (Command Center)",
+      "log_event_cjs": "blijft de per-project event-writer (in actieve dienst, geen onderdeel van de removal) — het enige bestand dat nog in .claude/forge-dashboard/ hoort te staan, naast README.md en start-forge-dashboard.bat"
     },
     "dashboard_state_json": {
       "new_installs": "never-create",
       "existing_legacy": "read-only toegestaan (lezers mogen een bestaand bestand tonen); ontbreken is NOOIT een installatiefout",
-      "readers": [".claude/commands/forge.md (/forge status)", ".claude/forge-bin/forge-mcp.cjs", ".claude/forge-bin/forge-registry.cjs"]
+      "cleanup": "forge-sync's pruneRetiredFiles() verwijdert PORT/DASHBOARD_STATE.json in een bestaand project onvoorwaardelijk (gegenereerde runtime-state, geen ownerdata) tijdens dezelfde sync die de 7 UI-bestanden opruimt",
+      "readers": [".claude/forge-bin/forge-mcp.cjs (met eerlijke fallback naar de mapnaam)", ".claude/forge-bin/forge-registry.cjs"]
+    },
+    "cli_status_runs_open_report": {
+      "tool": ".claude/forge-bin/forge-runinfo.cjs",
+      "note": "v2.9.0: '/forge status'/'runs'/'open-report' lezen niet meer server.cjs's CLI-modes, maar deze losstaande tool (dezelfde run-listing-logica, plus een Command Center /api/health-check voor status). Nooit DASHBOARD_STATE.json/PORT."
+    },
+    "wrapper_launch": {
+      "status": "WP-P2 (v2.9.0, 'forge dashboard works after a fresh install, with no manual steps')",
+      "tool": ".claude/forge-bin/forge-cc-launch.cjs (forge.ps1/forge.cmd/forge.sh 'dashboard'/'start' just resolve node and delegate to it)",
+      "port_rule": "process.env.CC_PORT when it parses as a positive number, else 4100 — the exact same rule command-center/gateway/bin.mjs itself uses",
+      "already_running_reuse": "GET http://127.0.0.1:<port>/api/health with a short timeout FIRST, before anything else — ANY real HTTP response (not specifically the JSON body's ok:true) means already running (a DEGRADED gateway still holds the port); the wrapper reports the URL and starts nothing else, so it can never collide with an already-bound port",
+      "lookup_order": ["<project>/command-center/gateway/bin.mjs (project-local — a developer checkout)", "<home>/.claude/forge/template/command-center/gateway/bin.mjs (central — the installer's shared copy, WP-P1)"],
+      "neither_found": "one plain line naming the installer for this OS (install.ps1 on win32, else install.sh) — never a stack trace, never a command the user has to type",
+      "build_on_demand": "when dashboard/dist/index.html is missing but dashboard/package.json exists: npm ci when dashboard/package-lock.json exists, else npm install, then npm run build — run BY Forge itself with real npm stdout/stderr inherited, never printed as a step for the user to type",
+      "entry_choice": "gateway/supervisor.mjs when present (auto-restart on crash), else gateway/bin.mjs directly — started in the foreground with FORGE_CC_DEFAULT_PROJECT set to this project's own absolute root; the URL is printed by the wrapper BEFORE spawning because supervisor.mjs does not forward the child gateway's own stdout to the console"
     }
   },
   "installer": {
     "npm_forge_dashboard_script": "forbidden — geen package.json-script dat server.cjs start; de oude Phase-7-instructie is hierbij vervallen",
     "phase_9_dashboard_state_check": "vervallen — een verse install bevestigt juist de AFWEZIGHEID van DASHBOARD_STATE.json (Phase 8 wint)",
-    "safe_installer": "forge-sync install (backup + doctor-validatie in het doelproject + rollback) is de enige vloot-route"
+    "safe_installer": "forge-sync install (backup + doctor-validatie in het doelproject + rollback) is de enige vloot-route",
+    "central_template_location": "WP-P1/WP-P2 (v2.9.0): install.sh/install.ps1 (the public distribution installer) copy command-center/ next to a fresh ~/.claude/forge/template/.claude/ — i.e. ~/.claude/forge/template/command-center/, already built (dashboard/dist/) — and record every real project they set up in ~/.claude/forge/projects.json. The Command Center gateway itself (command-center/gateway/src/paths.mjs FORGE_TEMPLATE_DIR/FORGE_INSTALLED_PROJECTS_FILE) reads that list and never lists the template host as a project. See dashboard.wrapper_launch above for how a per-project wrapper finds/builds/starts that central copy."
   },
   "append_only_rules": {
     "policy": "superseded-by-canon",

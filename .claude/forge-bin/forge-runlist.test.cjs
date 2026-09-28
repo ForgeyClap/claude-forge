@@ -2,7 +2,10 @@
 'use strict';
 /**
  * forge-runlist.test.cjs — hermetic tests for the run LISTING used by `/forge status`, `/forge runs`
- * and `/forge open-report` (`.claude/forge-dashboard/server.cjs`'s classifyRunDir/listRunIds).
+ * and `/forge open-report` (v2.9.0: moved from the retired `.claude/forge-dashboard/server.cjs` to
+ * `.claude/forge-bin/forge-runinfo.cjs`'s classifyRunDir/listRunIds — see forge-runinfo.test.cjs for
+ * that tool's own dedicated coverage, incl. readRun()/checkCommandCenterHealth()/commandCenterStartHint()
+ * added in the move; this file keeps the original regression history below intact against the new home).
  *
  * MEASURED DEFECT (audit sweep, 2026-08-03) — the listing sorted by DIRECTORY NAME and accepted every
  * directory under forge-runs/. Consequences, both observed on the real project:
@@ -24,7 +27,7 @@ const path = require('path');
 const assert = require('assert');
 // (no child process needed: the ordering rule is tested purely and the live assertion runs in-process)
 
-const SERVER = path.join(__dirname, '..', 'forge-dashboard', 'server.cjs');
+const RUNINFO = path.join(__dirname, 'forge-runinfo.cjs');
 
 let pass = 0, fail = 0;
 const t = (name, fn) => { try { fn(); pass++; console.log('  ok  ' + name); } catch (e) { fail++; console.error('  FAIL ' + name + ' — ' + e.message); } };
@@ -39,11 +42,11 @@ function mkRun(runsDir, name, opts) {
 }
 
 // classifyRunDir and orderRunRows are pure and are tested directly against the fixtures below;
-// listRunIds() reads a module-level RUNS_DIR resolved from the server's OWN install (detectProjectRoot's
-// isolation guard refuses an env root that does not contain this very server), so it is exercised once
+// listRunIds() reads a module-level RUNS_DIR resolved from the tool's OWN install (detectProjectRoot's
+// isolation guard refuses an env root that does not contain this very tool), so it is exercised once
 // against the real project — the tree where the defect was actually found and must stay fixed.
 // (Codex review #26 caught an unused child-process import left over from an earlier attempt at that.)
-const S = require(SERVER);
+const S = require(RUNINFO);
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runlist-'));
 const RUNS = path.join(TMP, '.claude', 'forge-runs');
@@ -82,9 +85,9 @@ t('classifyRunDir: an unreadable run.json is NOT treated as evidence of anything
   assert.strictEqual(c.synthetic, false);
 });
 
-// The ORDERING rule is tested purely (server.cjs deliberately refuses to be pointed at a fixture
+// The ORDERING rule is tested purely (forge-runinfo.cjs deliberately refuses to be pointed at a fixture
 // project — detectProjectRoot()'s isolation guard requires the env root to contain THIS very install,
-// which is exactly the protection that stops a dashboard serving another project's runs).
+// which is exactly the protection that stops this CLI reading another project's runs).
 t('orderRunRows: newest REAL run first — a synthetic demo never wins "latest"', () => {
   const rows = [
     { name: 'zzz-demo-preview', synthetic: true, recency: 9999 },   // newest AND alphabetically last

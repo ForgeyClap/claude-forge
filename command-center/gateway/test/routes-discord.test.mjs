@@ -10,18 +10,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.mjs';
+import { runDiscordOperation } from '../src/discord-ops.mjs';
 import { request, requestWithBody } from '../test-support/helpers.mjs';
 import {
   _setDiscordPathsForTests,
   _setSpawnFnForTests,
   _setFetchFnForTests,
   _setExtraEnvOverridesForTests,
+  _setKillFnForTests,
+  _setHomeDirForTests,
   _resetDiscordServiceForTests,
 } from '../src/discord-service.mjs';
 
 let server;
 let port;
 let tempDir;
+let homeDir; // WP-S1: a throwaway stand-in for os.homedir(), never the real one
 
 function makeFakeChild(pid) {
   const child = new EventEmitter();
@@ -32,6 +36,10 @@ function makeFakeChild(pid) {
   return child;
 }
 
+// WP-P1: pre-creates a `node_modules/discord.js/package.json` marker by default so every route
+// test below (none of which are about the deps-install feature) keeps exercising the
+// already-installed fast path it was written against — see discord-service.test.mjs's own
+// `isolatedPaths()` header for the identical reasoning.
 function isolatedPaths(dir) {
   const mainJsDir = path.join(dir, 'src');
   fs.mkdirSync(mainJsDir, { recursive: true });
@@ -41,6 +49,8 @@ function isolatedPaths(dir) {
   fs.writeFileSync(envExampleFile, 'TRANSPORT=mock\nDISCORD_BOT_TOKEN=\nBOT_HTTP_PORT=3979\n', 'utf8');
   const envFile = path.join(dir, '.env');
   fs.writeFileSync(envFile, 'TRANSPORT=mock\n', 'utf8');
+  fs.mkdirSync(path.join(dir, 'node_modules', 'discord.js'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'node_modules', 'discord.js', 'package.json'), '{"name":"discord.js"}\n', 'utf8');
   return {
     discordDir: dir,
     mainJs,
@@ -66,14 +76,17 @@ after(async () => {
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-routes-discord-test-'));
+  homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-routes-discord-home-'));
   _resetDiscordServiceForTests();
   _setDiscordPathsForTests(isolatedPaths(tempDir));
+  _setHomeDirForTests(homeDir);
   _setFetchFnForTests(async () => { throw new Error('unreachable — isolated test port, nothing listens'); });
 });
 
 afterEach(() => {
   _resetDiscordServiceForTests();
   fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
+  fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
 });
 
 test('GET /api/discord/status returns a real 200 shape, no exec token needed (read-only)', async () => {
@@ -281,4 +294,196 @@ test('SECURITY Codex K3-6: POST /api/discord/guild refuses a format-valid guildI
 test('GET /api/discord/connect (no matching GET route for this path) is a real 404', async () => {
   const res = await request(port, '/api/discord/connect');
   assert.equal(res.statusCode, 404);
+});
+
+// ── WP-S1 (owner request 2026-09-27): the Discord "projects folder" setting + folder picker ────
+// Deep validation-rule coverage (drive root / system folder / home root / create-inside-home-only
+// / atomic-write shape / conditional restart) already lives in discord-projects-dir.test.mjs at
+// the unit level — these tests cover HTTP wiring only: auth, schema, status codes, and one real
+// round trip through the actual server.
+
+test('GET /api/discord/projects-dir returns a real 200 shape, no exec token needed (read-only)', async () => {
+  const res = await request(port, '/api/discord/projects-dir');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
+  assert.equal(res.json.dir, path.join(homeDir, 'Documents', 'ForgeProjects'));
+  assert.equal(res.json.source, 'default');
+  assert.equal(res.json.exists, false);
+  assert.equal(res.json.project_count, null);
+});
+
+test('POST /api/discord/projects-dir without the exec token is rejected with 403, never writes .env', async () => {
+  const envBefore = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+  const target = path.join(homeDir, 'Projects');
+  fs.mkdirSync(target, { recursive: true });
+
+  const res = await requestWithBody(port, '/api/discord/projects-dir', {
+    method: 'POST',
+    jsonBody: { dir: target },
+    omitExecToken: true,
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(fs.readFileSync(path.join(tempDir, '.env'), 'utf8'), envBefore);
+});
+
+test('POST /api/discord/projects-dir with an unknown body field is rejected with 400 (strict schema)', async () => {
+  const res = await requestWithBody(port, '/api/discord/projects-dir', {
+    method: 'POST',
+    jsonBody: { dir: homeDir, extra: 'nope' },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json.ok, false);
+});
+
+test('POST /api/discord/projects-dir with a non-string dir is rejected with 400', async () => {
+  const res = await requestWithBody(port, '/api/discord/projects-dir', { method: 'POST', jsonBody: { dir: 42 } });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /dir must be a string/);
+});
+
+test('POST /api/discord/projects-dir with a non-boolean create is rejected with 400', async () => {
+  const res = await requestWithBody(port, '/api/discord/projects-dir', {
+    method: 'POST',
+    jsonBody: { dir: homeDir, create: 'yes' },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /create must be a boolean/);
+});
+
+test('POST /api/discord/projects-dir with a real exec token and an existing folder saves it — GET then reflects the new setting', async () => {
+  const target = path.join(homeDir, 'Projects');
+  fs.mkdirSync(path.join(target, 'demo-project'), { recursive: true });
+
+  const postRes = await requestWithBody(port, '/api/discord/projects-dir', { method: 'POST', jsonBody: { dir: target } });
+  assert.equal(postRes.statusCode, 200, JSON.stringify(postRes.json));
+  assert.equal(postRes.json.ok, true);
+  assert.equal(postRes.json.dir, target);
+  assert.equal(postRes.json.restarted, false, 'nothing is tracked as running in this test');
+
+  const getRes = await request(port, '/api/discord/projects-dir');
+  assert.equal(getRes.json.dir, target);
+  assert.equal(getRes.json.source, 'setting');
+  assert.equal(getRes.json.exists, true);
+  assert.equal(getRes.json.project_count, 1);
+});
+
+test('POST /api/discord/projects-dir refuses a Windows system folder with 400, never writes .env', { skip: process.platform !== 'win32' }, async () => {
+  const winDir = process.env.WINDIR || process.env.SystemRoot;
+  const envBefore = fs.readFileSync(path.join(tempDir, '.env'), 'utf8');
+  const res = await requestWithBody(port, '/api/discord/projects-dir', { method: 'POST', jsonBody: { dir: winDir } });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json.error, /Windows system folder/);
+  assert.equal(fs.readFileSync(path.join(tempDir, '.env'), 'utf8'), envBefore);
+});
+
+test('POST /api/discord/projects-dir restarts an actually-running bot (restarted:true, a fresh pid)', async () => {
+  _setExtraEnvOverridesForTests({ RUNNER: 'fake' });
+  _setKillFnForTests(() => {});
+  let spawnCalls = 0;
+  _setSpawnFnForTests(() => {
+    spawnCalls += 1;
+    return makeFakeChild(5100 + spawnCalls);
+  });
+
+  const startRes = await requestWithBody(port, '/api/discord/start', { method: 'POST' });
+  assert.equal(startRes.statusCode, 202, JSON.stringify(startRes.json));
+
+  const target = path.join(homeDir, 'RestartProjects');
+  fs.mkdirSync(target, { recursive: true });
+  const res = await requestWithBody(port, '/api/discord/projects-dir', { method: 'POST', jsonBody: { dir: target } });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.json));
+  assert.equal(res.json.restarted, true);
+  assert.equal(res.json.pid, 5102);
+});
+
+test('DELETE /api/discord/projects-dir (unsupported method) is rejected with 405', async () => {
+  const res = await requestWithBody(port, '/api/discord/projects-dir', { method: 'DELETE' });
+  assert.equal(res.statusCode, 405);
+});
+
+test('GET /api/discord/browse-folder with no ?dir defaults to the real <home>/Documents, no exec token needed', async () => {
+  // folder-browse.mjs is a separate, stateless module with no home-dir override seam of its own
+  // (unlike discord-service.mjs's `_setHomeDirForTests`) — its default root is the machine's REAL
+  // os.homedir(), same as folder-browse.test.mjs's own unit-level assertion for this exact case.
+  const res = await request(port, '/api/discord/browse-folder');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
+  assert.equal(res.json.path, fs.realpathSync.native(path.join(os.homedir(), 'Documents')));
+});
+
+test('GET /api/discord/browse-folder?dir=<real folder> lists real subfolder names only', async () => {
+  const target = path.join(homeDir, 'Browsable');
+  fs.mkdirSync(path.join(target, 'child-one'), { recursive: true });
+  fs.mkdirSync(path.join(target, '.hidden'), { recursive: true });
+  fs.writeFileSync(path.join(target, 'a-file.txt'), 'x', 'utf8');
+
+  const res = await request(port, '/api/discord/browse-folder?dir=' + encodeURIComponent(target));
+  assert.equal(res.statusCode, 200, JSON.stringify(res.json));
+  assert.deepEqual(res.json.folders, ['child-one']);
+  assert.equal('content' in res.json, false);
+});
+
+test('GET /api/discord/browse-folder?dir=<missing folder> answers 400, honestly', async () => {
+  const res = await request(port, '/api/discord/browse-folder?dir=' + encodeURIComponent(path.join(homeDir, 'nope')));
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.json.ok, false);
+});
+
+test('POST /api/discord/browse-folder (GET-only route) is rejected with 405, even with a real exec token', async () => {
+  const res = await requestWithBody(port, '/api/discord/browse-folder', { method: 'POST', jsonBody: {} });
+  assert.equal(res.statusCode, 405);
+});
+
+// v2.9.0 (Command Center audit finding 31): GET /api/discord/activity reads the SAME state folder
+// GET /api/discord/status reports (the isolated one from beforeEach here), never the real bot state.
+test('GET /api/discord/activity summarizes the isolated bot state folder, no exec token needed (read-only)', async () => {
+  const stateDir = path.join(tempDir, 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(
+    path.join(stateDir, 'queue.json'),
+    JSON.stringify({ items: [{ id: 'x1', projectId: 'alpha', state: 'COMPLETED', content: 'private route text', receivedAt: now - 2000, startedAt: now - 1500, completedAt: now - 500 }] }),
+    'utf8',
+  );
+  fs.writeFileSync(path.join(stateDir, 'usage.jsonl'), JSON.stringify({ ts: now - 500, projectId: 'alpha', costUsd: 0.5 }) + '\n', 'utf8');
+  const res = await request(port, '/api/discord/activity');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
+  const a = res.json.activity;
+  assert.equal(a.available, true);
+  assert.equal(a.state_dir, stateDir);
+  assert.equal(a.jobs.total, 1);
+  assert.deepEqual(a.jobs.by_state, { COMPLETED: 1 });
+  assert.equal(a.jobs.recent[0].duration_ms, 1000);
+  assert.equal(a.cost.total_usd, 0.5);
+  assert.ok(!JSON.stringify(res.json).includes('private route text'), 'message text must never be returned');
+});
+
+test('GET /api/discord/activity with no bot state yet answers 200 with available:false, not an error', async () => {
+  const res = await request(port, '/api/discord/activity');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
+  assert.equal(res.json.activity.available, false);
+  assert.equal(res.json.activity.jobs.total, 0);
+});
+
+test('POST /api/discord/activity (GET-only route) is rejected with 405, even with a real exec token', async () => {
+  const res = await requestWithBody(port, '/api/discord/activity', { method: 'POST', jsonBody: {} });
+  assert.equal(res.statusCode, 405);
+});
+
+test('F-08: saving the projects folder waits its turn behind a running Discord operation (it may restart the bot)', async () => {
+  const target = path.join(homeDir, 'Projects');
+  fs.mkdirSync(target, { recursive: true });
+  let release;
+  const busy = runDiscordOperation(() => new Promise((r) => { release = r; }));
+  let answered = false;
+  const save = requestWithBody(port, '/api/discord/projects-dir', { method: 'POST', jsonBody: { dir: target } }).then((res) => { answered = true; return res; });
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(answered, false, 'the save must wait while another Discord operation runs');
+  release();
+  await busy;
+  const res = await save;
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.ok, true);
 });

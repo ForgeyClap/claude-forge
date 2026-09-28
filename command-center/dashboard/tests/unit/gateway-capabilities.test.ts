@@ -535,7 +535,7 @@ describe('useGatewayForgeConfig — GET /api/config?project=', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('/api/config?project=68%20agents%20works!'),
+      expect.stringContaining('/api/config?project=my%20project%20(v2)!'),
       { method: 'GET' },
     );
     expect(result.current.error).toBeNull();

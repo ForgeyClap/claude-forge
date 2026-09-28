@@ -8,21 +8,27 @@
  * for real.
  *
  * WHY: an agent can log agent_completed while several of its own task events are still open/running/
- * failed. The dashboard already renders that honestly (see forge-dashboard/app.js taskStatus), but
- * nothing previously forced a re-check. This tool is that forcing function.
+ * failed. The dashboard already renders that honestly, but nothing previously forced a re-check. This
+ * tool is that forcing function.
  *
- * SEMANTICS (mirrored EXACTLY from forge-dashboard/app.js, read before changing either file):
- *   - BACKBONE (app.js ~L55-61): structural milestone event types that are NEVER counted as a per-agent
- *     "task" (run_started, agent_completed, lead_review_completed, etc.).
- *   - statusClass (app.js ~L64-72) + taskStatus (app.js ~L73-98): an event's status is decided by its
- *     explicit `status` field first (via the same substring keyword mapping — "done"/"complete"/"pass"
- *     -> done, "fail"/"block"/"refus" -> failed, etc.); otherwise by its `event_type` falling into one of
- *     six buckets (done / failed / internal / previewing / waiting / running). TERMINAL_TYPES below is the
- *     union of app.js's two "done" event_type lists (the main done list L74-82 + the "already happened"
- *     informational list L94-96) — the two lists are disjoint from every other bucket in app.js, so
- *     checking TERMINAL_TYPES first here is behaviorally identical to app.js's original branch order.
- *   If app.js's BACKBONE/statusClass/taskStatus ever changes, update the matching constants/function here
- *   too — otherwise this tool and the dashboard will disagree about what "done" means.
+ * SEMANTICS — v2.9.0 (WP-N1, 2026-09-27) UPDATE: this file's BACKBONE/statusClass/taskStatus/TERMINAL_TYPES
+ * etc. were originally described as "mirrored EXACTLY from forge-dashboard/app.js" — that file (the retired
+ * per-project Control Center's browser UI) was REMOVED from the template along with the rest of that
+ * dashboard. THIS FILE is now the sole, canonical source of truth for this classification; there is no
+ * longer a second file to mirror or to keep in sync with. The scattered inline comments below that still
+ * say "app.js ~Lxx" or "mirrored in app.js" are kept as historical provenance for WHY each bucket/list is
+ * shaped the way it is (they were correct descriptions of the original design) — read them as history, not
+ * as a live pointer to a file that still needs checking; nothing here still needs to agree with app.js,
+ * because app.js no longer exists.
+ *   - BACKBONE: structural milestone event types that are NEVER counted as a per-agent "task"
+ *     (run_started, agent_completed, lead_review_completed, etc.).
+ *   - statusClass + taskStatus: an event's status is decided by its explicit `status` field first (via a
+ *     substring keyword mapping — "done"/"complete"/"pass" -> done, "fail"/"block"/"refus" -> failed,
+ *     etc.); otherwise by its `event_type` falling into one of six buckets (done / failed / internal /
+ *     previewing / waiting / running). TERMINAL_TYPES below is the union of the two "done" event_type
+ *     lists (the main done list + the "already happened" informational list) — the two lists are disjoint
+ *     from every other bucket, so checking TERMINAL_TYPES first here is behaviorally identical to the
+ *     original branch order.
  *
  * CLI:
  *   node forge-verify.cjs <run_id> [--root <projectRoot>] [--enforce] [--json] [--domain <domain>]
@@ -541,8 +547,8 @@ function closeHeartbeats(rec, completionEvent, evIdx) {
  * "67 open tasks" forever): see closeHeartbeats() above (RULE 1) and the closes_event_id handling below
  * (RULE 2 — a fix_completed/check_passed with a `closes_event_id` pointing at an EARLIER event's
  * event_id, plus a non-empty `evidence` string, closes that exact earlier task with the closer's status —
- * whatever agent/type it belongs to). Both rules mirror the SAME semantics in forge-dashboard/app.js
- * buildNodes() (read that file before changing either).
+ * whatever agent/type it belongs to). Both rules originally mirrored the same semantics in
+ * forge-dashboard/app.js's buildNodes() — that file was REMOVED in v2.9.0; this is now the sole source.
  */
 function verifyRun(runDir, opts) {
   opts = opts || {};
@@ -1253,8 +1259,8 @@ function findItemDecision(events, prdId, key, id, ownerAllowlist) {
  * A failure condition is HIT when an event in THIS run's events.jsonl carries the same prd_id + fc_id and
  * resolves to 'failed' through the EXISTING taskStatus() taxonomy (check_failed, quality_gate_blocked, an
  * explicit status field saying fail/block/refuse …). Reusing taskStatus rather than hardcoding a list of
- * event types means this check and the dashboard can never disagree about what "failed" means — the same
- * reason the file header insists app.js and this file share their semantics.
+ * event types means every consumer of "failed" in this file agrees with every other — this file is the
+ * one place that taxonomy is defined (see the file header's v2.9.0 note on app.js's removal).
  *
  * A hit is a BLOCKER and it gates, exactly like a dropped acceptance criterion: "this outcome is
  * unacceptable" is not a softer statement than "this outcome is required", it is the same statement from the

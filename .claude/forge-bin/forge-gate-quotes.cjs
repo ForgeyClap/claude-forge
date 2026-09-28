@@ -1675,6 +1675,442 @@ function cArgLiveAfterFlag(text) {
   return false;
 }
 
+/** classifySearchWords(tool, texts) -> { ok, patternIdx } — WP-M3 (2026-09-27, independent review RB2-1). The
+ *  ONE shared, closed-grammar option parser for secret-print's pattern-vs-file position analysis, used
+ *  IDENTICALLY by forge-actiongate.cjs::secretPrintPatternExempt() (the classifier's own veto) and
+ *  forge-gate-data.cjs::searchPatternWords() (the pre-classify stripping layer) — both already require() this
+ *  file, so the one grammar lives here instead of two that can drift apart (exactly what happened across
+ *  WP-M1/WP-M2: each file kept its OWN copy of the same three regexes).
+ *
+ *  WHY A REAL OPTION-TABLE PARSER. WP-M1/M2's exemption only ever recognised the EXACT words
+ *  -e/--regexp/-f/--file (plus an attached --name= form) as "this word supplies the pattern"; every OTHER
+ *  flag was merely "starts with -/-- so skip it", with NO notion of which flags take a VALUE. That is unsound
+ *  the moment a value-taking flag's own VALUE sits where the "first bare word" fallback goes looking for the
+ *  pattern: `grep -A 3 "\.env" src/` skipped "-A" (flag-shaped) then wrongly read "3" — -A's OWN numeric
+ *  argument — as the implicit pattern, leaving the REAL pattern ".env" to be tested as a FILE and blocked (a
+ *  false BLOCK on one of this task's own required-ALLOW examples, reproduced empirically against the pre-fix
+ *  code — see forge-gate-secretprint.test.cjs's own WP-M3 section). The mirror failure runs the other way:
+ *  `grep -eTOKEN .env` (an attached short-flag value) and `grep -vf .env` / `-Ff` / `-wf` / `-rf` (a
+ *  value-taking letter anywhere but the FRONT of a short cluster) were never recognised as carrying a value at
+ *  all, so the FILE right after them was wrongly read as the implicit pattern and exempted — a false ALLOW.
+ *  `rg -r .env pattern src` closes the same gap for a letter whose ARITY differs BETWEEN tools: `-r` is
+ *  grep's no-value `--recursive`, but ripgrep's `-r`/`--replace` takes a value — reusing one shared table for
+ *  both would misjudge one of them regardless of which arity it picked.
+ *
+ *  FAIL-CLOSED BY CONSTRUCTION. Every branch below that does not positively recognise a word's shape returns
+ *  `{ ok: false }` immediately — an unknown short letter anywhere in a cluster, an unrecognised or AMBIGUOUS
+ *  long-option abbreviation (matched against this closed table by UNAMBIGUOUS PREFIX, real GNU getopt_long
+ *  semantics, never against the real program's full option set, which this file cannot see), a value-taking
+ *  flag with no value available anywhere (end of the word list), or a context/count flag (-A/-B/-C/-m and
+ *  their long forms) whose value is not purely digits. `ok:false` means the caller must treat the WHOLE
+ *  segment as unresolved and supply NO exemption at all — the base gate's own broad regex decides, which can
+ *  only ever BLOCK something this parser could not positively clear, never newly allow it. This is a
+ *  deliberate, documented price (an exotic or as-yet-unmodelled real flag now loses the exemption) — the same
+ *  "advisory gate, over-block is the accepted safe direction" trade this codebase already makes elsewhere
+ *  (see forge-actiongate.cjs's own header on the destructive-delete valve).
+ *
+ *  POSITION MODEL (grep/egrep/fgrep/rg share one grammar, selected per `tool` via SEARCH_TOOL_OPTION_TABLES;
+ *  findstr's own much simpler `/switch[:value]` grammar is handled by classifyFindstrWords() below instead —
+ *  see its own doc). Each word in `texts` (already past the tool's own head, and already whatever quoting
+ *  convention the CALLER uses — this function only ever compares literal text) is classified as: `pattern`
+ *  (-e/--regexp, or its per-tool short letter, attached or separate — this word or its value is the search
+ *  PATTERN, always exempt); `file` (-f/--file — a pattern-SOURCE FILE the tool itself reads, NEVER exempt,
+ *  per the Lead's own v2.9.0 fix); `filterExempt` (a vetted set of criteria that can NEVER select a specific
+ *  file to read, unconditionally exempt regardless of anything else in the segment — --color/--colour for
+ *  grep, unrelated to file selection entirely; -t/--type/-T/--type-not for rg, since a "type" is a curated
+ *  extension category, never a filename); `filterInclude` (grep's --include — a glob that genuinely SELECTS
+ *  which files grep reads and prints matching lines from, so its value is NEVER exempt, left visible to the
+ *  caller's own SECRET_TARGET_RE scan); `filterExclude` (grep's --exclude/--exclude-dir — CONDITIONALLY
+ *  exempt: see "EXCLUSION-VS-INCLUSION PRECEDENCE" below, this is not the same as `filterExempt`); `filterGlob`
+ *  (rg's -g/--glob/--iglob — gitignore-style: a value starting with `!` is a negation/exclusion, CONDITIONALLY
+ *  exempt the same way `filterExclude` is; any other value is an inclusion that selects files the same way
+ *  grep's --include does, and is NEVER exempt — this category's exemption depends on its own VALUE's
+ *  content, not just its flag name); `numeric` (the -A/-B/-C/-m context/count group — consumed once validated
+ *  purely-digit, never exempt but never secret-shaped either); `other` (every other recognised value-taking
+ *  flag, e.g. grep's -d/-D or rg's -r/--replace/-E/--encoding/-j/--threads — consumed, left as an ordinary
+ *  word for the caller's own SECRET_TARGET_RE scan, the safe default for a value this parser does not need
+ *  to specially exempt); `novalue` (a known argument-less flag, alone or clustered); `positional` (does not
+ *  look like a flag for this tool at all); or `unknown` (anything else — fails closed).
+ *
+ *  TWO-PASS ARGUMENT PERMUTATION (WP-M3 rework, Lead adversarial probe group A, 2026-09-27). Real grep/rg use
+ *  GNU getopt semantics: options and non-option (positional) words may be freely INTERLEAVED in any order —
+ *  getopt collects every non-option word into one group, evaluated only once ALL options have been parsed —
+ *  so `grep .env -e TOKEN` and `grep -e TOKEN .env` mean EXACTLY the same thing: "TOKEN" is the pattern (from
+ *  -e), ".env" is a file argument grep will actually open. A single left-to-right pass that decides a
+ *  positional's fate the MOMENT it is seen (the original WP-M3 shape) gets this wrong: it read the FIRST
+ *  positional as the implicit pattern before ever reaching a LATER -e/--regexp/-f/--file, wrongly exempting a
+ *  real file target. Fixed with two passes over the same pre-`--` word range: PASS 1 walks every word once,
+ *  purely to validate (the same fail-closed conditions the single-pass version already checked: an unknown
+ *  word, a dangling value-taking flag, a non-numeric context/count value) and to detect whether an explicit
+ *  pattern-supplying option (`pattern` or `file`, in ANY form) exists ANYWHERE in the region. PASS 2 does the
+ *  real accounting, with `patternClaimed` PRE-ARMED to that detection result — so once ANY explicit source
+ *  exists, no positional may claim the pattern slot, no matter where it sits relative to that source.
+ *  A standalone `--` still ends option parsing (M2 F2, preserved): nothing after it is scanned as a flag at
+ *  all; if no pattern slot was filled before it, the first word right after it is the pattern, every other
+ *  word (before or after `--`) stays a plain, tested file/positional. `patternIdx` is the set of indices into
+ *  `texts` (0-based, relative to the array passed in) the caller must SKIP when scanning for a secret-shaped
+ *  FILE argument — it holds `pattern`/`filterExempt` values, a `filterExclude` value ONLY when no inclusion
+ *  filter exists anywhere in the region, and a negated `filterGlob` value under that SAME condition — never
+ *  a `file`/`filterInclude`/a non-negated `filterGlob`/`numeric`/`other` value, by construction.
+ *
+ *  EXCLUSION-VS-INCLUSION PRECEDENCE (WP-M3 round 3, Codex M3-1, HIGH, 2026-09-27). The first cut of the
+ *  group-B fix decided each `filterExclude`/negated-`filterGlob` word's exemption from its OWN value alone,
+ *  independent of every other word in the segment — unsound, because both real tools let a LATER inclusion
+ *  silently override an EARLIER exclusion for the very same file. GNU grep's own manual: "if contradictory
+ *  --include and --exclude options are given, the last matching one wins." Ripgrep's glob matching is
+ *  gitignore-style, where a later `--glob` can re-include what an earlier one excluded. Live repro: `rg
+ *  --hidden --glob='!*.env' --glob='.*' TOKEN` — the first cut exempted "!*.env" (its own value starts with
+ *  "!"), but ".*" (given AFTER it) re-includes every dotfile for real ripgrep, `.env` included, so the
+ *  command actually searches `.env` while the classifier stayed silent on the only secret-shaped text in the
+ *  line. This classifier cannot resolve real glob/pattern SPECIFICITY (which of two overlapping globs would
+ *  actually win for a given filename) — that is a strictly harder problem than this file's own closed-table
+ *  option-arity model was ever meant to solve — so it does not try. Instead: an exclusion criterion is exempt
+ *  ONLY when NO inclusion filter (grep's `filterInclude`, or an rg `filterGlob` whose value does NOT start
+ *  with `!`) exists ANYWHERE in the pre-`--` region, full stop, regardless of which one is textually first or
+ *  last. This is deliberately CONSERVATIVE, not a precedence resolver: the moment both shapes coexist in one
+ *  command, every exclusion in it loses its exemption, even in the (real, valid) cases where the exclusion
+ *  would actually still win — over-blocking a rarer mixed-filter shape is the accepted price, the same
+ *  "advisory gate, fail toward blocking" trade this whole file already makes everywhere else. PASS 1 above
+ *  computes this fact (`anyInclusionFilterGiven`) by scanning the WHOLE region once before PASS 2 ever
+ *  decides a single exemption, which is what makes the rule genuinely order-independent.
+ */
+const SEARCH_TOOL_OPTION_CATEGORIES = ['novalue', 'numeric', 'pattern', 'file', 'filterExempt', 'filterInclude', 'filterExclude', 'filterGlob', 'other'];
+function buildSearchToolTable(spec) {
+  const allLong = [];
+  for (const cat of SEARCH_TOOL_OPTION_CATEGORIES) {
+    for (const name of spec[cat + 'Long'] || []) allLong.push([name, cat]);
+  }
+  return Object.assign({}, spec, { allLong });
+}
+
+/** hasUnquotedShellSyntax(raw) -> true when a RAW word (quotes still in it) carries shell syntax outside quotes:
+ *  a redirection (`<`, `>`), or command substitution (a backtick or `$(`, which also run inside double quotes).
+ *  v2.9.0 (Codex recheck SEC-1, HIGH): words are split on whitespace only, so `grep -e '.*'<.env` produced ONE
+ *  word `'.*'<.env` that was exempted as the -e pattern while the shell reads .env through the redirection. A
+ *  search segment with such a word gets NO pattern exemption at all (both gate layers call this on raw words
+ *  before classifySearchWords()). A backslash escapes the next character outside single quotes. */
+function hasUnquotedShellSyntax(raw) {
+  const s = String(raw);
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; continue; }
+    if (c === '\\') { i++; continue; }
+    if (q === '"') {
+      if (c === '"') q = null;
+      else if (c === '`' || (c === '$' && s[i + 1] === '(')) return true;
+      continue;
+    }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (c === '<' || c === '>' || c === '`' || (c === '$' && s[i + 1] === '(')) return true;
+  }
+  return false;
+}
+const SEARCH_TOOL_OPTION_TABLES = {
+  // grep/egrep/fgrep (GNU grep(1) — egrep/fgrep are the same binary under a different default match mode, one
+  // shared option grammar). Letters are matched CASE-SENSITIVELY (grep's own convention: -c/-C, -u/-U, -z/-Z
+  // and -l/-L are each a genuinely different flag).
+  grep: buildSearchToolTable({
+    novalueShort: 'EFGPivwxsVHhoqaIbnrRLlcTZUuy',
+    // "fixed-strings"/"files-with-matches"/"files-without-match" are DELIBERATELY absent from this long-name
+    // list (their unambiguous short letters -F/-l/-L still classify correctly): every one of the three shares
+    // a "fi"/"fil" prefix with "file" (real GNU getopt_long would reject "--fi"/"--fil" as ambiguous too, once
+    // ALL of a program's real long options are registered), and this task's own required abbreviations
+    // (RB2-1: "--fil", "--fi=") must resolve to "file" alone. Curating them out keeps this closed table's
+    // abbreviation matching unambiguous for the names that matter; the full spelling of these three (never
+    // abbreviated) simply falls to a safe 'unknown' fail-closed instead of 'novalue' — an accepted, narrow gap.
+    novalueLong: ['extended-regexp', 'basic-regexp', 'perl-regexp', 'ignore-case',
+      'no-ignore-case', 'invert-match', 'word-regexp', 'line-regexp', 'no-messages', 'version', 'help',
+      'line-buffered', 'text', 'byte-offset', 'line-number', 'with-filename', 'no-filename', 'only-matching',
+      'quiet', 'silent', 'recursive', 'dereference-recursive',
+      'count', 'initial-tab', 'null', 'binary', 'unix-byte-offsets'],
+    // v2.9.0 (Codex recheck GATE-2): the three names curated out above ARE recognised when written in full
+    // (`grep --fixed-strings '.env' src/` is a harmless search); matchLongOption() matches them exactly and keeps
+    // them out of prefix matching, so "--fil"/"--fi=" still resolve to "file" alone.
+    exactOnlyNovalueLong: ['fixed-strings', 'files-with-matches', 'files-without-match'],
+    numericShort: 'ABCm', numericLong: ['after-context', 'before-context', 'context', 'max-count'],
+    patternShort: 'e', patternLong: ['regexp'],
+    fileShort: 'f', fileLong: ['file'],
+    // WP-M3 rework group B (Lead adversarial probe, 2026-09-27): --include genuinely SELECTS which files
+    // grep reads and prints matching lines from ("grep -rn --include=.env TOKEN ." really does search every
+    // .env file it finds), so it is NEVER exempt — split out of the old blanket "filter" category, which
+    // wrongly treated it the same as an exclusion. --color/--colour are unrelated to file selection entirely
+    // and stay UNCONDITIONALLY exempt. --exclude/--exclude-dir get their OWN category (filterExclude, WP-M3
+    // round 3 / Codex M3-1) rather than joining color/colour here — see that category's own doc for why.
+    filterExemptShort: '', filterExemptLong: ['color', 'colour'],
+    // --color[=WHEN] / --colour[=WHEN]: the value is OPTIONAL and attached-only (GNU grep manual, General Output
+    // Control). Bare, they take no value; see classifySearchOptionWord().
+    optionalValueLong: ['color', 'colour'],
+    filterIncludeShort: '', filterIncludeLong: ['include'],
+    filterGlobShort: '', filterGlobLong: [], // grep has no negatable single-flag glob syntax (unlike rg's -g)
+    // WP-M3 round 3 (Codex M3-1, HIGH): GNU grep's own manual states "if contradictory --include and
+    // --exclude options are given, the last matching one wins" — so --exclude/--exclude-dir can NOT be
+    // treated as unconditionally safe the way --color is; see classifySearchWords()'s own doc for the
+    // "exempt only when no inclusion filter exists anywhere" rule this category is subject to.
+    filterExcludeShort: '', filterExcludeLong: ['exclude', 'exclude-dir'],
+    otherShort: 'Dd', otherLong: ['directories', 'devices', 'label', 'binary-files'],
+  }),
+  // ripgrep(1). `-r`/`--replace` takes a value (a replacement string) here — unlike grep's no-value `-r`
+  // (recursive) — the exact per-tool arity divergence this task's own "rg -r X" fixture exists to pin down.
+  rg: buildSearchToolTable({
+    novalueShort: 'abcFHhiLlnNoPpqSsUuVvwxz0',
+    // same curation note as grep's table above: "fixed-strings"/"files-with-matches"/"files-without-match"
+    // are deliberately absent (their short -F/-l/-L letters are unaffected) to keep "--fil"/"--fi=" resolving
+    // unambiguously to "file" rather than colliding on a shared "fi"/"fil" prefix.
+    novalueLong: ['text', 'count', 'count-matches', 'with-filename', 'no-filename', 'follow',
+      'line-number', 'no-line-number', 'only-matching', 'pcre2',
+      'pretty', 'quiet', 'smart-case', 'case-sensitive', 'multiline', 'unrestricted', 'invert-match', 'version',
+      'word-regexp', 'line-regexp', 'search-zip', 'null', 'hidden', 'no-ignore', 'no-messages', 'json',
+      'vimgrep', 'no-config', 'trim', 'stats', 'heading', 'no-heading', 'column', 'byte-offset', 'ignore-case',
+      'crlf', 'one-file-system'],
+    exactOnlyNovalueLong: ['fixed-strings', 'files-with-matches', 'files-without-match'], // see the grep table
+    numericShort: 'ABCm', numericLong: ['after-context', 'before-context', 'context', 'max-count'],
+    patternShort: 'e', patternLong: ['regexp'],
+    fileShort: 'f', fileLong: ['file'],
+    // WP-M3 rework group B: -t/--type and -T/--type-not name a curated TYPE CATEGORY (e.g. "js"), never a
+    // filename, so neither can ever select a specific secret file — both stay exempt. -g/--glob/--iglob use
+    // gitignore syntax where a LEADING "!" negates the match (an exclusion); every other value is a real
+    // inclusion glob that selects files rg reads and prints matching lines from ("rg -g .env TOKEN" really
+    // does search every .env file it finds) — classifySearchWords() below decides exempt-or-not from the
+    // resolved VALUE itself, not from the flag name alone, which is why this category is split out on its own.
+    filterExemptShort: 'tT', filterExemptLong: ['type', 'type-not'],
+    filterIncludeShort: '', filterIncludeLong: [], // rg has no separate always-include-only flag (glob covers it)
+    filterExcludeShort: '', filterExcludeLong: [], // rg has no exclude-by-name flag; -g/--glob's own "!" value is its exclusion mechanism, handled inside filterGlob below
+    filterGlobShort: 'g', filterGlobLong: ['glob', 'iglob'],
+    otherShort: 'rEj', otherLong: ['replace', 'encoding', 'threads'],
+  }),
+};
+
+/** matchLongOption(table, name) -> category|null — `name` is a long option's own name with any leading `--`
+ *  and `=value` already removed. An EXACT match against `table.allLong` always wins outright, even when it is
+ *  also a prefix of another, longer name in the same table (real getopt_long behaviour: `--count` never means
+ *  `--count-matches`). Otherwise, `name` must be an UNAMBIGUOUS PREFIX of exactly one entry — zero or several
+ *  hits both return null (unknown/ambiguous), which classifySearchOptionWord() below turns into a fail-closed
+ *  verdict. This is real GNU getopt_long abbreviation semantics applied to this file's own closed, curated
+ *  table only — never a claim about the real program's full, larger option set. */
+function matchLongOption(table, name) {
+  // v2.9.0 (Codex recheck GATE-2): exact-only full spellings (see exactOnlyNovalueLong in the tables) are no-value
+  // options when written out in full, but they never take part in prefix matching, so "--fil" stays "--file".
+  if ((table.exactOnlyNovalueLong || []).includes(name)) return 'novalue';
+  for (const [full, cat] of table.allLong) if (full === name) return cat;
+  let hitCat = null, hits = 0;
+  for (const [full, cat] of table.allLong) if (full.startsWith(name)) { hits++; hitCat = cat; }
+  return hits === 1 ? hitCat : null;
+}
+/** matchLongOptionName(table, name) -> the FULL long-option name matchLongOption() resolved `name` to (same
+ *  exact-then-unambiguous-prefix rule), or null. Needed where arity depends on the specific option, not only on
+ *  its category (optionalValueLong below). */
+function matchLongOptionName(table, name) {
+  if ((table.exactOnlyNovalueLong || []).includes(name)) return name;
+  for (const [full] of table.allLong) if (full === name) return full;
+  const hits = table.allLong.filter(([full]) => full.startsWith(name));
+  return hits.length === 1 ? hits[0][0] : null;
+}
+
+/** classifySearchOptionWord(table, raw) -> { category, valueMode?, attachedValue? } — classifies ONE word of
+ *  a grep/rg-family segment per the per-tool `table` (SEARCH_TOOL_OPTION_TABLES entry). `category` is one of
+ *  'novalue' | 'pattern' | 'file' | 'filterExempt' | 'filterInclude' | 'filterExclude' | 'filterGlob' |
+ *  'numeric' | 'other' | 'positional' | 'unknown' (see classifySearchWords()'s own doc for what each means).
+ *  For a value-taking
+ *  category, `valueMode` is 'attached' (the value is glued onto this same word — `attachedValue` holds it) or
+ *  'separate' (the value is
+ *  a whole further word the CALLER must consume — `attachedValue` is null). A short CLUSTER (`-vf`, `-rfi`,
+ *  `-vex`, …) is walked letter by letter, left to right: a no-value letter just continues the walk; the FIRST
+ *  value-taking letter encountered ends it immediately, and everything remaining in the word — further
+ *  letters included — becomes that letter's own glued value (real getopt(3) short-cluster semantics: once a
+ *  value-taking option is hit, the rest of the argv word belongs to it, never re-parsed as more flags). This
+ *  is why `-eTOKEN` reads as "-e" with value "TOKEN" and `-vf` reads as "-v" then "-f" with its value in the
+ *  NEXT word, never the other way around. Any letter the table does not recognise at all — anywhere in the
+ *  cluster — is 'unknown' (fails the whole word, not just that letter). A pure no-value cluster with anything
+ *  unexpected glued after it (`afterCluster !== ''`) is also 'unknown', mirroring stripWrapperOptions()'s own
+ *  "something unexpected glued after a full no-value cluster" rule elsewhere in this file. */
+function classifySearchOptionWord(table, raw) {
+  const s = String(raw);
+  if (s === '--') return { category: 'boundary' };
+  if (s.startsWith('--') && s.length > 2) {
+    const eq = s.indexOf('=');
+    const name = (eq === -1 ? s.slice(2) : s.slice(2, eq)).toLowerCase();
+    if (!name) return { category: 'unknown' };
+    const glued = eq === -1 ? null : s.slice(eq + 1);
+    const cat = matchLongOption(table, name);
+    if (!cat) return { category: 'unknown' };
+    if (cat === 'novalue') return glued === null ? { category: 'novalue' } : { category: 'unknown' };
+    // v2.9.0 (Codex stop-time review F1, HIGH): GNU grep's --color[=WHEN] / --colour[=WHEN] take an OPTIONAL
+    // value that only ever counts when glued with '='. A bare --color takes NO value, so the next word must
+    // never be consumed as its value: `grep --color API_KEY .env` reads .env, and consuming API_KEY made .env
+    // look like the pattern.
+    if (glued === null && (table.optionalValueLong || []).includes(matchLongOptionName(table, name))) return { category: 'novalue' };
+    return { category: cat, valueMode: glued === null ? 'separate' : 'attached', attachedValue: glued };
+  }
+  if (s[0] === '-' && s.length > 1) {
+    const m = /^-([A-Za-z0-9]+)/.exec(s);
+    if (!m) return { category: 'unknown' }; // e.g. a lone "-", "-@", ... : not a recognised cluster shape
+    const letters = m[1];
+    const afterCluster = s.slice(m[0].length);
+    for (let k = 0; k < letters.length; k++) {
+      const L = letters[k];
+      const glued = letters.slice(k + 1) + afterCluster;
+      if (table.patternShort.includes(L)) return { category: 'pattern', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.fileShort.includes(L)) return { category: 'file', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.filterExemptShort.includes(L)) return { category: 'filterExempt', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.filterIncludeShort.includes(L)) return { category: 'filterInclude', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.filterExcludeShort.includes(L)) return { category: 'filterExclude', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.filterGlobShort.includes(L)) return { category: 'filterGlob', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.numericShort.includes(L)) return { category: 'numeric', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.otherShort.includes(L)) return { category: 'other', valueMode: glued ? 'attached' : 'separate', attachedValue: glued || null };
+      if (table.novalueShort.includes(L)) continue;
+      return { category: 'unknown' };
+    }
+    if (afterCluster !== '') return { category: 'unknown' };
+    return { category: 'novalue' };
+  }
+  return { category: 'positional' };
+}
+
+/** classifyFindstrWords(texts) -> { ok, patternIdx } — findstr(1)'s own grammar: every switch is its own
+ *  `/letter` or `/letter:value` word (Windows CLI convention, matched case-insensitively; unlike grep/rg,
+ *  there is no clustering and no standalone `--` end-of-options marker at all). `/C:string` supplies the
+ *  search string inline (a `pattern`), so once it appears every remaining positional is a plain file — the
+ *  exact regression this task closes (`findstr /C:TOKEN .env` used to read ".env" as the implicit pattern
+ *  because the old code only ever recognised "starts with /" as generically flag-shaped, never that /C:
+ *  already consumed the pattern slot). `/G:file` and `/F:file` NAME A FILE findstr itself reads (a search-
+ *  string file / a file-list file) — never exempt, same rule as grep's -f. `/A:attr` (display colour) and
+ *  `/D:dir` (a semicolon-delimited directory list) are consumed but not exempted (harmless, non-file values,
+ *  left for the caller's ordinary scan). Any `/`-led word that is not a valid `/letter[:value]` shape, or
+ *  whose letter this table does not recognise, or that glues a `:value` onto a switch this table marks
+ *  no-value, is 'unknown' — fails the whole segment closed, same convention as the grep/rg family above. */
+const FINDSTR_NOVALUE = new Set(['B', 'E', 'I', 'L', 'M', 'N', 'O', 'P', 'R', 'S', 'V', 'X']);
+const FINDSTR_PATTERN = new Set(['C']);
+const FINDSTR_FILE = new Set(['G', 'F']);
+const FINDSTR_OTHER = new Set(['A', 'D']);
+const FINDSTR_SWITCH_RE = /^\/([A-Za-z]+)(?::([\s\S]*))?$/;
+function classifyFindstrWords(texts) {
+  const patternIdx = new Set();
+  let patternClaimed = false;
+  for (let i = 0; i < texts.length; i++) {
+    const raw = String(texts[i]);
+    if (raw[0] !== '/') {
+      if (!patternClaimed) { patternIdx.add(i); patternClaimed = true; }
+      continue;
+    }
+    const m = FINDSTR_SWITCH_RE.exec(raw);
+    if (!m) return { ok: false, patternIdx };
+    const name = m[1].toUpperCase();
+    const glued = m[2] === undefined ? null : m[2];
+    if (FINDSTR_NOVALUE.has(name)) {
+      if (glued !== null) return { ok: false, patternIdx };
+      continue;
+    }
+    if (FINDSTR_PATTERN.has(name)) {
+      if (glued === null) return { ok: false, patternIdx };
+      patternClaimed = true;
+      patternIdx.add(i);
+      continue;
+    }
+    if (FINDSTR_FILE.has(name)) {
+      if (glued === null) return { ok: false, patternIdx };
+      patternClaimed = true; // never add to patternIdx: /G and /F name a FILE findstr reads, never exempt
+      continue;
+    }
+    if (FINDSTR_OTHER.has(name)) {
+      if (glued === null) return { ok: false, patternIdx };
+      continue;
+    }
+    return { ok: false, patternIdx }; // an unrecognised findstr switch letter
+  }
+  return { ok: true, patternIdx };
+}
+
+/** classifySearchWords(tool, texts) -> { ok, patternIdx } — the single entry point both gate layers call. See
+ *  the doc comment above SEARCH_TOOL_OPTION_TABLES for the full position model and fail-closed contract.
+ *  `tool` is 'grep' | 'rg' | 'findstr'; `texts` is the word TEXTS after the tool's own head word (index 0 of
+ *  `texts` is the first word after the head). Select-string/sls is deliberately NOT handled here — its own
+ *  "only an explicit -Pattern, no positional fallback at all" rule is simple enough, and different enough
+ *  from this shared grammar, that both callers keep it inline exactly as WP-M1 wrote it (see
+ *  secretPrintPatternExempt()'s and searchPatternWords()'s own doc comments). */
+function classifySearchWords(tool, texts) {
+  if (tool === 'findstr') return classifyFindstrWords(texts);
+  const patternIdx = new Set();
+  const table = SEARCH_TOOL_OPTION_TABLES[tool];
+  if (!table) return { ok: false, patternIdx };
+
+  // PASS 1 (validation + detection) — see this function's own doc comment above SEARCH_TOOL_OPTION_TABLES
+  // ("TWO-PASS ARGUMENT PERMUTATION" and "EXCLUSION-VS-INCLUSION PRECEDENCE") for the full "why". Fails the
+  // WHOLE segment closed on exactly the same three conditions the original single-pass version did (an
+  // unknown word, a dangling value-taking flag, a non-numeric context/count value) — so PASS 2 below can
+  // never itself hit one of them — and records two independent facts about the pre-`--` region: whether an
+  // explicit pattern-supplying option (`pattern` or `file`, in ANY recognised form) exists ANYWHERE in it,
+  // regardless of position; and whether an INCLUSION filter exists ANYWHERE in it — grep's `filterInclude`
+  // (--include), or an rg `filterGlob` whose resolved value does NOT start with "!" (a non-negated glob is
+  // always an inclusion, gitignore convention) — again regardless of position.
+  let dashDashIdx = -1;
+  let explicitPatternGiven = false;
+  let anyInclusionFilterGiven = false;
+  for (let i = 0; i < texts.length; i++) {
+    const raw = String(texts[i]);
+    if (raw === '--') { dashDashIdx = i; break; }
+    const cls = classifySearchOptionWord(table, raw);
+    if (cls.category === 'unknown') return { ok: false, patternIdx };
+    if (cls.category === 'novalue' || cls.category === 'positional') continue;
+    let value = cls.attachedValue;
+    if (cls.valueMode === 'separate') {
+      if (i + 1 >= texts.length) return { ok: false, patternIdx }; // a dangling flag with no value anywhere
+      value = texts[i + 1];
+      i++; // consume the value word too; the enclosing for-loop's own i++ steps past it
+    }
+    if (cls.category === 'numeric' && !/^[0-9]+$/.test(value == null ? '' : String(value))) return { ok: false, patternIdx };
+    if (cls.category === 'pattern' || cls.category === 'file') explicitPatternGiven = true;
+    if (cls.category === 'filterInclude') anyInclusionFilterGiven = true;
+    else if (cls.category === 'filterGlob' && !String(value == null ? '' : value).startsWith('!')) anyInclusionFilterGiven = true;
+  }
+
+  // PASS 2 (accounting) — every word here is GUARANTEED to classify (and, where relevant, validate) exactly
+  // the way pass 1 already confirmed, so this pass only ever decides patternIdx membership; it can never
+  // itself fail closed. `patternClaimed` is PRE-ARMED to `explicitPatternGiven`: once an explicit pattern
+  // source exists anywhere in the region, no positional may claim the pattern slot, no matter its position.
+  let patternClaimed = explicitPatternGiven;
+  for (let i = 0; i < texts.length; i++) {
+    const raw = String(texts[i]);
+    if (raw === '--') break;
+    const cls = classifySearchOptionWord(table, raw);
+    if (cls.category === 'novalue') continue;
+    if (cls.category === 'positional') {
+      if (!patternClaimed) { patternIdx.add(i); patternClaimed = true; }
+      continue;
+    }
+    let value = cls.attachedValue;
+    if (cls.valueMode === 'separate') { value = texts[i + 1]; i++; }
+    if (cls.category === 'pattern' || cls.category === 'filterExempt') {
+      patternIdx.add(i);
+    } else if (cls.category === 'filterExclude') {
+      // WP-M3 round 3 (Codex M3-1, HIGH): grep's own manual states "if contradictory --include and
+      // --exclude options are given, the last matching one wins" — a LATER --include can silently defeat an
+      // EARLIER --exclude for the same file, so an exclusion is exempt ONLY when no inclusion filter exists
+      // anywhere in the region at all (order does not matter — see PASS 1 above, which already scanned the
+      // WHOLE region before this loop ever started). This classifier cannot resolve real glob/pattern
+      // specificity to know which one would actually win for a given filename, so the safe reading the
+      // moment BOTH shapes are present is "assume the inclusion could win" and leave --exclude's own value
+      // visible to the base regex too: `grep -r --exclude=*.env --include=.* TOKEN .` now fires.
+      if (!anyInclusionFilterGiven) patternIdx.add(i);
+    } else if (cls.category === 'filterGlob' && String(value == null ? '' : value).startsWith('!')) {
+      // Same rule for ripgrep: a LATER --glob overrides an EARLIER one for the same file (gitignore
+      // semantics), so a negated ("!"-prefixed) glob value is exempt ONLY when no inclusion glob exists
+      // anywhere in the region — the live repro this closes: `rg --hidden --glob='!*.env' --glob='.*'
+      // TOKEN` used to exempt "!*.env" (its own value starts with "!") while ".*" (added AFTER it) actually
+      // re-includes every dotfile, `.env` included, for real ripgrep — order-independent by construction,
+      // since PASS 1 already scanned the whole region for ANY non-negated glob before this loop started.
+      if (!anyInclusionFilterGiven) patternIdx.add(i);
+    }
+    // 'file', 'filterInclude', a non-negated 'filterGlob', 'other', and an already-validated 'numeric': never
+    // exempt — left as an ordinary word for the caller's own SECRET_TARGET_RE scan (harmless for numeric/
+    // other; for filterInclude/a non-negated filterGlob this is the WHOLE POINT of the group-B fix — an
+    // inclusion filter's value genuinely selects which files get read, so `.env`/`*.env`/`.ENV` there must
+    // stay visible to the base regex, which is already case-insensitive — see hard-gates.json's own doc).
+  }
+  if (!patternClaimed && dashDashIdx !== -1 && dashDashIdx + 1 < texts.length) patternIdx.add(dashDashIdx + 1);
+  return { ok: true, patternIdx };
+}
+
 module.exports = {
   scanQuotes, stripHeredocs, findHeredocDelim,
   cArgLiveAfterFlag, scanDoubleQuoteLive, readBareWord, isSubstitutionDollar, hasLiveSubstitution, stripEnvAssignment,
@@ -1685,4 +2121,9 @@ module.exports = {
   // same closed-grammar option skipping instead of a second, looser regex. See matchWrapper()'s and
   // stripWrapperOptions()'s own doc comments above for the full per-wrapper grammar.
   matchWrapper, stripWrapperOptions,
+  // WP-M3 (2026-09-27, independent review RB2-1) — the shared secret-print pattern-vs-file option grammar,
+  // used identically by forge-actiongate.cjs and forge-gate-data.cjs; the two lower-level pieces are exported
+  // too so a test can probe a single word's classification or a single table directly, without having to
+  // reverse-engineer it from a full command line. See classifySearchWords()'s own doc comment for the "why".
+  classifySearchWords, classifySearchOptionWord, matchLongOption, SEARCH_TOOL_OPTION_TABLES, hasUnquotedShellSyntax,
 };

@@ -75,6 +75,67 @@ export function activationGraceActive(last: { id: string; at: number }, activeId
   return last.id === activeId && now - last.at < GRACE_MS;
 }
 
+/**
+ * WP-CCD (item 7): the localStorage key the owner's OWN chosen project is remembered under, and
+ * the two tiny read/write helpers around it — both best-effort (a private-browsing tab, a full
+ * storage quota, or `localStorage` genuinely absent all degrade to "nothing remembered", never a
+ * thrown error that would break the whole workspace over a cosmetic preference).
+ */
+const REMEMBERED_PROJECT_KEY = 'forge.activeProjectId';
+
+export function readRememberedProjectId(): string | null {
+  try {
+    const value = window.localStorage.getItem(REMEMBERED_PROJECT_KEY);
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeRememberedProjectId(id: string): void {
+  if (id.length === 0) return;
+  try {
+    window.localStorage.setItem(REMEMBERED_PROJECT_KEY, id);
+  } catch {
+    // Best-effort — a full quota or a disabled storage API must never break project switching.
+  }
+}
+
+/**
+ * WP-P1 (Forge v2.9.0): which project id the reconciliation effect below should fall back to,
+ * given the current project list and the wrapper-designated default (if any). Extracted as its
+ * own pure function — same reasoning as `activationGraceActive` above (its own doc comment):
+ * mounting the full provider to exercise this one decision would otherwise race the OTHER mount-
+ * time effect that seeds `lastActivationRef` (that ref is set to the CURRENT `activeProjectId`
+ * with a fresh timestamp on every render where `activeProjectId` itself changes, which — on a
+ * cold-started `''` — makes `activationGraceActive` true for the grace window's own full 15s
+ * starting from mount; a real integration test would have to fake-advance a clock rather than
+ * exercise the actual decision this function makes). Never trusts `defaultProjectId` blindly: it
+ * only wins when it names a project actually present in `projects` right now — otherwise this
+ * returns the exact same `projects[0].id` this codebase chose before this WP existed.
+ *
+ * WP-CCD (item 7) UPDATE — a third, HIGHER-priority candidate: the project the owner themselves
+ * last chose in THIS browser (`rememberedProjectId`, `readRememberedProjectId()` above), checked
+ * FIRST and under the exact same "only wins when it names a project actually present" rule
+ * `defaultProjectId` already used alone. This is what makes the workspace reopen on the project
+ * the owner was actually looking at, rather than silently resetting to the installer's default
+ * every single reload — `defaultProjectId` remains the fallback for a genuinely fresh browser
+ * (nothing remembered yet) or once the remembered project no longer exists.
+ */
+export function resolveFallbackProjectId(
+  projects: readonly { readonly id: string }[],
+  defaultProjectId: string | null | undefined,
+  rememberedProjectId: string | null | undefined = null,
+): string {
+  if (typeof rememberedProjectId === 'string' && projects.some((p) => p.id === rememberedProjectId)) {
+    return rememberedProjectId;
+  }
+  if (typeof defaultProjectId === 'string' && projects.some((p) => p.id === defaultProjectId)) {
+    return defaultProjectId;
+  }
+  return projects[0].id;
+}
+
 function ProductionProvider({ children }: { children?: ReactNode }) {
   const [uiState, dispatch] = useReducer(reducer, undefined, () => createInitialState(EMPTY_DATASET));
   useShellEffects(uiState, dispatch);
@@ -103,14 +164,45 @@ function ProductionProvider({ children }: { children?: ReactNode }) {
   // still heals as soon as the window lapses. Window = server TTL + poll + margin.
   const lastActivationRef = useRef<{ id: string; at: number }>({ id: '', at: 0 });
   useEffect(() => {
+    // REVIEW FIX (WP-CCD, found via real screenshot verification, 2026-09-28): the transient
+    // cold-start `''` is NOT a real local activation — recording it here (as this effect
+    // unconditionally did before this fix) made `activationGraceActive` see `last.id === activeId`
+    // (`'' === ''`) with an `at` of "just now" (this effect firing on the very first mount, before
+    // any project was ever chosen), holding its 15s grace window open against the FIRST EVER project
+    // pick. Measured live: `/api/agents`/`/api/runs` for the real default project were never even
+    // requested for a full 15 seconds after a cold load — Home/Agents/every project-scoped view
+    // showed a false "0 agents, 0 conversations" empty state that had nothing to do with the real
+    // data (confirmed present and fast, <150ms, via direct gateway calls) the whole time. Skipping
+    // the record for the empty id leaves `lastActivationRef.current` at its true initial `{id:'',
+    // at:0}` — an epoch timestamp far outside any real grace window — so `activationGraceActive`
+    // honestly returns `false` from t=0 and the FIRST real activation is never held back. The
+    // create-flow race this ref exists for (see this block's own header above) is unaffected: it
+    // only ever protects a REAL, non-empty freshly-activated id, which this still records exactly as
+    // before.
+    if (activeProjectId.length === 0) return;
     lastActivationRef.current = { id: activeProjectId, at: Date.now() };
   }, [activeProjectId]);
   useEffect(() => {
     if (data.projects.length === 0) return;
     if (data.projects.some((p) => p.id === activeProjectId)) return;
     if (activationGraceActive(lastActivationRef.current, activeProjectId, Date.now())) return;
-    dispatch({ type: 'project/activate', id: data.projects[0].id });
-  }, [data.projects, activeProjectId, dispatch]);
+    // WP-P1 (Forge v2.9.0): prefer the wrapper-designated default project
+    // (FORGE_CC_DEFAULT_PROJECT, e.g. "the project the owner ran `forge dashboard` from") over
+    // plain `data.projects[0]` — see `resolveFallbackProjectId`'s own doc comment for why that
+    // decision is a separate, directly-tested pure function rather than inlined here.
+    // WP-CCD (item 7): the owner's OWN last-chosen project (this browser's own localStorage) now
+    // wins over even the wrapper default — see `resolveFallbackProjectId`'s own updated comment.
+    dispatch({ type: 'project/activate', id: resolveFallbackProjectId(data.projects, data.defaultProjectId, readRememberedProjectId()) });
+  }, [data.projects, data.defaultProjectId, activeProjectId, dispatch]);
+
+  // WP-CCD (item 7): remembers the owner's OWN choice every time it genuinely changes — a real
+  // explicit pick (Sidebar, Projects, Home) as well as the reconciliation effect just above landing
+  // on one. Never fires for the transient cold-start `''`, so a browser that never picked anything
+  // never writes a meaningless empty string over a real previous choice.
+  useEffect(() => {
+    if (activeProjectId.length === 0) return;
+    writeRememberedProjectId(activeProjectId);
+  }, [activeProjectId]);
 
   // conversation reconciliation (fix-activation-race, forge-2026-07-30-cc-finish): heals a
   // genuinely unselected conversation on cold start, but ONLY from conversations that belong to

@@ -15,6 +15,17 @@ const t = (name, cond, extra) => { if (cond) { pass++; console.log('  ok  ' + na
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const GW = path.join(__dirname, '..', '..', 'command-center', 'gateway');
 const PORT = 4360 + (process.pid % 400);
+// v2.9.0 WP-DA: this test starts the REAL gateway from the real command-center folder, which shares the
+// real .data (and the owner's Discord token). Since the gateway starts the Discord bot by itself on boot,
+// a test gateway must switch that off, or a doctor run starts the owner's real bot (seen live on
+// 2026-09-28, pid 3956, stopped again by this test's own drain). The gateway also refuses on its own
+// when CC_TEST_THROW_AFTER_MS is set; this is the explicit, primary switch.
+const TEST_ENV = {
+  CC_PORT: String(PORT),
+  CC_DISCORD_AUTOSTART: 'off',
+  // The supervisor's own log goes to a temp file, never into the real gateway-runtime.log.
+  FORGE_SUPERVISOR_LOG_FILE: path.join(require('os').tmpdir(), 'forge-gateway-drain-' + process.pid + '.log'),
+};
 
 function get(pathName) {
   return new Promise((resolve) => {
@@ -45,7 +56,7 @@ function get(pathName) {
   {
     const child = spawn(process.execPath, [path.join(GW, 'bin.mjs')], {
       cwd: GW, stdio: ['ignore', 'pipe', 'pipe'],
-      env: Object.assign({}, process.env, { CC_PORT: String(PORT), CC_TEST_THROW_AFTER_MS: '2500' }),
+      env: Object.assign({}, process.env, TEST_ENV, { CC_TEST_THROW_AFTER_MS: '2500' }),
     });
     let exited = null;
     child.on('exit', (code) => { exited = code; });
@@ -77,7 +88,7 @@ function get(pathName) {
   {
     const sup = spawn(process.execPath, [path.join(GW, 'supervisor.mjs')], {
       cwd: GW, stdio: ['ignore', 'pipe', 'pipe'],
-      env: Object.assign({}, process.env, { CC_PORT: String(PORT), CC_TEST_THROW_AFTER_MS: '1500' }),
+      env: Object.assign({}, process.env, TEST_ENV, { CC_TEST_THROW_AFTER_MS: '1500' }),
     });
     let out = '';
     sup.stdout.on('data', (d) => { out += d; });

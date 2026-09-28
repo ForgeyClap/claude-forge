@@ -439,7 +439,7 @@ function fakeReport(liveness) {
       node_check: { ok: true, total: 1, failed: 0, failures: [], reason: '' },
       tests: { ok: true, suites: 1, passed: 1, failed: 0 },
       strict_events: { ok: true, known_accepted: true, unknown_rejected: true },
-      dashboard_spa: { ok: true, missing: [] },
+      dashboard_spa: { ok: true, present: [] },
       leak_scan: { ok: true, scanned: 0, source: 'fs', hits: [], skipped: [] },
     },
     advisory: { run_liveness: liveness },

@@ -1,0 +1,125 @@
+/*
+ * ProjectsDirSection — the "Projects folder" panel + folder-picker modal (WP-S1, owner request
+ * 2026-09-27). Same house rules as discord.css/connect-wizard.css:
+ *   - no raw hex/rgb/hsl — every colour a var(--forge-*) token, no new visual language.
+ *   - a fresh `.fw-projdir__*` prefix (this codebase's per-component CSS convention), reusing
+ *     `.fw-discord__row*` / `.fw-wizard__*` classes directly wherever the SAME structure applies,
+ *     rather than reinventing rows/alerts/inputs that already exist.
+ *   - the folder list reuses `--fw-row-h` (already defined in styles/app.css, same token
+ *     files.css's own `.fw-files__row` uses) so a picker row matches the app's established list
+ *     rhythm instead of inventing a new row height.
+ */
+
+.fw-projdir__note {
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  font-size: var(--forge-text-xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-projdir__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  justify-content: flex-start;
+}
+
+/* ---------------------------------------------------------------- browser */
+
+.fw-projdir__browser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-projdir__current {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  min-inline-size: 0;
+}
+
+.fw-projdir__current-path {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.fw-projdir__list {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  max-block-size: 16rem;
+  overflow-y: auto;
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+}
+
+.fw-projdir__item {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-row-h);
+  flex: none;
+  padding-inline: var(--forge-space-3);
+  border: none;
+  border-inline-start: var(--forge-border-thick) solid transparent;
+  background: transparent;
+  color: var(--forge-color-text-secondary);
+  font-size: var(--forge-text-sm);
+  text-align: start;
+  cursor: pointer;
+  min-inline-size: 0;
+}
+
+.fw-projdir__item + .fw-projdir__item {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-projdir__item:hover {
+  background: var(--forge-color-hover);
+  color: var(--forge-color-text);
+}
+
+.fw-projdir__item:focus-visible {
+  outline: none;
+  box-shadow: var(--forge-shadow-focus-ring);
+}
+
+.fw-projdir__item-name {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-projdir__hint {
+  padding: var(--forge-space-3);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+/* -------------------------------------------------------------- advanced */
+
+.fw-projdir__advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  padding-block-start: var(--forge-space-2);
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-projdir__advanced-input {
+  min-inline-size: min(100%, 26rem);
+}
+
+.fw-projdir__create-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+}

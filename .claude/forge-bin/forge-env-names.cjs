@@ -40,9 +40,18 @@ const LINE_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
  *  containing `=`) printed as a fabricated variable name that is really a FRAGMENT of the still-open secret
  *  value. Escape state is scoped to the ONE line `s` — this function is never handed more than one physical
  *  line at a time, so a trailing backslash at the very end of a line simply escapes nothing further and never
- *  reaches into the next one. Pure, never throws. */
+ *  reaches into the next one. Pure, never throws.
+ *
+ *  WP-M3 (2026-09-27, independent review RB2-3): a backtick (`` ` ``) is dotenv's THIRD quote character — like
+ *  a single quote, it has no escape character at all (dotenv never recognises `` \` `` as an escaped backtick
+ *  inside a backtick-quoted value), so it takes the SAME plain `.includes(q)` branch a single quote already
+ *  does; only `"` gets the escape-aware character walk. Without this, a multi-line BACKTICK value's own
+ *  continuation lines were never tracked as "still inside an open quote" at all (envNames() below only ever
+ *  opened tracking for `"`/`'`), so a continuation line shaped like a fresh `KEY=` entry printed as a
+ *  fabricated name — a fragment of the still-open secret value, the exact same leak class WP-M1/M2 already
+ *  closed for `"`/`'`. */
 function hasUnescapedQuote(s, q) {
-  if (q !== '"') return s.includes(q); // single-quoted values have no escape character at all
+  if (q !== '"') return s.includes(q); // single- and backtick-quoted values have no escape character at all
   let escaped = false;
   for (let i = 0; i < s.length; i++) {
     if (escaped) { escaped = false; continue; }
@@ -78,7 +87,11 @@ function hasUnescapedQuote(s, q) {
  *  escaped quote but no REAL closer (`KEY="a \"b`) was wrongly judged "already closed on this line" (an
  *  escaped `\"` made `.includes('"')` true), so tracking never opened at all and a later genuine continuation
  *  line of that same value could print as a fabricated entry. Both sides now go through the same
- *  escape-aware hasUnescapedQuote() above. */
+ *  escape-aware hasUnescapedQuote() above.
+ *
+ *  WP-M3 (2026-09-27, independent review RB2-3): a backtick-opened value (`` KEY=`multi\nline` ``) is now
+ *  tracked the same way — see hasUnescapedQuote()'s own WP-M3 note for why a backtick needs no escape
+ *  awareness of its own, only recognition as a THIRD quote-opening character here. */
 function envNames(text) {
   const names = [];
   let openQuote = null; // the unterminated quote CHARACTER carried over from a previous line, or null
@@ -94,7 +107,7 @@ function envNames(text) {
     names.push(m[1]);
     const value = line.slice(m[0].length).trimStart();
     const q = value[0];
-    if ((q === '"' || q === "'") && !hasUnescapedQuote(value.slice(1), q)) openQuote = q; // opened, not closed here
+    if ((q === '"' || q === "'" || q === '`') && !hasUnescapedQuote(value.slice(1), q)) openQuote = q; // opened, not closed here
   }
   return names;
 }

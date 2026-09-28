@@ -104,6 +104,21 @@ test('FORGE_LEAD_PREAMBLE carries an explicit honesty clause', () => {
   assert.match(FORGE_LEAD_PREAMBLE, /never claim something was tested, built, or verified/i);
 });
 
+// WP-CC1 (item 14): the completion command must match this project's own CLAUDE.md "Mission
+// ledger" section exactly (`--log-event --finalize`, not `--log-event` alone), and the event-
+// logging guidance must name the real field names modern events use (wp_id/verdict/check/summary)
+// — matching the vocabulary log-event.cjs's own KNOWN_EVENT_TYPES actually accepts.
+test('FORGE_LEAD_PREAMBLE\'s completion command uses --log-event --finalize together, matching this project\'s own Mission ledger rule', () => {
+  assert.match(FORGE_LEAD_PREAMBLE, /forge-runcontract\.cjs check --run <run_id> --log-event --finalize/);
+});
+
+test('FORGE_LEAD_PREAMBLE tells the session to carry real wp_id/verdict/check/summary fields on events', () => {
+  assert.match(FORGE_LEAD_PREAMBLE, /wp_id/);
+  assert.match(FORGE_LEAD_PREAMBLE, /verdict/);
+  assert.match(FORGE_LEAD_PREAMBLE, /"check"/);
+  assert.match(FORGE_LEAD_PREAMBLE, /summary/);
+});
+
 /* ---------------------------------------------------------------- argv wiring ------------------ */
 
 test('ARGV: a REAL (non-mock) execution appends --append-system-prompt with the real FORGE_LEAD_PREAMBLE text', () => {

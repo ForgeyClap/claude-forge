@@ -71,7 +71,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-/** GET one gateway route. Never throws — every failure is a typed `{ok:false}`. */
+/**
+ * GET one gateway route. Never throws — every failure is a typed `{ok:false}`.
+ *
+ * WP-S1: on a non-OK response, the real JSON body's own `error` string (when present) is now
+ * surfaced verbatim — same fallback shape `gwPost` below already uses (a generic `HTTP <status>`
+ * only when the body carries no usable `error` field). Every existing GET-failure fixture in this
+ * codebase's own tests uses an EMPTY body (`{}`), so this is purely additive: nothing that
+ * currently asserts the generic `HTTP <status>` string changes, while a route that DOES return a
+ * real, plain-language reason (e.g. the folder-picker's `GET /api/discord/browse-folder`) is no
+ * longer flattened to a meaningless status code.
+ */
 export async function gwGet(path: string): Promise<GatewayResult> {
   let res: Response;
   try {
@@ -85,7 +95,11 @@ export async function gwGet(path: string): Promise<GatewayResult> {
   } catch {
     // A non-JSON body is handled below by the !res.ok / empty-record fallback.
   }
-  if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+  if (!res.ok) {
+    const record = asRecord(body) ?? {};
+    const errField = typeof record.error === 'string' ? record.error : `HTTP ${res.status}`;
+    return { ok: false, error: errField };
+  }
   return { ok: true, data: asRecord(body) ?? {} };
 }
 

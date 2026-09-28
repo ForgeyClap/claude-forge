@@ -92,7 +92,9 @@
   color: var(--forge-color-text-faint);
 }
 
-.fw-acct-usage__v[data-guard='paused'] {
+.fw-acct-usage__v[data-guard='paused'],
+.fw-acct-usage__v[data-guard='not-running'],
+.fw-acct-usage__v[data-guard='stale'] {
   color: var(--forge-color-text);
   font-weight: var(--forge-weight-semibold);
 }
@@ -114,6 +116,14 @@
 .fw-acct-usage__level-dot[data-level='unknown'] {
   border-style: dotted;
   border-color: var(--forge-color-text-faint);
+}
+
+/* WP-CCD (item 10): a pending-checkup / last-error flag inline with the Guard pair — the SAME
+   muted icon treatment `.fw-acct-usage__icon` already uses, never a new colour; the full sentence
+   for each lives in this pill's own `title` tooltip. */
+.fw-acct-usage__flag {
+  flex: none;
+  color: var(--forge-color-text-faint);
 }
 
 .fw-acct-usage__age {

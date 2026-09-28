@@ -21,8 +21,10 @@
  *
  * SECRET HYGIENE: putEntity() redacts every string leaf of the value before anything touches disk
  * (forge-store.cjs redactValue) — a raw secret is never written, never echoed, never re-served.
- * The dashboard's read-only GET /api/artifact/<id> (server.cjs) only ever serves back this already-
- * redacted file — it does not re-process the value.
+ * v2.9.0 note: the original reader was the retired per-project dashboard's read-only GET
+ * /api/artifact/<id> (server.cjs), which was removed along with the rest of that dashboard; whatever
+ * reads the stored file now (e.g. the Command Center) only ever sees this same already-redacted file —
+ * nothing here re-processes the value either way.
  */
 const path = require('path');
 const { spawnSync } = require('child_process');

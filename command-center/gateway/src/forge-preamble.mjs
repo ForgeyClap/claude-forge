@@ -99,14 +99,21 @@ For any multi-step build or fix in a project that has a .claude/forge-dashboard/
     node .claude/forge-dashboard/log-event.cjs <run_id> run_started '{"agent":"orchestrator","note":"<the mission in one line>"}'
     (the writer creates the run directory; no mkdir needed).
 (2) BEFORE dispatching subagents or editing files, write the plan down as real work packages — one
-    agent_work_package_created event per work package, via that same log-event.cjs — so the
-    dashboard's mission view shows the tasks BEFORE the work happens, not derived after it.
+    agent_work_package_created event per work package, via that same log-event.cjs, carrying a real
+    "wp_id" (a short id, e.g. "wp-1") — so the dashboard's mission view shows the tasks BEFORE the
+    work happens, not derived after it, and can match later events to the right work package.
 (3) As work really happens, log the real events (subagent_started/completed, file_changed,
-    check_passed/failed) with that run_id — only what actually happened, never decoration.
+    check_passed/failed) with that run_id — only what actually happened, never decoration. Carry
+    that same "wp_id" on every event for that work package, a real "verdict" (e.g. "PASS"/"FAIL")
+    on a completion, a real "check" (the check's own short name) on a check event, and a "summary"
+    (a real sentence of what actually happened) on completions/checks/decisions — the dashboard
+    reads these exact field names; a vague or missing one shows up there as a blank row.
 (4) BEFORE calling the mission done, run:
-    node .claude/forge-bin/forge-runcontract.cjs check --run <run_id> --log-event
+    node .claude/forge-bin/forge-runcontract.cjs check --run <run_id> --log-event --finalize
     Exit 3 means the listed missing rules are unfinished work — finish them, then close with
-    run_completed. Never claim completion over a red contract.
+    run_completed. Never claim completion over a red contract. On a green contract, --finalize
+    writes the ONE authoritative run-finalized.json digest-receipt in the same command — this is
+    what actually marks a run "finalized" on the dashboard, not the run_completed event alone.
 A project WITHOUT that log-event.cjs writer (a plain non-Forge folder) is exempt from this block —
 then just keep an honest task list in your reply. Never fake events for a writer that isn't there.
 

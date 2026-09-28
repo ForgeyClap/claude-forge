@@ -36,3 +36,31 @@ export interface Keyed<T> {
   readonly key: string;
   readonly value: T;
 }
+
+/**
+ * WP-CCD: collapses a list that may carry SEVERAL rows for the same real-world "thing" (a check
+ * that was run more than once, e.g.) down to exactly one row per identity — the LATEST one by
+ * array/file order, never "any failure ever wins". Mirrors this codebase's own established
+ * "last one wins" convention (`missions.mjs`'s own `event_scan_error`/`lastAgentType` comments) —
+ * reused here so Mission Control's Boss/Verify nodes, the Tests & proof gate board, Home's
+ * "Failures and blockers" and the Dock's notices all agree that a check which failed once and later
+ * passed reads as passing, not as permanently red.
+ *
+ * The RESULT preserves each identity's FIRST-SEEN position (so the list does not visually reshuffle
+ * to "most-recently-updated first" — only the row shown per identity is the latest one), which is
+ * why this is a real two-pass function rather than a one-line `Map` dedupe.
+ */
+export function dedupeLatestByKey<T>(rows: readonly T[], keyOf: (row: T) => string): readonly T[] {
+  const lastIndexByKey = new Map<string, number>();
+  rows.forEach((row, index) => {
+    lastIndexByKey.set(keyOf(row), index);
+  });
+  const firstIndexByKey = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const key = keyOf(row);
+    if (!firstIndexByKey.has(key)) firstIndexByKey.set(key, index);
+  });
+  return [...lastIndexByKey.entries()]
+    .sort((a, b) => (firstIndexByKey.get(a[0]) ?? 0) - (firstIndexByKey.get(b[0]) ?? 0))
+    .map(([, index]) => rows[index]);
+}

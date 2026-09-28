@@ -79,10 +79,19 @@ t('chainCheck detects a tampered event', () => {
   assert.ok(!rep.ok && rep.broken.some((b) => b.run === tamperRid), 'expected tamper detected in ' + tamperRid);
 });
 
-// 5) rebinding guard self-test
-t('rebindingGuard passes on the real server.cjs', () => {
+// 5) rebinding guard self-test — v2.9.0: the guard moved from the retired (now-removed) per-project
+// server.cjs to the Command Center gateway (command-center/gateway/src/security.mjs). Whether THIS checkout
+// has a command-center/ folder depends on where it runs: an agent worktree or a user project has none, while
+// the Forge source tree and the public distribution both carry it. So the real-checkout test asserts the
+// right thing for either layout (the first version assumed "none here" and failed in both trees that ship
+// the Command Center): with command-center/ present the REAL security.mjs must pass the guard check
+// (applicable:true, ok:true); without it the answer is ok:true, applicable:false. forge-doctor.test.cjs's
+// dedicated RG_* fixtures cover every branch hermetically (none / missing security.mjs / good / bad guard).
+t('rebindingGuard on this real checkout: the real gateway guard passes, or "not applicable" without command-center/', () => {
   const rep = doctor.rebindingGuard(TEMPLATE_ROOT);
   assert.ok(rep.ok, rep.reason);
+  const hasCc = fs.existsSync(path.join(TEMPLATE_ROOT, 'command-center'));
+  assert.strictEqual(rep.applicable, hasCc, 'expected applicable=' + hasCc + ' for this layout, got: ' + JSON.stringify(rep));
 });
 
 cleanup(RID);

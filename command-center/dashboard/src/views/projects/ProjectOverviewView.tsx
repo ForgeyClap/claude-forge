@@ -500,7 +500,10 @@ export default function ProjectOverviewView() {
                     <div className="fw-project__figure">
                       <dt>Open tickets</dt>
                       <dd>
-                        <Machine>{project.health.openTickets}</Machine>
+                        {/* WP-CCD (item 8): `openTickets` is `number | null` now — `null` ("never
+                            measured", e.g. no `.claude/forge-tickets` reading exposed yet) reads as
+                            an explicit '—', never a blank cell and never a fabricated 0. */}
+                        <Machine>{project.health.openTickets ?? '—'}</Machine>
                       </dd>
                     </div>
                     <div className="fw-project__figure">

@@ -26,6 +26,8 @@ import { Icon } from '@/components/primitives';
 import { useGatewayAccountUsage } from '@/prototype/state/gateway-adapter';
 import { usePrototype } from '@/prototype/state/prototype-store';
 
+import { guardLabel, guardStateAttr, isGuardWatcherDown } from '@/prototype/state/guard-label';
+
 import './account-usage-pressure.css';
 
 /**
@@ -54,11 +56,21 @@ function levelLabel(level: string | null): string {
   return 'n/a';
 }
 
-function guardLabel(mode: string | null, available: boolean): string {
-  if (!available) return 'n/a';
-  if (mode === 'paused') return 'Paused';
-  if (mode === 'ok') return 'Active';
-  return mode ?? 'n/a';
+/** WP-CCD (item 10): a real reset timestamp, formatted as a plain relative-future label — "in 5d",
+ *  never "X ago" (this is a FUTURE reset, unlike every other timestamp this strip already shows).
+ *  A genuinely unparsable/absent value reads as `null` (omitted), never a fabricated date. */
+function formatResetIn(iso: string | null): string | null {
+  if (iso === null) return null;
+  const thenMs = Date.parse(iso);
+  if (!Number.isFinite(thenMs)) return null;
+  const diffMs = thenMs - Date.now();
+  if (diffMs <= 0) return 'due now';
+  const diffMinutes = diffMs / 60000;
+  if (diffMinutes < 60) return `in ${Math.round(diffMinutes)}m`;
+  const diffHours = diffMinutes / 60;
+  if (diffHours < 24) return `in ${Math.round(diffHours)}h`;
+  const diffDays = diffHours / 24;
+  return `in ${Math.round(diffDays)}d`;
 }
 
 export function AccountUsagePressure() {
@@ -79,16 +91,31 @@ export function AccountUsagePressure() {
   const unverified = usage.provenance === 'UNVERIFIED';
   const reported = usage.provenance === 'REPORTED';
 
-  const guardText = guardLabel(guard.mode, guard.available);
+  const guardText = guardLabel(guard);
+  const watcherDown = isGuardWatcherDown(guard);
+
+  // WP-CCD (item 10): the guard's own LIVE session/week percentages beat the top-level pressure
+  // file's `week` (a slower-cadence, less-live reading) whenever the guard reports one — falls
+  // back to `usage.week` exactly as before when it does not.
+  const sessionPercent = guard.sessionPercent;
+  const weekPercent = guard.weekPercent ?? usage.week;
+  const sessionResetIn = useMemo(() => formatResetIn(guard.sessionResetAt), [guard.sessionResetAt]);
+  const weekResetIn = useMemo(() => formatResetIn(guard.weekResetAt), [guard.weekResetAt]);
 
   const title = notConfigured
     ? 'No account-wide usage-pressure file found for this machine yet — the owner’s usage-guard tool has not run.'
     : unverified
       ? (usage.note ?? 'The usage-pressure file is present but could not be parsed.')
       : [
-          `Week usage ${usage.week !== null ? `${usage.week}%` : 'n/a'}`,
+          sessionPercent !== null ? `Session usage ${sessionPercent}%${sessionResetIn !== null ? ` (resets ${sessionResetIn})` : ''}` : null,
+          `Week usage ${weekPercent !== null ? `${weekPercent}%` : 'n/a'}${weekResetIn !== null ? ` (resets ${weekResetIn})` : ''}`,
           `pressure ${levelLabel(usage.level)}`,
           `guard ${guardText}${guard.pauseAt !== null ? ` (pause at ${guard.pauseAt}%)` : ''}`,
+          watcherDown
+            ? 'the usage guard is not checking usage right now, so nothing pauses work when usage gets high; Forge starts it again at the start of its next task'
+            : null,
+          guard.pendingCheckup ? 'a pending checkup is waiting — verify the paused agents actually resumed' : null,
+          guard.lastError !== null ? `guard's last error: ${guard.lastError}` : null,
           ageLabel !== null ? `updated ${ageLabel}` : null,
         ]
           .filter((part): part is string => part !== null)
@@ -112,9 +139,18 @@ export function AccountUsagePressure() {
         <span className="fw-acct-usage__v fw-acct-usage__v--muted">unreadable</span>
       ) : (
         <>
+          {/* WP-CCD (item 10): the guard's own real, live session percentage — omitted entirely
+              (never a fabricated "n/a") on a gateway build that has not forwarded it yet. */}
+          {sessionPercent !== null ? (
+            <span className="fw-acct-usage__pair">
+              <span className="fw-acct-usage__k">Session</span>
+              <span className="fw-acct-usage__v">{sessionPercent}%</span>
+            </span>
+          ) : null}
+
           <span className="fw-acct-usage__pair">
             <span className="fw-acct-usage__k">Week</span>
-            <span className="fw-acct-usage__v">{reported && usage.week !== null ? `${usage.week}%` : 'n/a'}</span>
+            <span className="fw-acct-usage__v">{reported && weekPercent !== null ? `${weekPercent}%` : 'n/a'}</span>
           </span>
 
           <span className="fw-acct-usage__pair">
@@ -124,9 +160,14 @@ export function AccountUsagePressure() {
 
           <span className="fw-acct-usage__pair">
             <span className="fw-acct-usage__k">Guard</span>
-            <span className="fw-acct-usage__v" data-guard={guard.mode ?? 'unknown'}>
+            <span className="fw-acct-usage__v" data-guard={guardStateAttr(guard)}>
               {guardText}
             </span>
+            {/* WP-CCD (item 10): the guard's own "resumed — go verify the agents actually came
+                back" flag, and its own last real fetch error (e.g. an HTTP 429) — both real,
+                on-disk fields; the full sentence is in this pill's own `title` above. */}
+            {guard.pendingCheckup ? <Icon name="ClipboardCheck" size="xs" className="fw-acct-usage__flag" /> : null}
+            {guard.lastError !== null ? <Icon name="CircleAlert" size="xs" className="fw-acct-usage__flag" /> : null}
           </span>
 
           {ageLabel !== null ? (

@@ -1,25 +1,28 @@
 /**
- * wp12 (forge-2026-09-24-config-v250) + WP-A (v2.9.0) — Settings ▸ Forge
- * settings: reads the active project's own Forge settings (GET /api/config)
- * and, since WP-A, writes them back for real (POST /api/config) — "we also
- * want to be able to change the config in the dashboard" (owner).
+ * wp12 (forge-2026-09-24-config-v250) + WP-A (v2.9.0) + WP-S2 (v2.9.0) —
+ * Settings ▸ Forge settings: reads the active project's own Forge settings
+ * (GET /api/config), writes them back for real (POST /api/config), and,
+ * since WP-S2, presents every setting in plain language for a beginner
+ * instead of a five-column table (Status / Setting / Value / From / What it
+ * does) narrow enough for words to break mid-way — see this work package's
+ * owner screenshot. `renderControl`'s actual controls, the confirm modal,
+ * and the gate-hook lockout all live in ForgeSettingControl.tsx, unchanged
+ * by WP-S2, and stay covered here end to end.
  *
  * Same minimal harness as `settings-mcp-counts-honesty.test.tsx`: `SettingsView`
  * against a hand-built `PrototypeState` with an active project, and a stubbed
  * `fetch` standing in for the gateway — so the real `useGatewayForgeConfig`
- * hook, its parser, `ForgeSettingControl` and `writeForgeConfig` all run
- * unchanged. The payload is a trimmed copy of the real response this
- * project's forge-config.cjs produced, extended with `allowed`/`min`/`max`
- * (WP-A) and two settings this suite specifically exercises: `explain-mode`
- * (an ordinary, unflagged, project-scoped bool — no confirm needed) and
- * `gate-hook` (which must never offer an off control at all).
+ * hook, its parser, `ForgeSettingControl`, `ForgeSettingRow`, the
+ * `forge-setting-presentation` helpers and `writeForgeConfig` all run
+ * unchanged.
  *
- * Locks in: the five columns, the tool's own groups, the copyable
- * `/forge config set` command per row (flip for on/off, current value
- * otherwise), the disclosure footnotes, the locked list, the honest
- * unavailable state that never renders a settings table, a real editable
- * control per setting type, the confirm modal for a flagged/global-scope
- * write, the gate-hook row's permanent lack of an off control, and honest
+ * Locks in: a plain-language name plus the technical key and a source badge
+ * per row, settings grouped by topic (not the tool's own core/when-needed/
+ * advanced buckets), the free-text search box, the disclosure footnotes, the
+ * locked list, the honest unavailable state that never renders a settings
+ * row, a real editable control per setting type, the confirm modal for a
+ * flagged/global-scope write, the gate-hook row's permanent lack of an off
+ * control and its command staying inside a collapsed detail, and honest
  * success/error toasts wired through the (spied) prototype-store dispatch.
  */
 
@@ -130,6 +133,16 @@ const CONFIG_PAYLOAD = {
       desc: 'How far Forge goes on its own.',
     }),
     setting({
+      key: 'start-gate',
+      value: 'off',
+      default: 'off',
+      display: 'off',
+      group: 'core',
+      type: 'enum',
+      allowed: ['off', 'l4-only', 'always'],
+      desc: 'Does not wait for a START before building.',
+    }),
+    setting({
       key: 'explain-mode',
       value: true,
       default: true,
@@ -161,10 +174,14 @@ const CONFIG_PAYLOAD = {
     }),
     setting({
       key: 'cleanup',
-      value: 'report',
+      value: 'auto',
       default: 'report',
-      display: 'report',
+      display: 'auto',
       status: null,
+      // WP-S2: the one fixture setting that is genuinely person-changed, so the
+      // "You changed this" badge wording and the changed-marker dot have something
+      // real to assert against (every other fixture row is a Forge-chosen value).
+      source: 'project',
       group: 'when-needed',
       type: 'enum',
       allowed: ['report', 'auto'],
@@ -293,57 +310,159 @@ function toastPushCalls(dispatch: ReturnType<typeof vi.fn>): Array<{ title: stri
     .map((action) => action.toast as { title: string; detail: string; icon: string });
 }
 
+/** WP-S2: finds a setting's own `.fw-fsetting` row from anywhere inside the panels — a row always
+ *  shows its technical key at least once (in `.fw-fsetting__key`; a bool/Switch control repeats it
+ *  a second time as the Switch's own visually-hidden accessible name), so the first match's nearest
+ *  `.fw-fsetting` ancestor is always the right row, exactly the same shape the old table version of
+ *  this file used with `.closest('tr')`. */
+function rowFor(panels: HTMLElement, key: string): HTMLElement {
+  const [first] = within(panels).getAllByText(key);
+  const row = first.closest('.fw-fsetting');
+  if (row == null) throw new Error(`expected a .fw-fsetting ancestor for "${key}"`);
+  return row as HTMLElement;
+}
+
 /* ========================================================================== */
 /*  Tests                                                                      */
 /* ========================================================================== */
 
-describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/config)', () => {
+describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/config + WP-S2 redesign)', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
   });
 
-  it('asks the gateway for the active project and renders every group with the five columns', async () => {
+  it('asks the gateway for the active project, and never renders a table (WP-S2 replaced the old five-column layout)', async () => {
     const fetchMock = installFetchMock(CONFIG_PAYLOAD);
     const panels = await openForgeSettings();
 
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/api/config?project=demo-project'))).toBe(true);
     expect(screen.getByRole('heading', { name: 'Forge settings' })).toBeTruthy();
+    expect(within(panels).queryAllByRole('table')).toHaveLength(0);
+    expect(within(panels).queryAllByRole('columnheader')).toHaveLength(0);
 
-    const tables = within(panels).getAllByRole('table');
-    expect(tables).toHaveLength(3); // core · when-needed · advanced
-    for (const table of tables) {
-      const headers = within(table).getAllByRole('columnheader').map((th) => th.textContent);
-      expect(headers).toEqual(['Status', 'Setting', 'Value', 'From', 'What it does']);
-    }
     const text = panels.textContent ?? '';
-    expect(text).toContain('On by default — Forge uses this on every run');
-    expect(text).toContain('Available when needed — Forge uses it without asking');
-    expect(text).toContain('Advanced — change only if you know why');
     expect(text).toContain('or just say it in chat');
   });
 
-  it('shows value, source and the exact /forge config set command on each row', async () => {
+  it('WP-S2: groups settings by topic instead of the tool\'s own core/when-needed/advanced buckets', async () => {
     installFetchMock(CONFIG_PAYLOAD);
     const panels = await openForgeSettings();
 
-    const pauseRow = within(panels).getByText('usage-guard.pause-at').closest('tr') as HTMLElement;
-    // WP-A: the Value column is now the real, editable number input (see the dedicated
-    // ForgeSettingControl tests below for min/max/reset coverage) — "98 %" as plain read-only
-    // text no longer exists, the input carries "98" as its value instead.
-    expect((within(pauseRow).getByRole('spinbutton') as HTMLInputElement).value).toBe('98');
-    expect(within(pauseRow).getByText('default')).toBeTruthy();
-    expect(within(pauseRow).getByText('ON')).toBeTruthy();
-    expect(within(pauseRow).getByText('/forge config set usage-guard.pause-at 98')).toBeTruthy();
+    // The fixture's 9 settings land across exactly these four topical groups — "Dashboard and
+    // tools" has no matching fixture row, so it must not render an empty panel.
+    expect(screen.getByRole('heading', { name: 'Safety and quality' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Usage and cost' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Working style' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Advanced' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Dashboard and tools' })).toBeNull();
 
-    const text = panels.textContent ?? '';
-    // On/off settings show the command that flips them.
-    expect(text).toContain('/forge config set usage-guard off');
-    expect(text).toContain('/forge config set paperclip on');
-    // Every other setting shows its current value, ready to edit.
-    expect(text).toContain('/forge config set autonomy continue-within-mission');
-    expect(text).toContain('/forge config set budget-usd 5');
-    expect(within(panels).getByText('product-default')).toBeTruthy();
+    // The tool's own bucket titles are gone from the main flow (still available via
+    // `/forge config list` in a terminal — this view just no longer duplicates them).
+    expect(panels.textContent ?? '').not.toContain('On by default — Forge uses this on every run');
+
+    const totalRows = panels.querySelectorAll('.fw-fsetting').length;
+    expect(totalRows).toBe(CONFIG_PAYLOAD.settings.length);
+  });
+
+  it('WP-S2: every row shows a plain-language name plus the technical key as small secondary detail', async () => {
+    installFetchMock(CONFIG_PAYLOAD);
+    const panels = await openForgeSettings();
+
+    // The owner's own four worked examples for this work package.
+    expect(within(panels).getByText('Usage guard')).toBeTruthy();
+    expect(within(panels).getByText('Pause at (% of your limit)')).toBeTruthy();
+    expect(within(panels).getByText('Autonomy')).toBeTruthy();
+    expect(within(panels).getByText('Ask before starting')).toBeTruthy();
+
+    const usageGuardRow = rowFor(panels, 'usage-guard');
+    // getAllByText, never getByText: the Switch's own (visually hidden) accessible-name label
+    // repeats the same key text a second time inside this same row — the FIRST match is always the
+    // row's own `.fw-fsetting__key`, since it renders before the control section.
+    const [key] = within(usageGuardRow).getAllByText('usage-guard');
+    expect(key.className).toContain('fw-fsetting__key');
+
+    // The description (the schema's own text, straight from the API) is still the one-line
+    // explanation — unchanged content, just no longer sitting under a raw command.
+    expect(usageGuardRow.textContent).toContain('Pauses Forge automatically just before your Claude usage limit.');
+  });
+
+  it('WP-S2: no raw /forge config set command sits in the main flow — only inside a collapsed "for the command line" detail', async () => {
+    installFetchMock(CONFIG_PAYLOAD);
+    const panels = await openForgeSettings();
+
+    const pauseRow = rowFor(panels, 'usage-guard.pause-at');
+    // The description paragraph itself never carries the raw command any more.
+    const desc = pauseRow.querySelector('.fw-fsetting__desc');
+    expect(desc?.textContent ?? '').not.toContain('/forge config set');
+
+    const summary = within(pauseRow).getByText('For the command line');
+    expect(summary.tagName.toLowerCase()).toBe('summary');
+    const details = summary.closest('details');
+    expect(details).not.toBeNull();
+    expect(details?.hasAttribute('open')).toBe(false); // collapsed by default
+
+    const command = within(pauseRow).getByText('/forge config set usage-guard.pause-at 98');
+    expect(command.closest('details')).toBe(details); // the command lives INSIDE that same detail
+  });
+
+  it('WP-S2: source becomes a plain badge — a Forge default is never called "changed", a real edit is', async () => {
+    installFetchMock(CONFIG_PAYLOAD);
+    const panels = await openForgeSettings();
+
+    // usage-guard: source 'default'. autonomy: source 'product-default'. Both read "Forge default".
+    const usageGuardRow = rowFor(panels, 'usage-guard');
+    expect(within(usageGuardRow).getByText('Forge default')).toBeTruthy();
+    const autonomyRow = rowFor(panels, 'autonomy');
+    expect(within(autonomyRow).getByText('Forge default')).toBeTruthy();
+
+    // cleanup: source 'project' in this fixture — the one setting a person actually changed.
+    const cleanupRow = rowFor(panels, 'cleanup');
+    const badge = within(cleanupRow).getByText('You changed this — this project');
+    expect(badge.className).toContain('is-changed');
+
+    // The raw tool-internal source word 'product-default' never appears anywhere as visible text —
+    // 'default' alone is not asserted absent here, since the kept honest note ("Everything is at
+    // its default, that is normal.") legitimately uses the plain English word.
+    expect((panels.textContent ?? '')).not.toContain('product-default');
+  });
+
+  it('WP-S2: the search box filters by name, key and description, and an empty result offers a way back', async () => {
+    installFetchMock(CONFIG_PAYLOAD);
+    const panels = await openForgeSettings();
+
+    // "usage-guard" is a substring of both settings' technical keys (and nothing else's name, key
+    // or description) — an exact, unambiguous way to prove the search matches on the key.
+    const search = within(panels).getByPlaceholderText('Find a setting…') as HTMLInputElement;
+    fireEvent.change(search, { target: { value: 'usage-guard' } });
+    await flush();
+
+    expect(screen.getByRole('heading', { name: 'Usage and cost' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Safety and quality' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Working style' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Advanced' })).toBeNull();
+    expect(panels.querySelectorAll('.fw-fsetting').length).toBe(2); // usage-guard, usage-guard.pause-at
+
+    fireEvent.change(search, { target: { value: 'zzz-nomatch-anywhere' } });
+    await flush();
+
+    expect(panels.querySelectorAll('.fw-fsetting').length).toBe(0);
+    expect(within(panels).getByText(/No settings match/)).toBeTruthy();
+
+    fireEvent.click(within(panels).getByRole('button', { name: 'Show every setting again' }));
+    await flush();
+
+    expect((within(panels).getByPlaceholderText('Find a setting…') as HTMLInputElement).value).toBe('');
+    expect(panels.querySelectorAll('.fw-fsetting').length).toBe(CONFIG_PAYLOAD.settings.length);
+  });
+
+  it('WP-S2: every rendered row carries the class its own phone-card media query targets', async () => {
+    installFetchMock(CONFIG_PAYLOAD);
+    const panels = await openForgeSettings();
+
+    const rows = Array.from(panels.querySelectorAll('.fw-fsetting'));
+    expect(rows.length).toBe(CONFIG_PAYLOAD.settings.length);
+    for (const row of rows) expect(row.classList.contains('fw-fsetting')).toBe(true);
   });
 
   it('renders the disclosure footnotes, the flag legend, the settings files and the locked list', async () => {
@@ -371,31 +490,35 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     installFetchMock(CONFIG_PAYLOAD);
     const panels = await openForgeSettings();
 
-    // getAllByText, never getByText: a Switch's own (visually hidden) accessible-name label
-    // duplicates the Setting column's text — both matches sit in the SAME <tr>, so either works
-    // for .closest('tr'), but only the *All* variant tolerates there being two.
-    const explainRow = within(panels).getAllByText('explain-mode')[0].closest('tr') as HTMLElement;
+    const explainRow = rowFor(panels, 'explain-mode');
     const explainSwitch = within(explainRow).getByRole('switch');
     expect(explainSwitch.getAttribute('aria-checked')).toBe('true');
 
-    const autonomyRow = within(panels).getByText('autonomy').closest('tr') as HTMLElement;
+    const autonomyRow = rowFor(panels, 'autonomy');
     expect(within(autonomyRow).getByRole('radiogroup')).toBeTruthy();
     expect(within(autonomyRow).getAllByRole('radio')).toHaveLength(3);
 
-    const pauseRow = within(panels).getByText('usage-guard.pause-at').closest('tr') as HTMLElement;
+    const pauseRow = rowFor(panels, 'usage-guard.pause-at');
     const pauseInput = within(pauseRow).getByRole('spinbutton') as HTMLInputElement;
     expect(pauseInput.value).toBe('98');
     expect(pauseInput.min).toBe('50');
     expect(pauseInput.max).toBe('99');
 
     // Every editable row gets a reset-to-default button; a setting already at its default has it
-    // disabled (nothing to reset) — autonomy's source is 'product-default', not 'default'.
+    // disabled (nothing to reset) — autonomy's source is 'product-default', not 'default'. The
+    // reset action always carries a real accessible name (never a bare, unexplained icon).
     const resets = within(panels).getAllByRole('button', { name: /Reset .* to its default/ });
     expect(resets.length).toBeGreaterThan(0);
     const autonomyReset = within(autonomyRow).getByRole('button', { name: /Reset autonomy to its default/ });
     expect(autonomyReset).not.toBeDisabled();
     const explainReset = within(explainRow).getByRole('button', { name: /Reset explain-mode to its default/ });
     expect(explainReset).toBeDisabled(); // explain-mode's source is already 'default'
+
+    // WP-S2: the changed badge and the reset button agree with each other — cleanup was person-set
+    // (source 'project'), so unlike explain-mode above, its reset is enabled.
+    const cleanupRow = rowFor(panels, 'cleanup');
+    const cleanupReset = within(cleanupRow).getByRole('button', { name: /Reset cleanup to its default/ });
+    expect(cleanupReset).not.toBeDisabled();
   });
 
   it('WP-A: a project-scoped setting with no disclosure flags writes immediately (no confirm) and refreshes on success', async () => {
@@ -403,10 +526,7 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     const { panels, dispatch } = await openForgeSettingsWithDispatch();
     const getCallsBefore = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method !== 'POST').length;
 
-    // getAllByText, never getByText: a Switch's own (visually hidden) accessible-name label
-    // duplicates the Setting column's text — both matches sit in the SAME <tr>, so either works
-    // for .closest('tr'), but only the *All* variant tolerates there being two.
-    const explainRow = within(panels).getAllByText('explain-mode')[0].closest('tr') as HTMLElement;
+    const explainRow = rowFor(panels, 'explain-mode');
     fireEvent.click(within(explainRow).getByRole('switch'));
     await flush();
 
@@ -431,7 +551,7 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     const fetchMock = installFetchMock(CONFIG_PAYLOAD, () => ({ ok: true }));
     const { panels } = await openForgeSettingsWithDispatch();
 
-    const usageGuardRow = within(panels).getAllByText('usage-guard')[0].closest('tr') as HTMLElement;
+    const usageGuardRow = rowFor(panels, 'usage-guard');
     fireEvent.click(within(usageGuardRow).getAllByRole('switch')[0]);
     await flush();
 
@@ -449,14 +569,27 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     expect(screen.queryByRole('dialog')).toBeNull(); // closed after confirming
   });
 
-  it('SECURITY WP-A: the gate-hook row never offers an off control, only the plain "do it yourself" sentence', async () => {
+  it('SECURITY WP-S2: the gate-hook row never offers an off control, explains itself in plain words, and keeps the exact command only inside the collapsed detail', async () => {
     installFetchMock(CONFIG_PAYLOAD);
     const panels = await openForgeSettings();
 
-    const gateHookRow = within(panels).getByText('gate-hook').closest('tr') as HTMLElement;
+    const gateHookRow = rowFor(panels, 'gate-hook');
     expect(within(gateHookRow).queryAllByRole('switch')).toHaveLength(0);
     expect(within(gateHookRow).queryAllByRole('button')).toHaveLength(0); // no "reset" either — nothing to click at all
-    expect(gateHookRow.textContent).toContain('node .claude/forge-bin/forge-config.cjs set gate-hook off');
+
+    // The plain-language sentence ForgeSettingControl renders inline...
+    const note = gateHookRow.querySelector('.fw-settings__forge-gate-hook-note');
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toContain('Always on here');
+    expect(note?.textContent).toContain('never from this dashboard');
+    // ...never contains the raw command any more (WP-S2 moved it out of the main flow).
+    expect(note?.textContent ?? '').not.toContain('node .claude/forge-bin/forge-config.cjs');
+
+    // The exact command that used to sit inline lives only inside this row's own collapsed detail.
+    const command = within(gateHookRow).getByText('node .claude/forge-bin/forge-config.cjs set gate-hook off');
+    const details = command.closest('details.fw-fsetting__cli');
+    expect(details).not.toBeNull();
+    expect(details?.hasAttribute('open')).toBe(false);
   });
 
   it('WP-A: a failed write shows an error toast naming the real gateway reason, and never refreshes', async () => {
@@ -467,7 +600,7 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     const { panels, dispatch } = await openForgeSettingsWithDispatch();
     const getCallsBefore = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method !== 'POST').length;
 
-    const pauseRow = within(panels).getByText('usage-guard.pause-at').closest('tr') as HTMLElement;
+    const pauseRow = rowFor(panels, 'usage-guard.pause-at');
     const pauseInput = within(pauseRow).getByRole('spinbutton') as HTMLInputElement;
     fireEvent.change(pauseInput, { target: { value: '70' } });
     fireEvent.blur(pauseInput);
@@ -491,7 +624,7 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     }));
     const { panels, dispatch } = await openForgeSettingsWithDispatch();
 
-    const pauseRow = within(panels).getByText('usage-guard.pause-at').closest('tr') as HTMLElement;
+    const pauseRow = rowFor(panels, 'usage-guard.pause-at');
     const pauseInput = within(pauseRow).getByRole('spinbutton') as HTMLInputElement;
     fireEvent.change(pauseInput, { target: { value: '70' } });
     fireEvent.blur(pauseInput);
@@ -507,7 +640,7 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
 
     // The rejected "70" must NOT still be displayed — it must have snapped back to the real,
     // authoritative value ("98") the gateway actually holds.
-    const pauseInputAfter = within(pauseRow).getByRole('spinbutton') as HTMLInputElement;
+    const pauseInputAfter = within(rowFor(panels, 'usage-guard.pause-at')).getByRole('spinbutton') as HTMLInputElement;
     expect(pauseInputAfter.value).toBe('98');
     expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(true);
   });
@@ -516,7 +649,7 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     installFetchMock(CONFIG_PAYLOAD, () => ({ ok: true }));
     const { panels } = await openForgeSettingsWithDispatch();
 
-    const pauseRow = within(panels).getByText('usage-guard.pause-at').closest('tr') as HTMLElement;
+    const pauseRow = rowFor(panels, 'usage-guard.pause-at');
     const pauseInput = within(pauseRow).getByRole('spinbutton') as HTMLInputElement;
     fireEvent.change(pauseInput, { target: { value: '77' } });
     fireEvent.blur(pauseInput);
@@ -526,11 +659,11 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await flush();
 
-    const pauseInputAfter = within(pauseRow).getByRole('spinbutton') as HTMLInputElement;
+    const pauseInputAfter = within(rowFor(panels, 'usage-guard.pause-at')).getByRole('spinbutton') as HTMLInputElement;
     expect(pauseInputAfter.value).toBe('98');
   });
 
-  it('a project without forge-config.cjs shows the honest unavailable state and never a settings table', async () => {
+  it('a project without forge-config.cjs shows the honest unavailable state and never a settings row or search box', async () => {
     installFetchMock(UNAVAILABLE_PAYLOAD);
     const panels = await openForgeSettings();
     const text = panels.textContent ?? '';
@@ -538,6 +671,8 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     expect(text).toContain('Settings unavailable');
     expect(text).toContain('forge-config.cjs not found for this project');
     expect(within(panels).queryAllByRole('table')).toHaveLength(0);
+    expect(panels.querySelectorAll('.fw-fsetting')).toHaveLength(0);
+    expect(within(panels).queryByPlaceholderText('Find a setting…')).toBeNull();
     expect(text).not.toContain('/forge config set');
     expect(text).not.toContain('Locked');
   });

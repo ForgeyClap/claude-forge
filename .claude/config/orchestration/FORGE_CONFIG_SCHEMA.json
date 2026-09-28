@@ -95,10 +95,19 @@
     },
     "dashboard": {
       "type": "bool", "default": true, "scope": "global", "group": "core",
-      "desc": { "nl": "Start het Forge Command Center (alleen op deze computer, 127.0.0.1:4100) zodat je live ziet wat de agents doen — als het op deze computer staat. De installer met één regel levert het niet mee (het zit in de volledige repo-kloon); zonder Command Center meldt Forge dat één keer en gaat gewoon door.", "en": "Starts the Forge Command Center (this machine only, 127.0.0.1:4100) so you can watch the agents live — when it is present on this machine. The one-line installer does not include it (it comes with the full repo clone); without it Forge says so once and simply continues." },
+      "desc": { "nl": "Start het Forge Command Center (alleen op deze computer, 127.0.0.1:4100) zodat je live ziet wat de agents doen. De installer zet het klaar naast Forge's globale bestanden; ontbreekt het toch, dan meldt Forge dat één keer en gaat gewoon door.", "en": "Starts the Forge Command Center (this machine only, 127.0.0.1:4100) so you can watch the agents live. The installer puts it next to Forge's global files; if it is missing anyway, Forge says so once and simply continues." },
       "off_means": { "nl": "Geen dashboard; alles staat nog wel in de run-bestanden.", "en": "No dashboard; everything is still in the run files." },
       "consumers": [".claude/commands/forge.md (dashboard)", "command-center/gateway/supervisor.mjs"],
       "aliases": { "nl": ["dashboard", "command center"], "en": ["dashboard", "command center"] }
+    },
+    "discord-autostart": {
+      "type": "bool", "default": true, "scope": "global", "group": "when-needed",
+      "desc": { "nl": "Start je Discord-bot vanzelf wanneer het Command Center start, ook na een herstart van je computer, zodat je Forge via Discord kunt blijven besturen. Alleen als je Discord hebt gekoppeld en de bot niet zelf hebt uitgezet; zet je hem uit met de schakelaar in het dashboard, dan blijft hij uit.", "en": "Starts your Discord bot by itself whenever the Command Center starts, also after a reboot, so you can keep controlling Forge from Discord. Only when you connected Discord and did not switch the bot off yourself; switch it off in the dashboard and it stays off." },
+      "off_means": { "nl": "De bot start alleen nog als je hem zelf aanzet in het dashboard (tabblad Discord).", "en": "The bot only starts when you switch it on yourself in the dashboard (Discord tab)." },
+      "disclosure": { "nl": "De bot verbindt met Discord met jouw eigen bot-token en voert opdrachten uit die in jouw server worden gegeven, ook als je niet kijkt; die opdrachten gebruiken je Claude-quota.", "en": "The bot connects to Discord with your own bot token and carries out requests made in your server, also while you are not watching; those requests use your Claude quota." },
+      "flags": ["N", "U", "$"],
+      "consumers": ["command-center/gateway/src/discord-autostart.mjs", "command-center/gateway/bin.mjs"],
+      "aliases": { "nl": ["discord automatisch starten", "discord autostart", "discord bot automatisch"], "en": ["discord autostart", "start discord automatically", "discord bot autostart"] }
     },
     "codex-review": {
       "type": "enum", "allowed": ["auto", "on-request", "off"], "default": "auto", "scope": "project", "group": "core",

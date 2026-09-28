@@ -19,11 +19,13 @@ import {
   selectDiscordGuild,
   isValidBotTokenFormat,
   isValidSnowflake,
+  ensureDiscordDepsInstalled,
   _setDiscordPathsForTests,
   _setSpawnFnForTests,
   _setFetchFnForTests,
   _setKillFnForTests,
   _setExtraEnvOverridesForTests,
+  _setNpmInstallRunnerForTests,
   _resetDiscordServiceForTests,
   _acquireEnvLockForTests,
   _releaseEnvLockForTests,
@@ -55,7 +57,12 @@ function makeFakeChild(pid) {
   return child;
 }
 
-function isolatedPaths({ mainJsExists = true, envContent = '' } = {}) {
+// WP-P1 `depsInstalled` param: defaults to true so every PRE-EXISTING test below (none of which
+// are about the deps-install feature itself) keeps seeing "discord.js already installed" — the
+// exact fast-path behaviour they were written against, unaffected by this WP. Only the new
+// deps-install tests further down pass `depsInstalled: false` to exercise the real code path
+// (with `_setNpmInstallRunnerForTests` mocked).
+function isolatedPaths({ mainJsExists = true, envContent = '', depsInstalled = true } = {}) {
   const mainJsDir = path.join(tempDir, 'src');
   fs.mkdirSync(mainJsDir, { recursive: true });
   const mainJs = path.join(mainJsDir, 'main.js');
@@ -68,6 +75,10 @@ function isolatedPaths({ mainJsExists = true, envContent = '' } = {}) {
   );
   const envFile = path.join(tempDir, '.env');
   fs.writeFileSync(envFile, envContent, 'utf8');
+  if (depsInstalled) {
+    fs.mkdirSync(path.join(tempDir, 'node_modules', 'discord.js'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'node_modules', 'discord.js', 'package.json'), '{"name":"discord.js"}\n', 'utf8');
+  }
   return {
     discordDir: tempDir,
     mainJs,
@@ -81,6 +92,11 @@ function isolatedPaths({ mainJsExists = true, envContent = '' } = {}) {
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-discord-service-test-'));
   _resetDiscordServiceForTests();
+  // Default: nothing answers on the bot port. Without this, a test that sets no fetch of its own
+  // probed the REAL port 3979, and whenever the owner's own bot was running there (it now comes back
+  // by itself after a restart) start() rightly refused with "another instance is already answering".
+  // Tests that need a live answer set their own fetch, as before.
+  _setFetchFnForTests(async () => { throw new Error('unreachable — isolated test, nothing listens'); });
 });
 
 afterEach(() => {
@@ -721,4 +737,192 @@ test('WP-L2 finding N4: release() never deletes a lock that now belongs to a DIF
   _releaseEnvLockForTests(lock); // using the OLD lock object — must be a no-op against the new owner
   assert.equal(fs.existsSync(lockPath), true, 'release must never delete a lock it does not currently own');
   assert.equal(fs.readFileSync(lockPath, 'utf8'), otherOwnerContent, 'the other owner\'s lock content must be completely untouched');
+});
+
+/* ========================================================================================== */
+/* WP-P1 (Forge v2.9.0): automatic `discord.js` dependency install — every test below uses a
+ * MOCKED npm runner (`_setNpmInstallRunnerForTests`), same `(command, args, options, callback)`
+ * shape `execFile` itself has, never a real network call. `discordDir` is set to `depsInstalled:
+ * false` (no pre-created node_modules marker) so `ensureDiscordDepsInstalled()`'s "already
+ * installed" fast path is never taken by accident. */
+/* ========================================================================================== */
+
+/** A fake runner matching execFile's `(command, args, options, callback)` shape. `behavior` is
+ *  one of 'success' | 'enoent' | 'nonzero' | 'timeout'. On 'success', it ALSO creates the real
+ *  `node_modules/discord.js/package.json` marker under `discordDir` — a mock npm call that did
+ *  not touch disk would leave `discordDepsInstalled()` false afterward even on a reported
+ *  success, which would not honestly exercise what this test claims to prove. */
+function makeMockNpmRunner(behavior, discordDir) {
+  const calls = [];
+  const runner = (command, args, options, callback) => {
+    calls.push({ command, args, options });
+    queueMicrotask(() => {
+      if (behavior === 'success') {
+        fs.mkdirSync(path.join(discordDir, 'node_modules', 'discord.js'), { recursive: true });
+        fs.writeFileSync(path.join(discordDir, 'node_modules', 'discord.js', 'package.json'), '{"name":"discord.js"}\n', 'utf8');
+        callback(null, 'added 25 packages\n', '');
+        return;
+      }
+      if (behavior === 'enoent') {
+        const err = new Error("spawn npm ENOENT");
+        err.code = 'ENOENT';
+        callback(err, '', '');
+        return;
+      }
+      if (behavior === 'nonzero') {
+        const err = new Error('Command failed: npm ci --omit=dev\nnpm ERR! code EUSAGE');
+        err.code = 1;
+        callback(err, '', 'npm ERR! code EUSAGE\n');
+        return;
+      }
+      if (behavior === 'timeout') {
+        const err = new Error('Command failed: npm ci --omit=dev');
+        err.killed = true;
+        err.signal = 'SIGTERM';
+        callback(err, '', '');
+        return;
+      }
+      throw new Error('unknown mock behavior: ' + behavior);
+    });
+    return { pid: 999 };
+  };
+  runner.calls = calls;
+  return runner;
+}
+
+test('ensureDiscordDepsInstalled: success — installs, reports ok:true, and discordDepsInstalled() becomes true', async () => {
+  const dir = tempDir;
+  const runner = makeMockNpmRunner('success', dir);
+  _setNpmInstallRunnerForTests(runner);
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  assert.equal(fs.existsSync(path.join(dir, 'node_modules', 'discord.js', 'package.json')), false);
+  const result = await ensureDiscordDepsInstalled();
+  assert.deepEqual(result, { ok: true, message: 'installed' });
+  assert.equal(fs.existsSync(path.join(dir, 'node_modules', 'discord.js', 'package.json')), true);
+  assert.equal(runner.calls.length, 1);
+  assert.ok(runner.calls[0].args.includes('install'), 'no package-lock.json in this fixture -> npm install, not npm ci');
+});
+
+test('ensureDiscordDepsInstalled: an existing package-lock.json makes it use "npm ci", not "npm install"', async () => {
+  const dir = tempDir;
+  fs.writeFileSync(path.join(dir, 'package-lock.json'), '{}', 'utf8');
+  const runner = makeMockNpmRunner('success', dir);
+  _setNpmInstallRunnerForTests(runner);
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  await ensureDiscordDepsInstalled();
+  assert.ok(runner.calls[0].args.includes('ci'));
+  assert.ok(!runner.calls[0].args.includes('install'));
+});
+
+test('ensureDiscordDepsInstalled: npm missing (ENOENT) reports an honest, plain-language failure — never a raw error code', async () => {
+  const dir = tempDir;
+  _setNpmInstallRunnerForTests(makeMockNpmRunner('enoent', dir));
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  const result = await ensureDiscordDepsInstalled();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /npm was not found/);
+  assert.equal(fs.existsSync(path.join(dir, 'node_modules', 'discord.js', 'package.json')), false);
+});
+
+test('ensureDiscordDepsInstalled: a non-zero npm exit reports an honest failure, never a fabricated success', async () => {
+  const dir = tempDir;
+  _setNpmInstallRunnerForTests(makeMockNpmRunner('nonzero', dir));
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  const result = await ensureDiscordDepsInstalled();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /automatic install failed/);
+});
+
+test('ensureDiscordDepsInstalled: a timeout reports the specific timeout message, not the generic fallback', async () => {
+  const dir = tempDir;
+  _setNpmInstallRunnerForTests(makeMockNpmRunner('timeout', dir));
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  const result = await ensureDiscordDepsInstalled();
+  assert.equal(result.ok, false);
+  assert.match(result.message, /did not finish in time/);
+});
+
+test('ensureDiscordDepsInstalled: already installed short-circuits — the mocked runner is never even called', async () => {
+  const dir = tempDir;
+  const runner = makeMockNpmRunner('success', dir);
+  _setNpmInstallRunnerForTests(runner);
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: true })); // marker pre-created
+
+  const result = await ensureDiscordDepsInstalled();
+  assert.deepEqual(result, { ok: true, message: 'already installed' });
+  assert.equal(runner.calls.length, 0);
+});
+
+test('ensureDiscordDepsInstalled: two concurrent callers share the SAME in-flight install — the runner is invoked only once', async () => {
+  const dir = tempDir;
+  const runner = makeMockNpmRunner('success', dir);
+  _setNpmInstallRunnerForTests(runner);
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  const [a, b] = await Promise.all([ensureDiscordDepsInstalled(), ensureDiscordDepsInstalled()]);
+  assert.deepEqual(a, { ok: true, message: 'installed' });
+  assert.deepEqual(b, { ok: true, message: 'installed' });
+  assert.equal(runner.calls.length, 1, 'two near-simultaneous callers must never trigger two separate npm processes');
+});
+
+test('startDiscordService(): missing deps are installed automatically before the real spawn ever happens', async () => {
+  const dir = tempDir;
+  const runner = makeMockNpmRunner('success', dir);
+  _setNpmInstallRunnerForTests(runner);
+  const spawnSpy = captureSpawn(4242);
+  _setSpawnFnForTests(spawnSpy);
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  const result = await startDiscordService();
+  assert.equal(result.ok, true, 'start must succeed once deps are auto-installed');
+  assert.equal(runner.calls.length, 1, 'the install must have actually run before the spawn');
+});
+
+test('startDiscordService(): a failed automatic install refuses with an honest 503 and never spawns', async () => {
+  const dir = tempDir;
+  _setNpmInstallRunnerForTests(makeMockNpmRunner('enoent', dir));
+  let spawnCalled = false;
+  _setSpawnFnForTests(() => {
+    spawnCalled = true;
+    return makeFakeChild(1);
+  });
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+
+  const result = await startDiscordService();
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 503);
+  assert.match(result.error, /npm was not found/);
+  assert.equal(spawnCalled, false, 'a failed dependency install must never be followed by a real spawn attempt');
+});
+
+test('getDiscordStatus(): deps_install_phase reports "not-installed" honestly when nothing has been attempted yet', async () => {
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+  const status = await getDiscordStatus();
+  assert.equal(status.deps_installed, false);
+  assert.equal(status.deps_install_phase, 'not-installed');
+  assert.equal(status.deps_install_error, null);
+});
+
+test('getDiscordStatus(): deps_install_phase reports "installed" once the marker is present', async () => {
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: true }));
+  const status = await getDiscordStatus();
+  assert.equal(status.deps_installed, true);
+  assert.equal(status.deps_install_phase, 'installed');
+});
+
+test('getDiscordStatus(): deps_install_phase reports "failed" with the real message after a failed install attempt', async () => {
+  const dir = tempDir;
+  _setDiscordPathsForTests(isolatedPaths({ depsInstalled: false }));
+  _setNpmInstallRunnerForTests(makeMockNpmRunner('enoent', dir));
+  await ensureDiscordDepsInstalled();
+
+  const status = await getDiscordStatus();
+  assert.equal(status.deps_installed, false);
+  assert.equal(status.deps_install_phase, 'failed');
+  assert.match(status.deps_install_error, /npm was not found/);
 });

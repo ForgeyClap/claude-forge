@@ -92,10 +92,13 @@ describe('DiscordView — installed and running', () => {
     vi.stubGlobal('fetch', vi.fn(async () => statusResponse(RUNNING_SERVICE)));
     render(createElement(DiscordView));
 
-    expect(await screen.findByText('queue_depth')).toBeInTheDocument();
+    // v2.9.0 (audit finding 31): plain labels and readable values; the raw field name stays as the tooltip.
+    expect(await screen.findByText('Queue depth')).toBeInTheDocument();
+    expect(screen.getByTitle('queue_depth')).toBeInTheDocument();
     expect(screen.getByText('0')).toBeInTheDocument();
-    expect(screen.getByText('uptime_seconds')).toBeInTheDocument();
-    expect(screen.getByText('812')).toBeInTheDocument();
+    expect(screen.getByText('Uptime')).toBeInTheDocument();
+    expect(screen.getByTitle('uptime_seconds')).toBeInTheDocument();
+    expect(screen.getByText('13 min')).toBeInTheDocument();
   });
 });
 
@@ -124,6 +127,50 @@ describe('DiscordView — installed and stopped', () => {
     expect(
       await screen.findByText('Another process is already listening on port 4501.'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('DiscordView — WP-P1 automatic Discord-dependency install status (shown inside the Connect wizard)', () => {
+  it('shows the honest "installing" message while the one-time dependency install is in progress', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => statusResponse({ ...STOPPED_SERVICE, deps_install_phase: 'installing' })),
+    );
+    render(createElement(DiscordView));
+
+    expect(
+      await screen.findByText(/Installing the Discord bot.s software/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the real failure message, verbatim, when the automatic install failed', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        statusResponse({
+          ...STOPPED_SERVICE,
+          deps_install_phase: 'failed',
+          deps_install_error: 'npm was not found on this machine — install Node.js (which includes npm) and try again',
+        }),
+      ),
+    );
+    render(createElement(DiscordView));
+
+    expect(
+      await screen.findByText('npm was not found on this machine — install Node.js (which includes npm) and try again'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows neither message once installed — the ordinary, steady-state case', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => statusResponse({ ...STOPPED_SERVICE, deps_installed: true, deps_install_phase: 'installed' })),
+    );
+    render(createElement(DiscordView));
+
+    await screen.findByText('STOPPED'); // wait for the real status to have rendered at all
+    expect(screen.queryByText(/Installing the Discord bot.s software/)).toBeNull();
+    expect(screen.queryByText(/could not be installed automatically/)).toBeNull();
   });
 });
 

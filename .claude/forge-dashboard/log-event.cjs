@@ -19,10 +19,12 @@
  *     intake by forge-bin/forge-echo.cjs::emitEcho(), summarizing which .claude/FORGE_OWNER_PROFILE.json prefs
  *     (forge-prefs.cjs) and which active config/orchestration/FORGE_STANDING_RULES.json rules (forge-standing.cjs)
  *     apply to this run, per config/orchestration/precedence.md's ordering. Informational/one-shot, like
- *     profile_loaded/memory_loaded — see forge-verify.cjs TERMINAL_TYPES and forge-dashboard/app.js taskStatus()
- *     for its mirrored registration (same 3-place discipline every event type here follows).
+ *     profile_loaded/memory_loaded — see forge-verify.cjs TERMINAL_TYPES for its mirrored registration (the
+ *     same event-registration discipline every event type here follows; a 3rd place, forge-dashboard/app.js's
+ *     taskStatus(), existed at the time this was written but was removed with the rest of the retired
+ *     per-project Control Center in v2.9.0).
  *   config_changed (v2.7.0, 2026-09-24) — forge-bin/forge-config.cjs::diff({run}) logs ONE when an owner setting changed
- *     since the last run (changed[] + count); one-shot fact like owner_prefs_loaded, mirrored in the same places.
+ *     since the last run (changed[] + count); one-shot fact like owner_prefs_loaded, mirrored in forge-verify.cjs.
  *   VISIBLE-REASONING (NOT hidden chain-of-thought): agent_note · agent_output · agent_decision_summary · agent_next_action · agent_evidence_added
  *   SWARM EXECUTION (Lead-Agent studio): mission_packet_created · mission_blueprint_created · role_map_created ·
  *     skill_discovery · skill_map_created · custom_skill_created · skill_assigned ·
@@ -132,7 +134,7 @@
  *     WAVE D — but which were never registered HERE, so under STRICT mode (the default) that entire
  *     manifest/resume/briefing chain could never receive a single real line. They are per-WP siblings of the
  *     already-registered `wp_resumed` (its "started again" counterpart, which pairs with them in
- *     forge-verify.cjs/app.js TASK_PAIRS), never run-level BACKBONE milestones. Shape:
+ *     forge-verify.cjs's TASK_PAIRS), never run-level BACKBONE milestones. Shape:
  *     `{event_type:'wp_completed'|'wp_failed', agent:'<who>', wp_id:'<the manifest wp_id>', ...}` — the
  *     `wp_id` is what `forge-manifest.cjs::projectManifest` matches on; without it the event still logs but
  *     flips no work package. wp_completed is BOTH a PROOF_EVENT and a PASS_ASSERTION event (see below): it
@@ -158,8 +160,9 @@
  *   decision_summary, next_action, evidence, files_read[], files_changed[], artifact, handoff/to, severity, iteration, custom (bool),
  *   work-package fields (mission, inputs[], allowed_actions[], not_allowed[], output_artifact, evidence_required[], handoff, success_criteria, rework_criteria),
  *   skill-routing fields (skill, skill_source: ecc-skill|forge-skill|project-local|native|internal|unavailable), and rework fields (target/to, issue, reason, required_fix).
- * WP23 (2026-09-24) heartbeat/evidence-closure fields, read by forge-verify.cjs::verifyRun() and
- *   forge-dashboard/app.js::buildNodes() (mirrored 1:1, never enforced here — plain optional extra fields):
+ * WP23 (2026-09-24) heartbeat/evidence-closure fields, read by forge-verify.cjs::verifyRun() (also mirrored
+ *   in the retired per-project dashboard's app.js::buildNodes() until that file was removed in v2.9.0;
+ *   never enforced here either way — plain optional extra fields):
  *   `wp_id` on an `agent_progress` heartbeat AND on the matching `subagent_completed`/`subagent_failed` lets
  *   the completion close that heartbeat (falls back to matching `role` when the completion has no `wp_id`);
  *   `closes_event_id` on a `fix_completed`/`check_passed` names the EARLIER event's own `event_id` it closes —
@@ -196,7 +199,9 @@ try { RUNCONTRACT = require(path.join(CLAUDE_DIR, 'forge-bin', 'forge-runcontrac
 
 function nowIso() { return new Date().toISOString(); }
 
-/** resolveRunDir — run-id-vorm + containment (zelfde guard als server.cjs). Retourneert {ok,runDir} of
+/** resolveRunDir — run-id-vorm + containment (dezelfde guard-vorm als forge-bin/forge-runinfo.cjs's
+ * readRun(); v2.9.0: het oude server.cjs, waar deze guard oorspronkelijk ook in stond, is verwijderd).
+ * Retourneert {ok,runDir} of
  *  {ok:false,message}; de CLI mapt message naar stderr+exit 1. Functie i.p.v. top-level code (H1-refactor
  *  2026-08-06) zodat batch-modus en tests dezelfde guard delen. */
 function resolveRunDir(runId) {

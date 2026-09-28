@@ -1,0 +1,138 @@
+/*
+ * RunHealthPanel — WP-CCD (item 6). Tokens only, no new colours — mirrors this view's own
+ * `.fw-tests__stat`/`.fw-verdict` treatment (`tests.css`) rather than inventing a second visual
+ * language for a sibling panel in the same view.
+ */
+
+.fw-run-health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-5);
+  padding: var(--forge-space-5);
+}
+
+.fw-run-health__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+}
+
+.fw-run-health__empty {
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-run-health__note {
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-run-health__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--forge-space-5);
+  margin: 0;
+}
+
+.fw-run-health__fact {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--forge-space-1);
+}
+
+.fw-run-health__fact dt {
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-faint);
+}
+
+.fw-run-health__fact dd {
+  margin: 0;
+  font-size: var(--forge-text-md);
+  color: var(--forge-color-text);
+}
+
+.fw-run-health__flag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-run-health__flag[data-flag='true'] {
+  color: var(--forge-status-completed);
+}
+
+.fw-run-health__flag[data-flag='false'] {
+  color: var(--forge-status-failed);
+}
+
+.fw-run-health__contract-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  margin: 0;
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-run-health__contract-status[data-status='green'] {
+  color: var(--forge-status-completed);
+}
+
+.fw-run-health__contract-status[data-status='red'] {
+  color: var(--forge-status-failed);
+}
+
+.fw-run-health__missing {
+  margin: 0;
+  padding-inline-start: var(--forge-space-5);
+  font-size: var(--forge-text-xs);
+  color: var(--forge-color-text-muted);
+}
+
+.fw-run-health__reviews {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fw-run-health__review {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-3);
+  padding: var(--forge-space-2) var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+  border-radius: var(--forge-radius-sm);
+  background: var(--forge-color-surface-2);
+  min-inline-size: 0;
+}
+
+.fw-run-health__review-verdict {
+  flex: none;
+  font-size: var(--forge-text-2xs);
+  letter-spacing: var(--forge-tracking-wide);
+  text-transform: uppercase;
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-run-health__review-verdict[data-verdict='pass'],
+.fw-run-health__review-verdict[data-verdict='approved'] {
+  color: var(--forge-status-completed);
+}
+
+.fw-run-health__review-verdict[data-verdict='fail'],
+.fw-run-health__review-verdict[data-verdict='changes_required'] {
+  color: var(--forge-status-failed);
+}
+
+.fw-run-health__review-subject {
+  flex: 1;
+  min-inline-size: 0;
+  font-size: var(--forge-text-sm);
+  color: var(--forge-color-text);
+}

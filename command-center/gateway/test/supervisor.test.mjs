@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GatewaySupervisor } from '../supervisor.mjs';
+import { GatewaySupervisor, DEFAULT_LOG_FILE } from '../supervisor.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SUPERVISOR_SCRIPT = path.join(__dirname, '..', 'supervisor.mjs');
@@ -274,4 +274,21 @@ test('supervisor: a child that stayed up longer than the crash-loop window reset
   );
 
   sup.stop();
+});
+
+test('supervisor: logFilePath null means NO log file, never the real gateway-runtime.log', async () => {
+  const sup = new GatewaySupervisor({
+    childScript: path.join(FIXTURES_DIR, 'supervisor-crash.mjs'), // never executed (fake spawnFn)
+    logFilePath: null,
+    spawnFn: () => fakeChild(),
+  });
+  assert.equal(sup.logFilePath, null, 'an explicit null must not fall back to ' + DEFAULT_LOG_FILE);
+  sup.start();
+  assert.ok(!sup.logStream, 'no log file may be opened at all');
+  const stopped = new Promise((r) => sup.once('stopped', r));
+  sup.stop();
+  sup.child && sup.child.emit('exit', 0, null);
+  await Promise.race([stopped, new Promise((r) => setTimeout(r, 500))]);
+  // Left out, the documented default still applies (production passes the env value or the default).
+  assert.equal(new GatewaySupervisor({ spawnFn: () => fakeChild() }).logFilePath, DEFAULT_LOG_FILE);
 });

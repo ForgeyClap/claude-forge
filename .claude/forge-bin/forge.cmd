@@ -9,7 +9,7 @@ set "NODE_CMD=node"
 node -v >nul 2>nul
 if not errorlevel 1 goto run
 if exist "C:\Program Files\nodejs\node.exe" goto fallback
-echo Node.js LTS is required for Forge Control Center. Install Node.js LTS, close and reopen your terminal, then run node -v.
+echo Node.js LTS is required to run Forge. Install Node.js LTS, close and reopen your terminal, then run node -v.
 exit /b 1
 :fallback
 set "NODE_CMD=C:\Program Files\nodejs\node.exe"
@@ -21,17 +21,14 @@ REM NOTE for editors: cmd parses redirection and separator characters even insid
 REM in this file must not contain angle brackets, ampersands, pipes or quote characters.
 set "BIN=%~dp0"
 set "DASH=%~dp0..\forge-dashboard"
-set "CC_GW=%~dp0..\..\command-center\gateway\bin.mjs"
-set "CC_DIST_INDEX=%~dp0..\..\command-center\dashboard\dist\index.html"
 if "%~1"=="" goto help
 if /I "%~1"=="dashboard"   goto dashboard_or_start
 if /I "%~1"=="start"       goto dashboard_or_start
-if /I "%~1"=="legacy-dashboard" ( "%NODE_CMD%" "%DASH%\server.cjs" & goto end )
-if /I "%~1"=="status"      ( "%NODE_CMD%" "%DASH%\server.cjs" --status & goto end )
-if /I "%~1"=="runs"        ( "%NODE_CMD%" "%DASH%\server.cjs" --runs & goto end )
-if /I "%~1"=="open-report" ( "%NODE_CMD%" "%DASH%\server.cjs" --open-report & goto end )
-if /I "%~1"=="health"      ( "%NODE_CMD%" "%DASH%\server.cjs" --health & goto end )
-if /I "%~1"=="assign-only" ( "%NODE_CMD%" "%DASH%\server.cjs" --assign-only & goto end )
+if /I "%~1"=="legacy-dashboard" goto legacydash
+if /I "%~1"=="status"      ( "%NODE_CMD%" "%BIN%forge-runinfo.cjs" status & goto end )
+if /I "%~1"=="runs"        ( "%NODE_CMD%" "%BIN%forge-runinfo.cjs" runs & goto end )
+if /I "%~1"=="open-report" ( "%NODE_CMD%" "%BIN%forge-runinfo.cjs" open-report & goto end )
+if /I "%~1"=="health"      ( "%NODE_CMD%" "%BIN%forge-runinfo.cjs" status & goto end )
 if /I "%~1"=="log-event"   goto logevent
 if /I "%~1"=="resume"      goto resume
 if /I "%~1"=="learn"       goto learn
@@ -40,25 +37,18 @@ if /I "%~1"=="sweep"       goto sweep
 if /I "%~1"=="promptcheck" goto promptcheck
 goto help
 :dashboard_or_start
-REM WP7d: if THIS project has a Command Center (command-center/gateway/bin.mjs), it is now the
-REM real dashboard - start it (port 4100) instead of the old Control Center. If it exists but
-REM dashboard/dist hasn't been built yet, say so honestly rather than failing silently. If
-REM command-center/ doesn't exist at all (most projects today, no command-center yet), fall back
-REM to the original per-project Control Center exactly as before. Deze fallback is VERVALLEN (audit G7):
-REM this wrapper syncs to every other Forge project via the template, most of which have no
-REM command-center. Old Control Center stays reachable regardless via legacy-dashboard.
-if exist "%CC_GW%" (
-  if exist "%CC_DIST_INDEX%" (
-    "%NODE_CMD%" "%CC_GW%"
-  ) else (
-    echo Command Center found but not built yet. Run: cd command-center\dashboard ^&^& npm install ^&^& npm run build
-  )
-) else (
-  REM AUDIT G7 (2026-08-06): de auto-fallback naar de RETIRED server.cjs is verwijderd - de
-  REM canon (config/orchestration/forge-canon.json) verbiedt elke automatische start; alleen een
-  REM expliciete owner-vraag (legacy-dashboard) mag hem nog starten.
-  echo Forge Command Center niet aanwezig in dit project. De oude per-project Control Center (server.cjs) is RETIRED en start NOOIT automatisch (forge-canon.json). Vraag de owner expliciet om een legacy dashboard, of gebruik het centrale Command Center op 127.0.0.1:4100.
-)
+REM WP-P2 (v2.9.0, "forge dashboard works after a fresh install, with no manual steps"): ALL the decision
+REM logic (already-running reuse, project-local vs. central lookup, on-demand build, supervisor-vs-bin.mjs
+REM entry) now lives in forge-cc-launch.cjs - exactly like every other non-trivial subcommand here already
+REM delegates to its own tool (forge-runinfo.cjs, forge-config.cjs, ...). This wrapper just hands off; see
+REM that file's own header comment for the full behaviour and exit-code contract.
+"%NODE_CMD%" "%BIN%forge-cc-launch.cjs"
+goto end
+:legacydash
+REM v2.9.0 (WP-N1): the old per-project Control Center (server.cjs + its static UI) was REMOVED from
+REM .claude/forge-dashboard/ - there is nothing left to start here. log-event.cjs is the only file that
+REM remains in that folder, and it is not a dashboard.
+echo De oude per-project Forge Control Center is verwijderd in v2.9.0. Gebruik "forge dashboard" voor het Forge Command Center (http://127.0.0.1:4100).
 goto end
 :logevent
 REM Usage: forge.cmd log-event RUN_ID EVENT_TYPE payload.json - the .cmd wrapper accepts ONLY a .json path.
@@ -110,7 +100,7 @@ shift
 "%NODE_CMD%" "%BIN%forge-promptcheck.cjs" %1 %2 %3 %4 %5 %6 %7 %8 %9
 goto end
 :help
-echo Forge commands: dashboard ^| start ^| legacy-dashboard ^| status ^| runs ^| open-report ^| health ^| assign-only ^| log-event ^| resume ^| learn ^| config ^| sweep ^| promptcheck
+echo Forge commands: dashboard ^| start ^| legacy-dashboard ^| status ^| runs ^| open-report ^| health ^| log-event ^| resume ^| learn ^| config ^| sweep ^| promptcheck
 :end
 REM Propagate the tool's real exit code. The batch used to fall off the end and return 0 to the caller
 REM even when node had failed (external audit II-G): a scheduled task or CI saw success on a failure.

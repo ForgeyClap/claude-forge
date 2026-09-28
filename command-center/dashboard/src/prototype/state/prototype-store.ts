@@ -94,6 +94,11 @@ export interface PrototypeDataset {
   readonly proof: readonly ProofEntry[];
   readonly files: readonly FileNode[];
   readonly graph: MissionGraph;
+  /** WP-P1 (Forge v2.9.0): the wrapper-designated default project id (`FORGE_CC_DEFAULT_PROJECT`,
+   *  resolved gateway-side against a project it actually found), or `null` when there is none.
+   *  Optional — never fabricated by the fixture dataset, which has no such notion. See
+   *  `PrototypeProvider.tsx`'s reconciliation effect for the one place this is read. */
+  readonly defaultProjectId?: string | null;
 }
 
 /* ------------------------------------------------------------------ state */

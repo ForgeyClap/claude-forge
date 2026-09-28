@@ -28,6 +28,13 @@ import { makeTempProjectRoot, writeEventsFile } from '../test-support/helpers.mj
 import { needsAnyRunEvents, needsAnyRunEventsOf, needsRunEvents } from './.real-data-guard.mjs';
 
 const HOUR = 60 * 60 * 1000;
+// WP-CC1 (item 7): STALE_TASK_MS shrank from 24h to 10 minutes (missions.mjs's own comment
+// explains why — cross-view consistency with agent-dispatches.mjs's new run-log heartbeat). A
+// handful of fixtures below use minute-scale offsets instead of hour-scale ones specifically so
+// they stay well inside the new, much stricter staleness window while testing the SAME pairing/
+// fallback logic as before — the offsets' MAGNITUDE never mattered to what they test, only their
+// RELATIVE ordering, which is unchanged.
+const MINUTE = 60 * 1000;
 
 /** Runs `fn` against a throwaway project root holding exactly `events`, then deletes it. */
 function withRun(events, fn, options = {}) {
@@ -159,9 +166,9 @@ test('(b2) dispatch_id routing is UNCHANGED when it disagrees with (agent, role)
   // decide — the fallback may never re-route a completion that already carries a usable id.
   withRun(
     [
-      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'first', timestamp: iso(NOW - 5 * HOUR) },
-      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'second', timestamp: iso(NOW - 4 * HOUR) },
-      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'builder', dispatch_id: 'second', note: 'second finished first', timestamp: iso(NOW - 3 * HOUR) },
+      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'first', timestamp: iso(NOW - 5 * MINUTE) },
+      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'second', timestamp: iso(NOW - 4 * MINUTE) },
+      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'builder', dispatch_id: 'second', note: 'second finished first', timestamp: iso(NOW - 3 * MINUTE) },
     ],
     (m) => {
       const first = m.tasks.find((t) => t.dispatch_id === 'first');
@@ -198,8 +205,8 @@ test('(b4) a completion whose dispatch_id is a free-text explanation stays an ho
   // never sees it — the weaker link is only ever unlocked by a genuinely ABSENT dispatch_id.
   withRun(
     [
-      { event_type: 'subagent_started', agent: 'Test Boss', role: 'cc-t0.8-verify', dispatch_id: 'real-id', timestamp: iso(NOW - 3 * HOUR) },
-      { event_type: 'subagent_completed', agent: 'Test Boss', role: 'cc-t0.8-verify', dispatch_id: 'none — no cc-t0.8-verify subagent_started event exists (not fabricated)', timestamp: iso(NOW - 2 * HOUR) },
+      { event_type: 'subagent_started', agent: 'Test Boss', role: 'cc-t0.8-verify', dispatch_id: 'real-id', timestamp: iso(NOW - 3 * MINUTE) },
+      { event_type: 'subagent_completed', agent: 'Test Boss', role: 'cc-t0.8-verify', dispatch_id: 'none — no cc-t0.8-verify subagent_started event exists (not fabricated)', timestamp: iso(NOW - 2 * MINUTE) },
     ],
     (m) => {
       assert.equal(m.tasks[0].status, 'running', 'unchanged: an unusable id is not an absent id');
@@ -327,8 +334,8 @@ test('(f) agent-only matching is REJECTED: same agent, different roles never cro
   // finish a live task, so it must stay rejected.
   withRun(
     [
-      { event_type: 'subagent_started', agent: 'Build Boss', role: 'wp1-salvage', dispatch_id: 'r1', timestamp: iso(NOW - 3 * HOUR) },
-      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'wp5-evidence', timestamp: iso(NOW - 2 * HOUR) },
+      { event_type: 'subagent_started', agent: 'Build Boss', role: 'wp1-salvage', dispatch_id: 'r1', timestamp: iso(NOW - 3 * MINUTE) },
+      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'wp5-evidence', timestamp: iso(NOW - 2 * MINUTE) },
     ],
     (m) => {
       assert.equal(m.tasks[0].status, 'running', 'a different role is a different task');
@@ -341,8 +348,8 @@ test('(f) agent-only matching is REJECTED: same agent, different roles never cro
 test('(f2) a missing role on either side blocks the fallback (real demo-preview shape)', () => {
   withRun(
     [
-      { event_type: 'subagent_started', agent: 'review-boss', dispatch_id: 'demo-preview', timestamp: iso(NOW - 3 * HOUR) },
-      { event_type: 'subagent_completed', agent: 'review-boss', timestamp: iso(NOW - 2 * HOUR) },
+      { event_type: 'subagent_started', agent: 'review-boss', dispatch_id: 'demo-preview', timestamp: iso(NOW - 3 * MINUTE) },
+      { event_type: 'subagent_completed', agent: 'review-boss', timestamp: iso(NOW - 2 * MINUTE) },
     ],
     (m) => {
       assert.equal(m.tasks[0].status, 'running', 'no role means no key weak enough to be safe');
@@ -487,11 +494,11 @@ test('(Z1e) NO OVER-CORRECTION: exactly ONE open start still pairs normally', ()
   // candidate — which must still be matched, otherwise the fix would throw away sound evidence.
   withRun(
     [
-      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'z1', timestamp: iso(NOW - 5 * HOUR) },
-      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'builder', dispatch_id: 'z1', note: 'exact', timestamp: iso(NOW - 4.5 * HOUR) },
-      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'z2', timestamp: iso(NOW - 4 * HOUR) },
-      { event_type: 'subagent_started', agent: 'Build Boss', role: 'reviewer', dispatch_id: 'z3', timestamp: iso(NOW - 4 * HOUR) },
-      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'builder', note: 'fallback', timestamp: iso(NOW - 1 * HOUR) },
+      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'z1', timestamp: iso(NOW - 5 * MINUTE) },
+      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'builder', dispatch_id: 'z1', note: 'exact', timestamp: iso(NOW - 4.5 * MINUTE) },
+      { event_type: 'subagent_started', agent: 'Build Boss', role: 'builder', dispatch_id: 'z2', timestamp: iso(NOW - 4 * MINUTE) },
+      { event_type: 'subagent_started', agent: 'Build Boss', role: 'reviewer', dispatch_id: 'z3', timestamp: iso(NOW - 4 * MINUTE) },
+      { event_type: 'subagent_completed', agent: 'Build Boss', role: 'builder', note: 'fallback', timestamp: iso(NOW - 1 * MINUTE) },
     ],
     (m) => {
       const z2 = m.tasks.find((t) => t.dispatch_id === 'z2');

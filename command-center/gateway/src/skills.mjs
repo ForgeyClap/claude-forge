@@ -23,10 +23,19 @@ function parseSkillFrontmatter(mdText) {
   return fm;
 }
 
+// WP-CC1 (item 15): `.claude/skills/.claude-flow` is a real directory on this fleet (the Ruflo/
+// claude-flow coordination-layer cache, unrelated to any real Forge skill) — it has no SKILL.md and
+// was showing up as a nameless, description-less "skill" row. Skipped by exact name, never by a
+// generic "starts with a dot" rule (a future genuine dotfolder skill must not be silently excluded).
+const NON_SKILL_DIR_NAMES = new Set(['.claude-flow']);
+
 function listSkillDirs(skillsDir) {
   let entries;
   try { entries = fs.readdirSync(skillsDir, { withFileTypes: true }); } catch { return []; }
-  return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  return entries
+    .filter((e) => e.isDirectory() && !NON_SKILL_DIR_NAMES.has(e.name))
+    .map((e) => e.name)
+    .sort();
 }
 
 const SEPARATOR_CELL_RE = /^:?-+:?$/;

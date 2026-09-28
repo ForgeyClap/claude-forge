@@ -1,8 +1,40 @@
 // T3.5 tests — buildAgentsRegistry() against THIS project's real 4 config sources.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { buildAgentsRegistry } from '../src/agents.mjs';
-import { PROJECT_ROOT } from '../src/paths.mjs';
+import { PROJECT_ROOT, COMMAND_CENTER_DATA_DIR } from '../src/paths.mjs';
+import { writeEventsFile } from '../test-support/helpers.mjs';
+
+// WP-CC1 (item 6) fixtures — isolated, nested under COMMAND_CENTER_DATA_DIR (a real descendant of
+// PROJECT_ROOT/SYNC_SCAN_ROOTS; listRunLogDispatches()'s own anyContainmentOk() check, reached via
+// buildAgentsRegistry()'s live-status merge, would reject a plain os.tmpdir() fixture — same
+// reasoning as runs.test.mjs's own header comment).
+const FIXTURE_PARENT = path.join(COMMAND_CENTER_DATA_DIR, 'gateway-test-tmp-agents');
+const tempRoots = [];
+function freshRoot() {
+  fs.mkdirSync(FIXTURE_PARENT, { recursive: true });
+  const root = fs.mkdtempSync(path.join(FIXTURE_PARENT, 'fixture-'));
+  tempRoots.push(root);
+  return root;
+}
+function writeAgentMd(root, slug, frontmatter) {
+  const dir = path.join(root, '.claude', 'agents');
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = ['---', ...Object.entries(frontmatter).map(([k, v]) => k + ': ' + v), '---', 'body'];
+  fs.writeFileSync(path.join(dir, slug + '.md'), lines.join('\n'), 'utf8');
+}
+function writeRegistry(root, agents) {
+  const dir = path.join(root, '.claude', 'config', 'agents');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'agent-registry.json'), JSON.stringify({ agents }), 'utf8');
+}
+
+after(() => {
+  for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(FIXTURE_PARENT, { recursive: true, force: true });
+});
 
 test('buildAgentsRegistry finds the real 19 agent-md files and the 12 permanent Bosses', () => {
   const result = buildAgentsRegistry(PROJECT_ROOT);
@@ -75,4 +107,53 @@ test('an agent with no entry in agent-skill-map.json gets an honest empty list, 
   ));
   assert.ok(unmapped, 'expected at least one non-Boss agent not present in agent-skill-map.json');
   assert.deepEqual(unmapped.skills, []);
+});
+
+// WP-CC1 (item 6) — display_name/aliases, and live status merged from the run-log dispatch view.
+test('display_name comes from the registry (e.g. "Build Boss"), separate from the unchanged slug `name`', () => {
+  const root = freshRoot();
+  writeAgentMd(root, 'build-boss', { name: 'build-boss', description: 'x' });
+  writeRegistry(root, { 'build-boss': { name: 'Build Boss', role: 'Implementation / coding' } });
+
+  const result = buildAgentsRegistry(root);
+  const bb = result.agents.find((a) => a.slug === 'build-boss');
+  assert.equal(bb.name, 'build-boss', 'the existing `name` field must stay the slug, unchanged');
+  assert.equal(bb.display_name, 'Build Boss');
+  assert.deepEqual(bb.aliases, ['build-boss', 'Build Boss']);
+});
+
+test('an agent outside the registry (a specialist) falls back to its own slug for display_name/aliases, never a guess', () => {
+  const root = freshRoot();
+  writeAgentMd(root, 'codex-reviewer', { name: 'codex-reviewer', description: 'x' });
+  writeRegistry(root, {});
+
+  const result = buildAgentsRegistry(root);
+  const cr = result.agents.find((a) => a.slug === 'codex-reviewer');
+  assert.equal(cr.display_name, 'codex-reviewer');
+  assert.deepEqual(cr.aliases, ['codex-reviewer']);
+});
+
+test('is_running/live_dispatches merge real run-log liveness when a projectName is given', () => {
+  const root = freshRoot();
+  writeAgentMd(root, 'build-boss', { name: 'build-boss', description: 'x' });
+  writeRegistry(root, { 'build-boss': { name: 'Build Boss' } });
+  const nowIso = new Date().toISOString();
+  writeEventsFile(root, 'forge-live-run', [
+    { event_type: 'run_started', timestamp: nowIso },
+    { event_type: 'subagent_started', agent: 'Build Boss', dispatch_id: 'd1', timestamp: nowIso },
+  ]);
+
+  const withName = buildAgentsRegistry(root, 'some-project-name');
+  const bb = withName.agents.find((a) => a.slug === 'build-boss');
+  assert.equal(bb.is_running, true);
+  assert.equal(bb.running_dispatch_count, 1);
+  assert.equal(bb.live_dispatches.length, 1);
+  assert.equal(bb.live_dispatches[0].source, 'run-log');
+
+  // Omitting projectName (every OTHER existing call site) keeps the static registry behavior
+  // exactly as before — honest false/empty, never a guess.
+  const withoutName = buildAgentsRegistry(root);
+  const bb2 = withoutName.agents.find((a) => a.slug === 'build-boss');
+  assert.equal(bb2.is_running, false);
+  assert.deepEqual(bb2.live_dispatches, []);
 });

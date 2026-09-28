@@ -290,7 +290,7 @@ export {
 
 export { toGatewayGate, toGatewayArtifact, parseDoctorHealth } from './adapter/graph-and-proof';
 
-export type { GatewayProjectProfile, GatewayEventsState } from './adapter/polling-hooks';
+export type { GatewayProjectProfile, GatewayEventsState, ActiveRunRow, ActiveRunsResult, GatewayProofExtras } from './adapter/polling-hooks';
 export {
   useGatewayRunScanErrors,
   EMPTY_PROJECT_PROFILE,
@@ -301,7 +301,21 @@ export {
   createEventsAccumulator,
   useGatewayEvents,
   useGatewayEventsMeta,
+  useGatewayActiveRuns,
+  useGatewayProofExtras,
+  parseActiveRunRows,
 } from './adapter/polling-hooks';
+
+export type {
+  GatewayReview,
+  GatewayGateEvidence,
+  GatewayFinalizeReceipt,
+  GatewayRunContract,
+  IntegrationGateSignal,
+} from './adapter/graph-and-proof';
+export { dedupeLatestVerdictRows } from './adapter/graph-and-proof';
+
+export { buildAgentNameIndex, normalizeAgentKey, resolveAgentSlug, toRunStatusKey, parseCurrentRunId } from './adapter/rows';
 
 export type {
   ChatRunTodoRow,

@@ -28,8 +28,20 @@ import {
   _resetForgeSyncCjsForTests,
   _setScanRootsForTests,
   _resetScanRootsForTests,
+  _setDefaultProjectPathForTests,
+  _resetDefaultProjectPathForTests,
 } from '../src/projects.mjs';
+import { _setInstalledProjectsFileForTests, _resetInstalledProjectsFileForTests } from '../src/installed-projects.mjs';
 import { PROJECT_ROOT } from '../src/paths.mjs';
+
+// WP-P1: this suite's own assertions are about the multi-root SCAN merge/dedup/ambiguity logic
+// only — never about the two NEW sources WP-P1 adds (the installer's recorded list, and the
+// wrapper's default-project env var). Pointing both at a guaranteed-absent path/empty value makes
+// every test below hermetic: it must never depend on whatever this one machine's real
+// ~/.claude/forge/projects.json or FORGE_CC_DEFAULT_PROJECT happens to hold right now (on the
+// author's own machine neither exists yet, which is why these tests passed unmodified before this
+// hardening — but that is a fact about one machine, not a guarantee).
+const GUARANTEED_ABSENT_INSTALLED_PROJECTS_FILE = path.join(os.tmpdir(), 'cc-multiroot-test-installed-projects-never-created.json');
 
 // The real, already-reviewed forge-sync.cjs this project ships — found by walking upward from
 // PROJECT_ROOT for the real outer project's own .claude/forge-bin (never assumed to be a fixed
@@ -66,11 +78,15 @@ beforeEach(() => {
   tempRoots = [];
   _resetProjectsCacheForTests();
   if (REAL_FORGE_SYNC_CJS) _setForgeSyncCjsForTests(REAL_FORGE_SYNC_CJS);
+  _setInstalledProjectsFileForTests(GUARANTEED_ABSENT_INSTALLED_PROJECTS_FILE);
+  _setDefaultProjectPathForTests('');
 });
 
 after(() => {
   _resetForgeSyncCjsForTests();
   _resetScanRootsForTests();
+  _resetInstalledProjectsFileForTests();
+  _resetDefaultProjectPathForTests();
   _resetProjectsCacheForTests();
 });
 
@@ -231,4 +247,39 @@ test('TOTAL FAILURE: the client-visible error is generic (no leaked paths); the 
   assert.ok(loggedLines.some((l) => l.includes('FAIL-THIS-ROOT-b')), 'the real detail must still reach the gateway\'s own log');
 
   for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
+});
+
+/* -------------------------------------------------------------------- WP-CC1 (item 12): kind --- */
+
+test('a project under a forge-backups path segment is flagged kind:backup; an ordinary one is kind:primary', { skip: SKIP_REASON }, async () => {
+  const scanRoot = makeRootWithProject('proj-ordinary');
+  const backupsDir = path.join(scanRoot, 'forge-backups');
+  fs.mkdirSync(path.join(backupsDir, 'some-old-copy', '.claude', 'forge-dashboard'), { recursive: true });
+  _setScanRootsForTests([scanRoot]);
+  _resetProjectsCacheForTests();
+
+  const result = await listProjects();
+  assert.equal(result.ok, true);
+  const ordinary = result.projects.find((p) => p.name === 'proj-ordinary');
+  assert.ok(ordinary);
+  assert.equal(ordinary.kind, 'primary');
+  const backup = result.projects.find((p) => p.name === 'some-old-copy');
+  assert.ok(backup, 'a real .claude-bearing dir under forge-backups/ IS discovered by the real scan tool');
+  assert.equal(backup.kind, 'backup');
+});
+
+test('a project named Forge-e2e-<timestamp> is flagged kind:test; a project merely containing "test" in its name is NOT', { skip: SKIP_REASON }, async () => {
+  const scanRoot = makeRootWithProject('proj-named-test-but-real');
+  fs.mkdirSync(path.join(scanRoot, 'Forge-e2e-2026-07-29T03-53-47-830Z', '.claude', 'forge-dashboard'), { recursive: true });
+  _setScanRootsForTests([scanRoot]);
+  _resetProjectsCacheForTests();
+
+  const result = await listProjects();
+  assert.equal(result.ok, true);
+  const real = result.projects.find((p) => p.name === 'proj-named-test-but-real');
+  assert.ok(real, 'a real project whose OWN name happens to contain "test" must still be discovered');
+  assert.equal(real.kind, 'primary', 'a name merely containing "test" must never be misclassified');
+  const fixture = result.projects.find((p) => p.name === 'Forge-e2e-2026-07-29T03-53-47-830Z');
+  assert.ok(fixture);
+  assert.equal(fixture.kind, 'test');
 });

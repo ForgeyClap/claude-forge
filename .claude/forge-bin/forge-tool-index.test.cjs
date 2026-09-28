@@ -516,7 +516,10 @@ t('CLI `resolve` returns the full original event and reports plain-text output w
 });
 
 // =======================================================================================================
-console.log('\n6) rejected_approach registration — the 3-places discipline (REAL tools, real sources)');
+console.log('\n6) rejected_approach registration — the event-registration discipline (REAL tools, real sources)');
+// v2.9.0 (WP-N1, 2026-09-27): a PLACE 3 (forge-dashboard/app.js static source proof) existed here at the
+// time this section was written; app.js was removed with the rest of the retired per-project Control
+// Center. Places 1 (log-event.cjs) and 2 (forge-verify.cjs) below are unchanged and still fully enforced.
 // =======================================================================================================
 // Section 6 uses the REAL .claude/forge-runs/ (log-event.cjs resolves CLAUDE_DIR from its own __dirname and
 // cannot be redirected). The throwaway run dir is removed in the finally below.
@@ -568,17 +571,6 @@ try {
     assert.ok(!verify.RUNNING_TYPES.has('rejected_approach'), 'must not be a running task');
     assert.ok(!verify.PREVIEWING_TYPES.has('rejected_approach'), 'must not be previewing');
     assert.ok(!verify.FINDING_EVENT_TYPES.has('rejected_approach'), 'must not count as a recurring finding in loop convergence');
-  });
-
-  console.log('\n  PLACE 3 — forge-dashboard/app.js (static source proof; browser JS, no module boundary)');
-  const appSrc = fs.readFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'app.js'), 'utf8');
-  t('app.js taskStatus() informational done-list contains the rejected_approach literal', () => {
-    const m = appSrc.match(/informational\/activity events that represent an action that already happened[\s\S]{0,1600}?return 'done';/);
-    assert.ok(m, 'could not locate the informational done-list in app.js');
-    assert.ok(/'rejected_approach'/.test(m[0]), 'rejected_approach is not in the informational done-list');
-  });
-  t('app.js SYNTH fallback map has an entry for rejected_approach', () => {
-    assert.ok(/rejected_approach:\s*'[a-z-]+'/.test(appSrc), 'rejected_approach not found in the SYNTH fallback map');
   });
 
   console.log('\n  CROSS-CHECK — the KNOWN_EVENT_TYPES source really carries the literal');

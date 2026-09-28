@@ -98,12 +98,370 @@ t('secretLabel jwt', D.secretLabel('eyJ[A-Za-z0-9_-]{10,}\\.') === 'jwt');
 t('secretLabel url creds', D.secretLabel('[a-z]+://[^@]+:[^@]+@') === 'url-embedded-credentials');
 t('secretLabel aws', D.secretLabel('AKIA[0-9A-Z]{16}') === 'aws-access-key');
 
-// --- spaPresent ---
-const spaMissing = D.spaPresent(ROOT); // forge-dashboard dir exists but empty
-t('spaPresent ok=false when SPA files missing', spaMissing.ok === false && spaMissing.missing.includes('app.js'));
+// --- spaPresent — v2.9.0: the retired per-project Control Center's SPA files were REMOVED. ABSENT is
+// now the healthy state (ok:true); PRESENT is advisory only (an older install forge-sync hasn't cleaned
+// up yet) — `ok` must stay true either way, this can never fail a doctor run. ---
+const spaAbsent = D.spaPresent(ROOT); // forge-dashboard dir exists but is empty of legacy files
+t('spaPresent ok=true when legacy SPA files are absent (the healthy post-2.9.0 state)', spaAbsent.ok === true && spaAbsent.present.length === 0 && spaAbsent.stale === false);
 for (const f of ['server.cjs', 'index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css']) fs.writeFileSync(path.join(cd, 'forge-dashboard', f), '// ' + f);
-const spaOk = D.spaPresent(ROOT);
-t('spaPresent ok=true once all files exist', spaOk.ok === true && spaOk.missing.length === 0);
+const spaStale = D.spaPresent(ROOT);
+t('spaPresent ok=true even when legacy files are present (advisory, never a failure)', spaStale.ok === true);
+t('spaPresent lists every legacy file still present, for the advisory message', spaStale.present.length === 7 && spaStale.present.includes('app.js') && spaStale.stale === true);
+
+// --- rebindingGuard — v2.9.0: the guard moved from the retired per-project server.cjs to the Command
+// Center gateway (command-center/gateway/src/security.mjs), which is its OWN separate git repo — absent
+// from a plain project checkout, and that must never fail this project's doctor. ---
+//
+// WP-Q2 (2026-09-27, Codex adversarial-review finding DOCTOR-1, MEDIUM): the PRE-fix version scanned the
+// WHOLE security.mjs file for marker WORDS wherever they appeared, including inside a comment — the OLD
+// RG_GOOD fixture just below (kept here, renamed, as RG_MARKER_ONLY) proves the bug: hostOk/crossSiteOk
+// that unconditionally `return true` still passed doctor's check, purely because a comment above them
+// named the right words. The fix requires real, wired-in code — see forge-doctor.cjs's own rebindingGuard
+// header comment for the exact 5-step rule. Fixture helper: writes BOTH security.mjs and server.mjs (the
+// new check reads both) under a fresh temp command-center/gateway/src/.
+function writeRgFixture(prefix, secContent, srvContent) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.mkdirSync(path.join(dir, 'command-center', 'gateway', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'command-center', 'gateway', 'src', 'security.mjs'), secContent);
+  if (srvContent !== null) fs.writeFileSync(path.join(dir, 'command-center', 'gateway', 'src', 'server.mjs'), srvContent);
+  return dir;
+}
+// A faithful mini-mirror of the REAL command-center/gateway/src/security.mjs shape: hostOk(req)'s own
+// body directly references both a header-reading helper call (hostName(req)) and the LOCAL_HOSTS set;
+// crossSiteOk(req) reads headers directly with no indirection. Real code, not comment prose.
+const RG_REAL_SHAPE_SECURITY =
+  "export const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);\n" +
+  "function hostName(req) {\n" +
+  "  return String((req.headers && req.headers.host) || '').toLowerCase();\n" +
+  "}\n" +
+  "export function hostOk(req) {\n" +
+  "  const h = hostName(req);\n" +
+  "  return h === '' || LOCAL_HOSTS.has(h);\n" +
+  "}\n" +
+  "export function crossSiteOk(req) {\n" +
+  "  const sfs = String((req.headers && req.headers['sec-fetch-site']) || '');\n" +
+  "  if (sfs && sfs !== 'same-origin' && sfs !== 'none') return false;\n" +
+  "  const origin = req.headers && req.headers.origin;\n" +
+  "  return !origin || origin === 'http://localhost:4100';\n" +
+  "}\n";
+// A faithful mini-mirror of the REAL server.mjs: imports both real names, calls both near the top of the
+// function it hands to http.createServer(...), before any pathname-based routing.
+const RG_REAL_SHAPE_SERVER =
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  "  const parsed = new URL(req.url, 'http://localhost');\n" +
+  "  const pathname = parsed.pathname;\n" +
+  "  if (!hostOk(req)) { res.writeHead(403); return res.end(); }\n" +
+  "  if (!crossSiteOk(req)) { res.writeHead(403); return res.end(); }\n" +
+  "  if (pathname === '/api/health') { res.writeHead(200); return res.end(); }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n";
+
+const RG_NO_CC = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rebind-nocc-'));
+const rgNoCc = D.rebindingGuard(RG_NO_CC);
+t('rebindingGuard: no command-center/ at all -> ok:true, applicable:false (never a doctor failure)', rgNoCc.ok === true && rgNoCc.applicable === false);
+
+const RG_NO_SECURITY = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rebind-nosecurity-'));
+fs.mkdirSync(path.join(RG_NO_SECURITY, 'command-center', 'gateway', 'src'), { recursive: true });
+const rgNoSecurity = D.rebindingGuard(RG_NO_SECURITY);
+t('rebindingGuard: command-center/ exists but security.mjs is missing -> ok:false, applicable:true (a real gap, not a false pass)', rgNoSecurity.ok === false && rgNoSecurity.applicable === true);
+
+// DOCTOR-1's exact reported bug, kept as its own regression fixture: marker WORDS only inside comments,
+// with guard functions that unconditionally `return true` — must now FAIL, not pass.
+const RG_MARKER_ONLY = writeRgFixture('forge-doctor-rebind-markeronly-',
+  "// DNS-rebinding guard: reject a Host header that is not localhost or 127.0.0.1\n" +
+  "export function hostOk(req) { return true; }\n" +
+  "// cross-site guard: check Origin / Sec-Fetch-Site before serving /api/*\n" +
+  "export function crossSiteOk(req) { return true; }\n",
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  "  if (!hostOk(req)) { return; }\n" +
+  "  if (!crossSiteOk(req)) { return; }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n");
+const rgMarkerOnly = D.rebindingGuard(RG_MARKER_ONLY);
+t('rebindingGuard: DOCTOR-1 regression — marker WORDS only in a comment, no real header check -> ok:false (comments are stripped before matching)', rgMarkerOnly.ok === false && rgMarkerOnly.applicable === true);
+
+const RG_GOOD = writeRgFixture('forge-doctor-rebind-good-', RG_REAL_SHAPE_SECURITY, RG_REAL_SHAPE_SERVER);
+const rgGood = D.rebindingGuard(RG_GOOD);
+t('rebindingGuard: the real gateway shape (real header checks, imported and called before routing) -> ok:true', rgGood.ok === true && rgGood.applicable === true && rgGood.reason === '');
+
+// The guard functions are real and exported, but server.mjs never calls either -- imported-but-unused
+// must fail, not pass (this is the second half of DOCTOR-1: "exists" must not be confused with "wired in").
+const RG_NEVER_CALLED = writeRgFixture('forge-doctor-rebind-nevercalled-', RG_REAL_SHAPE_SECURITY,
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  "  const parsed = new URL(req.url, 'http://localhost');\n" +
+  "  const pathname = parsed.pathname;\n" +
+  "  if (pathname === '/api/health') { res.writeHead(200); return res.end(); }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n");
+const rgNeverCalled = D.rebindingGuard(RG_NEVER_CALLED);
+t('rebindingGuard: real guard functions exist but server.mjs never calls either -> ok:false ("imported ... but never called")', rgNeverCalled.ok === false && rgNeverCalled.applicable === true && /never called/.test(rgNeverCalled.reason));
+
+// Guard calls exist but only AFTER routing has already started -- still not a real "before routing" guard.
+const RG_AFTER_ROUTING = writeRgFixture('forge-doctor-rebind-afterrouting-', RG_REAL_SHAPE_SECURITY,
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  "  const parsed = new URL(req.url, 'http://localhost');\n" +
+  "  const pathname = parsed.pathname;\n" +
+  "  if (pathname === '/api/health') { res.writeHead(200); return res.end(); }\n" +
+  "  if (!hostOk(req)) { res.writeHead(403); return res.end(); }\n" +
+  "  if (!crossSiteOk(req)) { res.writeHead(403); return res.end(); }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n");
+const rgAfterRouting = D.rebindingGuard(RG_AFTER_ROUTING);
+t('rebindingGuard: guard is called only after routing has already begun -> ok:false', rgAfterRouting.ok === false && /after routing/.test(rgAfterRouting.reason));
+
+const RG_BAD = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-rebind-bad-'));
+fs.mkdirSync(path.join(RG_BAD, 'command-center', 'gateway', 'src'), { recursive: true });
+fs.writeFileSync(path.join(RG_BAD, 'command-center', 'gateway', 'src', 'security.mjs'), '// no guard here at all\nmodule.exports = {};\n');
+const rgBad = D.rebindingGuard(RG_BAD);
+t('rebindingGuard: a security.mjs with no real guard function at all -> ok:false, names what is missing', rgBad.ok === false && /host-vs-localhost guard NOT found/.test(rgBad.reason) && /cross-site\/origin guard NOT found/.test(rgBad.reason));
+
+// ---------------------------------------------------------------------------------------------------------
+// DOCTOR-1, round 2 (Codex adversarial-review, MEDIUM, WP-9B-SRC): round 1 (RG_MARKER_ONLY above) only
+// stripped COMMENTS — a guard that unconditionally `return`s true, with the marker text hidden in a
+// STRING or a REGEX LITERAL instead of a comment, still satisfied every RG_*_TOKEN_RE check. Comments
+// AND string/template/regex literal content are now masked before the property-access markers
+// (.headers/.origin) are checked (see rgStripForStructuralScan/rgLooksLikeHostGuardBody's own doc
+// comments) — these three fixtures reproduce the finding's own reported examples almost verbatim.
+// ---------------------------------------------------------------------------------------------------------
+const RG_STRING_MARKER = writeRgFixture('forge-doctor-rebind-stringmarker-',
+  'export function hostOk(req) { var marker = "req.headers 127.0.0.1 localhost"; return true; }\n' +
+  'export function crossSiteOk(req) { var marker2 = "req.headers sec-fetch-site"; return true; }\n',
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  "  if (!hostOk(req)) { return; }\n" +
+  "  if (!crossSiteOk(req)) { return; }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n");
+const rgStringMarker = D.rebindingGuard(RG_STRING_MARKER);
+t('rebindingGuard: DOCTOR-1 round 2 — marker text hidden in a STRING (not a comment), guards unconditionally return true -> ok:false', rgStringMarker.ok === false && rgStringMarker.applicable === true);
+
+const RG_REGEX_MARKER = writeRgFixture('forge-doctor-rebind-regexmarker-',
+  'export function hostOk(req) { var marker = /req\\.headers 127\\.0\\.0\\.1 localhost/; return true; }\n' +
+  'export function crossSiteOk(req) { var marker2 = /req\\.headers sec-fetch-site/; return true; }\n',
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  "  if (!hostOk(req)) { return; }\n" +
+  "  if (!crossSiteOk(req)) { return; }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n");
+const rgRegexMarker = D.rebindingGuard(RG_REGEX_MARKER);
+t('rebindingGuard: DOCTOR-1 round 2 — marker text hidden in a REGEX LITERAL, guards unconditionally return true -> ok:false', rgRegexMarker.ok === false && rgRegexMarker.applicable === true);
+
+// The finding's third shape: "hostOk(req); crossSiteOk(req); pathname ===" as a decoy STRING sitting
+// inside the real listener (server.mjs), never actually executed — security.mjs is the REAL, legitimate
+// shape here, so this isolates the LISTENER-wiring half of the fix (rgFirstCallIndex/RG_ROUTING_MARKER_RE
+// must never be fooled by call-shaped TEXT inside a string).
+const RG_LISTENER_STRING_MARKER = writeRgFixture('forge-doctor-rebind-listenerstringmarker-', RG_REAL_SHAPE_SECURITY,
+  "import { hostOk, crossSiteOk } from './security.mjs';\n" +
+  "export function requestListener(req, res) {\n" +
+  '  var decoy = "hostOk(req); crossSiteOk(req); pathname ===";\n' +
+  "  const parsed = new URL(req.url, 'http://localhost');\n" +
+  "  const pathname = parsed.pathname;\n" +
+  "  if (pathname === '/api/health') { res.writeHead(200); return res.end(); }\n" +
+  "}\n" +
+  "export function createServer() { return require('http').createServer(requestListener); }\n");
+const rgListenerStringMarker = D.rebindingGuard(RG_LISTENER_STRING_MARKER);
+t('rebindingGuard: DOCTOR-1 round 2 — "hostOk(req); crossSiteOk(req); pathname ===" hidden in a STRING in the listener -> ok:false (never really called)', rgListenerStringMarker.ok === false && rgListenerStringMarker.applicable === true && /never called/.test(rgListenerStringMarker.reason));
+
+// Precision check: the REAL gateway shape (RG_GOOD) legitimately expresses its 127.0.0.1/localhost/
+// sec-fetch-site VALUES as string literals compared against real header values — round 2's fix must not
+// regress this back to a false failure (this is the exact case round 1 of THIS fix accidentally broke,
+// caught before shipping — see git history for the intermediate failing state).
+t('rebindingGuard: round 2 fix does not regress the real gateway shape — value tokens legitimately inside strings still pass', D.rebindingGuard(RG_GOOD).ok === true);
+
+// ---------------------------------------------------------------------------------------------------------
+// rebindingGuardBehavioral (DOCTOR-1 fix, bullet 2; Lead review round 2, 2026-09-28: "judged NOT CLOSED
+// twice" until wired into the real doctor report) — the BEHAVIOURAL companion: dynamically imports the
+// REAL security.mjs (in a SEPARATE spawned Node process — forge-rebindguard-runner.cjs — so this stays a
+// plain SYNCHRONOUS function callable directly from runDoctor()) and calls the discovered guards with
+// requests that MUST be rejected/accepted.
+// ---------------------------------------------------------------------------------------------------------
+tFn('rebindingGuardBehavioral: not applicable when there is no command-center/ folder', () => {
+  const r = D.rebindingGuardBehavioral(RG_NO_CC);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.applicable, false);
+});
+tFn('rebindingGuardBehavioral: the REAL gateway shape — evil.example rejected, 127.0.0.1 accepted, cross-site rejected, same-site accepted -> ok:true', () => {
+  const r = D.rebindingGuardBehavioral(RG_GOOD);
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.applicable, true);
+});
+
+// Lead review round 2's exact requirement: a fixture whose guards always return true, with EVERY
+// structural marker written as REAL, genuinely executed code (not a decoy string) — a realistic logic
+// bug (the `return ok;` that should decide the outcome is dead code; a stray `return true;` always wins)
+// rather than an obviously-fake guard. This must pass rebindingGuard() (the structural scan) cleanly and
+// only be caught by actually calling the guard.
+const RG_REALCODE_ALWAYS_TRUE_SECURITY =
+  "export function hostOk(req) {\n" +
+  "  var h = String((req.headers && req.headers.host) || '').toLowerCase();\n" +
+  "  var ok = (h === '127.0.0.1' || h === 'localhost');\n" +
+  "  return true;\n" + // BUG: should be `return ok;`
+  "}\n" +
+  "export function crossSiteOk(req) {\n" +
+  "  var sfs = String((req.headers && req.headers['sec-fetch-site']) || '');\n" +
+  "  var ok = (!sfs || sfs === 'same-origin' || sfs === 'none');\n" +
+  "  return true;\n" + // BUG: should be `return ok;`
+  "}\n";
+const RG_REALCODE_ALWAYS_TRUE = writeRgFixture('forge-doctor-rebind-realcodealwaystrue-', RG_REALCODE_ALWAYS_TRUE_SECURITY, RG_REAL_SHAPE_SERVER);
+tFn('rebindingGuardBehavioral precondition: the always-true guard with REAL-CODE structural markers (not a decoy string) PASSES the structural check', () => {
+  const structural = D.rebindingGuard(RG_REALCODE_ALWAYS_TRUE);
+  assert.strictEqual(structural.ok, true, JSON.stringify(structural));
+});
+tFn('rebindingGuardBehavioral: the always-true guard with REAL-CODE structural markers FAILS the behavioural check', () => {
+  const r = D.rebindingGuardBehavioral(RG_REALCODE_ALWAYS_TRUE);
+  assert.strictEqual(r.ok, false, JSON.stringify(r));
+  assert.strictEqual(r.applicable, true);
+  assert.ok(/evil\.example/.test(r.reason), r.reason);
+});
+
+// THE residual gap a decoy STRING (not real code) can also create — kept as a second, complementary
+// fixture shape alongside the real-code one above.
+const RG_BEHAVIORAL_GAP_SECURITY =
+  "export function hostOk(req) {\n" +
+  "  var touch = req.headers;\n" +
+  "  var decoy = 'accepts only 127.0.0.1 or localhost';\n" +
+  "  return true;\n" +
+  "}\n" +
+  "export function crossSiteOk(req) {\n" +
+  "  var touch2 = req.headers;\n" +
+  "  var decoy2 = 'rejects cross-site via sec-fetch-site';\n" +
+  "  return true;\n" +
+  "}\n";
+const RG_BEHAVIORAL_GAP = writeRgFixture('forge-doctor-rebind-behavioralgap-', RG_BEHAVIORAL_GAP_SECURITY, RG_REAL_SHAPE_SERVER);
+tFn('rebindingGuardBehavioral precondition: the always-true-with-decoy-value-string guard PASSES the structural check (proves this is a genuine residual gap, not a duplicate of an already-caught case)', () => {
+  const structural = D.rebindingGuard(RG_BEHAVIORAL_GAP);
+  assert.strictEqual(structural.ok, true, JSON.stringify(structural));
+});
+tFn('rebindingGuardBehavioral: the always-true-with-decoy-value-string guard FAILS the behavioural check (Host: evil.example is wrongly accepted)', () => {
+  const r = D.rebindingGuardBehavioral(RG_BEHAVIORAL_GAP);
+  assert.strictEqual(r.ok, false, JSON.stringify(r));
+  assert.strictEqual(r.applicable, true);
+  assert.ok(/evil\.example/.test(r.reason), r.reason);
+});
+
+// --- runner-failure modes: a timeout, a non-zero exit, and garbage/unparsable output must ALL be a FAIL
+// with a plain reason — never a silent pass. opts.runnerFile/opts.timeoutMs are test-only overrides. ---
+function writeThrowawayScript(prefix, lines) {
+  const p = path.join(os.tmpdir(), prefix + '-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.cjs');
+  fs.writeFileSync(p, lines.join('\n'), 'utf8');
+  return p;
+}
+tFn('rebindingGuardBehavioral: a runner that never exits is a TIMEOUT FAIL with a reason naming the timeout, never a silent pass', () => {
+  const hangScript = writeThrowawayScript('forge-doctor-rgrunner-hang', [
+    '// deliberately keeps the event loop alive without ever printing a verdict or exiting',
+    'setInterval(() => {}, 1000);',
+  ]);
+  try {
+    const r = D.rebindingGuardBehavioral(RG_GOOD, { runnerFile: hangScript, timeoutMs: 300 });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(r.applicable, true);
+    assert.ok(/timeout/i.test(r.reason), r.reason);
+  } finally { try { fs.unlinkSync(hangScript); } catch { /* best-effort */ } }
+});
+tFn('rebindingGuardBehavioral: a runner that prints garbage (not JSON) is an UNPARSABLE-OUTPUT FAIL with a reason, never a silent pass', () => {
+  const garbageScript = writeThrowawayScript('forge-doctor-rgrunner-garbage', [
+    "console.log('this is not json at all');",
+    'process.exit(0);',
+  ]);
+  try {
+    const r = D.rebindingGuardBehavioral(RG_GOOD, { runnerFile: garbageScript });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(r.applicable, true);
+    assert.ok(/unparsable/i.test(r.reason), r.reason);
+  } finally { try { fs.unlinkSync(garbageScript); } catch { /* best-effort */ } }
+});
+tFn('rebindingGuardBehavioral: a runner that exits non-zero with no verdict is a FAIL with a reason naming the exit code, never a silent pass', () => {
+  const crashScript = writeThrowawayScript('forge-doctor-rgrunner-crash', [
+    'process.exit(7);',
+  ]);
+  try {
+    const r = D.rebindingGuardBehavioral(RG_GOOD, { runnerFile: crashScript });
+    assert.strictEqual(r.ok, false, JSON.stringify(r));
+    assert.strictEqual(r.applicable, true);
+    assert.ok(/exited 7/.test(r.reason), r.reason);
+  } finally { try { fs.unlinkSync(crashScript); } catch { /* best-effort */ } }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// rebindingGuardCombined (Lead review round 2, 2026-09-28) — the ONE verdict runDoctor() now reports under
+// checks.rebinding_guard: ok requires BOTH the structural AND the behavioural check to pass (when
+// applicable); a structural failure short-circuits (behavioral stays null, never computed twice).
+// ---------------------------------------------------------------------------------------------------------
+tFn('rebindingGuardCombined: not applicable (no command-center/) passes straight through, behavioral never computed', () => {
+  const r = D.rebindingGuardCombined(RG_NO_CC);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.applicable, false);
+  assert.strictEqual(r.behavioral, null);
+});
+tFn('rebindingGuardCombined: a structural failure short-circuits — ok:false, behavioral stays null, reason is the structural reason', () => {
+  const r = D.rebindingGuardCombined(RG_STRING_MARKER);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.applicable, true);
+  assert.strictEqual(r.behavioral, null);
+  assert.strictEqual(r.reason, r.structural.reason);
+});
+tFn('rebindingGuardCombined: the REAL gateway shape passes BOTH layers -> ok:true, with both sub-verdicts present', () => {
+  const r = D.rebindingGuardCombined(RG_GOOD);
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual(r.structural.ok, true);
+  assert.strictEqual(r.behavioral.ok, true);
+});
+tFn('rebindingGuardCombined: structural passes but behavioural fails -> overall ok:false, reason is the behavioural reason', () => {
+  const r = D.rebindingGuardCombined(RG_REALCODE_ALWAYS_TRUE);
+  assert.strictEqual(r.ok, false, JSON.stringify(r));
+  assert.strictEqual(r.structural.ok, true);
+  assert.strictEqual(r.behavioral.ok, false);
+  assert.ok(/evil\.example/.test(r.reason), r.reason);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// runDoctor() wiring (Lead review round 2): checks.rebinding_guard must be the COMBINED verdict, and a
+// behavioural failure must genuinely fail the real doctor report (rep.ok), not merely the standalone
+// function — proving the fix is actually load-bearing, not just present-but-uncalled again.
+// ---------------------------------------------------------------------------------------------------------
+tFn('runDoctor() static wiring: checks.rebinding_guard is built from rebindingGuardCombined(), not the bare structural rebindingGuard()', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'forge-doctor.cjs'), 'utf8');
+  assert.ok(/rebinding_guard:\s*rebindingGuardCombined\(root\)/.test(src), 'expected runDoctor() to assign checks.rebinding_guard from rebindingGuardCombined(root)');
+});
+tFn('runDoctor(): the real gateway shape -> checks.rebinding_guard.ok:true, carrying both structural and behavioral sub-verdicts', () => {
+  const rep = D.runDoctor(RG_GOOD);
+  assert.strictEqual(rep.checks.rebinding_guard.ok, true, JSON.stringify(rep.checks.rebinding_guard));
+  assert.strictEqual(rep.checks.rebinding_guard.applicable, true);
+  assert.ok(rep.checks.rebinding_guard.structural && rep.checks.rebinding_guard.behavioral, 'expected both sub-verdicts on the report');
+});
+tFn('runDoctor(): the always-true-with-real-code-markers guard genuinely fails checks.rebinding_guard (and therefore the overall report), not just the standalone function', () => {
+  const rep = D.runDoctor(RG_REALCODE_ALWAYS_TRUE);
+  assert.strictEqual(rep.checks.rebinding_guard.ok, false, JSON.stringify(rep.checks.rebinding_guard));
+  assert.strictEqual(rep.ok, false, 'a failing rebinding_guard must drag the overall doctor verdict down, exactly like every other checks.* entry');
+  assert.ok(/evil\.example/.test(rep.checks.rebinding_guard.reason), rep.checks.rebinding_guard.reason);
+});
+
+// --- commandCenterLocation (WP-P2, v2.9.0) — purely informational, ok:true in every branch. opts.homeDir
+// is a test-only override so these never touch the real, live home directory. ---
+const CCL_NONE_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ccl-none-project-'));
+const CCL_NONE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ccl-none-home-'));
+const cclNone = D.commandCenterLocation(CCL_NONE_PROJECT, { homeDir: CCL_NONE_HOME });
+t('commandCenterLocation: neither project-local nor central -> ok:true, location:not-installed (the ordinary case)', cclNone.ok === true && cclNone.location === 'not-installed' && cclNone.path === null);
+
+const CCL_LOCAL_PROJECT = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ccl-local-project-'));
+fs.mkdirSync(path.join(CCL_LOCAL_PROJECT, 'command-center', 'gateway'), { recursive: true });
+fs.writeFileSync(path.join(CCL_LOCAL_PROJECT, 'command-center', 'gateway', 'bin.mjs'), '// fixture');
+const cclLocal = D.commandCenterLocation(CCL_LOCAL_PROJECT, { homeDir: CCL_NONE_HOME });
+t('commandCenterLocation: a project-local command-center/gateway/bin.mjs -> ok:true, location:project-local', cclLocal.ok === true && cclLocal.location === 'project-local' && cclLocal.path === path.join(CCL_LOCAL_PROJECT, 'command-center'));
+
+const CCL_CENTRAL_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-doctor-ccl-central-home-'));
+fs.mkdirSync(path.join(CCL_CENTRAL_HOME, '.claude', 'forge', 'template', 'command-center', 'gateway'), { recursive: true });
+fs.writeFileSync(path.join(CCL_CENTRAL_HOME, '.claude', 'forge', 'template', 'command-center', 'gateway', 'bin.mjs'), '// fixture');
+const cclCentral = D.commandCenterLocation(CCL_NONE_PROJECT, { homeDir: CCL_CENTRAL_HOME });
+t('commandCenterLocation: no project-local one, but a central template copy exists -> ok:true, location:central', cclCentral.ok === true && cclCentral.location === 'central');
+
+const cclBoth = D.commandCenterLocation(CCL_LOCAL_PROJECT, { homeDir: CCL_CENTRAL_HOME });
+t('commandCenterLocation: project-local takes priority when BOTH exist', cclBoth.location === 'project-local');
 
 // =====================================================================================================
 // 2026-07-14 honesty-hardening fixes: (1) a suite with 0 real assertions is REJECTED, (2) a forge-bin
@@ -357,8 +715,9 @@ fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-bin', 'good.cjs'), "'us
 fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-bin', 'good.test.cjs'), "const assert = require('assert');\nassert.ok(true);\nconsole.log('1 passed, 0 failed');\nprocess.exit(0);\n");
 fs.mkdirSync(path.join(GREEN_ROOT, '.claude', 'forge-dashboard'), { recursive: true });
 fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs'), path.join(GREEN_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs'));
-fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'server.cjs'), path.join(GREEN_ROOT, '.claude', 'forge-dashboard', 'server.cjs'));
-for (const f of ['index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css']) fs.writeFileSync(path.join(GREEN_ROOT, '.claude', 'forge-dashboard', f), '// stub ' + f);
+// v2.9.0: the retired server.cjs + its 6 static SPA files are gone from REAL_ROOT — spaPresent()'s `ok`
+// no longer depends on their presence (see forge-doctor.cjs's spaPresent doc comment), so this GREEN
+// fixture no longer needs to fabricate them to pass.
 fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(GREEN_ROOT, '.claude', 'agents'), { recursive: true });
 sanitizeReadOnlyAgentMemory(path.join(GREEN_ROOT, '.claude', 'agents'));
 fs.mkdirSync(path.join(GREEN_ROOT, '.claude', 'config', 'agents'), { recursive: true });
@@ -1390,8 +1749,8 @@ function makeCompletenessBase(dirName) {
   fs.writeFileSync(path.join(root, '.claude', 'forge-bin', 'good.test.cjs'), "const assert = require('assert');\nassert.ok(true);\nconsole.log('1 passed, 0 failed');\nprocess.exit(0);\n");
   fs.mkdirSync(path.join(root, '.claude', 'forge-dashboard'), { recursive: true });
   fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'log-event.cjs'), path.join(root, '.claude', 'forge-dashboard', 'log-event.cjs'));
-  fs.copyFileSync(path.join(REAL_ROOT, '.claude', 'forge-dashboard', 'server.cjs'), path.join(root, '.claude', 'forge-dashboard', 'server.cjs'));
-  for (const f of ['index.html', 'app.js', 'lenses.js', 'graph.js', 'panels.js', 'styles.css']) fs.writeFileSync(path.join(root, '.claude', 'forge-dashboard', f), '// stub ' + f);
+  // v2.9.0: same reasoning as GREEN_ROOT above — server.cjs + its stub SPA files are no longer needed
+  // for spaPresent()'s `ok` to be true (absent is now the healthy state).
   fs.cpSync(path.join(REAL_ROOT, '.claude', 'agents'), path.join(root, '.claude', 'agents'), { recursive: true });
   sanitizeReadOnlyAgentMemory(path.join(root, '.claude', 'agents'));
   fs.mkdirSync(path.join(root, '.claude', 'config', 'agents'), { recursive: true });
@@ -2240,7 +2599,7 @@ if (!nestedGitReady) {
       && nestedLeak.sources.some((s) => s.root === '.' && s.method === 'git' && s.files > 0)
       && nestedLeak.sources.some((s) => s.root === 'command-center' && s.method === 'git' && s.files > 0),
     JSON.stringify(nestedLeak.sources));
-  const nestedSummary = D.printSummary({ root: NESTED_ROOT, ok: false, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: nestedLeak }, advisory: {} });
+  const nestedSummary = D.printSummary({ root: NESTED_ROOT, ok: false, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, present: [] }, leak_scan: nestedLeak }, advisory: {} });
   t('printSummary: the leak-scan line names the nested repo as a separate source, not one anonymous total',
     /2 repos: \. \d+ \+ command-center \d+/.test(nestedSummary), (nestedSummary.split('\n').find((l) => /leak scan/.test(l)) || nestedSummary));
 }
@@ -2254,7 +2613,7 @@ if (!gitOk(SOLO_ROOT, 'init', '-q') || !gitOk(SOLO_ROOT, 'add', '-A')) {
 } else {
   const soloLeak = D.leakScan(SOLO_ROOT);
   t('leakScan: a project with no nested repo still reports exactly one git source', soloLeak.source === 'git' && soloLeak.sources.length === 1 && soloLeak.sources[0].root === '.', JSON.stringify(soloLeak.sources));
-  const soloSummary = D.printSummary({ root: SOLO_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: soloLeak }, advisory: {} });
+  const soloSummary = D.printSummary({ root: SOLO_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, present: [] }, leak_scan: soloLeak }, advisory: {} });
   t('printSummary: and its leak-scan line carries no multi-repo clause at all', /leak scan\s+\d+ tracked files \(git\) · clean/.test(soloSummary) && !/repos:/.test(soloSummary), (soloSummary.split('\n').find((l) => /leak scan/.test(l)) || soloSummary));
 }
 
@@ -2859,7 +3218,7 @@ tFn('printSummary: renders the gate-watchdog-health line as advisory, ok as a gr
   // reads rep.ok directly (forge-doctor.cjs's own printSummary, near the end), it is NOT derived from the
   // `checks` object here. This test's own assertion never looked at the verdict line, so the gap was silent;
   // fixed here so this fixture is honest even though the gap did not fail this specific assertion.
-  const rep = { root: GWH_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: true, detail: 'the real hook was run end-to-end: a harmless command exited 0, and a harmless destructive-SHAPED canary (never executed, only classified) was BLOCKED (exit 2) by the real classifier' } } };
+  const rep = { root: GWH_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, present: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: true, detail: 'the real hook was run end-to-end: a harmless command exited 0, and a harmless destructive-SHAPED canary (never executed, only classified) was BLOCKED (exit 2) by the real classifier' } } };
   const out = D.printSummary(rep);
   assert.ok(/✓ gate watchdog health \(advisory\): the real hook was run end-to-end/.test(out), out);
 });
@@ -2868,10 +3227,34 @@ tFn('printSummary: renders the gate-watchdog-health line as a visible, non-block
   // never have matched (printSummary reads rep.ok directly, never derives it from `checks`), regardless of
   // whether the advisory warn itself correctly stays out of the verdict. This test only became real once
   // tFn actually invoked the callback; ok:true here is what the fixture always meant to assert against.
-  const rep = { root: GWH_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, missing: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: false, detail: '1 hook dependency file(s) missing from X: forge-gate-messages.cjs' } } };
+  const rep = { root: GWH_ROOT, ok: true, checks: { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, present: [] }, leak_scan: D.leakScan(GWH_ROOT) }, advisory: { gate_watchdog_health: { ok: false, detail: '1 hook dependency file(s) missing from X: forge-gate-messages.cjs' } } };
   const out = D.printSummary(rep);
   assert.ok(/⚠ gate watchdog health \(advisory, non-blocking\): 1 hook dependency/.test(out), out);
   assert.ok(/⇒ ALL GREEN/.test(out), 'an advisory warn alone must never flip the overall verdict: ' + out);
+});
+
+// --- printSummary: command_center_location (WP-P2, v2.9.0) — ALWAYS printed (like context budget), never
+// a ✗, never part of the ALL GREEN/FAILURES verdict even when 'not-installed' (the ordinary case). ---
+const CCL_PS_BASE_CHECKS = { node_check: { ok: true, total: 1 }, tests: { ok: true, suites: 1, passed: 1, failed: 0, perSuite: [] }, strict_events: { ok: true }, dashboard_spa: { ok: true, present: [] }, leak_scan: D.leakScan(GWH_ROOT) };
+tFn('printSummary: command_center_location renders "not-installed" as an info line (ℹ), never a warn, and never flips the verdict', () => {
+  const rep = { root: GWH_ROOT, ok: true, checks: CCL_PS_BASE_CHECKS, advisory: { command_center_location: { ok: true, location: 'not-installed', path: null } } };
+  const out = D.printSummary(rep);
+  assert.ok(/ℹ command center \(advisory\): not installed for this project/.test(out), out);
+  assert.ok(!/⚠ command center/.test(out), 'not-installed must never render as a warning: ' + out);
+  assert.ok(/⇒ ALL GREEN/.test(out), out);
+});
+tFn('printSummary: command_center_location renders "project-local" as a green line naming the real path', () => {
+  const rep = { root: GWH_ROOT, ok: true, checks: CCL_PS_BASE_CHECKS, advisory: { command_center_location: { ok: true, location: 'project-local', path: path.join(GWH_ROOT, 'command-center') } } };
+  const out = D.printSummary(rep);
+  assert.ok(/✓ command center \(advisory\): project-local at /.test(out), out);
+  assert.ok(out.includes(path.join(GWH_ROOT, 'command-center')), out);
+});
+tFn('printSummary: command_center_location renders "central" as a green line naming the real path', () => {
+  const centralPath = path.join(GWH_ROOT, '.claude', 'forge', 'template', 'command-center');
+  const rep = { root: GWH_ROOT, ok: true, checks: CCL_PS_BASE_CHECKS, advisory: { command_center_location: { ok: true, location: 'central', path: centralPath } } };
+  const out = D.printSummary(rep);
+  assert.ok(/✓ command center \(advisory\): central \(shared\) install at /.test(out), out);
+  assert.ok(out.includes(centralPath), out);
 });
 
 console.log(pass + ' passed, ' + fail + ' failed' + (skipped ? ', ' + skipped + ' skipped' : ''));

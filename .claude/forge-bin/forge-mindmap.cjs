@@ -5,8 +5,10 @@
  * (WP4 "Mind Map"). Windows-safe (node "C:/Program Files/nodejs/node.exe" or any Node on PATH).
  *
  * Parses an indented plain-text outline into a small node/edge graph, renders it to a guarded
- * Mermaid string, and stores it via forge-store.cjs (`.claude/forge-mindmaps/`) so the dashboard's
- * radial "MIND MAP" lens (forge-dashboard/lenses.js) can render it read-only.
+ * Mermaid string, and stores it via forge-store.cjs (`.claude/forge-mindmaps/`) for read-only rendering.
+ * v2.9.0 note: the original reader was the retired per-project dashboard's radial "MIND MAP" lens
+ * (forge-dashboard/lenses.js), which was removed along with the rest of that dashboard — the stored
+ * file itself is unaffected and remains available to the Command Center or any other reader.
  *
  * REUSES forge-bin/forge-store.cjs (do not re-implement its guards):
  *   - redactValue      — deep-redacts every string leaf before anything touches disk or stdout.

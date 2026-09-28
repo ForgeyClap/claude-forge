@@ -33,6 +33,8 @@ import { pollProjectInstall } from '@/components/shell/gateway-actions';
 import type { ProjectType, StatusKey } from '@/prototype/types/prototype-types';
 import { isProductionMode } from '@/config/mode';
 import { NewProjectDialog } from '@/components/shell/NewProjectDialog';
+import { useGatewayActiveRuns } from '@/prototype/state/gateway-adapter';
+import type { ActiveRunRow } from '@/prototype/state/gateway-adapter';
 
 /* ------------------------------------------------------------------ local helpers */
 
@@ -171,6 +173,43 @@ function productionGreetingLead(projectCount: number, activeRuns: number): strin
   return `${projectCount} ${projectWord} in the workspace, ${activeRuns} ${runWord} active right now.`;
 }
 
+/**
+ * WP-CCD (item 7): one shared shape for "a mission currently running", whether it came from the
+ * cross-project `GET /api/active-runs` (when available) or the current-project `Run[]` this view
+ * already has (the honest fallback, used until that route lands — see this file's own call site
+ * for the exact precedence). Never mixes the two within one render: either every row is real
+ * cross-project data, or every row is the pre-existing current-project derivation.
+ */
+interface HomeActiveMission {
+  readonly key: string;
+  readonly title: string;
+  readonly projectLabel: string;
+  readonly agentCount: number;
+  /** `null` when no real work-package/dispatch count exists for this row (a cross-project row
+   *  before the endpoint reports one) — rendered as an honest absence, never a fabricated 0. */
+  readonly workPackageCount: number | null;
+  readonly duration: string;
+  /** Only a current-project row carries a real `StatusKey` badge — a cross-project row's status
+   *  badge would be a bare inference ("it's in this list, so it must be running"), so it renders
+   *  a plain "RUNNING" label via `data-cross-project`, not `<StatusBadge>`, to stay honest about
+   *  what is and is not a verified per-task status. */
+  readonly crossProject: boolean;
+  readonly status: StatusKey;
+}
+
+function activeRunRowToMission(row: ActiveRunRow): HomeActiveMission {
+  return {
+    key: `${row.project}::${row.runId}`,
+    title: row.title ?? row.runId,
+    projectLabel: row.project,
+    agentCount: row.agents.length,
+    workPackageCount: row.openDispatches,
+    duration: '',
+    crossProject: true,
+    status: 'running',
+  };
+}
+
 /* --------------------------------------------------------------------- view */
 
 export default function HomeView() {
@@ -181,7 +220,30 @@ export default function HomeView() {
   // In production the view renders real values or honest empty states; in fixture
   // mode it keeps the example chrome the theme showcase and tests depend on.
   const production = isProductionMode();
-  const activeRunCount = runs.filter((run) => run.status === 'running').length;
+
+  // WP-CCD (item 7): `GET /api/active-runs` — real active missions ACROSS EVERY PROJECT, not just
+  // the one currently open. `available: false` today (the route does not exist on this gateway
+  // build yet — verified live before writing this) falls back to the pre-existing CURRENT-PROJECT
+  // derivation below, now also excluding a synthetic/example run (`Run.synthetic`) — a real, honest
+  // improvement regardless of whether the cross-project route has landed.
+  const activeRunsAcrossWorkspace = useGatewayActiveRuns();
+  const currentProjectRunningMissions = runs.filter((run) => run.status === 'running' && !run.synthetic);
+  const activeMissions: readonly HomeActiveMission[] = activeRunsAcrossWorkspace.available
+    ? activeRunsAcrossWorkspace.rows.map(activeRunRowToMission)
+    : currentProjectRunningMissions.map((run) => {
+        const owner = projects.find((p) => p.id === run.projectId);
+        return {
+          key: run.id,
+          title: run.goal,
+          projectLabel: owner ? owner.name : production ? 'No project' : 'Example project',
+          agentCount: run.agentIds.length,
+          workPackageCount: run.workPackageIds.length,
+          duration: run.duration,
+          crossProject: false,
+          status: run.status,
+        };
+      });
+  const activeRunCount = activeMissions.length;
 
   // build-lastdemos: the "Start something" template cards open the SAME real
   // `NewProjectDialog` `Sidebar` uses (never a duplicate), seeded with the
@@ -207,7 +269,10 @@ export default function HomeView() {
   });
 
   const resumeConversation = recentConversations[0];
-  const resumeRun = runs.find((r) => r.status === 'running') ?? runs[0];
+  // WP-CCD (item 1): the resume card is about continuing THIS session in THIS project, so it
+  // stays current-project-scoped — but a synthetic/example run never stands in as "the" active
+  // mission to resume.
+  const resumeRun = currentProjectRunningMissions[0] ?? runs.find((r) => !r.synthetic) ?? runs[0];
   const resumeProject = projects.find((p) => p.id === resumeConversation?.projectId);
   const resumeRunProject = projects.find((p) => p.id === resumeRun?.projectId);
 
@@ -268,6 +333,10 @@ export default function HomeView() {
   // receives. Metrics with no real source in this build (skills available, tests
   // passed, pending reviews — their backing operations are UNAVAILABLE) are
   // omitted rather than fabricated. A real 0 beats a fake 1,185.
+  // WP-CCD (item 7): "agents" used to mean the ROSTER size (every installed agent, working or
+  // not) — the real, distinct signal is how many are WORKING right now; the roster size is kept
+  // as its own separately-labelled cell rather than dropped.
+  const workingAgentCount = agents.filter((a) => a.status === 'running').length;
   const overview: readonly OverviewCell[] = production
     ? [
         { value: String(projects.length), label: projects.length === 1 ? 'project' : 'projects' },
@@ -276,7 +345,8 @@ export default function HomeView() {
           label: conversations.length === 1 ? 'conversation' : 'conversations',
         },
         { value: String(activeRunCount), label: activeRunCount === 1 ? 'active run' : 'active runs' },
-        { value: String(agents.length), label: agents.length === 1 ? 'agent' : 'agents' },
+        { value: String(workingAgentCount), label: workingAgentCount === 1 ? 'agent working' : 'agents working' },
+        { value: String(agents.length), label: agents.length === 1 ? 'installed agent' : 'installed agents' },
       ]
     : [
         { value: String(projects.length), label: 'projects' },
@@ -456,7 +526,7 @@ export default function HomeView() {
                     <Eyebrow>Last conversation</Eyebrow>
                     <Machine muted>{resumeConversation.updatedAt}</Machine>
                   </header>
-                  <h3 className="fw-home__resume-title">{resumeConversation.title}</h3>
+                  <h3 className="fw-home__resume-title" title={resumeConversation.title}>{resumeConversation.title}</h3>
                   {lastMessage ? (
                     <p className="fw-home__resume-body">{plainSnippet(lastMessage.body)}</p>
                   ) : null}
@@ -489,7 +559,7 @@ export default function HomeView() {
                     <Eyebrow>Active mission</Eyebrow>
                     <StatusBadge status={resumeRun.status} size="sm" />
                   </header>
-                  <h3 className="fw-home__resume-title">{resumeRun.goal}</h3>
+                  <h3 className="fw-home__resume-title" title={resumeRun.goal}>{resumeRun.goal}</h3>
                   <div className="fw-home__resume-meter">
                     <Meter
                       value={runProgress}
@@ -628,7 +698,13 @@ export default function HomeView() {
             flush
             padded={false}
             title="Active missions"
-            subtitle={production ? 'Runs across the workspace.' : 'Example runs across the workspace.'}
+            subtitle={
+              production
+                ? activeRunsAcrossWorkspace.available
+                  ? 'Real active runs across every project in the workspace.'
+                  : 'Active runs for this project. (Workspace-wide active-run reporting is not available from this gateway yet.)'
+                : 'Example runs across the workspace.'
+            }
             actions={
               <Button variant="quiet" size="sm" iconRight="ArrowRight" onClick={() => navigate('/mission')}>
                 Mission control
@@ -636,41 +712,51 @@ export default function HomeView() {
             }
             className="fw-home__section"
           >
-            {runs.length === 0 ? (
+            {activeMissions.length === 0 ? (
               <EmptyState
                 compact
                 icon="Workflow"
-                title="No runs yet"
-                detail="Runs will appear here as they start."
+                title="No active missions"
+                detail="Nothing is running right now — it will appear here the moment a run starts."
               />
             ) : (
             <ul className="fw-home__missions">
-              {runs.map((run) => {
-                const owner = projects.find((p) => p.id === run.projectId);
-                const own = tasks.filter((t) => run.workPackageIds.includes(t.workPackageId));
-                const progress =
-                  own.length > 0 ? Math.round(own.reduce((sum, t) => sum + t.progress, 0) / own.length) : 0;
+              {activeMissions.map((mission) => {
+                // WP-CCD (item 7): a real per-task progress figure only exists for a CURRENT-
+                // project row (the shared `tasks` collection this view already has is scoped to
+                // the active project) — a cross-project row honestly omits the meter rather than
+                // fabricating a progress figure for a project this view has no task data for.
+                const own = !mission.crossProject ? tasks.filter((t) => runs.find((r) => r.id === mission.key)?.workPackageIds.includes(t.workPackageId)) : [];
+                const progress = own.length > 0 ? Math.round(own.reduce((sum, t) => sum + t.progress, 0) / own.length) : 0;
                 return (
-                  <li key={run.id} className="fw-home__mission">
+                  <li key={mission.key} className="fw-home__mission">
                     <div className="fw-home__mission-head">
-                      <StatusBadge status={run.status} size="sm" />
-                      <Machine muted>{run.id}</Machine>
+                      {/* A cross-project row's status is a real fact, not an inference: being
+                          listed by the gateway's own /api/active-runs literally means running —
+                          `mission.status` is always 'running' for one (see
+                          `activeRunRowToMission`), so the SAME real `StatusBadge` applies. */}
+                      <StatusBadge status={mission.status} size="sm" />
+                      <Machine muted>{mission.key}</Machine>
                       <span className="fw-home__mission-project fw-truncate">
-                        {owner ? owner.name : production ? 'No project' : 'Example project'}
+                        {mission.projectLabel !== '' ? mission.projectLabel : production ? 'No project' : 'Example project'}
                       </span>
                     </div>
-                    <p className="fw-home__mission-goal">{run.goal}</p>
+                    <p className="fw-home__mission-goal">{mission.title}</p>
                     <div className="fw-home__mission-foot">
-                      <Meter
-                        value={progress}
-                        label={production ? 'Task progress' : 'Example task progress'}
-                        tone={run.status === 'running' ? 'accent' : 'default'}
-                        showValue
-                      />
+                      {!mission.crossProject ? (
+                        <Meter
+                          value={progress}
+                          label={production ? 'Task progress' : 'Example task progress'}
+                          tone="accent"
+                          showValue
+                        />
+                      ) : null}
                       <span className="fw-home__mission-meta">
-                        <Machine muted>{run.duration}</Machine>
-                        <Machine muted>{run.workPackageIds.length} WP</Machine>
-                        <Machine muted>{run.agentIds.length} agents</Machine>
+                        {mission.duration !== '' ? <Machine muted>{mission.duration}</Machine> : null}
+                        {mission.workPackageCount !== null ? (
+                          <Machine muted>{mission.workPackageCount} {mission.crossProject ? 'open dispatches' : 'WP'}</Machine>
+                        ) : null}
+                        <Machine muted>{mission.agentCount} agents</Machine>
                       </span>
                     </div>
                   </li>

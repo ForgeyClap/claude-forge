@@ -33,10 +33,12 @@ node .claude/forge-bin/forge-verify.cjs <run_id> --root <projectRoot> # target a
 Exit code: 0 when there are no mismatches and no open tickets for the run; 1 otherwise — safe to gate a
 hook/CI step on it.
 
-## What it checks (mirrors the dashboard exactly)
+## What it checks
 
-Reconstructs per-agent task state from `<run>/events.jsonl` the **same way** the Forge Control Center
-does (`forge-dashboard/app.js` `BACKBONE` + `taskStatus()`): structural milestone events (`run_started`,
+Reconstructs per-agent task state from `<run>/events.jsonl` using forge-verify.cjs's own `BACKBONE` +
+`taskStatus()` — the sole, canonical classification since v2.9.0 (this used to also mirror the retired
+per-project Control Center's `forge-dashboard/app.js`, which was removed along with the rest of that
+dashboard): structural milestone events (`run_started`,
 `agent_completed`, `lead_review_completed`, …) are never counted as a "task"; every other event
 attributed to an agent is a task, and a task is "done" only when its status genuinely resolves to done.
 An agent "claims completed" once it has logged `agent_completed` or `subagent_completed`. A **mismatch**

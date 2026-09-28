@@ -90,6 +90,7 @@ import type { ConnectionState } from '@/prototype/state/bridge-client';
 import type { GatewayAccountUsage, GatewayLatency } from '@/prototype/state/gateway-adapter';
 import type { ChatRunView } from '@/prototype/state/chat-send';
 import { readChatMessageUsage } from '@/prototype/state/gateway-chat';
+import { guardLabel, isGuardWatcherDown } from '@/prototype/state/guard-label';
 import type { ChatMessage } from '@/prototype/types/prototype-types';
 import type { OperationalStatus } from '@/shared/protocol';
 import { PLAN_USAGE_UNAVAILABLE_MESSAGE } from '@/shared/protocol';
@@ -500,7 +501,12 @@ export function formatGuardTooltip(usage: GatewayAccountUsage): string {
     `pressure ${usage.level ?? 'n/a'}`,
     usage.nvidiaShiftAt !== null ? `NVIDIA-shift at ${usage.nvidiaShiftAt}%` : null,
     usage.pauseAt !== null ? `pause at ${usage.pauseAt}%` : null,
-    usage.guard.available ? `guard ${usage.guard.mode ?? 'unknown'}` : 'guard n/a',
+    // A dead or hanging watcher is named as such, never "guard ok" (found live 2026-09-28).
+    !usage.guard.available
+      ? 'guard n/a'
+      : isGuardWatcherDown(usage.guard)
+        ? `guard ${guardLabel(usage.guard).toLowerCase()}`
+        : `guard ${usage.guard.mode ?? 'unknown'}`,
     ageLabel !== null ? `updated ${ageLabel}` : null,
   ];
   const real = parts.filter((p): p is string => p !== null);

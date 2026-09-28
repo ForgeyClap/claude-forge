@@ -121,6 +121,15 @@ export function redactAndCap(value, maxLen) {
   return redacted.length > maxLen ? redacted.slice(0, maxLen) : redacted;
 }
 
+// Discord ids ("snowflakes", 17 to 20 digits today) are not secrets, so redact() leaves them alone, but
+// the routes that promise never to hand out a Discord identifier must not pass one on inside an error
+// text either, e.g. "Unknown Channel 123456789012345678" (Codex run B F-10). Any run of 17 or more digits
+// is replaced; call this BEFORE any length cap, so a cut can never leave a shortened id behind.
+const LONG_DIGIT_RUN_RE = /\d{17,}/g;
+export function stripDiscordIds(value) {
+  return typeof value === 'string' ? value.replace(LONG_DIGIT_RUN_RE, '[discord id]') : value;
+}
+
 // ── STREAM-AWARE REDACTION (Codex finding K3-4) ─────────────────────────────────────────────────
 //
 // redact()/redactAndCap() above assume the WHOLE value is already in memory. A live child process's

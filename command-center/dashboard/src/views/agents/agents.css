@@ -156,6 +156,17 @@
   border-style: dashed;
 }
 
+/* WP-CCD (item 3): a real-log dispatch the gateway itself reports as stalled — the SAME existing
+   `--forge-status-blocked` token this app already uses for "something needs attention" (Run.status
+   'stalled' maps to `StatusKey` 'blocked' too — see `toRunStatusKey`), never a new colour. Dashed
+   like `dispatched` (it is not running), but the border colour marks it apart from an ordinary
+   finished dispatch. */
+.fw-agents-chip[data-live='stalled'] {
+  border-style: dashed;
+  border-color: var(--forge-status-blocked);
+  color: var(--forge-color-text);
+}
+
 /* =========================================================================
    Filter row
    Eight chips, each with a live count. Scrolls inside itself on a phone

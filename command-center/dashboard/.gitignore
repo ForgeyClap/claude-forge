@@ -9,6 +9,9 @@
 # Build output and test artefacts
 node_modules/
 dist/
+# Public distribution only (v2.9.0): the PREBUILT dashboard ships, so a fresh install needs no npm and no build.
+# The private source keeps dist/ ignored; _scratch/rel-sync-cc.cjs does not overwrite this file.
+!dist/
 dist-bridge/
 playwright-report/
 test-results/

@@ -1,7 +1,7 @@
 // Forge Compatibility Gateway — request handler + server factory.
 // Zero-dependency (node:http only). Binds 127.0.0.1 only; enforces the DNS-rebinding + cross-site
-// guard on every request before any route logic runs, exactly as .claude/forge-dashboard/server.cjs
-// already does for the existing Control Center.
+// guard on every request before any route logic runs, the same way the retired per-project
+// Control Center did before it was removed in Forge 2.9.0 (see WP-N2).
 import http from 'node:http';
 import { hostOk, crossSiteOk, safeIdOk, anyContainmentOk, safeConvIdOk, execTokenOk, EXEC_TOKEN_HEADER } from './security.mjs';
 import { listProjects } from './projects.mjs';
@@ -10,7 +10,13 @@ import { listRuns } from './runs.mjs';
 import { readEvents, attachEventsStream } from './events.mjs';
 import { buildHealth } from './health.mjs';
 import { serveStatic, STATIC_SECURITY_HEADERS } from './static.mjs';
-import { SYNC_SCAN_ROOTS } from './paths.mjs';
+import { isSameResolvedPath, PROJECT_ROOT } from './paths.mjs';
+// Codex run B F-12: the DYNAMIC admitted-roots boundary (fixed scan roots PLUS whatever the
+// registry currently, honestly admits) — replaces the old, fixed-only SYNC_SCAN_ROOTS in
+// resolveProjectByName()'s own defense-in-depth check below, so a project the installer registered
+// outside the scan roots (the normal case for a beginner's fresh install) is reachable by name/path
+// here too, not just listed by GET /api/projects. See admitted-roots.mjs's own header.
+import { getContainmentRoots } from './admitted-roots.mjs';
 import { buildMission } from './missions.mjs';
 import { buildAgentsRegistry } from './agents.mjs';
 import { patchAgentModel } from './agents-write.mjs';
@@ -21,6 +27,7 @@ import { buildProof, buildProofAll } from './proof.mjs';
 import { listChatRuns } from './chat-runs.mjs';
 import { listPendingAsksForProject } from './pending-asks.mjs';
 import { listAgentDispatches } from './agent-dispatches.mjs';
+import { buildActiveRuns } from './active-runs.mjs';
 import { buildUsage } from './usage.mjs';
 import { buildToolsInventory } from './tools.mjs';
 import { buildMcpView } from './mcp.mjs';
@@ -53,7 +60,15 @@ import {
 import { buildArtifactContentResponse } from './artifact-content.mjs';
 import { readRawBody, parseMultipart, storeAttachment, AttachmentTooLargeError } from './attachments.mjs';
 import { createAskRequest, answerAskRequest } from './ask-store.mjs';
-import { getDiscordStatus, startDiscordService, stopDiscordService, connectDiscordService, selectDiscordGuild } from './discord-service.mjs';
+import {
+  getDiscordStatus, startDiscordService, stopDiscordService, connectDiscordService, selectDiscordGuild,
+  getProjectsDirStatus, setProjectsDirSetting,
+  getDiscordStateDir,
+} from './discord-service.mjs';
+import { browseFolder } from './folder-browse.mjs';
+import { readDiscordActivity } from './discord-activity.mjs';
+import { getAutostartInfo, recordDesiredState, saveWarningFor } from './discord-autostart.mjs';
+import { runDiscordOperation } from './discord-ops.mjs';
 
 const startedAtMs = Date.now();
 
@@ -264,13 +279,35 @@ function sendFile(res, status, buffer, fileName, mime) {
 async function resolveProjectByName(name) {
   const registry = await listProjects();
   if (!registry.ok) return { entry: null, registryError: registry.error };
+  // WP-CC1 (item 12): two real, DIFFERENT projects can share one folder name (the A2 fix above) —
+  // before this, `?project=test` 409ed for EITHER of them forever, with no way to reach either one
+  // by name: "every endpoint fails for that project". The 409 below already hands back each
+  // colliding project's own real, unique `path` in `matches` — so a caller may retry the SAME
+  // `?project=` param with that exact path instead of the bare name, and always reach the ONE
+  // project it means. Checked FIRST and only ever against a path this discovery pass already found
+  // real (never an arbitrary caller-supplied filesystem path) — this can never widen access beyond
+  // what `/api/projects` already lists, and a name that is not also a real path falls through to
+  // the unchanged name-lookup below exactly as before.
+  // Lead fix after the real-location suite (2026-09-28): only an ABSOLUTE path without any `..`
+  // segment is ever tried here. A relative value such as `../../` used to be resolved against the
+  // gateway's own working folder and could land on a registered project, so the SECURITY tests
+  // ("path traversal via ?project= is rejected") answered 200. The 409's `matches` always carry
+  // absolute paths, so item 12 is unaffected.
+  const looksLikeAbsolutePath = typeof name === 'string'
+    && (/^[A-Za-z]:[\\/]/.test(name) || name.startsWith('/'))
+    && !name.split(/[\\/]+/).includes('..');
+  const byPath = looksLikeAbsolutePath ? registry.projects.find((p) => isSameResolvedPath(p.path, name)) : null;
+  if (byPath) {
+    if (!anyContainmentOk(getContainmentRoots(), byPath.path)) return { entry: null }; // defense in depth
+    return { entry: byPath };
+  }
   const matches = registry.projects.filter((p) => p.name === name);
   if (matches.length > 1) {
     return { entry: null, ambiguous: true, matches: matches.map((p) => ({ name: p.name, path: p.path })) };
   }
   const entry = matches[0];
   if (!entry) return { entry: null };
-  if (!anyContainmentOk(SYNC_SCAN_ROOTS, entry.path)) return { entry: null }; // defense in depth
+  if (!anyContainmentOk(getContainmentRoots(), entry.path)) return { entry: null }; // defense in depth
   return { entry };
 }
 
@@ -290,6 +327,19 @@ function sendAmbiguousProject(res, matches) {
   });
 }
 
+// v2.9.0 WP-DA: the owner's own on/off choice for the Discord bot, remembered so the bot comes back by
+// itself after a restart (discord-autostart.mjs), or stays off when the owner switched it off. A failed
+// save does not undo the start/stop itself (the bot really did start/stop), but it is never hidden
+// (Codex stop-review DA-2): the route answers remembered:false plus a plain warning, and the status
+// block carries save_error, so the caller and the dashboard both say the choice was not saved.
+function rememberDiscordChoice(desired, by) {
+  const saved = recordDesiredState(desired, by);
+  if (!saved) {
+    console.error('Forge Command Center gateway: could not save the Discord "' + desired + '" choice; the next restart uses the previous one');
+  }
+  return saved ? { remembered: true } : { remembered: false, warning: saveWarningFor(desired) };
+}
+
 async function handleApi(req, res, pathname, searchParams) {
   if (pathname === '/api/health') {
     const health = await buildHealth(startedAtMs);
@@ -297,24 +347,38 @@ async function handleApi(req, res, pathname, searchParams) {
   }
 
   // WP-D1 (feat-discord-gateway): read-only, no exec token — same shape as every other GET route.
+  // v2.9.0 WP-DA: `autostart` says whether the bot comes back by itself when the Command Center starts.
   if (pathname === '/api/discord/status' && req.method === 'GET') {
     const service = await getDiscordStatus();
-    return sendJson(res, 200, { ok: true, service });
+    const autostart = await getAutostartInfo({ status: service });
+    return sendJson(res, 200, { ok: true, service: { ...service, autostart } });
   }
 
   // WP-D1: a real write (spawns a child process) — exec token required, same as every other
   // write route, now checked once in requestListener (N6 fix) before handleApi is ever called.
+  // WP-DA: a successful start is the owner's own "on", remembered for the next restart.
+  // Codex run B F-08: start, stop, connect and the server pick each run as one queued Discord
+  // operation (discord-ops.mjs), together with the choice they remember, so two clicks (or a click
+  // and the boot autostart) can never interleave: no second bot, and the last click always wins.
   if (pathname === '/api/discord/start' && req.method === 'POST') {
-    const result = await startDiscordService();
+    const { result, choice } = await runDiscordOperation(async () => {
+      const r = await startDiscordService();
+      return { result: r, choice: r.ok ? rememberDiscordChoice('running', 'dashboard') : null };
+    });
     if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
-    return sendJson(res, result.status, { ok: true, pid: result.pid });
+    return sendJson(res, result.status, { ok: true, pid: result.pid, ...choice });
   }
 
   // WP-D1: stop is idempotent (never an error when nothing is tracked) but is still a real write —
   // same exec-token requirement as start (checked once in requestListener, N6 fix).
+  // WP-DA: the owner's own "off" is remembered, so the bot is NOT started again on the next restart.
+  // (bin.mjs's crash drain calls stopDiscordService() directly and never records a choice.)
   if (pathname === '/api/discord/stop' && req.method === 'POST') {
-    const result = await stopDiscordService();
-    return sendJson(res, 200, { ok: true, stopped: result.stopped });
+    const { result, choice } = await runDiscordOperation(async () => {
+      const r = await stopDiscordService();
+      return { result: r, choice: rememberDiscordChoice('stopped', 'dashboard') };
+    });
+    return sendJson(res, 200, { ok: true, stopped: result.stopped, ...choice });
   }
 
   // WP-v290-B (beginner onboarding, B1): the ONE beginner-facing "log in" write route — a real
@@ -330,9 +394,12 @@ async function handleApi(req, res, pathname, searchParams) {
     const schemaErr = validateSchema(body, ['token', 'guildId'], ['token']);
     if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
     if (typeof body.token !== 'string') return sendJson(res, 400, { ok: false, error: 'token must be a string' });
-    const result = await connectDiscordService({ token: body.token, guildId: body.guildId });
+    const { result, choice } = await runDiscordOperation(async () => {
+      const r = await connectDiscordService({ token: body.token, guildId: body.guildId });
+      return { result: r, choice: r.ok ? rememberDiscordChoice('running', 'connect') : null };
+    });
     if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
-    return sendJson(res, result.status, { ok: true, pid: result.pid });
+    return sendJson(res, result.status, { ok: true, pid: result.pid, ...choice });
   }
 
   // WP-v290-B (beginner onboarding, B2): the owner's explicit guild pick when the bot is in
@@ -348,9 +415,72 @@ async function handleApi(req, res, pathname, searchParams) {
     const schemaErr = validateSchema(body, ['guildId'], ['guildId']);
     if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
     if (typeof body.guildId !== 'string') return sendJson(res, 400, { ok: false, error: 'guildId must be a string' });
-    const result = await selectDiscordGuild({ guildId: body.guildId });
+    const { result, choice } = await runDiscordOperation(async () => {
+      const r = await selectDiscordGuild({ guildId: body.guildId });
+      return { result: r, choice: r.ok ? rememberDiscordChoice('running', 'guild') : null };
+    });
     if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
-    return sendJson(res, result.status, { ok: true, pid: result.pid });
+    return sendJson(res, result.status, { ok: true, pid: result.pid, ...choice });
+  }
+
+  // WP-S1 (owner request 2026-09-27): "the user must be able to set the [Discord] project folder
+  // too, via the Command Center". GET is read-only (no exec token — same shape as every other GET
+  // on this gateway); POST is a real write (persists to discord/.env, may restart the bot) — exec
+  // token required, checked once in requestListener before handleApi ever runs (see
+  // isDiscordWriteRoute below).
+  if (pathname === '/api/discord/projects-dir' && req.method === 'GET') {
+    const status = getProjectsDirStatus();
+    return sendJson(res, 200, {
+      ok: true,
+      dir: status.dir,
+      source: status.source,
+      exists: status.exists,
+      project_count: status.projectCount,
+      // Codex run B F-04 (2026-09-28): an ADDITIVE field — when true, project_count is a LOWER
+      // BOUND (the scan stopped at its budget before finishing the directory), never a silently
+      // wrong exact number.
+      project_count_truncated: status.projectCountTruncated,
+    });
+  }
+
+  if (pathname === '/api/discord/projects-dir' && req.method === 'POST') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(res, err instanceof BodyTooLargeError ? 413 : 400, { ok: false, error: err.message });
+    }
+    const schemaErr = validateSchema(body, ['dir', 'create'], ['dir']);
+    if (schemaErr) return sendJson(res, 400, { ok: false, error: schemaErr });
+    if (typeof body.dir !== 'string') return sendJson(res, 400, { ok: false, error: 'dir must be a string' });
+    if ('create' in body && typeof body.create !== 'boolean') {
+      return sendJson(res, 400, { ok: false, error: 'create must be a boolean' });
+    }
+    // Codex run B F-08: saving the folder may stop and start the bot, so it waits its turn in the same
+    // Discord operation queue as start/stop; a stop clicked meanwhile can no longer be undone by it.
+    const result = await runDiscordOperation(() => setProjectsDirSetting({ dir: body.dir, create: body.create === true }));
+    if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+    return sendJson(res, result.status, {
+      ok: true,
+      dir: result.dir,
+      restarted: result.restarted,
+      restart_error: result.restartError,
+      pid: result.pid,
+    });
+  }
+
+  // WP-S1: the read-only folder picker behind "Change folder" — never file content, see
+  // folder-browse.mjs's own header for the full containment/safety reasoning. GET, no exec token.
+  if (pathname === '/api/discord/browse-folder' && req.method === 'GET') {
+    const result = browseFolder(searchParams.get('dir'));
+    return sendJson(res, result.ok ? 200 : 400, result);
+  }
+
+  // v2.9.0 (Command Center audit finding 31): what the Discord bot has done, its jobs and the cost
+  // Claude Code recorded for them. Read-only and no exec token, same as /api/discord/status; see
+  // discord-activity.mjs for exactly which fields are returned and which never are.
+  if (pathname === '/api/discord/activity' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, activity: readDiscordActivity({ stateDir: getDiscordStateDir() }) });
   }
 
   if (pathname === '/api/projects') {
@@ -447,7 +577,9 @@ async function handleApi(req, res, pathname, searchParams) {
     if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
     if (ambiguous) return sendAmbiguousProject(res, matches);
     if (!entry) return sendJson(res, 404, { ok: false, error: 'unknown project (must match /api/projects)' });
-    const result = buildAgentsRegistry(entry.path);
+    // WP-CC1 (item 6): projectName merges the real run-log live-status view (item 5) into each
+    // agent row — optional param, so this stays the exact same call shape any earlier reviewer saw.
+    const result = buildAgentsRegistry(entry.path, entry.name);
     return sendJson(res, result.ok ? 200 : 400, result);
   }
 
@@ -521,7 +653,8 @@ async function handleApi(req, res, pathname, searchParams) {
     if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
     if (ambiguous) return sendAmbiguousProject(res, matches);
     if (!entry) return sendJson(res, 404, { ok: false, error: 'unknown project (must match /api/projects)' });
-    const result = runId === 'all' ? buildProofAll(entry.path) : buildProof(entry.path, runId);
+    // WP-CC1 (item 10): buildProof() is now async (it awaits a short, cached run-contract check).
+    const result = runId === 'all' ? buildProofAll(entry.path) : await buildProof(entry.path, runId);
     return sendJson(res, result.ok ? 200 : 400, result);
   }
 
@@ -572,17 +705,34 @@ async function handleApi(req, res, pathname, searchParams) {
     if (registryError) return sendJson(res, 502, { ok: false, error: registryError });
     if (ambiguous) return sendAmbiguousProject(res, matches);
     if (!entry) return sendJson(res, 404, { ok: false, error: 'unknown project (must match /api/projects)' });
+    // WP-CC1 (item 5): entry.path additionally merges in the run-log (headless /forge/CLI) source
+    // — optional param, so this stays the exact same call shape any earlier reviewer saw.
     return sendJson(res, 200, {
       ok: true,
-      dispatches: listAgentDispatches(projectName),
+      dispatches: listAgentDispatches(projectName, entry.path),
       captured_at: new Date().toISOString(),
       age_ms: 0,
       provenance: 'DERIVED',
     });
   }
 
+  // WP-CC1 (item 3): fleet-wide, no `?project=` (deliberately global — see active-runs.mjs's own
+  // header for why this is not scoped to the selected project).
+  if (pathname === '/api/active-runs') {
+    const result = await buildActiveRuns();
+    return sendJson(res, result.ok ? 200 : 502, result);
+  }
+
   if (pathname === '/api/usage') {
-    const result = buildUsage();
+    // The owner's check interval decides when a silent watcher counts as "stale" (usage.mjs). Read
+    // through config.mjs's cached `forge-config list`; unreadable means the guard's own default.
+    let intervalSec;
+    try {
+      const cfg = await buildForgeConfig(PROJECT_ROOT);
+      const row = cfg && cfg.available === true ? (cfg.settings || []).find((s) => s && s.key === 'usage-guard.interval') : null;
+      if (row && typeof row.value === 'number') intervalSec = row.value;
+    } catch { /* the default applies */ }
+    const result = buildUsage({ intervalSec });
     return sendJson(res, 200, result);
   }
 
@@ -1118,11 +1268,17 @@ export function requestListener(req, res) {
   // unlisted here, exactly like every other GET route on this gateway). /connect and /guild are
   // B1/B2's own beginner-onboarding writes (token save + guild pick), same allowlist shape as the
   // original start/stop pair.
+  // WP-S1: '/api/discord/projects-dir' is listed here too, even though it also answers GET — the
+  // exec-token check below is itself gated on `req.method !== 'GET'`, so a GET request to this
+  // same pathname is unaffected (identical shape to '/api/projects', which also answers both GET
+  // and POST at one pathname). '/api/discord/browse-folder' is GET-only and deliberately absent
+  // from this allowlist, same as '/api/discord/status'.
   const isDiscordWriteRoute =
     pathname === '/api/discord/start' ||
     pathname === '/api/discord/stop' ||
     pathname === '/api/discord/connect' ||
-    pathname === '/api/discord/guild';
+    pathname === '/api/discord/guild' ||
+    pathname === '/api/discord/projects-dir';
   // WP-A (v2.9.0): the dashboard's real config-write route — GET /api/config stays read-only and
   // unlisted here, exactly like every other GET route on this gateway.
   const isConfigWriteRoute = pathname === '/api/config';

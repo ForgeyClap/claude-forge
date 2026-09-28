@@ -79,7 +79,13 @@ export function buildProjectDetail(
                   </Machine>
                 ),
               },
-              { label: 'Open tickets', value: <Machine>{orDash(project.health.openTickets)}</Machine> },
+              {
+                // WP-CCD (item 8): `openTickets` is real for EVERY project row now (not gated by
+                // `measured`/active-project — see `ProjectHealth.openTickets`'s own doc comment),
+                // so it is read directly rather than through the active-project-only `orDash` gate.
+                label: 'Open tickets',
+                value: <Machine>{project.health.openTickets ?? '—'}</Machine>,
+              },
               { label: 'Blockers', value: <Machine>{orDash(project.health.blockers)}</Machine> },
             ]}
           />

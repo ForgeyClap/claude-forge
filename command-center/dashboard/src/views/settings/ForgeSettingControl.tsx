@@ -17,6 +17,14 @@
  * `renderGateHookControl`'s own comment. Every OTHER flagged setting (a
  * disclosure or a scope:"global" key) shows a confirm `Modal` first,
  * carrying the real disclosure/scope text, before the write is ever sent.
+ *
+ * WP-S2 (v2.9.0): the gate-hook "always on" sentence used to end with the
+ * raw terminal command — "No raw commands in the main flow" (this work
+ * package's owner ask) moved that exact command into the calling row's own
+ * collapsed "For the command line" detail (see ForgeSettingRow.tsx and
+ * forge-setting-presentation.ts's `forgeSetCommand`, which special-cases
+ * this same key to the identical string). This component keeps the plain
+ * sentence only — it does not know about, or need, the row around it.
  */
 
 import { useState } from 'react';
@@ -222,7 +230,8 @@ function renderGateHookControl(
   if (setting.status === 'on') {
     return (
       <span className="fw-settings__forge-gate-hook-note">
-        Always on from here. To turn it off yourself: node .claude/forge-bin/forge-config.cjs set gate-hook off
+        Always on here. Only you can turn this off, from a terminal on this computer — never from this
+        dashboard. Open “For the command line” on this row for the exact command.
       </span>
     );
   }

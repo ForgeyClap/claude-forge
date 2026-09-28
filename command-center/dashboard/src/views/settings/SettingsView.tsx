@@ -23,6 +23,7 @@ import {
   Eyebrow,
   ExampleTag,
   Icon,
+  IconButton,
   KeyHint,
   Machine,
   Panel,
@@ -41,13 +42,13 @@ import {
 } from '@/prototype/state/gateway-capabilities';
 import type {
   GatewayForgeConfigFile,
-  GatewayForgeGroup,
   GatewayForgeSetting,
 } from '@/prototype/state/gateway-capabilities';
 import { nextToastId, selectActiveProject, usePrototype } from '@/prototype/state/prototype-store';
 import type { DockTab } from '@/prototype/state/prototype-store';
 import { liveChipState } from '@/components/shell/claude-code-chip';
-import { ForgeSettingControl } from './ForgeSettingControl';
+import { ForgeSettingRow } from './ForgeSettingRow';
+import { categorizeForgeSettings, forgeSettingMatchesQuery } from './forge-setting-presentation';
 import type { AgentLayout, Appearance, Density, TaskLayout } from '@/prototype/types/prototype-types';
 
 import './settings.css';
@@ -279,38 +280,9 @@ const FORGE_FLAG_WORDS: Readonly<Record<string, string>> = {
 };
 const FORGE_FLAG_ORDER: readonly string[] = ['C', 'N', '$', 'U', 'X', 'D'];
 
-/** The exact command that changes a setting: an on/off setting shows the
- *  command that flips it; any other shows its current value, ready to edit. */
-function forgeSetCommand(setting: GatewayForgeSetting): string {
-  let next = '<value>';
-  if (typeof setting.value === 'boolean') next = setting.value ? 'off' : 'on';
-  else if (setting.value !== null) next = String(setting.value);
-  return `/forge config set ${setting.key} ${next}`;
-}
-
-function forgeStatusWord(status: string | null): string {
-  if (status === 'on') return 'ON';
-  if (status === 'off') return 'OFF';
-  return '—';
-}
-
 function forgeFileLine(file: GatewayForgeConfigFile | null): string {
   if (file === null) return '—';
   return `${file.pretty ?? file.path ?? '—'} · ${file.present ? 'saved' : 'not created, defaults apply'}`;
-}
-
-/** Settings in the tool's own group order. A setting whose group the tool did
- *  not list still shows, under its raw group id — never silently dropped. */
-function groupForgeSettings(
-  settings: readonly GatewayForgeSetting[],
-  groups: readonly GatewayForgeGroup[],
-): readonly { readonly id: string; readonly title: string; readonly settings: readonly GatewayForgeSetting[] }[] {
-  const groupOf = (setting: GatewayForgeSetting) => setting.group ?? 'other';
-  const titles = new Map(groups.map((group) => [group.id, group.title ?? group.id]));
-  const ids = [...groups.map((group) => group.id), ...unique(settings.map(groupOf)).filter((id) => !titles.has(id))];
-  return ids
-    .map((id) => ({ id, title: titles.get(id) ?? id, settings: settings.filter((setting) => groupOf(setting) === id) }))
-    .filter((group) => group.settings.length > 0);
 }
 
 /** Footnote numbers in settings order for every setting that says what it
@@ -378,6 +350,9 @@ export default function SettingsView() {
   const [preferences, setPreferences] = useState<Record<string, PreferenceValue>>(() =>
     readStoredPreferences(),
   );
+  // WP-S2 (v2.9.0): free-text filter across the Forge settings section only —
+  // its own local state, since no other section has enough rows to need one.
+  const [forgeQuery, setForgeQuery] = useState('');
 
   const announce = useCallback(
     (label: string) => {
@@ -1099,17 +1074,30 @@ export default function SettingsView() {
     );
   }
 
-  /** wp12 + WP-A (v2.9.0): every value comes from GET /api/config; the Value
-   *  column is now a real, editable control (ForgeSettingControl) that POSTs
-   *  through the gateway's own forge-config.cjs set/unset — see that
-   *  component's header for the confirm-modal and gate-hook-off-refusal
-   *  rules. The `/forge config set ...` hint stays too, for chat/terminal use. */
+  /** WP-S2 (v2.9.0): a full redesign for a beginner — see the owner's Settings
+   *  screenshot for this work package (words breaking mid-word in narrow
+   *  columns, a raw terminal command under every description, one 24-row
+   *  wall of settings). Every value still comes from GET /api/config and a
+   *  change still POSTs through ForgeSettingControl (untouched — see that
+   *  file's own header), but the section now: gives each setting a
+   *  plain-language name (forge-setting-presentation.ts), groups by topic
+   *  instead of the tool's own core/when-needed/advanced buckets, adds a
+   *  free-text search, and moves the technical key + the raw
+   *  `/forge config set ...` command to small secondary detail — see
+   *  ForgeSettingRow.tsx for the per-setting layout. */
   function renderForgeSettings(): ReactNode {
     const config = forgeConfig.data;
     const showData = !forgeConfig.error && !forgeConfig.loading && config.available;
+    const hasAnySettings = showData && config.settings.length > 0;
     const refs = forgeFootnoteRefs(config.settings);
     const footnoted = config.settings.filter((setting) => refs.has(setting.key));
     const usedFlags = FORGE_FLAG_ORDER.filter((flag) => footnoted.some((setting) => setting.flags.includes(flag)));
+    const matches = hasAnySettings
+      ? config.settings.filter((setting) => forgeSettingMatchesQuery(setting, forgeQuery))
+      : [];
+    const categories = categorizeForgeSettings(matches);
+    const searching = forgeQuery.trim() !== '';
+    const noMatches = hasAnySettings && searching && matches.length === 0;
 
     return (
       <>
@@ -1132,9 +1120,8 @@ export default function SettingsView() {
           ) : (
             <>
               <Note>
-                Change a setting right here in the table, or with the command on its row — on/off
-                settings show the command that flips them, the others their current value to edit —
-                or just say it in chat.
+                Change a setting right here — flip a switch, pick an option, or type a number. Open
+                “For the command line” on any setting for the exact command, or just say it in chat.
               </Note>
               <div className="fw-settings__rows">
                 <Row label="Project settings file" hint="Values saved for this project only.">
@@ -1152,49 +1139,64 @@ export default function SettingsView() {
           )}
         </Panel>
 
-        {showData
-          ? groupForgeSettings(config.settings, config.groups).map((group) => (
-              <Panel key={group.id} title={group.title} subtitle={`${group.settings.length} settings`}>
-                <div className="fw-settings__table-scroll">
-                  <table className="fw-settings__table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Status</th>
-                        <th scope="col">Setting</th>
-                        <th scope="col">Value</th>
-                        <th scope="col">From</th>
-                        <th scope="col">What it does</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.settings.map((setting) => (
-                        <tr key={setting.key}>
-                          <td>
-                            <Machine muted>{forgeStatusWord(setting.status)}</Machine>
-                          </td>
-                          <td>
-                            <Machine>{setting.key}</Machine>
-                          </td>
-                          <td>
-                            <ForgeSettingControl
-                              projectName={state.activeProjectId}
-                              setting={setting}
-                              onChanged={forgeConfig.refresh}
-                            />
-                          </td>
-                          <td>
-                            <Machine muted>{setting.source ?? '—'}</Machine>
-                          </td>
-                          <td>
-                            {setting.desc ?? '—'}
-                            {refs.has(setting.key) ? ` [${refs.get(setting.key)}]` : null}
-                            <br />
-                            <Machine muted>{forgeSetCommand(setting)}</Machine>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+        {hasAnySettings ? (
+          <Panel title="Find a setting" subtitle="Search by name, technical key, or what it does.">
+            <label className="fw-visually-hidden" htmlFor="fw-forge-settings-search">
+              Find a setting by name or word
+            </label>
+            <span className="fw-fsettings-search">
+              <Icon name="Search" size="sm" className="fw-fsettings-search__icon" />
+              <input
+                id="fw-forge-settings-search"
+                className="fw-fsettings-search__input"
+                type="search"
+                placeholder="Find a setting…"
+                autoComplete="off"
+                spellCheck={false}
+                value={forgeQuery}
+                onChange={(event) => setForgeQuery(event.target.value)}
+              />
+              {forgeQuery ? (
+                <IconButton
+                  icon="X"
+                  label="Clear search"
+                  size="sm"
+                  className="fw-fsettings-search__clear"
+                  onClick={() => setForgeQuery('')}
+                />
+              ) : null}
+            </span>
+          </Panel>
+        ) : null}
+
+        {noMatches ? (
+          <Panel>
+            <EmptyState
+              icon="SearchX"
+              title={`No settings match "${forgeQuery.trim()}"`}
+              detail="Try a different word, or clear the search to see every setting again."
+              action={
+                <Button size="sm" icon="RotateCcw" onClick={() => setForgeQuery('')}>
+                  Show every setting again
+                </Button>
+              }
+            />
+          </Panel>
+        ) : null}
+
+        {hasAnySettings
+          ? categories.map((group) => (
+              <Panel key={group.category.id} title={group.category.title} subtitle={group.category.intro}>
+                <div className="fw-fsetting-list">
+                  {group.settings.map((setting) => (
+                    <ForgeSettingRow
+                      key={setting.key}
+                      projectName={state.activeProjectId}
+                      setting={setting}
+                      onChanged={forgeConfig.refresh}
+                      footnoteRef={refs.get(setting.key)}
+                    />
+                  ))}
                 </div>
               </Panel>
             ))

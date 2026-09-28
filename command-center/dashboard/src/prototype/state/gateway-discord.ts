@@ -96,6 +96,45 @@ export interface DiscordService {
    *  Intent not enabled, ...), verbatim from the bot itself — `null` when there is no failure to
    *  report. Only meaningful together with `setupState === 'login-failed'`. */
   readonly loginError: string | null;
+  /* ---- WP-P1 (Forge v2.9.0): the bot's own npm dependencies (discord.js) may need a one-time
+   * automatic install on a fresh machine/central install — reported so the wizard can show an
+   * honest status instead of a silent multi-minute pause on the first "Connect" click. ---- */
+  readonly depsInstalled: boolean;
+  /** `'installed'` | `'installing'` | `'failed'` | `'not-installed'`, verbatim from the gateway. */
+  readonly depsInstallPhase: string | null;
+  /** A plain-language reason the LAST automatic install attempt failed — `null` when there is
+   *  none to report. Only meaningful together with `depsInstallPhase === 'failed'`. */
+  readonly depsInstallError: string | null;
+  /** v2.9.0 WP-DA: whether the bot comes back by itself when the Command Center starts. `null` when
+   *  the gateway predates this field (never a guessed "yes"). */
+  readonly autostart: DiscordAutostart | null;
+}
+
+/** v2.9.0 WP-DA — the `autostart` block of `GET /api/discord/status`, verbatim. */
+export interface DiscordAutostart {
+  /** The owner setting `discord-autostart`; `null` when it could not be read (the default, on, applies). */
+  readonly setting: boolean | null;
+  /** The owner's own last choice (dashboard switch, Connect Discord, server pick); `null` when none yet. */
+  readonly desired: 'running' | 'stopped' | null;
+  /** The saved choice exists but cannot be read — treated as unknown, so the bot is not started. */
+  readonly desiredInvalid: boolean;
+  readonly desiredNote: string | null;
+  /** Codex DA-1: can the bot be started at all (installed and connected)? Reported apart from the setting. */
+  readonly ready: boolean;
+  readonly readyReason: string | null;
+  /** Codex DA-3: this Command Center process was started with CC_DISCORD_AUTOSTART=off. */
+  readonly envOptOut: boolean;
+  /** Codex DA-3: another process already answers on the bot port, so no bot would be started — verbatim. */
+  readonly conflict: string | null;
+  /** True only when the bot will TRY to start by itself next time: setting on, not switched off, ready. */
+  readonly effective: boolean;
+  /** Codex DA-2: the last failed save of the owner's on/off choice, verbatim — `null` when none. */
+  readonly saveError: string | null;
+  /** What happened at the last Command Center start (`'started'` | `'skipped'` | `'failed'`), verbatim. */
+  readonly lastOutcome: string | null;
+  /** The plain-language reason for that outcome, already redacted by the gateway. */
+  readonly lastDetail: string | null;
+  readonly lastAt: string | null;
 }
 
 export const EMPTY_DISCORD_SERVICE: DiscordService = {
@@ -116,6 +155,10 @@ export const EMPTY_DISCORD_SERVICE: DiscordService = {
   inviteUrl: null,
   setupState: null,
   loginError: null,
+  depsInstalled: false,
+  depsInstallPhase: null,
+  depsInstallError: null,
+  autostart: null,
 };
 
 /** `{ loading, error, data }` — mirrors `gateway-capabilities.ts`'s `GatewayFetchState<T>` shape,
@@ -171,6 +214,34 @@ export function parseDiscordService(data: Record<string, unknown>): DiscordServi
     inviteUrl: pickString(service, ['invite_url']),
     setupState: pickString(service, ['setup_state']),
     loginError: pickString(service, ['login_error']),
+    depsInstalled: pickBool(service, ['deps_installed']) ?? false,
+    depsInstallPhase: pickString(service, ['deps_install_phase']),
+    depsInstallError: pickString(service, ['deps_install_error']),
+    autostart: toAutostart(pickRecord(service, ['autostart'])),
+  };
+}
+
+/** WP-DA: maps the `autostart` block; an absent block (an older gateway) stays `null`. */
+function toAutostart(raw: Record<string, unknown> | null): DiscordAutostart | null {
+  if (raw === null) return null;
+  const desired = pickString(raw, ['desired']);
+  const last = pickRecord(raw, ['last']);
+  const saveError = pickRecord(raw, ['save_error']);
+  return {
+    setting: pickBool(raw, ['setting']),
+    desired: desired === 'running' || desired === 'stopped' ? desired : null,
+    desiredInvalid: pickBool(raw, ['desired_invalid']) ?? false,
+    desiredNote: pickString(raw, ['desired_note']),
+    // An older gateway without `ready` never gets a guessed "ready": false is the honest default.
+    ready: pickBool(raw, ['ready']) ?? false,
+    readyReason: pickString(raw, ['ready_reason']),
+    envOptOut: pickBool(raw, ['env_opt_out']) ?? false,
+    conflict: pickString(raw, ['conflict']),
+    effective: pickBool(raw, ['effective']) ?? false,
+    saveError: saveError !== null ? pickString(saveError, ['detail']) : null,
+    lastOutcome: last !== null ? pickString(last, ['outcome']) : null,
+    lastDetail: last !== null ? pickString(last, ['detail']) : null,
+    lastAt: last !== null ? pickString(last, ['at']) : null,
   };
 }
 
@@ -221,27 +292,37 @@ export interface DiscordStartResult {
   readonly pid: number | null;
   /** The gateway's own real error text (verbatim) on a 409 conflict or any other failure. */
   readonly error: string | null;
+  /** WP-DA (Codex DA-2): the bot started, but the gateway could not save the owner's "on" — its own
+   *  plain warning, verbatim. `null` when the choice was saved (or an older gateway said nothing). */
+  readonly warning: string | null;
+}
+
+/** WP-DA: `remembered:false` comes with the gateway's own warning; anything else means nothing to warn. */
+function choiceWarning(data: Record<string, unknown>): string | null {
+  return pickBool(data, ['remembered']) === false ? pickString(data, ['warning']) : null;
 }
 
 /** `POST /api/discord/start` — 202 `{ok:true, pid}` | 409 `{ok:false, error}`. Never optimistic:
  *  the caller must wait for the next `useGatewayDiscordStatus` poll to see `running` flip. */
 export async function requestDiscordStart(): Promise<DiscordStartResult> {
   const result = await gwPost('/api/discord/start', {}, execHeaders());
-  if (!result.ok) return { ok: false, pid: null, error: result.error };
-  return { ok: true, pid: pickNumber(result.data, ['pid']), error: null };
+  if (!result.ok) return { ok: false, pid: null, error: result.error, warning: null };
+  return { ok: true, pid: pickNumber(result.data, ['pid']), error: null, warning: choiceWarning(result.data) };
 }
 
 export interface DiscordStopResult {
   readonly ok: boolean;
   readonly stopped: boolean;
   readonly error: string | null;
+  /** WP-DA (Codex DA-2): the bot stopped, but the gateway could not save the owner's "off". */
+  readonly warning: string | null;
 }
 
 /** `POST /api/discord/stop` — 200 `{ok:true, stopped:boolean}`. Same no-optimism rule as start. */
 export async function requestDiscordStop(): Promise<DiscordStopResult> {
   const result = await gwPost('/api/discord/stop', {}, execHeaders());
-  if (!result.ok) return { ok: false, stopped: false, error: result.error };
-  return { ok: true, stopped: pickBool(result.data, ['stopped']) ?? false, error: null };
+  if (!result.ok) return { ok: false, stopped: false, error: result.error, warning: null };
+  return { ok: true, stopped: pickBool(result.data, ['stopped']) ?? false, error: null, warning: choiceWarning(result.data) };
 }
 
 export interface DiscordConnectResult {

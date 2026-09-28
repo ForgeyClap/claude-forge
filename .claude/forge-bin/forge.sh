@@ -1,42 +1,34 @@
 #!/usr/bin/env bash
 # Forge dispatcher (Bash/Git Bash) — Node detection + project-local. Usage: bash forge.sh <command> [args]
 DIR="$(cd "$(dirname "$0")" && pwd)"; DASH="$DIR/../forge-dashboard"
-CC_GW="$DIR/../../command-center/gateway/bin.mjs"
-CC_DIST_INDEX="$DIR/../../command-center/dashboard/dist/index.html"
 NODE_CMD="node"
 if ! command -v node >/dev/null 2>&1; then
   if [ -x "/c/Program Files/nodejs/node.exe" ]; then NODE_CMD="/c/Program Files/nodejs/node.exe";
   elif [ -x "/mnt/c/Program Files/nodejs/node.exe" ]; then NODE_CMD="/mnt/c/Program Files/nodejs/node.exe";
-  else echo "Node.js LTS is required for Forge Control Center. Install Node.js LTS, close and reopen your terminal, then run node -v."; exit 1; fi
+  else echo "Node.js LTS is required to run Forge. Install Node.js LTS, close and reopen your terminal, then run node -v."; exit 1; fi
 fi
-# WP7d: if THIS project has a Command Center (command-center/gateway/bin.mjs), it is now the real
-# dashboard — start it (port 4100) instead of the old Control Center. If it exists but
-# dashboard/dist hasn't been built yet, say so honestly rather than failing silently. If
-# command-center/ doesn't exist at all (most projects today, no command-center yet), fall back to
-# the original per-project Control Center exactly as before. This fallback is MANDATORY: this
-# wrapper syncs to every other Forge project via the template, most of which have no
-# command-center. The old Control Center stays reachable regardless via "legacy-dashboard".
+# WP-P2 (v2.9.0, "forge dashboard works after a fresh install, with no manual steps"): ALL the decision
+# logic (already-running reuse, project-local vs. central lookup, on-demand build, supervisor-vs-bin.mjs
+# entry) now lives in forge-cc-launch.cjs — exactly like every other non-trivial subcommand below already
+# delegates to its own tool (forge-runinfo.cjs, forge-config.cjs, ...). This wrapper just hands off; see
+# that file's own header comment for the full behaviour and exit-code contract.
 start_dashboard_or_fallback() {
-  if [ -f "$CC_GW" ]; then
-    if [ -f "$CC_DIST_INDEX" ]; then
-      "$NODE_CMD" "$CC_GW"
-    else
-      echo "Command Center found but not built yet. Run: cd command-center/dashboard && npm install && npm run build"
-    fi
-  else
-    # AUDIT G7 (2026-08-06): auto-fallback naar de retired server.cjs verwijderd (forge-canon.json)
-    echo "Forge Command Center niet aanwezig in dit project. De oude per-project Control Center (server.cjs) is RETIRED en start NOOIT automatisch (forge-canon.json). Vraag de owner expliciet om een legacy dashboard, of gebruik het centrale Command Center op 127.0.0.1:4100."
-  fi
+  "$NODE_CMD" "$DIR/forge-cc-launch.cjs"
+}
+# v2.9.0 (WP-N1): the old per-project Control Center (server.cjs + its static UI) was REMOVED from
+# .claude/forge-dashboard/ - there is nothing left to start here. log-event.cjs is the only file that
+# remains in that folder, and it is not a dashboard.
+show_legacy_dashboard_removed() {
+  echo 'De oude per-project Forge Control Center is verwijderd in v2.9.0. Gebruik "forge dashboard" voor het Forge Command Center (http://127.0.0.1:4100).'
 }
 cmd="${1:-help}"; shift 2>/dev/null || true
 case "$cmd" in
   dashboard|start) start_dashboard_or_fallback ;;
-  legacy-dashboard) "$NODE_CMD" "$DASH/server.cjs" ;;
-  status)          "$NODE_CMD" "$DASH/server.cjs" --status ;;
-  runs)            "$NODE_CMD" "$DASH/server.cjs" --runs ;;
-  open-report)     "$NODE_CMD" "$DASH/server.cjs" --open-report ;;
-  health)          "$NODE_CMD" "$DASH/server.cjs" --health ;;
-  assign-only)     "$NODE_CMD" "$DASH/server.cjs" --assign-only ;;
+  legacy-dashboard) show_legacy_dashboard_removed ;;
+  status)          "$NODE_CMD" "$DIR/forge-runinfo.cjs" status ;;
+  runs)            "$NODE_CMD" "$DIR/forge-runinfo.cjs" runs ;;
+  open-report)     "$NODE_CMD" "$DIR/forge-runinfo.cjs" open-report ;;
+  health)          "$NODE_CMD" "$DIR/forge-runinfo.cjs" status ;;
   log-event)       "$NODE_CMD" "$DASH/log-event.cjs" "$@" ;;
   # reconciles the run's manifest.json from logged events and reports which work packages remain
   # unfinished (forge-swarm-resume.cjs). Usage: bash forge.sh resume --run <run_id> [--json]
@@ -53,5 +45,5 @@ case "$cmd" in
   # Prompt Master dispatch-prompt linter, advisory only (forge-promptcheck.cjs); the ask subcommand scores
   # the raw owner request before Forge plans anything. Usage: bash forge.sh promptcheck <promptFile|-> [args]
   promptcheck)     "$NODE_CMD" "$DIR/forge-promptcheck.cjs" "$@" ;;
-  *) echo "Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | assign-only | log-event | resume | learn | config | sweep | promptcheck" ;;
+  *) echo "Forge commands: dashboard | start | legacy-dashboard | status | runs | open-report | health | log-event | resume | learn | config | sweep | promptcheck" ;;
 esac

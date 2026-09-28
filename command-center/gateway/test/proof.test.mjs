@@ -15,8 +15,8 @@ const NEEDS_EVENTS = needsRunEvents(RUN_ID);
 const NEEDS_DOCTOR = needsDoctorReceipt(RUN_ID);
 const NEEDS_INDEX = needsArtifactsIndex();
 
-test('buildProof finds the real run-artifacts-dir files, the doctor receipt, and the final report', { skip: needsAll(NEEDS_ARTIFACT_FILES, NEEDS_DOCTOR) }, () => {
-  const result = buildProof(PROJECT_ROOT, RUN_ID);
+test('buildProof finds the real run-artifacts-dir files, the doctor receipt, and the final report', { skip: needsAll(NEEDS_ARTIFACT_FILES, NEEDS_DOCTOR) }, async () => {
+  const result = await buildProof(PROJECT_ROOT, RUN_ID);
   assert.equal(result.ok, true);
   assert.equal(result.report_present, true);
   assert.equal(result.doctor_present, true);
@@ -24,8 +24,8 @@ test('buildProof finds the real run-artifacts-dir files, the doctor receipt, and
   assert.ok(runDirArtifacts.length >= 4, 'the 4 real wp0/wp6 markdown artifacts under this run\'s artifacts/ dir');
 });
 
-test('exactly the 2 real forge-artifacts index entries that actually reference this run are matched (not the unrelated 2026-07-10 one)', { skip: NEEDS_INDEX }, () => {
-  const result = buildProof(PROJECT_ROOT, RUN_ID);
+test('exactly the 2 real forge-artifacts index entries that actually reference this run are matched (not the unrelated 2026-07-10 one)', { skip: NEEDS_INDEX }, async () => {
+  const result = await buildProof(PROJECT_ROOT, RUN_ID);
   const storeArtifacts = result.artifacts.filter((a) => a.source === 'forge-artifacts-index');
   assert.equal(storeArtifacts.length, 2);
   const ids = storeArtifacts.map((a) => a.id).sort();
@@ -33,8 +33,8 @@ test('exactly the 2 real forge-artifacts index entries that actually reference t
   assert.ok(!ids.includes('art-mc-report'), 'the unrelated 2026-07-10 artifact must NOT match — it never references this run');
 });
 
-test('verdicts combine the real doctor summary and this run\'s real check_passed events', { skip: needsAll(NEEDS_DOCTOR, NEEDS_EVENTS) }, () => {
-  const result = buildProof(PROJECT_ROOT, RUN_ID);
+test('verdicts combine the real doctor summary and this run\'s real check_passed events', { skip: needsAll(NEEDS_DOCTOR, NEEDS_EVENTS) }, async () => {
+  const result = await buildProof(PROJECT_ROOT, RUN_ID);
   const doctorVerdict = result.verdicts.find((v) => v.source === 'doctor');
   assert.ok(doctorVerdict);
   assert.equal(doctorVerdict.ok, true);
@@ -43,14 +43,14 @@ test('verdicts combine the real doctor summary and this run\'s real check_passed
   assert.equal(eventVerdicts.length, 3);
 });
 
-test('an invalid run id is rejected honestly', () => {
-  const result = buildProof(PROJECT_ROOT, '..\\..\\evil');
+test('an invalid run id is rejected honestly', async () => {
+  const result = await buildProof(PROJECT_ROOT, '..\\..\\evil');
   assert.equal(result.ok, false);
 });
 
 // cc-fix-adapter T6b — real byte sizes for run-artifacts-dir files (stat-able real files).
-test('run-artifacts-dir files carry a real, positive size_bytes — never null for a file that exists', { skip: NEEDS_ARTIFACT_FILES }, () => {
-  const result = buildProof(PROJECT_ROOT, RUN_ID);
+test('run-artifacts-dir files carry a real, positive size_bytes — never null for a file that exists', { skip: NEEDS_ARTIFACT_FILES }, async () => {
+  const result = await buildProof(PROJECT_ROOT, RUN_ID);
   const runDirArtifacts = result.artifacts.filter((a) => a.source === 'run-artifacts-dir');
   assert.ok(runDirArtifacts.length > 0);
   for (const a of runDirArtifacts) {
@@ -61,8 +61,8 @@ test('run-artifacts-dir files carry a real, positive size_bytes — never null f
 
 // cc-fix-adapter gate-output fix — the real `output` field on a check_passed/check_failed event
 // now survives the trip through buildProof(), instead of being silently dropped.
-test('event-sourced verdicts keep whatever real output/evidence field the event itself carried', { skip: NEEDS_EVENTS }, () => {
-  const result = buildProof(PROJECT_ROOT, RUN_ID);
+test('event-sourced verdicts keep whatever real output/evidence field the event itself carried', { skip: NEEDS_EVENTS }, async () => {
+  const result = await buildProof(PROJECT_ROOT, RUN_ID);
   const eventVerdicts = result.verdicts.filter((v) => v.source === 'event');
   assert.ok(eventVerdicts.length > 0);
   // Never fabricated: a verdict with neither field on the raw event must report both as null,

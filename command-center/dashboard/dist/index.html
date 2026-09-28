@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="Forge Command Center — a local dashboard for Forge projects, backed by the gateway on 127.0.0.1:4100."
+    />
+    <title>Forge Command Center</title>
+    <script>
+      // Applied before first paint so the shell never flashes the wrong theme.
+      (function () {
+        try {
+          var stored = localStorage.getItem('forge.prototype.appearance');
+          var mode = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+          var resolved =
+            mode === 'system'
+              ? window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark'
+              : mode;
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-BkarR84E.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/react-BuQOX7bh.js">
+    <link rel="modulepreload" crossorigin href="./assets/icons-CzFtYAGw.js">
+    <link rel="modulepreload" crossorigin href="./assets/router-68d_K6t8.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-DYH_Fwza.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

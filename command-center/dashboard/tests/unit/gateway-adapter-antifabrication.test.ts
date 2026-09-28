@@ -29,9 +29,18 @@ import {
   toGatewayGate,
   toGatewayProject,
   toGatewayTask,
+  toRunStatusKey,
   type ActiveProjectDetail,
   type MissionPayload,
 } from '@/prototype/state/gateway-adapter';
+
+// WP-CCD (review fix): `toGatewayWorkPackage`/`toGatewayRun`/`workPackageJoinId`/`parseAgentRows`/
+// `toStatusKey` are not part of the smaller public barrel above — imported directly from their own
+// sibling modules instead, the SAME established pattern `gateway-events-honesty.test.ts` /
+// `pairing-ambiguity-reaches-task.test.ts` (`parseMissionPayload`) and `default-project-id.test.tsx`
+// (`parseDefaultProjectId`) already use for a function this barrel does not (yet) re-export.
+import { toGatewayRun, toGatewayWorkPackage } from '@/prototype/state/adapter/mappers';
+import { parseAgentRows, toStatusKey, workPackageJoinId, type MissionWpRow } from '@/prototype/state/adapter/rows';
 
 // A minimal internal parser is not exported (agents/runs are parsed via the module-internal
 // `parseAgentRows`/`parseRunRows` inside `useGatewayProjectAgents`/`useGatewayProjectRuns`), so
@@ -264,7 +273,10 @@ describe('parseDoctorHealth — real doctor.json numbers via /api/proof, or hone
   // inherits the implementation's assumptions, and its green tick then protects the defect. Assert
   // the CONTRACT — "an unmeasured value is absent" — not the value the code happens to return.
   it('no proof payload at all yields the empty summary, never a guessed score', () => {
-    expect(parseDoctorHealth(null)).toEqual({ present: false, passed: 0, failed: 0, score: null });
+    // WP-CCD (item 6): `skipped` joined `passed`/`failed` as a real, summed field (the project's
+    // own recorded doctor + gateway test numbers) — still `0`, never fabricated, when nothing was
+    // measured.
+    expect(parseDoctorHealth(null)).toEqual({ present: false, passed: 0, failed: 0, skipped: 0, score: null });
   });
 
   it('a proof payload with no doctor-sourced verdict yields the empty summary', () => {
@@ -272,6 +284,7 @@ describe('parseDoctorHealth — real doctor.json numbers via /api/proof, or hone
       present: false,
       passed: 0,
       failed: 0,
+      skipped: 0,
       score: null,
     });
   });
@@ -316,7 +329,10 @@ describe('toGatewayProject — real detail only for the active project, honest e
     expect(project.taskCount).toBe(null);
     // fix-ui-clutter (item 6): `testsMeasured: false` is `EMPTY_ACTIVE_PROJECT_DETAIL`'s own real
     // value — no doctor verdict exists for a project this workspace has not measured.
-    expect(project.health).toEqual({ tests: { passed: 0, failed: 0, skipped: 0 }, openTickets: 0, blockers: 0, score: null, testsMeasured: false });
+    // WP-CCD (item 8): `openTickets` is WIDENED to `number | null` — this `ProjectRow` literal
+    // carries no `openTickets` field, so the honest reading is `null` ("never measured"), not the
+    // OLD fabricated `0` every non-active project used to render regardless of any real count.
+    expect(project.health).toEqual({ tests: { passed: 0, failed: 0, skipped: 0 }, openTickets: null, blockers: 0, score: null, testsMeasured: false });
     expect(project.description).toBe('');
     expect(project.templateVersion).toBe('');
     expect(project.lastActivity).toBe('');
@@ -425,5 +441,185 @@ describe('parseProjectProfile — real profile fields, or honest absence (never 
     expect(result.profilePresent).toBe(true);
     expect(result.projectTypeRaw).toContain('tooling / meta');
     expect(result.forgeVersion).toBe('66a10b6aec4c');
+  });
+});
+
+/* ========================================================================== */
+/*  WP-CCD review-fix regression tests (resumed session, 2026-09-28)         */
+/* ========================================================================== */
+
+describe('toStatusKey — a task-level "stalled"/"ended_unknown" reads as blocked, never idle/backlog', () => {
+  it('the pre-existing three states are unchanged', () => {
+    expect(toStatusKey('running')).toBe('running');
+    expect(toStatusKey('completed')).toBe('completed');
+    expect(toStatusKey('failed')).toBe('failed');
+  });
+
+  it('"stalled" (missions.mjs PASS 4: an agent gone silent past the stale window) reads as blocked', () => {
+    expect(toStatusKey('stalled')).toBe('blocked');
+  });
+
+  it('"ended_unknown" (missions.mjs PASS 3: the run ended before this task reported an outcome) reads as blocked', () => {
+    expect(toStatusKey('ended_unknown')).toBe('blocked');
+  });
+
+  it('an absent/unrecognised status is the honest neutral fallback, never a guess', () => {
+    expect(toStatusKey(null)).toBe('idle');
+    expect(toStatusKey('some-future-status')).toBe('idle');
+  });
+});
+
+/**
+ * toRunStatusKey — the run-level status vocabulary, TWICE corrected:
+ *   round 1 (this WP's own review): verified against runs.mjs::deriveStatus() as it existed then.
+ *   round 2 (Lead correction, mid-task, 2026-09-28): the gateway's own "is this run live" rule was
+ *   ALSO fixed (380 stale-but-still-"live" runs on this fleet under the old rule) — the corrected
+ *   contract is exactly the seven buckets in `toRunStatusKey`'s own doc comment, with an explicit
+ *   render treatment for 'stalled' (visible warning) and 'ended_unknown' (quiet, "never closed").
+ */
+describe('toRunStatusKey — the REAL run-level status vocabulary (review fix + Lead correction)', () => {
+  it('the four "obviously named" buckets map correctly', () => {
+    expect(toRunStatusKey('running')).toBe('running');
+    expect(toRunStatusKey('completed')).toBe('completed');
+    expect(toRunStatusKey('finalized')).toBe('completed');
+    expect(toRunStatusKey('failed')).toBe('failed');
+  });
+
+  it('"live" (real activity in the last 10 min) is a genuinely running run — the corrected gateway rule', () => {
+    // Before this fix, a live run's real gateway `status` was "live" (never the literal "running"),
+    // which fell through to the honest-but-WRONG neutral fallback instead of showing as running.
+    expect(toRunStatusKey('live')).toBe('running');
+  });
+
+  it('"report-only" (a final report exists, not live, not finalized) reads as completed', () => {
+    expect(toRunStatusKey('report-only')).toBe('completed');
+  });
+
+  it('LEAD CORRECTION: "stalled" (open work, no activity 10 min-24 h) is a VISIBLE WARNING — blocked, never green or failed', () => {
+    expect(toRunStatusKey('stalled')).toBe('blocked');
+    expect(toRunStatusKey('stalled')).not.toBe('completed');
+    expect(toRunStatusKey('stalled')).not.toBe('failed');
+  });
+
+  it('LEAD CORRECTION: "ended_unknown" (never closed, no activity >24h) renders QUIETLY — idle, never failed or running', () => {
+    expect(toRunStatusKey('ended_unknown')).toBe('idle');
+    expect(toRunStatusKey('ended_unknown')).not.toBe('failed');
+    expect(toRunStatusKey('ended_unknown')).not.toBe('running');
+    // Also, explicitly, not the same "visible warning" treatment 'stalled' gets — the two are
+    // deliberately different real states with deliberately different render weight.
+    expect(toRunStatusKey('ended_unknown')).not.toBe('blocked');
+  });
+
+  it('LEAD CORRECTION: anything unrecognised (including this fleet\'s own pre-correction historical "ended_unproven"/"done" values) is a neutral unknown, never guessed', () => {
+    expect(toRunStatusKey('ended_unproven')).toBe('idle');
+    expect(toRunStatusKey('done')).toBe('idle');
+    expect(toRunStatusKey('some-future-status')).toBe('idle');
+  });
+
+  it('matching is case-insensitive — a run.json is not guaranteed to match this fleet\'s all-lowercase convention', () => {
+    expect(toRunStatusKey('LIVE')).toBe('running');
+    expect(toRunStatusKey('Completed')).toBe('completed');
+    expect(toRunStatusKey('FAILED')).toBe('failed');
+    expect(toRunStatusKey('STALLED')).toBe('blocked');
+  });
+
+  it('FALLBACK: null/undefined is the honest neutral status, never a guess', () => {
+    expect(toRunStatusKey(null)).toBe('idle');
+    expect(toRunStatusKey(undefined)).toBe('idle');
+  });
+});
+
+describe('parseAgentRows — is_running / live_dispatches (WP-CCD item 3, review fix)', () => {
+  it('OLD shape (a gateway build that predates these fields): honest false/null, never a guess', () => {
+    const rows = parseAgentRows({
+      agents: [{ slug: 'build-boss', name: 'build-boss', is_permanent_boss: true }],
+    });
+    expect(rows[0].isRunning).toBe(false);
+    expect(rows[0].runningTask).toBeNull();
+  });
+
+  it('NEW shape: is_running true + a live_dispatches entry surfaces the real running task text', () => {
+    const rows = parseAgentRows({
+      agents: [
+        {
+          slug: 'build-boss',
+          name: 'build-boss',
+          is_permanent_boss: true,
+          is_running: true,
+          running_dispatch_count: 1,
+          live_dispatches: [{ agent: 'Build Boss', agent_slug: 'build-boss', wp_id: 'wp-ccd', task: 'Wire the adapter fix', running: true }],
+        },
+      ],
+    });
+    expect(rows[0].isRunning).toBe(true);
+    expect(rows[0].runningTask).toBe('Wire the adapter fix');
+  });
+
+  it('a live_dispatches entry that is NOT currently running never supplies a running task', () => {
+    const rows = parseAgentRows({
+      agents: [
+        {
+          slug: 'build-boss',
+          name: 'build-boss',
+          is_permanent_boss: true,
+          is_running: false,
+          live_dispatches: [{ agent: 'Build Boss', agent_slug: 'build-boss', task: 'Already finished', running: false }],
+        },
+      ],
+    });
+    expect(rows[0].isRunning).toBe(false);
+    expect(rows[0].runningTask).toBeNull();
+  });
+});
+
+describe('workPackageJoinId / toGatewayWorkPackage / toGatewayRun — the wp_id join (WP-CCD item 2, review fix)', () => {
+  // Verified live against this project's own real events.jsonl (many real runs, including
+  // "WP-CCD" itself): a modern `agent_work_package_created` event's own `wp` (kept as `id`, the
+  // human display code, e.g. "WP-CCD") and `wp_id` (the canonical lowercase id, e.g. "wp-ccd") are
+  // the SAME real work package but do not compare equal as strings.
+  const modernWp: MissionWpRow = { id: 'WP-CCD', wpId: 'wp-ccd', note: 'Fix the WIP', agent: 'orchestrator' };
+  const legacyWp: MissionWpRow = { id: 'WP1', note: 'Old-style work package', agent: 'orchestrator' };
+
+  it('workPackageJoinId prefers the real canonical wp_id over the display code', () => {
+    expect(workPackageJoinId(modernWp)).toBe('wp-ccd');
+  });
+
+  it('workPackageJoinId falls back to id for a legacy work package with no wp_id at all', () => {
+    expect(workPackageJoinId(legacyWp)).toBe('WP1');
+  });
+
+  it('toGatewayWorkPackage: id is the join key (wp_id), title stays the nicer display code', () => {
+    const wp = toGatewayWorkPackage(modernWp, 0, ['task-a', 'task-b']);
+    expect(wp.id).toBe('wp-ccd');
+    expect(wp.title).toBe('WP-CCD');
+    expect(wp.taskIds).toEqual(['task-a', 'task-b']);
+  });
+
+  it('toGatewayWorkPackage: a legacy row with no wp_id keeps using id for both — unchanged behaviour', () => {
+    const wp = toGatewayWorkPackage(legacyWp, 0, ['task-c']);
+    expect(wp.id).toBe('WP1');
+    expect(wp.title).toBe('WP1');
+  });
+
+  it('toGatewayRun.workPackageIds uses the SAME join key toGatewayWorkPackage uses — the two never drift apart', () => {
+    const runRow = { runId: 'run-1', hasFinalReport: false, eventCount: 1, mtime: null, durationMs: null, durationSource: null, eventScanError: null };
+    const mission: MissionPayload = { runId: 'run-1', wps: [modernWp, legacyWp], tasks: [], orphanCompletions: [], verdicts: [] };
+    const run = toGatewayRun(runRow, 'proj-1', mission, [], null);
+    // Regression: before this fix this read ['WP-CCD', 'WP1'] (the bare `id`), which a real modern
+    // task's own `Task.workPackageId` ("wp-ccd", from its own `wp_id`) could never match.
+    expect(run.workPackageIds).toEqual(['wp-ccd', 'WP1']);
+  });
+
+  it('a work package with neither id nor wp_id is excluded from Run.workPackageIds, never a fabricated key', () => {
+    const runRow = { runId: 'run-1', hasFinalReport: false, eventCount: 1, mtime: null, durationMs: null, durationSource: null, eventScanError: null };
+    const mission: MissionPayload = {
+      runId: 'run-1',
+      wps: [{ id: null, note: null, agent: null }],
+      tasks: [],
+      orphanCompletions: [],
+      verdicts: [],
+    };
+    const run = toGatewayRun(runRow, 'proj-1', mission, [], null);
+    expect(run.workPackageIds).toEqual([]);
   });
 });

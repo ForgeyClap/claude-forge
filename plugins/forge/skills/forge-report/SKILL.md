@@ -60,12 +60,12 @@ Be honest: if Forge used native roles because ECC was unavailable/blocked/too-sm
 - Summary of memory changes · any uncertain/inferred memory.
 
 ## 8. Dashboard Update (no fake starts)
-The dashboard is the **Command Center** (`http://127.0.0.1:4100`, owner decision 2026-07-31 — one dashboard for every project); the old per-project Control Center is RETIRED and only its `log-event.cjs` stays in service as the run-event writer. Report the Command Center first:
+The dashboard is the **Command Center** (`http://127.0.0.1:4100`, owner decision 2026-07-31 — one dashboard for every project); the old per-project Control Center was **REMOVED in v2.9.0** (2026-09-27, not merely retired — the file and its UI no longer exist) and only its `log-event.cjs` stays in service as the run-event writer. Report the Command Center first:
 - Command Center health check: passed / failed / not run (`GET http://127.0.0.1:4100/api/health` — **the report may only say the dashboard runs if this passed**)
 - Command Center URL: http://127.0.0.1:4100 (only when the health check passed)
 - latest run id: <id> · events written: <n> (via `.claude/forge-dashboard/log-event.cjs`)
 - **Forge Session Mode:** on / paused / off (from `FORGE_SESSION_STATE.json`)
-Legacy Control Center (ONLY if the owner explicitly requested `legacy dashboard` this run): started yes/no · port <from `.claude/forge-dashboard/PORT`> · health check result.
+If the owner explicitly said `legacy dashboard` this run: there is nothing to start or report on any more — say in one line that the old Control Center was removed in v2.9.0 and the dashboard is the Command Center above.
 Allowed wording: "Command Center health check passed (4100)." · "Command Center not reachable — Forge tried to start it itself (supervisor) and it is still not answering." · "Command Center not installed in this project (optional) — continuing without it." · "Events written via log-event.cjs; dashboard not started (not requested)." Never print a start/build command for the user to run, and never claim a URL is live unless tested/confirmed.
 
 ## 8b. Command Pack Update (include on install / when it changed)

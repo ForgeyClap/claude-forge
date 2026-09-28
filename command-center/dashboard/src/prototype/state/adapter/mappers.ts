@@ -38,6 +38,7 @@ import {
   deriveRunStatus,
   formatDurationWithSource,
   toStatusKey,
+  workPackageJoinId,
   type AgentRow,
   type MissionPayload,
   type MissionTaskRow,
@@ -121,6 +122,12 @@ export function classifyProjectType(raw: string | null): ProjectType {
  * was classifiable — keep compiling and passing unmodified; `useGatewayDataset`
  * below always passes the real, computed value.
  */
+/** WP-CCD (item 8): the closed 2-value union `Project.kind` accepts — anything else the gateway's
+ *  own `kind` field might ever report is an honest `null` (an ordinary project), never a guess. */
+function toProjectKind(raw: string | null | undefined): 'backup' | 'test' | null {
+  return raw === 'backup' || raw === 'test' ? raw : null;
+}
+
 export function toGatewayProject(row: ProjectRow, status: StatusKey, conversationCount: number, agentCount: number, missionCount: number, detail: ActiveProjectDetail, type: ProjectType = 'unknown'): Project {
   const record: Omit<Project, 'prototype'> = {
     id: row.name,
@@ -141,8 +148,14 @@ export function toGatewayProject(row: ProjectRow, status: StatusKey, conversatio
     taskCount: detail.taskCount,
     agentCount,
     skills: [],
-    health: { tests: detail.tests, openTickets: 0, blockers: 0, score: detail.score, testsMeasured: detail.testsMeasured },
+    // WP-CCD (item 8): `openTickets` is real for EVERY project row (`GET /api/projects` carries it
+    // per-row, unlike the "real only for the active project" fields above) — `null` (never a
+    // fabricated 0) on a gateway build that predates it. `blockers` stays 0 — genuinely no data
+    // source exists anywhere in this gateway for it (same named, undisguised gap as before).
+    health: { tests: detail.tests, openTickets: row.openTickets ?? null, blockers: 0, score: detail.score, testsMeasured: detail.testsMeasured },
     dirMtimeMs: row.dirMtimeMs,
+    // WP-CCD (item 8): real for every row, `null` for an ordinary project.
+    kind: toProjectKind(row.kind),
   };
   return record as unknown as Project;
 }
@@ -180,16 +193,32 @@ export function toGatewayRun(row: RunRow, projectId: string, mission: MissionPay
   const record: Omit<Run, 'prototype'> = {
     id: row.runId,
     projectId,
-    goal: goal ?? '',
+    // WP-CCD (item 4): a real, recorded run title beats a goal inferred from the `run_started`
+    // event's own `task`/`note` field (still the fallback for a gateway build that predates
+    // `/api/runs`' new `title`) — never a missing-event guess and never the folder name.
+    goal: row.title ?? goal ?? '',
     status,
-    startedAt: row.mtime ?? '',
+    // WP-CCD (item 4): the run's own real, recorded start time beats the run DIRECTORY's mtime —
+    // mtime reflects the last time anything touched the folder (a late artifact write, a doctor
+    // rerun), not when the run actually started. Falls back to mtime on a gateway build that
+    // predates `/api/runs`' new `started_at`.
+    startedAt: row.startedAt ?? row.mtime ?? '',
     // cc-fix-adapter T6c: real, derived server-side from this run's own first/last event
     // timestamp — '' (never a fabricated "0s") when fewer than two real timestamps exist.
     // cc-fix-events-honesty P1-6: now qualified via formatDurationWithSource() so a
     // 'derived-from-events' estimate never renders identically to a real measurement.
     duration: formatDurationWithSource(row.durationMs, row.durationSource),
-    workPackageIds: mission !== null ? mission.wps.map((w) => w.id ?? '').filter((id) => id.length > 0) : [],
+    // WP-CCD (item 2, review fix): `workPackageJoinId` — NOT the bare `w.id` this used to read —
+    // see that function's own doc comment for why `id` alone silently stopped matching
+    // `Task.workPackageId` for a modern work package.
+    workPackageIds: mission !== null ? mission.wps.map((w) => workPackageJoinId(w)).filter((id) => id.length > 0) : [],
     agentIds,
+    // WP-CCD (item 1) — read defensively, `null`/`false` on a gateway build that predates them;
+    // see `Run.rawStatus`/`finalized`/`hasGateEvidence`/`synthetic`'s own doc comments.
+    rawStatus: row.status,
+    finalized: row.finalized,
+    hasGateEvidence: row.hasGateEvidence,
+    synthetic: row.synthetic,
   };
   return record as unknown as Run;
 }
@@ -225,7 +254,13 @@ export function toGatewayAgent(row: AgentRow, status: StatusKey, currentTask: st
   const permission: PermissionLevel = toPermissionLevel(row.agentClass);
   const record: Omit<Agent, 'prototype'> = {
     id: row.slug,
-    name: row.name,
+    // WP-CCD (item 3): the real human display name (`agent-registry.json`'s own `name`, e.g.
+    // "Build Boss") beats the frontmatter-derived `row.name`, which is really the slug again
+    // (`fm.name || slug` — see `AgentRow.displayName`'s own doc comment) — this is what makes the
+    // roster read "Build Boss" instead of "build-boss" once the gateway sends it, and what makes
+    // Mission Control's own per-lane label (`resolveAgentDisplay` in `graph-and-proof.ts`) agree
+    // with the roster.
+    name: row.displayName ?? row.name,
     role: row.role ?? '',
     group,
     permission,
@@ -294,7 +329,13 @@ export function toGatewayTask(row: MissionTaskRow, index: number): Task {
     id: row.dispatchId ?? `task-${index}`,
     title: row.task ?? row.role ?? 'Task',
     agentId: row.agent ?? '',
-    workPackageId: row.wpGuess ?? '',
+    // WP-CCD (item 2): the run's own explicit `wp_id` beats `wpGuess` — `wpGuess` is a soft
+    // NAME-CONVENTION INFERENCE (`missions.mjs`'s own `guessWp()`, never a verified fact — see
+    // `MissionTaskRow.wpGuess`'s own doc comment), and on this fleet's real runs it is often absent
+    // entirely, which is what left every real work package showing 0 of its real tasks on the
+    // Tasks view's "work packages" layout. Falls back to `wpGuess` exactly as before when the
+    // gateway has not sent `wp_id` yet.
+    workPackageId: row.wpId ?? row.wpGuess ?? '',
     phase: phaseForStatus(status),
     column: columnForStatus(status),
     status,
@@ -308,7 +349,9 @@ export function toGatewayTask(row: MissionTaskRow, index: number): Task {
     createdAt: row.startedAt ?? '',
     updatedAt: row.completedAt ?? row.startedAt ?? '',
     repairAttempts: 0,
-    detail: row.notes.join(' '),
+    // WP-CCD (item 2): a real, human-written summary beats the joined raw `notes` array whenever
+    // the gateway sends one — falls back to the exact pre-existing `notes.join(' ')` otherwise.
+    detail: row.summary ?? row.notes.join(' '),
     // cc-wire-usage handoff-fix: the real per-task wp-guess confidence, straight
     // through from `MissionTaskRow` — was previously discarded here even though
     // the row shape already carried it. `null` when the gateway did not report
@@ -325,15 +368,25 @@ export function toGatewayTask(row: MissionTaskRow, index: number): Task {
     pairingAmbiguityReason: row.pairingAmbiguityReason,
     declinedCompletions: row.declinedCompletions,
     unmatchedReason: row.unmatchedReason,
+    // WP-CCD (item 2) — straight passthrough, `null` on a gateway build that predates them.
+    verdict: row.verdict,
+    rawStatus: row.status,
   };
   return record as unknown as Task;
 }
 
 export function toGatewayWorkPackage(row: MissionWpRow, index: number, taskIds: readonly string[]): WorkPackage {
   const record: Omit<WorkPackage, 'prototype'> = {
-    id: row.id ?? `wp-${index}`,
-    title: row.id ?? 'Work package',
-    goal: row.note ?? '',
+    // WP-CCD (item 2, review fix): `id` is the JOIN key (`workPackageJoinId` — the same one
+    // `Task.workPackageId` and `Run.workPackageIds` now use), so a real work package's own tasks
+    // actually resolve to it — see that function's own doc comment. `title` stays the nicer,
+    // human-authored display code (`row.id`, e.g. "WP-CCD") whenever one exists; `id` is for
+    // joining, `title` is for reading, and they may legitimately differ for the same real row.
+    id: workPackageJoinId(row) || `wp-${index}`,
+    title: row.id ?? row.wpId ?? 'Work package',
+    // WP-CCD (item 2): a real, human-written summary beats the plain `note` field whenever the
+    // gateway sends one — falls back to `note` exactly as before otherwise.
+    goal: row.summary ?? row.note ?? '',
     status: STATUS_WHEN_UNKNOWN,
     ownerAgentId: row.agent ?? '',
     phase: 'build',
@@ -349,11 +402,33 @@ export function toGatewayWorkPackage(row: MissionWpRow, index: number, taskIds: 
 
 const RUN_LIKE = /^run/;
 const AGENT_LIKE = /^(subagent|agent)_/;
+const REVIEW_LIKE = /^review/;
+
+/** WP-CCD (item 5): a real verdict text counts as "passing" only when it explicitly says so — an
+ *  absent or unrecognised verdict is never assumed to be a pass. Case-insensitive so a raw
+ *  `"Approved"`/`"PASS"` still matches. */
+const PASSING_REVIEW_VERDICTS: ReadonlySet<string> = new Set(['approved', 'pass', 'passed', 'accepted']);
+
+function isPassingReviewVerdict(verdict: string): boolean {
+  return PASSING_REVIEW_VERDICTS.has(verdict.toLowerCase());
+}
 
 /** A DISPLAY projection from this project's own real `event_type` vocabulary — mirrors
  * `live-store.ts`'s `STATUS_PROJECTION` in spirit: derived deterministically from a
- * real field, never invented. */
-function activityStatus(eventType: string): StatusKey {
+ * real field, never invented.
+ *
+ * WP-CCD (item 5): `review_completed` is special-cased BEFORE the generic `/_completed$/` rule —
+ * that generic rule used to paint EVERY `review_completed` event green regardless of its own real
+ * `verdict` field, so a review that came back `"changes_required"` still read as an accepted pass.
+ * A `review_completed` with no verdict at all is an honest unknown (never assumed green); one with
+ * a non-passing verdict reads as `'review'` (this app's existing "needs a look" status), never
+ * `'failed'` — a review asking for changes is not the same real-world event as a hard failure.
+ */
+function activityStatus(eventType: string, verdict: string | null): StatusKey {
+  if (eventType === 'review_completed') {
+    if (verdict === null) return STATUS_WHEN_UNKNOWN;
+    return isPassingReviewVerdict(verdict) ? 'completed' : 'review';
+  }
   if (eventType === 'run_started' || /_started$/.test(eventType)) return 'running';
   if (eventType === 'check_passed' || /_completed$/.test(eventType)) return 'completed';
   if (eventType === 'check_failed' || /_failed$/.test(eventType)) return 'failed';
@@ -364,20 +439,46 @@ function activityKind(eventType: string): EventKind {
   if (RUN_LIKE.test(eventType)) return 'mission';
   if (eventType === 'check_passed' || eventType === 'check_failed') return 'verify';
   if (eventType === 'agent_work_package_created') return 'work-package';
+  // WP-CCD (item 5): a review event previously fell through to the generic 'system' bucket, losing
+  // this app's own dedicated review icon/filter for no reason — `REVIEW_LIKE` catches
+  // `review_completed`/`review_requested`/any future `review_*` event the same way.
+  if (REVIEW_LIKE.test(eventType)) return 'review';
   if (AGENT_LIKE.test(eventType)) return 'agent';
   return 'system';
 }
 
+/**
+ * WP-CCD (item 5): the readable text for one activity row — tries the run's own new, purpose-built
+ * summary fields FIRST (a `summary`/`decision_summary` sentence, or a `check`+`verdict` pair for a
+ * quality-gate event), and only falls back to the pre-existing `note`/`task`/bare-event-type chain
+ * when none of those exist. This is what stops the bare event-type name (e.g. `"check_passed"`)
+ * from standing in as the "message" for an event that never carried a `note`/`task` at all — the
+ * majority of rows on a real run, measured live (164 of 211).
+ */
+function readableEventMessage(row: Record<string, unknown>, eventType: string): string {
+  const summary = pickString(row, ['summary']);
+  if (summary !== null) return summary;
+  const decisionSummary = pickString(row, ['decision_summary']);
+  if (decisionSummary !== null) return decisionSummary;
+  const check = pickString(row, ['check']);
+  const verdict = pickString(row, ['verdict']);
+  if (check !== null && verdict !== null) return `${check}: ${verdict}`;
+  if (check !== null) return check;
+  if (verdict !== null) return verdict;
+  return pickString(row, ['note']) ?? pickString(row, ['task']) ?? eventType;
+}
+
 export function toGatewayActivityEvent(row: Record<string, unknown>, runId: string, index: number): ActivityEvent {
   const eventType = pickString(row, ['event_type']) ?? 'unknown';
+  const verdict = pickString(row, ['verdict']);
   const record: Omit<ActivityEvent, 'prototype'> = {
     id: pickString(row, ['entry_hash']) ?? `${runId}-${index}`,
     runId,
     timestamp: pickString(row, ['timestamp']) ?? '',
     kind: activityKind(eventType),
     agent: pickString(row, ['agent']),
-    status: activityStatus(eventType),
-    message: pickString(row, ['note']) ?? pickString(row, ['task']) ?? eventType,
+    status: activityStatus(eventType, verdict),
+    message: readableEventMessage(row, eventType),
     detail: eventType,
   };
   return record as unknown as ActivityEvent;

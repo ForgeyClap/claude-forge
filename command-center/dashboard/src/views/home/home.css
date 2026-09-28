@@ -285,6 +285,12 @@
   font-weight: var(--forge-weight-semibold);
   line-height: var(--forge-leading-snug);
   color: var(--forge-color-text);
+  /* A run title is often the owner's whole /goal text: three lines, full text on hover. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .fw-home__resume-body {

@@ -87,6 +87,150 @@ FORGE_STANDING_MIGRATE_JS='try {
   process.exit(2);
 }'
 
+# v2.9.0 (WP-P3, coordinator follow-up): the Command Center gateway only auto-discovers projects
+# under <home>/Documents, <home>/Desktop and its own parent folder (command-center/gateway/src/
+# paths.mjs SYNC_SCAN_ROOTS) — a project living anywhere else (a custom drive/folder) never shows up
+# in the dashboard. Every project install/uninstall records (or removes) this project's absolute
+# path in $HOME/.claude/forge/projects.json, a small { schema, projects: [...] } file the gateway
+# reads (WP-P1, a separate work package — this installer only writes the file). Real JSON
+# read-modify-write via `node` (same discipline as FORGE_STANDING_MIGRATE_JS above: never a
+# hand-rolled regex edit of a user-owned file); when node is unavailable this warns once and
+# continues — it NEVER fails the install over this file. Written atomically (temp file + rename) and
+# merged like settings.json: never added to the install manifest, so a global --uninstall never
+# deletes the whole file — only a project uninstall removes that ONE project's own entry.
+# process.argv.slice(-4) mirrors FORGE_STANDING_MIGRATE_JS's own argv trick — see that constant's
+# header comment for why a fixed index would silently read the wrong thing on one of the two
+# installers.
+FORGE_PROJECTS_REGISTRY_JS='try {
+  var args = process.argv.slice(-4);
+  var projectsPath = args[0];
+  var projectPath = args[1];
+  var dryRun = args[2] === "1";
+  var action = args[3];
+  var fs = require("fs");
+  var path = require("path");
+  var isWin = process.platform === "win32";
+  var norm = function (p) {
+    p = String(p);
+    if (isWin) { p = p.replace(/\\/g, "/").toLowerCase(); }
+    if (p.length > 1) { p = p.replace(/\/+$/, ""); }
+    return p;
+  };
+
+  // WP-9B-INST (Codex adversarial review, INSTALL-4 LOW): two installs racing on the SAME
+  // projects.json (e.g. two terminals installing/uninstalling different projects at once) can each
+  // read the file before the rename from the other one lands, so the second writer'"'"'s own
+  // temp-file+rename silently discards the change from the first writer -- a lost-update race, even
+  // though each individual write is itself atomic. fs.mkdirSync is atomic (EEXIST when the directory
+  // already exists, exactly like a Unix `mkdir` used as a lockfile) and serializes the whole
+  // read-modify-rename section below across concurrent installer processes.
+  var lockPath = projectsPath + ".lock";
+  fs.mkdirSync(path.dirname(projectsPath), { recursive: true });
+  var haveLock = false;
+  var STALE_MS = 2 * 60 * 1000;   // a lock older than ~2 minutes is treated as abandoned (a crashed
+                                   // installer, or a machine that lost power mid-write) and removed
+  var RETRY_MS = 50;
+  var MAX_WAIT_MS = 5000;         // a short wait, up to a few seconds (as this fix explicitly asks for)
+  var deadline = Date.now() + MAX_WAIT_MS;
+  while (!haveLock) {
+    try {
+      fs.mkdirSync(lockPath);
+      haveLock = true;
+    } catch (eLock) {
+      if (eLock.code !== "EEXIST") { throw eLock; }
+      var isStale = false;
+      try {
+        isStale = (Date.now() - fs.statSync(lockPath).mtime.getTime()) > STALE_MS;
+      } catch (eStat) {
+        // the lock vanished between our mkdir attempt and this stat (the other installer finished and
+        // cleaned up) -- just retry the mkdir immediately, no need to treat this as a stale lock.
+      }
+      if (isStale) {
+        try { fs.rmdirSync(lockPath); } catch (eRm) { /* another process may already have removed it, or we lack permission */ }
+        if (Date.now() >= deadline) {
+          process.stderr.write("forge: " + lockPath + " looks stale but could not be removed -- proceeding without a lock (a concurrent update to the projects registry could be lost)\n");
+          break;
+        }
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        process.stderr.write("forge: " + lockPath + " is still held by another install after " + MAX_WAIT_MS + "ms -- proceeding without it (a concurrent update to the projects registry could be lost)\n");
+        break;
+      }
+      // Node has no synchronous sleep primitive without extra dependencies -- a short busy-wait is the
+      // simplest thing that works identically on every Node version this installer supports.
+      var until = Date.now() + RETRY_MS;
+      while (Date.now() < until) { /* busy-wait */ }
+    }
+  }
+
+  var exitCode = (function run() {
+    try {
+      var data = { schema: 1, projects: [] };
+      if (fs.existsSync(projectsPath)) {
+        var raw = fs.readFileSync(projectsPath, "utf8");
+        var parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (eParse) {
+          process.stderr.write("forge: " + projectsPath + " could not be read or parsed (" + eParse.message + ") -- left untouched\n");
+          return 3;
+        }
+        if (!parsed || !Array.isArray(parsed.projects)) {
+          process.stderr.write("forge: " + projectsPath + " does not have the expected { projects: [...] } shape -- left untouched\n");
+          return 3;
+        }
+        data = parsed;
+      }
+      if (typeof data.schema !== "number") { data.schema = 1; }
+
+      var idx = -1;
+      for (var i = 0; i < data.projects.length; i++) {
+        if (norm(data.projects[i]) === norm(projectPath)) { idx = i; break; }
+      }
+
+      if (action === "remove") {
+        if (idx === -1) {
+          process.stdout.write((dryRun ? "[dry-run] " : "") + "no entry for this project in " + projectsPath + " -- nothing to remove\n");
+          return 0;
+        }
+        if (dryRun) {
+          process.stdout.write("[dry-run] would remove the entry for this project from " + projectsPath + "\n");
+          return 0;
+        }
+        data.projects.splice(idx, 1);
+      } else {
+        if (idx !== -1) {
+          process.stdout.write((dryRun ? "[dry-run] " : "") + "this project is already recorded in " + projectsPath + "\n");
+          return 0;
+        }
+        if (dryRun) {
+          process.stdout.write("[dry-run] would add this project to " + projectsPath + " so the Command Center dashboard can find it\n");
+          return 0;
+        }
+        data.projects.push(projectPath);
+      }
+
+      var dir = path.dirname(projectsPath);
+      fs.mkdirSync(dir, { recursive: true });
+      var tmp = projectsPath + ".tmp-" + process.pid + "-" + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+      fs.renameSync(tmp, projectsPath);
+      process.stdout.write((action === "remove" ? "removed this project from " : "added this project to ") + projectsPath + "\n");
+      return 0;
+    } finally {
+      if (haveLock) {
+        try { fs.rmdirSync(lockPath); } catch (eRelease) { /* best effort -- a missing lock dir at cleanup time is not an error */ }
+      }
+    }
+  })();
+
+  process.exit(exitCode);
+} catch (e) {
+  process.stderr.write("forge: could not update the projects registry (" + e.message + ")\n");
+  process.exit(2);
+}'
+
 # ---------------------------------------------------------------------------
 # small helpers (defined before main, called from inside main)
 # ---------------------------------------------------------------------------
@@ -111,6 +255,28 @@ forge_resolve_dir() {
   else
     printf '%s\n' "${1%/}"
   fi
+}
+
+# forge_abs_path <path> — v2.9.0 (WP-P3 addition): a best-effort ABSOLUTE form of $1, for the ONE
+# thing that genuinely needs it — the projects registry (forge_update_projects_registry) records a
+# real, absolute path the Command Center dashboard can use directly as a filesystem root.
+# forge_resolve_dir above is not enough by itself: it only resolves via `cd`, so a relative
+# --project value that does not exist YET (a --dry-run preview, or before this run's own `mkdir -p`
+# has created it) falls through to its own "just strip a trailing slash" branch and stays relative.
+# This prefers the same symlink-resolved form when the directory already exists, and otherwise
+# prefixes the current working directory onto a relative path (an already-absolute path, POSIX or
+# Windows-drive-letter-shaped for Git-Bash/MSYS, is returned unchanged either way). Never fails.
+forge_abs_path() {
+  local p="$1"
+  if [ -d "$p" ]; then
+    (cd -- "$p" >/dev/null 2>&1 && pwd -P)
+    return 0
+  fi
+  case "$p" in
+    /*) printf '%s\n' "${p%/}" ;;
+    [A-Za-z]:[/\\]*) p="${p%/}"; printf '%s\n' "${p%\\}" ;;
+    *) printf '%s\n' "$(pwd)/$p" ;;
+  esac
 }
 
 # forge_sha256 <file> — prints the lowercase sha256 of a file using whatever hashing tool is on
@@ -152,6 +318,26 @@ forge_sha256() {
   # First whitespace-delimited field -- same result as `awk '{print $1}'`, including its behavior in
   # the (now unreachable in practice, since $p has no backslashes left) BACKSLASH-ESCAPE-MODE case
   # documented above: a leading "\" in $out would stay part of this field too, exactly as before.
+  printf '%s\n' "${out%% *}"
+}
+
+# forge_sha256_normalized <file> — sha256 of $1's bytes after normalizing CRLF -> LF (a lone CR or LF
+# is left untouched). v2.9.0 (WP-P3b): used ONLY by the pre-2.8.0 (no-manifest) legacy dashboard
+# fallback below, so a Windows checkout/extraction that turned a shipped LF file into CRLF still
+# matches the historical hash recorded from the original (LF) git blob. Hashes the SED OUTPUT over a
+# pipe (stdin), never the named file itself, so BACKSLASH-ESCAPE-MODE (forge_sha256's own header
+# comment above) never applies here -- sha256sum/shasum print "<hash>  -" for stdin either way, no
+# filename field to escape.
+forge_sha256_normalized() {
+  local p="$1" out
+  if forge_have_cmd sha256sum; then
+    out=$(sed 's/\r$//' -- "$p" | sha256sum 2>/dev/null)
+  elif forge_have_cmd shasum; then
+    out=$(sed 's/\r$//' -- "$p" | shasum -a 256 2>/dev/null)
+  else
+    printf ''
+    return 0
+  fi
   printf '%s\n' "${out%% *}"
 }
 
@@ -378,6 +564,10 @@ forge_copy_file() {
   dst_dir="${dst_file%/*}"
 
   if [ "$DRY_RUN" = "1" ]; then
+    if [ -e "$dst_file" ] && [ ! -f "$dst_file" ]; then
+      forge_log "  [dry-run] SKIP (a directory already exists at this file's destination): $dst_file"
+      return 0
+    fi
     if [ -f "$dst_file" ]; then
       if cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
         forge_log "  [dry-run] unchanged: $dst_file"
@@ -388,6 +578,18 @@ forge_copy_file() {
       forge_log "  [dry-run] would create: $dst_file"
     fi
     return 0
+  fi
+
+  # WP-9B-INST (Codex adversarial review, INSTALL-3 MEDIUM): dst_file existing as anything OTHER than a
+  # regular file (almost always a directory left behind by an older release, or planted deliberately)
+  # must never be silently treated as "does not exist yet" -- `[ -f ]` is false for BOTH cases, but `cp`
+  # against an existing DIRECTORY copies the source INSIDE it (dst_file/src_file's own name), not AS
+  # dst_file -- reporting "wrote: $dst_file" while the real bytes landed one level deeper. Treated as an
+  # explicit failure, never a silent success (mirrors forge_copy_settings_file's own UNSAFE-FIRST-COPY
+  # fix for the same shape, above).
+  if [ -e "$dst_file" ] && [ ! -f "$dst_file" ]; then
+    forge_err "cannot write $dst_file — a directory (or other non-file item) already exists at that exact path"
+    return 1
   fi
 
   # v2.9.0 (WP speed pass): `mkdir -p` used to run unconditionally, once per FILE, even though most
@@ -421,7 +623,96 @@ forge_copy_file() {
     forge_err "failed to copy: $src_file -> $dst_file"
     return 1
   fi
+  # WP-9B-INST (INSTALL-3): verify the copy actually produced a regular file matching the source,
+  # before reporting success -- catches a destination that silently became a directory-nested copy, or
+  # any other post-copy mismatch, instead of trusting cp's own zero exit status alone.
+  if [ ! -f "$dst_file" ] || ! cmp -s -- "$src_file" "$dst_file" 2>/dev/null; then
+    forge_err "copy to $dst_file did not produce a matching regular file — treating this as a failure"
+    return 1
+  fi
   forge_log "  wrote: $dst_file"
+  return 0
+}
+
+# forge_path_has_reparse_ancestor <root_dir> <rel> [include_root] — WP-9B-INST (Codex adversarial
+# review, INSTALL-1/INSTALL-2): true (exit 0) the moment any EXISTING component of rel (each
+# '/'-separated segment, including the final leaf), walked from root_dir down, is itself a symlink or
+# Windows junction ([ -L ] — Git-Bash/MSYS's lstat reports BOTH NTFS symlinks and directory junctions
+# this way, exactly like forge_guarded_write_new below already relies on). cp/mv both follow a reparse
+# point exactly like a real directory or file, so a link planted anywhere in that chain lets a write or
+# move meant for root_dir land somewhere else entirely. A component that does not exist yet is not a
+# symlink (nothing to follow yet). include_root=1 (optional) also checks root_dir itself — used by the
+# Command Center destination-tree check (forge_copy_command_center_tree); the manifest-retirement
+# path-safety check (forge_manifest_path_is_contained) deliberately leaves root_dir itself unchecked,
+# since root_dir there is the caller's own project/home directory, not something a manifest entry
+# could ever redirect. Pure parameter expansion, no subprocess — consistent with this file's existing
+# "WP speed pass" discipline (see forge_sha256's own header comment).
+forge_path_has_reparse_ancestor() {
+  local root_dir="$1" rel="$2" include_root="${3:-0}" current remaining seg
+  if [ "$include_root" = "1" ] && [ -L "$root_dir" ]; then return 0; fi
+  current="$root_dir"
+  remaining="$rel"
+  while [ -n "$remaining" ]; do
+    seg="${remaining%%/*}"
+    case "$remaining" in
+      */*) remaining="${remaining#*/}" ;;
+      *) remaining="" ;;
+    esac
+    [ -n "$seg" ] || continue
+    current="$current/$seg"
+    [ -L "$current" ] && return 0
+  done
+  return 1
+}
+
+# forge_is_safe_manifest_rel_path <rel> — WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH): true
+# (exit 0) when $1 is a normalized, forward-slash RELATIVE path with no drive letter, UNC, or leading
+# slash/backslash, and no '.'/'..'/empty path components, using only characters this installer's own
+# payload ever produces. See install.ps1's Test-ForgeSafeManifestRelPath for the full rationale (kept
+# in sync here) — an install manifest is attacker-influenced input the moment its project is cloned or
+# shared; a forged ".forge-install-manifest.json" entry like "../../victim.txt" must never be trusted
+# just because it parses and its own recorded hash happens to match a real file elsewhere.
+forge_is_safe_manifest_rel_path() {
+  local rel="$1" remaining seg
+  [ -n "$rel" ] || return 1
+  case "$rel" in
+    *'\'*) return 1 ;;
+    /*) return 1 ;;
+    [A-Za-z]:*) return 1 ;;
+  esac
+  remaining="$rel"
+  while [ -n "$remaining" ]; do
+    seg="${remaining%%/*}"
+    case "$remaining" in
+      */*) remaining="${remaining#*/}" ;;
+      *) remaining="" ;;
+    esac
+    case "$seg" in
+      '') return 1 ;;
+      .|..) return 1 ;;
+    esac
+    case "$seg" in
+      *[!A-Za-z0-9._\ -]*) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# forge_manifest_path_is_contained <root_dir> <rel> — WP-9B-INST (Codex adversarial review, INSTALL-1
+# HIGH): filesystem-level defense-in-depth for a manifest-recorded relative path that already passed
+# forge_is_safe_manifest_rel_path. Even a lexically clean relative path (no "..") can still resolve
+# outside root_dir if an ANCESTOR directory component is a symlink/junction planted after the fact —
+# cp/mv both follow a reparse point exactly like a real directory. Refuses the moment any EXISTING
+# component is a symlink/junction (forge_path_has_reparse_ancestor); once both checks hold,
+# root_dir/rel cannot resolve outside root_dir (the lexical check rules out any ".."/absolute escape
+# in the string itself, and this rules out a symlink redirecting any component of it) — no separate
+# real-path-resolve step is needed (unlike install.ps1, which additionally re-verifies via .NET's own
+# independent GetFullPath normalizer at near-zero cost; a bash equivalent would need a real subprocess,
+# `cd` + `pwd -P` or `realpath`, for a check these two already make redundant).
+forge_manifest_path_is_contained() {
+  local root_dir="$1" rel="$2"
+  forge_is_safe_manifest_rel_path "$rel" || return 1
+  forge_path_has_reparse_ancestor "$root_dir" "$rel" && return 1
   return 0
 }
 
@@ -641,6 +932,165 @@ forge_check_standing_rules_migration() {
   fi
 }
 
+# forge_update_projects_registry <project_dir_abs> <is_dry_run> <action: add|remove> — see
+# FORGE_PROJECTS_REGISTRY_JS's own header comment for the full contract. project_dir_abs must
+# already be a resolved absolute path (forge_abs_path) — this never resolves it itself. A missing
+# `node` is never a hard failure: one plain log line, then the caller continues exactly as if this
+# had not been called.
+forge_update_projects_registry() {
+  local project_abs="$1" is_dry_run="${2:-0}" action="${3:-add}"
+  local registry_path="$HOME/.claude/forge/projects.json"
+  local out code
+  if ! forge_have_cmd node; then
+    forge_log "  node was not found on PATH — could not update $registry_path (the Command Center dashboard may not auto-discover this project); this does not affect the rest of the install"
+    return 0
+  fi
+  if out=$(node -e "$FORGE_PROJECTS_REGISTRY_JS" "$registry_path" "$project_abs" "$is_dry_run" "$action" 2>&1); then
+    code=0
+  else
+    code=$?
+  fi
+  [ -n "$out" ] && forge_log "  $out"
+  if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
+    forge_err "could not update $registry_path — this does not affect the rest of the install"
+  fi
+}
+
+# forge_cc_should_skip <rel_path> — true (exit 0) when $1 (forward-slash, relative to
+# command-center/) must NEVER be shipped into a fresh install or clobbered on a re-install: build
+# output, dependencies, coverage/test artefacts, and per-user runtime data/secrets. Everything else
+# in the source tree (including dashboard/dist/, the prebuilt SPA) is copied normally. Mirrors
+# Test-ForgeCommandCenterSkip in install.ps1 — keep both in sync.
+#
+# Beyond the exact list WP-P3 named (node_modules, .data, .claude-flow, discord/.env, discord/
+# transcripts/, *.log, dashboard/test-results|playwright-report|reports/, coverage/), this also
+# skips two things flagged in the WP-P3 report rather than silently added:
+#   - discord/state/  — the documented STATE_DIR default (command-center/discord/.gitignore treats
+#     it identically to transcripts/); the gateway always overrides STATE_DIR to its own
+#     .data/discord/state/ when it spawns the bot, so this only matters for a standalone dev run.
+#   - any *.env file besides *.env.example — generalizes the named "discord/.env" rule to the exact
+#     secret-file convention command-center/dashboard/.gitignore already documents for its own .env.
+forge_cc_should_skip() {
+  local rel="$1" base
+  case "$rel" in
+    node_modules/*|*/node_modules/*) return 0 ;;
+    .data/*|*/.data/*) return 0 ;;
+    .claude-flow/*|*/.claude-flow/*) return 0 ;;
+    coverage/*|*/coverage/*) return 0 ;;
+    discord/.env) return 0 ;;
+    discord/transcripts|discord/transcripts/*) return 0 ;;
+    discord/state|discord/state/*) return 0 ;;
+    dashboard/test-results|dashboard/test-results/*) return 0 ;;
+    dashboard/playwright-report|dashboard/playwright-report/*) return 0 ;;
+    dashboard/reports|dashboard/reports/*) return 0 ;;
+    *.log) return 0 ;;
+  esac
+  base="${rel##*/}"
+  case "$base" in
+    .env.example) return 1 ;;
+    .env|.env.local|.env.forge-setup) return 0 ;;
+    .env.*.local) return 0 ;;
+    .env.tmp-*) return 0 ;;
+  esac
+  return 1
+}
+
+# forge_copy_command_center_tree <src_dir> <dst_dir> <manifest_root> [old_global_tsv] — like
+# forge_copy_tree, but skips every forge_cc_should_skip match instead of copying everything; the
+# Command Center ships no settings.json of its own, so this never routes through
+# forge_copy_settings_file. Every copied file is manifested exactly like the canonical template's own
+# files (scope "global", root manifest_root), so --uninstall removes it automatically through the SAME
+# manifest-driven path forge_remove_manifest_files already runs — a skipped (runtime/build) path is
+# never even considered, so it can never be deleted OR overwritten by a later install/uninstall.
+# Returns 1 if any non-skipped file failed to copy.
+#
+# old_global_tsv (optional, v2.9.0 WP-P3b point 3) — the PREVIOUS install's global manifest as a
+# "path<TAB>sha256" file (forge_manifest_to_tsv's output). When given, an existing destination file
+# that still matches its previously-recorded hash is replaced WITHOUT a *.forge-bak-<stamp> copy: only
+# a file that differs from BOTH the new payload AND its own last-recorded hash (edited since install,
+# or of unknown provenance) still gets forge_copy_file's normal timestamped safety-net backup. Nobody
+# hand-edits shipped gateway/dashboard/discord code the way they routinely edit project-side
+# skills/agents, so without this a routine Command Center upgrade littered it with a backup of its
+# own previous shipped code on every single release.
+forge_copy_command_center_tree() {
+  local src_dir="$1" dst_dir="$2" manifest_root="$3" old_tsv="${4:-}"
+  local file rel status=0 skipped=0 dst_file manifest_rel old_hash cur_dst_hash user_modified cc_prefix
+
+  if [ ! -d "$src_dir" ]; then
+    forge_err "source directory missing: $src_dir"
+    return 1
+  fi
+
+  # WP-9B-INST (Codex adversarial review, INSTALL-2 HIGH): a symlink/junction planted anywhere under
+  # the live Command Center destination tree (e.g. dst_dir/gateway pointing outside the template) would
+  # otherwise be followed transparently by cp/mv -- both treat a reparse point exactly like a real
+  # directory. Validate the FULL destination tree's ancestry, for every file this run would touch,
+  # BEFORE copying anything; the moment one is unsafe, the whole Command Center install for this run is
+  # skipped (never partially copied), with a clear message telling the owner to remove the link
+  # themselves. This never aborts the rest of the installer -- exactly like a missing command-center/
+  # source directory above is not fatal either.
+  while IFS= read -r -d '' file; do
+    rel="${file#"$src_dir"/}"
+    forge_cc_should_skip "$rel" && continue
+    if forge_path_has_reparse_ancestor "$dst_dir" "$rel" 1; then
+      # WP-9B-INST follow-up (found by self-review, not by tracing the finding alone -- confirmed by a
+      # real local run of the new command-center-symlink test): refusing here BEFORE this run records
+      # anything for the Command Center means $MANIFEST_TMP/global.tsv ends this run with NO Command
+      # Center paths at all -- forge_prune_retired_manifest_files (which runs right after this call, back
+      # in main()) would then see every path the OLD global manifest already listed under this Command
+      # Center as "no longer shipped this run" and MOVE each one to backup, even though every real file is
+      # still sitting there untouched. Carrying every OLD entry under this Command Center's own manifest
+      # prefix forward into THIS run's own accumulator (unchanged hash -- the file itself was never
+      # touched) tells that step "still shipped, leave it alone" instead, without pretending a copy that
+      # did not happen actually happened.
+      if [ -n "$manifest_root" ] && [ -s "$old_tsv" ] && [ -n "${MANIFEST_TMP:-}" ] && [ -d "$MANIFEST_TMP" ]; then
+        cc_prefix="${dst_dir#"$manifest_root"/}"
+        if [ "$cc_prefix" != "$dst_dir" ] && [ -n "$cc_prefix" ]; then
+          awk -F'\t' -v prefix="$cc_prefix/" 'index($1, prefix) == 1' "$old_tsv" >> "$MANIFEST_TMP/global.tsv"
+        fi
+      fi
+      forge_err "refusing to install the Command Center: a symlink or junction was found on the way to '$rel' under $dst_dir — remove that link, then re-run the installer"
+      return 1
+    fi
+  done < <(find "$src_dir" -type f -print0)
+
+  while IFS= read -r -d '' file; do
+    rel="${file#"$src_dir"/}"
+    if forge_cc_should_skip "$rel"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    dst_file="$dst_dir/$rel"
+    if [ -n "$old_tsv" ] && [ -f "$dst_file" ] && ! cmp -s -- "$file" "$dst_file" 2>/dev/null; then
+      manifest_rel="${dst_file#"$manifest_root"/}"
+      old_hash=$(forge_manifest_lookup_hash "$old_tsv" "$manifest_rel")
+      cur_dst_hash=$(forge_sha256 "$dst_file")
+      if [ -n "$old_hash" ] && [ "$old_hash" = "$cur_dst_hash" ]; then user_modified=0; else user_modified=1; fi
+      if [ "$DRY_RUN" = "1" ]; then
+        if [ "$user_modified" = "1" ]; then
+          forge_log "  [dry-run] would back up + overwrite: $dst_file"
+        else
+          forge_log "  [dry-run] would update (unchanged since install, no backup needed): $dst_file"
+        fi
+        continue
+      fi
+      if [ "$user_modified" = "0" ]; then
+        # Removing it first lets forge_copy_file's own "create new" path run below -- same end
+        # state as a normal overwrite, zero *.forge-bak litter for a file the user never touched.
+        rm -f -- "$dst_file"
+      fi
+    fi
+    if ! forge_copy_file "$file" "$dst_file"; then
+      status=1
+    elif [ "$DRY_RUN" != "1" ]; then
+      forge_manifest_add "global" "$manifest_root" "$dst_file"
+    fi
+  done < <(find "$src_dir" -type f -print0)
+
+  forge_log "  (Command Center: skipped $skipped runtime/build file(s) — node_modules, .data, logs, and similar)"
+  return "$status"
+}
+
 # Recursively merge-copy every file under $1 (source dir) into $2 (dest dir).
 # $3 = "1" routes <dir>/settings.json through forge_copy_settings_file instead of the generic
 # backup-then-overwrite path (used for the project payload only — see forge_copy_settings_file).
@@ -762,15 +1212,72 @@ forge_remove_empty_dirs() {
 # as a return value on stdout, because this function's own forge_log progress lines (which a real
 # user needs to see) ALSO go to stdout; a caller capturing this function via `$(...)` would get
 # those log lines and the count line mixed into one string with no reliable way to tell them apart.
+# forge_manifest_to_tsv <manifest_json_path> <out_tsv_path> — v2.9.0 (WP-P3b): parses
+# manifest_json_path's "files" array (if it exists and parses) into "path<TAB>sha256" lines written
+# to out_tsv_path (left EMPTY -- never left missing -- when the manifest does not exist, is
+# unreadable/malformed, or node is unavailable; every caller already treats an empty tsv the same way
+# it treats "no prior manifest"). Factored out of forge_remove_manifest_files so
+# forge_prune_retired_manifest_files/forge_manifest_lookup_hash below can read the SAME old-manifest
+# snapshot without a second, differently-written copy of this parse.
+forge_manifest_to_tsv() {
+  local manifest_json="$1" out_tsv="$2"
+  : > "$out_tsv"
+  [ -f "$manifest_json" ] || return 0
+  forge_have_cmd node || return 0
+  # WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH): this parse deliberately does NOT validate
+  # f.path here -- it has no root_dir to validate a path AGAINST (this function only ever sees
+  # manifest_json/out_tsv), and this function's own stderr is already discarded below, by design, for
+  # a malformed manifest generally (a warning written here could never actually reach the user). Every
+  # real consumer of out_tsv (forge_prune_retired_manifest_files, and forge_remove_manifest_files via
+  # its own call to this same function) re-validates each path with forge_manifest_path_is_contained --
+  # a real root_dir AND a real forge_log/forge_err are both available there, where an unsafe path can
+  # actually be rejected with a warning the user sees, not silently dropped.
+  node -e '
+    const fs = require("fs");
+    let j;
+    try { j = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
+    const files = Array.isArray(j.files) ? j.files : [];
+    for (const f of files) { if (f && f.path && f.sha256) process.stdout.write(f.path + "\t" + f.sha256 + "\n"); }
+  ' "$manifest_json" > "$out_tsv" 2>/dev/null || : > "$out_tsv"
+  return 0
+}
+
+# forge_manifest_lookup_hash <tsv_file> <rel> — the sha256 recorded for the exact path <rel> in
+# tsv_file (a "path<TAB>sha256" file, e.g. one forge_manifest_to_tsv just wrote), or empty when
+# tsv_file is empty/missing or has no line for that path. A plain linear grep -F is intentional here
+# (matches this installer's existing per-file granularity for hashing/copying -- see forge_sha256 and
+# forge_copy_file, both already called once per file) rather than an associative-array cache: stock
+# macOS /bin/bash (3.2) has no associative arrays, and this installer stays compatible with it (see
+# forge_remove_gitignore_lines's own header comment).
+forge_manifest_lookup_hash() {
+  local tsv_file="$1" rel="$2" line
+  [ -n "$tsv_file" ] && [ -f "$tsv_file" ] || { printf ''; return 0; }
+  line=$(grep -F -- "$(printf '%s\t' "$rel")" "$tsv_file" 2>/dev/null | head -1)
+  [ -n "$line" ] || { printf ''; return 0; }
+  printf '%s\n' "${line#*$'\t'}"
+}
+
 forge_remove_manifest_files() {
   local root_dir="$1" manifest_json="$2" is_dry_run="$3"
-  local removed=0 kept=0 missing=0 rel hash abs cur_hash dir
-  local dirs_file
+  local removed=0 kept=0 missing=0 rejected=0 rel hash abs cur_hash dir
+  local dirs_file tsv_file
   dirs_file=$(mktemp 2>/dev/null || mktemp -t forge-dirs)
   : > "$dirs_file"
   if forge_have_cmd node; then
+    tsv_file=$(mktemp 2>/dev/null || mktemp -t forge-manifest-tsv)
+    forge_manifest_to_tsv "$manifest_json" "$tsv_file"
     while IFS=$'\t' read -r rel hash; do
       [ -n "$rel" ] || continue
+      # WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH -- same untrusted-manifest-path class,
+      # reachable here via --uninstall on a forged/shared project's own manifest): never trust a
+      # manifest path enough to hash-then-delete it without the same safety check the
+      # retirement-pruning path (forge_prune_retired_manifest_files) already applies. Rejected with a
+      # plain line, never an error that aborts the uninstall.
+      if ! forge_manifest_path_is_contained "$root_dir" "$rel"; then
+        forge_log "  skipped (unsafe path in the install manifest, refusing to trust it): $rel"
+        rejected=$((rejected + 1))
+        continue
+      fi
       abs="$root_dir/$rel"
       if [ ! -f "$abs" ]; then missing=$((missing + 1)); continue; fi
       cur_hash=$(forge_sha256 "$abs")
@@ -787,13 +1294,8 @@ forge_remove_manifest_files() {
         forge_log "  kept (you edited this file): $abs"
         kept=$((kept + 1))
       fi
-    done < <(node -e '
-      const fs = require("fs");
-      let j;
-      try { j = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
-      const files = Array.isArray(j.files) ? j.files : [];
-      for (const f of files) { if (f && f.path && f.sha256) process.stdout.write(f.path + "\t" + f.sha256 + "\n"); }
-    ' "$manifest_json" 2>/dev/null)
+    done < "$tsv_file"
+    rm -f -- "$tsv_file" 2>/dev/null
   else
     forge_err "node is not on PATH — cannot read the install manifest safely; nothing was removed"
   fi
@@ -807,6 +1309,7 @@ forge_remove_manifest_files() {
   FORGE_LAST_REMOVED="$removed"
   FORGE_LAST_KEPT="$kept"
   FORGE_LAST_MISSING="$missing"
+  FORGE_LAST_REJECTED="$rejected"
 }
 
 # forge_remove_payload_fallback <payload_dir> <dest_root> <is_dry_run> [skip_rel] — pre-2.8.0
@@ -857,6 +1360,173 @@ forge_remove_payload_fallback() {
   rm -f -- "$dirs_file" 2>/dev/null
   FORGE_LAST_REMOVED="$removed"
   FORGE_LAST_KEPT="$kept"
+}
+
+# ---------------------------------------------------------------------------
+# Retirement pruning (v2.9.0, WP-P3b) -- files a NEWER version stops shipping, removed on the very
+# INSTALL/upgrade that stops shipping them, not just on --uninstall. See install.ps1's identical
+# header comment (same three-part split) for the full design rationale; kept in sync there.
+#   1. forge_prune_retired_manifest_files       -- a 2.8.0+ install (has a manifest to diff).
+#   2. forge_remove_retired_legacy_dashboard_files -- a pre-2.8.0 install (no manifest at all):
+#      migrates ONLY .claude/forge-dashboard/{7 files}, matched by known historical content hash.
+#   3. forge_remove_legacy_dashboard_state_files -- PORT/DASHBOARD_STATE.json, unconditional either way.
+# All three MOVE (never delete) into a dated backup folder, preserving the relative path.
+# ---------------------------------------------------------------------------
+
+# forge_move_to_backup <root_dir> <abs_path> <backup_dir> — moves abs_path (known to exist) to
+# backup_dir/<abs_path's path relative to root_dir>, creating the backup's parent directory first.
+# Prints the backup's absolute path. Shared by all three retirement-pruning functions below.
+forge_move_to_backup() {
+  local root_dir="$1" abs_path="$2" backup_dir="$3" rel backup_abs backup_parent
+  rel="${abs_path#"$root_dir"/}"
+  if [ "$rel" = "$abs_path" ]; then rel="${abs_path##*/}"; fi
+  backup_abs="$backup_dir/$rel"
+  backup_parent="${backup_abs%/*}"
+  mkdir -p -- "$backup_parent"
+  mv -- "$abs_path" "$backup_abs"
+  printf '%s\n' "$backup_abs"
+}
+
+# forge_prune_retired_manifest_files <root_dir> <old_tsv> <new_tsv> <backup_dir> <is_dry_run>
+# [skip_rel] — point 1 (2.8.0+ installs). old_tsv (forge_manifest_to_tsv's output for the OLD
+# manifest) is diffed against new_tsv (this SAME run's own accumulator, $MANIFEST_TMP/<scope>.tsv —
+# already exactly "every path this run really shipped for this scope" by construction); a path
+# present only in old_tsv is no longer shipped. Moved to backup_dir ONLY when its CURRENT hash still
+# matches what was recorded (unmodified since Forge itself wrote it) -- a file you edited yourself
+# differs and is kept, reported in one plain line. skip_rel (optional, e.g.
+# $FORGE_STANDING_MIGRATION_SKIP) is a single relative path to treat as "still wanted" even though it
+# is absent from new_tsv -- forge_copy_tree's OWN skip_rel leaves that exact file completely
+# untouched (neither copied nor manifested) when an owner-rule migration is pending, and without this
+# exemption it would look identical to "the new version no longer ships this file" and get moved to
+# backup, the opposite of what "leave my existing file in place this run" promises (found by
+# self-review, not by the test suite -- there was no fixture exercising a pending migration alongside
+# a manifest that already lists that same path from a previous, successful install).
+# Sets FORGE_LAST_RETIRED/FORGE_LAST_RETIRED_KEPT/FORGE_LAST_RETIRED_MISSING (see
+# forge_remove_manifest_files's own header comment for why these are globals, not a stdout value).
+forge_prune_retired_manifest_files() {
+  local root_dir="$1" old_tsv="$2" new_tsv="$3" backup_dir="$4" is_dry_run="$5" skip_rel="${6:-}"
+  local retired=0 kept=0 missing=0 rejected=0 rel hash abs cur_hash backup_abs dirs_file
+  FORGE_LAST_RETIRED=0; FORGE_LAST_RETIRED_KEPT=0; FORGE_LAST_RETIRED_MISSING=0; FORGE_LAST_RETIRED_REJECTED=0
+  [ -s "$old_tsv" ] || return 0
+  dirs_file=$(mktemp 2>/dev/null || mktemp -t forge-dirs)
+  : > "$dirs_file"
+  while IFS=$'\t' read -r rel hash; do
+    [ -n "$rel" ] || continue
+    if [ -n "$skip_rel" ] && [ "$rel" = "$skip_rel" ]; then continue; fi
+    if [ -s "$new_tsv" ] && grep -qF -- "$(printf '%s\t' "$rel")" "$new_tsv"; then continue; fi
+    # WP-9B-INST (Codex adversarial review, INSTALL-1 HIGH): validated here, right before this old
+    # manifest path is ever joined to root_dir, hashed, or moved. forge_manifest_to_tsv passes every
+    # path through unchecked (see its header), so this one call does both checks: the SHAPE (a normal
+    # relative path, no "..") and a live filesystem walk from root_dir, one ancestor at a time, which
+    # catches a legitimately-shaped path that a symlink/junction planted under root_dir would redirect.
+    if ! forge_manifest_path_is_contained "$root_dir" "$rel"; then
+      forge_log "  skipped (this old manifest path does not safely resolve inside $root_dir): $rel"
+      rejected=$((rejected + 1))
+      continue
+    fi
+    abs="$root_dir/$rel"
+    if [ ! -f "$abs" ]; then missing=$((missing + 1)); continue; fi
+    cur_hash=$(forge_sha256 "$abs")
+    if [ -n "$cur_hash" ] && [ "$cur_hash" = "$hash" ]; then
+      if [ "$is_dry_run" = "1" ]; then
+        forge_log "  [dry-run] would retire (no longer shipped by this version): $abs -> $backup_dir/$rel"
+      else
+        backup_abs=$(forge_move_to_backup "$root_dir" "$abs" "$backup_dir")
+        forge_log "  retired (no longer shipped by this version): $abs -> $backup_abs"
+        dirname -- "$abs" >> "$dirs_file"
+      fi
+      retired=$((retired + 1))
+    else
+      forge_log "  kept (you edited this file, no longer shipped by this version): $abs"
+      kept=$((kept + 1))
+    fi
+  done < "$old_tsv"
+  if [ "$is_dry_run" != "1" ]; then
+    while IFS= read -r dir; do
+      [ -n "$dir" ] || continue
+      forge_remove_empty_dirs "$dir" "$root_dir"
+    done < <(sort -u -- "$dirs_file")
+  fi
+  rm -f -- "$dirs_file" 2>/dev/null
+  FORGE_LAST_RETIRED="$retired"
+  FORGE_LAST_RETIRED_KEPT="$kept"
+  FORGE_LAST_RETIRED_MISSING="$missing"
+  FORGE_LAST_RETIRED_REJECTED="$rejected"
+}
+
+# forge_remove_retired_legacy_dashboard_files <root_dir> <hash_table_tsv> <backup_dir> <is_dry_run> —
+# point 2 (pre-2.8.0, no-manifest installs). hash_table_tsv is the shipped
+# .claude/forge-bin/forge-retired-dashboard-hashes.tsv (path<TAB>sha256, '#'-comments skipped, several
+# lines sharing one path -- one per historical version). Removes EXACTLY the paths it lists (the 7
+# retired dashboard files, never anything else) when the file's CRLF-normalized sha256 matches one of
+# that path's known historical shipped hashes; content that matches none of them is left in place.
+# Recomputed straight from this repo's git history by
+# tests/installer/assert-retired-dashboard-hashes.js, so the two can never silently drift apart.
+forge_remove_retired_legacy_dashboard_files() {
+  local root_dir="$1" hash_table="$2" backup_dir="$3" is_dry_run="$4"
+  local rel abs cur_hash trel thash matched=0 backup_abs dirs_file retired=0 kept=0
+  [ -f "$hash_table" ] || return 0
+  dirs_file=$(mktemp 2>/dev/null || mktemp -t forge-dirs)
+  : > "$dirs_file"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    abs="$root_dir/$rel"
+    [ -f "$abs" ] || continue
+    cur_hash=$(forge_sha256_normalized "$abs")
+    [ -n "$cur_hash" ] || continue
+    matched=0
+    while IFS=$'\t' read -r trel thash; do
+      thash=${thash%$'\r'}  # a CRLF copy of the table (e.g. files copied around on Windows) must still match
+      case "$trel" in \#*|'') continue ;; esac
+      [ "$trel" = "$rel" ] || continue
+      if [ "$thash" = "$cur_hash" ]; then matched=1; break; fi
+    done < "$hash_table"
+    if [ "$matched" = "1" ]; then
+      if [ "$is_dry_run" = "1" ]; then
+        forge_log "  [dry-run] would retire (pre-2.8.0 install, known shipped content): $abs -> $backup_dir/$rel"
+      else
+        backup_abs=$(forge_move_to_backup "$root_dir" "$abs" "$backup_dir")
+        forge_log "  retired (pre-2.8.0 install, known shipped content): $abs -> $backup_abs"
+        dirname -- "$abs" >> "$dirs_file"
+      fi
+      retired=$((retired + 1))
+    else
+      forge_log "  kept (content does not match a known shipped version -- may be your own file): $abs"
+      kept=$((kept + 1))
+    fi
+  done < <(awk -F'\t' -- '/^#/ {next} !seen[$1]++ && $1 { print $1 }' "$hash_table")
+  if [ "$is_dry_run" != "1" ]; then
+    while IFS= read -r dir; do
+      [ -n "$dir" ] || continue
+      forge_remove_empty_dirs "$dir" "$root_dir"
+    done < <(sort -u -- "$dirs_file")
+  fi
+  rm -f -- "$dirs_file" 2>/dev/null
+  FORGE_LAST_RETIRED="$retired"
+  FORGE_LAST_RETIRED_KEPT="$kept"
+}
+
+# forge_remove_legacy_dashboard_state_files <root_dir> <backup_dir> <is_dry_run> — point 2's other
+# half: PORT and DASHBOARD_STATE.json are runtime state the retired dashboard SERVER wrote while
+# running, never a file forge_copy_tree itself copied -- so they never have a manifest entry (old or
+# new) to diff against, and always need checking, independent of whether a manifest exists for this
+# project at all. Unconditional (no hash check): both are pure generated state (see
+# templates/gitignore.snippet, which already ignores them for exactly that reason).
+forge_remove_legacy_dashboard_state_files() {
+  local root_dir="$1" backup_dir="$2" is_dry_run="$3"
+  local rel abs backup_abs
+  for rel in '.claude/forge-dashboard/PORT' '.claude/forge-dashboard/DASHBOARD_STATE.json'; do
+    abs="$root_dir/$rel"
+    [ -f "$abs" ] || continue
+    if [ "$is_dry_run" = "1" ]; then
+      forge_log "  [dry-run] would retire (generated runtime state, not user data): $abs -> $backup_dir/$rel"
+    else
+      backup_abs=$(forge_move_to_backup "$root_dir" "$abs" "$backup_dir")
+      forge_log "  retired (generated runtime state, not user data): $abs -> $backup_abs"
+      forge_remove_empty_dirs "$(dirname -- "$abs")" "$root_dir"
+    fi
+  done
+  return 0
 }
 
 # forge_remove_gitignore_lines <gitignore> <snippet> <is_dry_run> — removes ONLY the exact lines
@@ -1008,8 +1678,8 @@ forge_clean_stale_pid() {
 forge_uninstall_run() {
   forge_log 'claude-forge uninstaller'
   forge_log ''
-  [ "$DO_PROJECT" = "1" ] && forge_log "This will remove Forge's own files from: $PROJECT_DIR/.claude (only files the installer itself wrote, verified by hash)"
-  [ "$DO_GLOBAL" = "1" ] && forge_log "This will remove Forge's global core from: $HOME/.claude (forge-core skill, /forge, /setup-forge, the canonical template)"
+  [ "$DO_PROJECT" = "1" ] && forge_log "This will remove Forge's own files from: $PROJECT_DIR/.claude (only files the installer itself wrote, verified by hash) and this project's own entry from $HOME/.claude/forge/projects.json"
+  [ "$DO_GLOBAL" = "1" ] && forge_log "This will remove Forge's global core from: $HOME/.claude (forge-core skill, /forge, /setup-forge, the canonical template, the Command Center)"
   forge_log "A file you edited yourself, and your own data (memory, run logs, CLAUDE.md, .env), are left in place."
   forge_log ''
   [ "$DRY_RUN" = "1" ] && forge_log "(dry-run mode — nothing will actually be removed)"
@@ -1084,6 +1754,12 @@ forge_uninstall_run() {
     else
       forge_log "  skipped: .gitignore — no payload gitignore.snippet available to identify Forge's own lines"
     fi
+
+    # v2.9.0 (WP-P3, coordinator follow-up): remove ONLY this project's own entry from the shared
+    # projects registry — never the whole file (it is merged/user data, like settings.json; a
+    # --global-only uninstall never reaches this branch at all, so it can never touch another
+    # project's entry).
+    forge_update_projects_registry "$(forge_abs_path "$PROJECT_DIR")" "$DRY_RUN" "remove"
 
     forge_log ''
     forge_log "  left in place (your own data): CLAUDE.md (if it predates Forge or you edited it), .env, FORGE_MEMORY*.md, .claude/forge-runs/, .claude/agent-memory/, and .claude/settings.json (unmerged above, never deleted)"
@@ -1249,6 +1925,19 @@ main() {
   : > "$MANIFEST_TMP/global.tsv"
   : > "$MANIFEST_TMP/project.tsv"
 
+  # v2.9.0 (WP-P3b): snapshot the PREVIOUS install's manifest(s) now, into the SAME scratch dir (so
+  # the EXIT/INT/TERM cleanup trap above already removes them too), before forge_write_manifest_file
+  # overwrites either JSON file further down -- see forge_manifest_to_tsv's own header comment. Read
+  # unconditionally (even for a --global-only/--project-only run touching only one scope, and even
+  # under --dry-run) -- it is a pure read; the retirement-pruning calls below already gate on
+  # DO_GLOBAL/DO_PROJECT themselves. One shared timestamp for both scopes' backup folders, so a single
+  # run never produces two differently-stamped "retired-*" folders.
+  OLD_GLOBAL_TSV="$MANIFEST_TMP/global-old.tsv"
+  OLD_PROJECT_TSV="$MANIFEST_TMP/project-old.tsv"
+  forge_manifest_to_tsv "$HOME/.claude/forge/install-manifest.json" "$OLD_GLOBAL_TSV"
+  forge_manifest_to_tsv "$PROJECT_DIR/.claude/.forge-install-manifest.json" "$OLD_PROJECT_TSV"
+  PRUNE_STAMP=$(date -u +%Y%m%d-%H%M%S 2>/dev/null || echo unknown)
+
   # -------------------------------------------------------------------------
   # 1. dual-source detection
   # -------------------------------------------------------------------------
@@ -1330,8 +2019,13 @@ main() {
   # left implicit.
   [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude                  [OUTSIDE this project -- global, shared by every project] (global core: forge-core skill, /forge, /setup-forge)"
   [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude/forge/template   [OUTSIDE this project -- global] (canonical template: used by forge-sync and the auto-installer)"
+  # v2.9.0 (WP-P3): the Command Center (local dashboard + gateway) is installed ONCE, centrally,
+  # next to the canonical template -- never per-project -- so every project shares the same
+  # dashboard at http://127.0.0.1:4100.
+  [ "$DO_GLOBAL" = "1" ] && forge_log "  - $HOME/.claude/forge/template/command-center   [OUTSIDE this project -- global] (Command Center: the local dashboard + gateway at http://127.0.0.1:4100)"
   [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/.claude           (per-project payload: skills, agents, dashboard, config)"
   [ "$DO_PROJECT" = "1" ] && forge_log "  - $PROJECT_DIR/CLAUDE.md         (only if missing) and $PROJECT_DIR/.gitignore (Forge lines appended)"
+  [ "$DO_PROJECT" = "1" ] && forge_log "  - $HOME/.claude/forge/projects.json   [OUTSIDE this project -- global] (records this project's path so the Command Center dashboard can find it)"
   forge_log ""
   forge_log "Existing files that differ are backed up as <file>.forge-bak-<timestamp> and replaced — except .claude/settings.json, which is MERGED (your own hooks/rules kept, a backup taken first); when a merge is not possible, a settings.forge-recommended-<timestamp>.json is written next to it instead and settings.json itself is left untouched."
   forge_log "Identical files are left untouched. This installer never deletes your existing .claude tree."
@@ -1422,6 +2116,48 @@ main() {
       forge_err "canonical template copy had failures (project installs still work; forge-sync update checks will not)"
       GLOBAL_OK="0"
     fi
+
+    # v2.9.0 (WP-P3): the Command Center (command-center/gateway + command-center/discord +
+    # command-center/dashboard) is installed ONCE, centrally, next to the canonical template --
+    # never per-project (see forge_cc_should_skip/forge_copy_command_center_tree's own header
+    # comments for exactly what is skipped and why). A source checkout without a command-center/
+    # directory at all (an old release, or a stripped-down archive) is not an error -- this
+    # installer's own job is copying whatever the payload actually ships.
+    CC_SOURCE_DIR="$SOURCE_DIR/command-center"
+    if [ -d "$CC_SOURCE_DIR" ]; then
+      CC_DEST_DIR="$TEMPLATE_DIR/command-center"
+      forge_log ""
+      forge_log "Installing Command Center -> $CC_DEST_DIR (local dashboard + gateway, http://127.0.0.1:4100)"
+      # Requirement 1 (WP-P3): dashboard/dist is the PREBUILT dashboard the gateway serves as static
+      # files. When this download does not ship it (an older archive, or a stripped release before
+      # the dashboard build step is wired in), this says so ONCE, plainly -- it never tells a
+      # beginner to run a build command themselves; everything else in the Command Center still
+      # installs normally.
+      if [ ! -d "$CC_SOURCE_DIR/dashboard/dist" ]; then
+        forge_log "  NOTE: command-center/dashboard/dist is missing from this download — the dashboard's built files were not included. Everything else in the Command Center was still installed; the dashboard page itself will not load until a build that includes dashboard/dist is installed."
+      fi
+      if ! forge_copy_command_center_tree "$CC_SOURCE_DIR" "$CC_DEST_DIR" "$HOME" "$OLD_GLOBAL_TSV"; then
+        forge_err "Command Center copy had failures (project installs still work; the dashboard may not start correctly)"
+        GLOBAL_OK="0"
+      fi
+    fi
+
+    # v2.9.0 (WP-P3b): retirement pruning for the "global" scope -- runs AFTER every global copy
+    # above, so $MANIFEST_TMP/global.tsv already holds every path this run really shipped (core +
+    # template + Command Center, all one scope, all rooted at $HOME), and BEFORE forge_write_manifest_file
+    # overwrites the manifest OLD_GLOBAL_TSV was read from.
+    GLOBAL_BACKUP_DIR="$HOME/.claude/forge/backups/retired-$PRUNE_STAMP"
+    if [ -s "$OLD_GLOBAL_TSV" ]; then
+      forge_prune_retired_manifest_files "$HOME" "$OLD_GLOBAL_TSV" "$MANIFEST_TMP/global.tsv" "$GLOBAL_BACKUP_DIR" "$DRY_RUN"
+    elif [ -n "${TEMPLATE_DIR:-}" ]; then
+      # Pre-2.8.0 global install (no manifest at all yet): the one concrete migration this release
+      # needs is the canonical template's own copy of the retired dashboard files. Backed up under the
+      # SAME relative path a 2.8.0+ manifest would have recorded it at (".claude/forge/template/...")
+      # so a legacy and a manifest-driven retirement land in a consistent shape under
+      # GLOBAL_BACKUP_DIR, even though this fallback never reads/writes a manifest itself.
+      LEGACY_HASH_TABLE="$SOURCE_DIR/.claude/forge-bin/forge-retired-dashboard-hashes.tsv"
+      forge_remove_retired_legacy_dashboard_files "$TEMPLATE_DIR" "$LEGACY_HASH_TABLE" "$GLOBAL_BACKUP_DIR/.claude/forge/template" "$DRY_RUN"
+    fi
   fi
 
   if [ "$DO_PROJECT" = "1" ]; then
@@ -1463,6 +2199,37 @@ main() {
     # without it a fresh install reports "installed=none" (2.4.0: the payload no longer ships a stale
     # copy of this per-install file — the installer writes the real value).
     forge_write_version_marker "$PROJECT_DIR"
+    # v2.9.0 (WP-P3, coordinator follow-up): record this project so the Command Center dashboard can
+    # find it even outside its default scan roots (Documents/Desktop/its own parent folder). See
+    # FORGE_PROJECTS_REGISTRY_JS's own header comment for the file contract and why a missing `node`
+    # only warns, never fails the install. forge_abs_path (not forge_resolve_dir) because $PROJECT_DIR
+    # was just created by this same block's own `mkdir -p` a few lines above, and must resolve to an
+    # absolute path even in a --dry-run preview where it was never actually created.
+    forge_update_projects_registry "$(forge_abs_path "$PROJECT_DIR")" "$DRY_RUN" "add"
+
+    # v2.9.0 (WP-P3b): retirement pruning for the "project" scope -- same shape as the "global" block
+    # above, rooted at $PROJECT_DIR. Runs AFTER the project copy, so $MANIFEST_TMP/project.tsv already
+    # holds every path this run really shipped, and BEFORE forge_write_manifest_file overwrites the
+    # manifest OLD_PROJECT_TSV was read from.
+    PROJECT_BACKUP_DIR="$PROJECT_DIR/.claude/forge-backups/retired-$PRUNE_STAMP"
+    if [ -s "$OLD_PROJECT_TSV" ]; then
+      # PATH-PREFIX TRAP (found by re-deriving this value independently right after writing the first
+      # pass, not by the test suite alone): FORGE_STANDING_MIGRATION_SKIP is relative to .claude/
+      # itself (what forge_copy_tree's own per-file loop compares it against), but every manifest path
+      # (old and new alike) is relative to the PROJECT ROOT -- ".claude/" must be prepended here or
+      # forge_prune_retired_manifest_files's skip_rel exemption silently never matches anything.
+      PRUNE_SKIP_REL=""
+      [ -n "$FORGE_STANDING_MIGRATION_SKIP" ] && PRUNE_SKIP_REL=".claude/$FORGE_STANDING_MIGRATION_SKIP"
+      forge_prune_retired_manifest_files "$PROJECT_DIR" "$OLD_PROJECT_TSV" "$MANIFEST_TMP/project.tsv" "$PROJECT_BACKUP_DIR" "$DRY_RUN" "$PRUNE_SKIP_REL"
+    else
+      # Pre-2.8.0 project install (no manifest at all yet): migrate the retired dashboard files by
+      # their known historical content hash instead.
+      LEGACY_HASH_TABLE="$SOURCE_DIR/.claude/forge-bin/forge-retired-dashboard-hashes.tsv"
+      forge_remove_retired_legacy_dashboard_files "$PROJECT_DIR" "$LEGACY_HASH_TABLE" "$PROJECT_BACKUP_DIR" "$DRY_RUN"
+    fi
+    # Unconditional either way (point 2's other half): PORT/DASHBOARD_STATE.json are runtime state the
+    # OLD dashboard SERVER wrote, never something any manifest (old or new) ever recorded.
+    forge_remove_legacy_dashboard_state_files "$PROJECT_DIR" "$PROJECT_BACKUP_DIR" "$DRY_RUN"
   fi
 
   # v2.8.0: persist the manifest(s) an uninstall will read back — see forge_manifest_add's header
@@ -1514,6 +2281,14 @@ main() {
   forge_log "  /setup-forge"
   forge_log "  /forge <task>"
   forge_log ""
+  # Requirement 5 (WP-P3): one plain line telling a beginner how to open the dashboard this install
+  # just set up. Only printed when this run actually installed/ensured the Command Center
+  # (DO_GLOBAL) -- a --project-only run against a machine that never ran a full install would
+  # otherwise point at a dashboard that is not there yet.
+  if [ "$DO_GLOBAL" = "1" ]; then
+    forge_log "Dashboard: open http://127.0.0.1:4100 (run \"forge dashboard\" in a project, or double-click start-forge-dashboard.bat in a project's .claude/forge-dashboard folder)"
+    forge_log ""
+  fi
   forge_log "Docs: https://github.com/${REPO_OWNER}/${REPO_NAME}#readme"
 }
 

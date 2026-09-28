@@ -86,5 +86,9 @@ test('the newest run alone would have reported empty — this is the real regres
   // (the pre-fix behavior) could never surface.
   const fromOtherRuns = result.artifacts.filter((a) => a.run_id !== null && a.run_id !== NEWEST_RUN_ID);
   assert.ok(fromOtherRuns.length > 0, 'at least one real artifact must come from a run other than the newest');
-  assert.equal(fromNewestRun.length, 0, 'the newest run genuinely has no artifacts/ dir yet — confirms the repro premise');
+  // WP-CC1 added run-top-level-doc sources (a run's own final report, mission blueprint, ...), so the
+  // newest run can now legitimately contribute those; the repro premise was always about its
+  // artifacts/ DIRECTORY, so that is what is asserted.
+  const fromNewestRunArtifactsDir = fromNewestRun.filter((a) => a.source === 'run-artifacts-dir');
+  assert.equal(fromNewestRunArtifactsDir.length, 0, 'the newest run genuinely has no artifacts/ dir yet — confirms the repro premise');
 });

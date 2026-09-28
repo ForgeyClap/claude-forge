@@ -3557,5 +3557,493 @@ console.log('\n79k) N8 fix — the migration write honors the symlink/containmen
   }
 }
 
+// =====================================================================================
+// 80) v2.9.0 WP-N1 — retired Control Center cleanup (pruneRetiredFiles / restoreRetiredPruneLedger)
+// The old server.cjs + its static UI were removed from this repo's OWN template; these tests use a
+// hermetic fixture template (never the real one) and drive pruneRetiredFiles()/restoreRetiredPruneLedger()
+// directly, plus safeSyncProject()/rawInstall()/rollbackProject() end-to-end, to prove the cleanup this
+// work package added to forge-sync.cjs — never the real 12 Forge projects.
+// =====================================================================================
+console.log('\n80) v2.9.0 WP-N1 — retired Control Center cleanup');
+{
+  const ONE_RETIRED = sync.RETIRED_TEMPLATE_FILES[0]; // 'forge-dashboard/server.cjs'
+  const ANOTHER_RETIRED = sync.RETIRED_TEMPLATE_FILES[1]; // 'forge-dashboard/index.html'
+
+  console.log('\n80a) classification: nothing present -> empty result, never an error');
+  {
+    const p = makeProject(freshDir('t80a-root'), 'proj', null);
+    const rp = sync.pruneRetiredFiles(p, { dryRun: true });
+    t('80a removable is empty', rp.removable.length === 0);
+    t('80a kept is empty', rp.kept.length === 0);
+    t('80a applied stays false (dry-run/nothing to do)', rp.applied === false);
+  }
+
+  console.log('\n80b) classification: unmodified vs modified vs unverifiable');
+  {
+    const p = makeProject(freshDir('t80b-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// old server.cjs\n');
+    fs.writeFileSync(path.join(dashDir, 'index.html'), '<!-- old index -->\n');
+    fs.writeFileSync(path.join(dashDir, 'app.js'), '// no receipt entry at all for this one\n');
+    const serverHash = sync.sha256(path.join(dashDir, 'server.cjs'));
+    // server.cjs: receipt says this EXACT hash was last shipped -> unmodified -> removable
+    // index.html: receipt says a DIFFERENT hash was last shipped -> modified -> kept
+    // app.js: no receipt entry at all -> unverifiable -> kept
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/server.cjs': serverHash, 'forge-dashboard/index.html': 'deadbeef'.repeat(8) } });
+    const rp = sync.pruneRetiredFiles(p, { dryRun: true });
+    t('80b server.cjs (unmodified) is removable', rp.removable.some((e) => e.rel === 'forge-dashboard/server.cjs'));
+    t('80b index.html (modified) is kept, not removable', rp.kept.some((k) => k.rel === 'forge-dashboard/index.html' && /modified/.test(k.reason)) && !rp.removable.some((e) => e.rel === 'forge-dashboard/index.html'));
+    t('80b app.js (no receipt entry) is kept, not removable', rp.kept.some((k) => k.rel === 'forge-dashboard/app.js' && /no last-shipped hash/.test(k.reason)) && !rp.removable.some((e) => e.rel === 'forge-dashboard/app.js'));
+    t('80b classification alone never deletes anything (dry-run)', fs.existsSync(path.join(dashDir, 'server.cjs')) && fs.existsSync(path.join(dashDir, 'index.html')) && fs.existsSync(path.join(dashDir, 'app.js')));
+  }
+
+  console.log('\n80c) generated state files (PORT/DASHBOARD_STATE.json) are removable unconditionally');
+  {
+    const p = makeProject(freshDir('t80c-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'PORT'), '3812\n');
+    fs.writeFileSync(path.join(dashDir, 'DASHBOARD_STATE.json'), '{"status":"ready"}\n');
+    // deliberately NO receipt at all -- these must never need a "last shipped hash" to be removable
+    const rp = sync.pruneRetiredFiles(p, { dryRun: true });
+    t('80c PORT is removable with no receipt at all', rp.removable.some((e) => e.rel === 'forge-dashboard/PORT' && e.generatedState === true));
+    t('80c DASHBOARD_STATE.json is removable with no receipt at all', rp.removable.some((e) => e.rel === 'forge-dashboard/DASHBOARD_STATE.json' && e.generatedState === true));
+  }
+
+  console.log('\n80d) dry-run and no-batchId both stay preview-only');
+  {
+    const p = makeProject(freshDir('t80d-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// old\n');
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/server.cjs': sync.sha256(path.join(dashDir, 'server.cjs')) } });
+    const rpDry = sync.pruneRetiredFiles(p, { dryRun: true, batchId: 'b80d-unused' });
+    t('80d dryRun:true never removes even with a batchId given', rpDry.applied === false && fs.existsSync(path.join(dashDir, 'server.cjs')));
+    const rpNoBatch = sync.pruneRetiredFiles(p, {});
+    t('80d no batchId at all -> preview-only, reports why', rpNoBatch.applied === false && /batchId required/.test(rpNoBatch.error || '') && fs.existsSync(path.join(dashDir, 'server.cjs')));
+  }
+
+  console.log('\n80e) a real removal backs up bytes BEFORE deleting, writes a ledger, and only lists genuinely removed rels');
+  {
+    const p = makeProject(freshDir('t80e-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// old server.cjs, byte content X\n');
+    fs.writeFileSync(path.join(dashDir, 'index.html'), '<!-- old index, kept because modified -->\n');
+    fs.writeFileSync(path.join(dashDir, 'PORT'), '3812\n');
+    const serverHash = sync.sha256(path.join(dashDir, 'server.cjs'));
+    const portHash = sync.sha256(path.join(dashDir, 'PORT'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/server.cjs': serverHash, 'forge-dashboard/index.html': 'not-the-real-hash' } });
+    const rp = sync.pruneRetiredFiles(p, { batchId: 'b80e' });
+    t('80e applied is true (something really happened)', rp.applied === true);
+    t('80e server.cjs was removed', rp.removed.includes('forge-dashboard/server.cjs'));
+    t('80e PORT was removed', rp.removed.includes('forge-dashboard/PORT'));
+    t('80e index.html (modified) was NOT removed', !rp.removed.includes('forge-dashboard/index.html') && fs.existsSync(path.join(dashDir, 'index.html')));
+    t('80e server.cjs is really gone from disk', !fs.existsSync(path.join(dashDir, 'server.cjs')));
+    t('80e PORT is really gone from disk', !fs.existsSync(path.join(dashDir, 'PORT')));
+    const backupPath = path.join(sync.backupDirFor(p, 'b80e'), 'retired-prune', 'forge-dashboard', 'server.cjs');
+    t('80e the removed bytes were backed up BEFORE deletion, byte-identical', fs.existsSync(backupPath) && sync.sha256(backupPath) === serverHash);
+    const ledger = JSON.parse(fs.readFileSync(path.join(sync.backupDirFor(p, 'b80e'), 'retired-prune-manifest.json'), 'utf8'));
+    // WP-Q3/SYNC-2: PORT is now ALSO ledgered (no longer excluded as "generated state") — server.cjs was
+    // being kept-if-modified in NO way here (it was removed), so PORT is safe to remove AND to restore.
+    t('80e the ledger names the real template file AND the removed PORT state (SYNC-2)', ledger.files.length === 2
+      && ledger.files.some((f) => f.rel === 'forge-dashboard/server.cjs' && f.oldHash === serverHash)
+      && ledger.files.some((f) => f.rel === 'forge-dashboard/PORT' && f.oldHash === portHash));
+    t('80e index.html never appears in the ledger (it was kept, never removed)', !ledger.files.some((f) => f.rel === 'forge-dashboard/index.html'));
+    t('80e no failures reported', !rp.failed || rp.failed.length === 0);
+  }
+
+  console.log('\n80f) restoreRetiredPruneLedger brings a pruned file back, hash-verified');
+  {
+    const p = makeProject(freshDir('t80f-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'app.js'), '// content to restore later\n');
+    const appHash = sync.sha256(path.join(dashDir, 'app.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/app.js': appHash } });
+    sync.pruneRetiredFiles(p, { batchId: 'b80f' });
+    t('80f precondition: app.js is really gone before restore', !fs.existsSync(path.join(dashDir, 'app.js')));
+    const restore = sync.restoreRetiredPruneLedger(p, 'b80f');
+    t('80f restore reports ok:true', restore.ok === true);
+    t('80f app.js restored to disk', fs.existsSync(path.join(dashDir, 'app.js')));
+    t('80f restored bytes are byte-identical (hash matches)', sync.sha256(path.join(dashDir, 'app.js')) === appHash);
+  }
+
+  console.log('\n80g) restoreRetiredPruneLedger on a batch that pruned nothing is an honest, silent no-op');
+  {
+    const p = makeProject(freshDir('t80g-root'), 'proj', null);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-backups', 'b80g-empty'), { recursive: true });
+    const restore = sync.restoreRetiredPruneLedger(p, 'b80g-empty');
+    t('80g ok:true (never an error just because nothing was pruned)', restore.ok === true);
+    t('80g restored is empty', restore.restored.length === 0);
+    const restoreNoBatchDir = sync.restoreRetiredPruneLedger(p, 'b80g-never-existed');
+    t('80g a batch dir that never existed at all is ALSO an honest no-op, not a throw', restoreNoBatchDir.ok === true);
+  }
+
+  console.log('\n80h) safeSyncProject: the no-op file-plan path STILL prunes a retired file (the tricky case —');
+  console.log('     preflight()/buildPlan() never see a retired file at all, since it left listSystemFiles())');
+  {
+    const tpl = freshDir('t80h-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'SAME-CONTENT');
+    const p = makeProject(freshDir('t80h-root'), 'proj', null);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'SAME-CONTENT'); // already up to date -> toChange.length === 0
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// legacy, unmodified since last sync\n');
+    const serverHash = sync.sha256(path.join(dashDir, 'server.cjs'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-bin/tool.cjs': sync.sha256(path.join(tpl, 'forge-bin', 'tool.cjs')), 'forge-dashboard/server.cjs': serverHash } });
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b80h', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('80h the file plan really was a no-op (proves this is the tricky path, not the normal apply path)', r.noop === true && r.plan.toChange.length === 0);
+    t('80h ok:true', r.ok === true);
+    t('80h retiredPrune actually ran and removed the legacy file', r.retiredPrune && r.retiredPrune.removed.includes('forge-dashboard/server.cjs'));
+    t('80h server.cjs is really gone from disk', !fs.existsSync(path.join(dashDir, 'server.cjs')));
+    t('80h a real backup exists for it', fs.existsSync(path.join(sync.backupDirFor(p, 'b80h'), 'retired-prune', 'forge-dashboard', 'server.cjs')));
+  }
+
+  console.log('\n80i) safeSyncProject: the normal apply path ALSO prunes, and a MODIFIED retired file is kept');
+  {
+    const tpl = freshDir('t80i-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'V2-CONTENT'); // differs from the project's V1 -> real toChange
+    const p = makeProject(freshDir('t80i-root'), 'proj', 0); // doctorExit 0 -> validation can pass
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'V1-CONTENT');
+    const v1Hash = sync.sha256(path.join(p, '.claude', 'forge-bin', 'tool.cjs'));
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// unmodified legacy file\n');
+    fs.writeFileSync(path.join(dashDir, 'app.js'), '// this one was hand-edited by the owner\n');
+    const serverHash = sync.sha256(path.join(dashDir, 'server.cjs'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-bin/tool.cjs': v1Hash, 'forge-dashboard/server.cjs': serverHash, 'forge-dashboard/app.js': 'some-other-hash-the-owner-edit-no-longer-matches' } });
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b80i', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('80i this really is the normal (non-no-op) apply path', r.plan.toChange.length === 1 && r.noop === undefined);
+    t('80i sync succeeded', r.ok === true);
+    t('80i unmodified server.cjs was pruned', r.retiredPrune.removed.includes('forge-dashboard/server.cjs') && !fs.existsSync(path.join(dashDir, 'server.cjs')));
+    t('80i modified app.js was KEPT, not deleted (owner edit preserved)', fs.existsSync(path.join(dashDir, 'app.js')) && r.retiredPrune.kept.some((k) => k.rel === 'forge-dashboard/app.js'));
+  }
+
+  console.log('\n80j) rawInstall (--unsafe) prunes too, using the same real backup');
+  {
+    const tpl = freshDir('t80j-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'V1-CONTENT'); // matches project -> toChange:[] on the --unsafe path too
+    const p = makeProject(freshDir('t80j-root'), 'proj', null);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'V1-CONTENT');
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'graph.js'), '// legacy graph.js\n');
+    const graphHash = sync.sha256(path.join(dashDir, 'graph.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/graph.js': graphHash } });
+    const r = sync.rawInstall(tpl, p, { batchId: 'b80j', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('80j --unsafe install reports ok:true', r.ok === true);
+    t('80j graph.js was pruned via --unsafe too', r.retiredPrune && r.retiredPrune.removed.includes('forge-dashboard/graph.js'));
+    t('80j graph.js is really gone from disk', !fs.existsSync(path.join(dashDir, 'graph.js')));
+  }
+
+  console.log('\n80k) rollback restores a pruned retired file (best-effort, on top of the normal rollback)');
+  {
+    const tpl = freshDir('t80k-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'V2-CONTENT');
+    const p = makeProject(freshDir('t80k-root'), 'proj', 0);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'V1-CONTENT');
+    const v1Hash = sync.sha256(path.join(p, '.claude', 'forge-bin', 'tool.cjs'));
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'lenses.js'), '// legacy lenses.js\n');
+    const lensesHash = sync.sha256(path.join(dashDir, 'lenses.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-bin/tool.cjs': v1Hash, 'forge-dashboard/lenses.js': lensesHash } });
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b80k', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('80k precondition: sync succeeded and pruned lenses.js', r.ok === true && r.retiredPrune.removed.includes('forge-dashboard/lenses.js'));
+    t('80k precondition: lenses.js is really gone', !fs.existsSync(path.join(dashDir, 'lenses.js')));
+    const rb = sync.rollbackProject(p, 'b80k', {});
+    t('80k rollback reports ok:true', rb.ok === true);
+    t('80k rollback restored the regular file too (unaffected by the prune addition)', fs.existsSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs')) && sync.sha256(path.join(p, '.claude', 'forge-bin', 'tool.cjs')) === v1Hash);
+    t('80k retiredPruneRestore is present on the rollback result', !!rb.retiredPruneRestore);
+    t('80k lenses.js came back, byte-identical', fs.existsSync(path.join(dashDir, 'lenses.js')) && sync.sha256(path.join(dashDir, 'lenses.js')) === lensesHash);
+  }
+
+  console.log('\n80l) ONE_RETIRED/ANOTHER_RETIRED sanity: the real constant list actually names the 7 removed files');
+  {
+    t('80l exactly 7 retired template files are named', sync.RETIRED_TEMPLATE_FILES.length === 7);
+    t('80l server.cjs and index.html are both in the list', sync.RETIRED_TEMPLATE_FILES.includes(ONE_RETIRED) && sync.RETIRED_TEMPLATE_FILES.includes(ANOTHER_RETIRED));
+    t('80l exactly 2 retired state files are named (PORT, DASHBOARD_STATE.json)', sync.RETIRED_STATE_FILES.length === 2 && sync.RETIRED_STATE_FILES.every((r) => /^forge-dashboard\//.test(r)));
+  }
+}
+
+// =====================================================================================
+// 81) v2.9.0 WP-Q3 — hardening pruneRetiredFiles()/restoreRetiredPruneLedger()/rollbackProject() against
+// 5 findings from an independent Codex adversarial review (SYNC-1..SYNC-5). One subsection per finding;
+// all fixtures are hermetic os.tmpdir() dirs, same as section 80 — never the real 12 Forge projects.
+// =====================================================================================
+console.log('\n81) v2.9.0 WP-Q3 — retired-prune hardening (SYNC-1..SYNC-5, independent Codex adversarial review)');
+{
+  console.log('\n81a) SYNC-1: a no-op-file-plan prune (no main manifest.json for this batch) can still be rolled back via its own ledger');
+  {
+    const tpl = freshDir('t81a-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'SAME-CONTENT');
+    const p = makeProject(freshDir('t81a-root'), 'proj', null);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'SAME-CONTENT'); // toChange.length === 0 -> the no-op path
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// legacy, unmodified since last sync\n');
+    const serverHash = sync.sha256(path.join(dashDir, 'server.cjs'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-bin/tool.cjs': sync.sha256(path.join(tpl, 'forge-bin', 'tool.cjs')), 'forge-dashboard/server.cjs': serverHash } });
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b81a', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('81a precondition: really the no-op path', r.noop === true && r.plan.toChange.length === 0);
+    t('81a precondition: no main manifest.json exists for this batch (nothing else to back up)', !fs.existsSync(path.join(sync.backupDirFor(p, 'b81a'), 'manifest.json')));
+    t('81a precondition: server.cjs is really gone', !fs.existsSync(path.join(dashDir, 'server.cjs')));
+    const rb = sync.rollbackProject(p, 'b81a', {});
+    t('81a rollback reports ok:true even with no main manifest for this batch', rb.ok === true);
+    t('81a rollback source is labeled ledger-only', rb.source === 'retired-prune-ledger-only');
+    t('81a server.cjs is really back, byte-identical', fs.existsSync(path.join(dashDir, 'server.cjs')) && sync.sha256(path.join(dashDir, 'server.cjs')) === serverHash);
+    t('81a retiredPruneRestore names it restored', rb.retiredPruneRestore && rb.retiredPruneRestore.restored.includes('forge-dashboard/server.cjs'));
+    // SYNC-3 idempotency refinement: re-running rollback on the SAME already-restored ledger-only batch
+    // must not misreport the now-existing, byte-identical file as a "recreated" conflict — restoreRetiredPruneLedger
+    // has no journal, so a second call re-examines every entry from scratch via fs.existsSync.
+    const rb2 = sync.rollbackProject(p, 'b81a', {});
+    t('81a a SECOND rollback of the same batch is still ok:true (idempotent, not a false conflict)', rb2.ok === true);
+    t('81a the second rollback reports the file as restored again, never as a conflict', rb2.retiredPruneRestore.restored.includes('forge-dashboard/server.cjs') && rb2.retiredPruneRestore.conflicts.length === 0);
+    t('81a the file is still byte-identical after the second rollback', sync.sha256(path.join(dashDir, 'server.cjs')) === serverHash);
+  }
+
+  console.log('\n81b) SYNC-2: a KEPT (modified) server.cjs means PORT/DASHBOARD_STATE.json are kept too, not deleted');
+  {
+    const p = makeProject(freshDir('t81b-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'server.cjs'), '// owner-modified server.cjs\n');
+    fs.writeFileSync(path.join(dashDir, 'PORT'), '4001\n');
+    fs.writeFileSync(path.join(dashDir, 'DASHBOARD_STATE.json'), '{"status":"ready"}\n');
+    // receipt records a hash that does NOT match what's on disk -> server.cjs classifies as "modified" -> kept
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/server.cjs': 'not-the-real-hash-'.repeat(2) } });
+    const rpPreview = sync.pruneRetiredFiles(p, { dryRun: true });
+    t('81b precondition: server.cjs is kept (modified), not removable', rpPreview.kept.some((k) => k.rel === 'forge-dashboard/server.cjs') && !rpPreview.removable.some((e) => e.rel === 'forge-dashboard/server.cjs'));
+    t('81b PORT is kept alongside it, not removable', rpPreview.kept.some((k) => k.rel === 'forge-dashboard/PORT') && !rpPreview.removable.some((e) => e.rel === 'forge-dashboard/PORT'));
+    t('81b DASHBOARD_STATE.json is kept alongside it too', rpPreview.kept.some((k) => k.rel === 'forge-dashboard/DASHBOARD_STATE.json'));
+    const rpReal = sync.pruneRetiredFiles(p, { batchId: 'b81b' });
+    t('81b a real run does NOT delete PORT (nothing was removable at all)', rpReal.applied === false && fs.existsSync(path.join(dashDir, 'PORT')));
+    t('81b server.cjs itself is untouched too (owner edit preserved)', fs.existsSync(path.join(dashDir, 'server.cjs')));
+    t('81b DASHBOARD_STATE.json is untouched too', fs.existsSync(path.join(dashDir, 'DASHBOARD_STATE.json')));
+  }
+
+  console.log('\n81c) SYNC-2: a removed state file (PORT) is now ledgered and comes back via a full rollback');
+  {
+    const tpl = freshDir('t81c-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'V2-CONTENT');
+    const p = makeProject(freshDir('t81c-root'), 'proj', 0);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'V1-CONTENT');
+    const v1Hash = sync.sha256(path.join(p, '.claude', 'forge-bin', 'tool.cjs'));
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'PORT'), '4321\n');
+    const portHash = sync.sha256(path.join(dashDir, 'PORT'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-bin/tool.cjs': v1Hash } }); // no server.cjs at all -> nothing kept -> PORT removable
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b81c', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('81c precondition: PORT was really pruned', r.ok === true && r.retiredPrune.removed.includes('forge-dashboard/PORT'));
+    t('81c precondition: PORT is really gone', !fs.existsSync(path.join(dashDir, 'PORT')));
+    const rb = sync.rollbackProject(p, 'b81c', {});
+    t('81c rollback reports ok:true', rb.ok === true);
+    t('81c PORT came back, byte-identical', fs.existsSync(path.join(dashDir, 'PORT')) && sync.sha256(path.join(dashDir, 'PORT')) === portHash);
+  }
+
+  console.log('\n81d) SYNC-3: a path recreated AFTER the prune is a rollback conflict — never overwritten, reported as partial');
+  {
+    const p = makeProject(freshDir('t81d-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'app.js'), '// old app.js\n');
+    const oldHash = sync.sha256(path.join(dashDir, 'app.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/app.js': oldHash } });
+    sync.pruneRetiredFiles(p, { batchId: 'b81d' });
+    t('81d precondition: app.js is really gone', !fs.existsSync(path.join(dashDir, 'app.js')));
+    // recreate a DIFFERENT file at the exact same path (e.g. a fresh sync re-shipped it, or the owner made a new one)
+    fs.writeFileSync(path.join(dashDir, 'app.js'), '// BRAND NEW content, unrelated to the retired backup\n');
+    const newHash = sync.sha256(path.join(dashDir, 'app.js'));
+    const restore = sync.restoreRetiredPruneLedger(p, 'b81d');
+    t('81d restore reports ok:false (a conflict is not a clean success)', restore.ok === false);
+    t('81d restore reports partial:true', restore.partial === true);
+    t('81d the conflict names the exact path', restore.conflicts.some((c) => c.rel === 'forge-dashboard/app.js'));
+    t('81d the recreated file was NEVER overwritten', sync.sha256(path.join(dashDir, 'app.js')) === newHash);
+    t('81d nothing was (falsely) reported as restored', !restore.restored.includes('forge-dashboard/app.js'));
+  }
+
+  console.log('\n81e) SYNC-4: an unsafe --batch-id (path traversal or otherwise malformed) is refused before anything is touched or written');
+  {
+    const p = makeProject(freshDir('t81e-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'panels.js'), '// legacy panels.js\n');
+    const panelsHash = sync.sha256(path.join(dashDir, 'panels.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/panels.js': panelsHash } });
+    for (const bad of ['..\\..\\..\\outside', '../../../outside', 'a/b', 'a b', '.', '..', 'x'.repeat(101)]) {
+      const rBad = sync.pruneRetiredFiles(p, { batchId: bad });
+      t('81e unsafe batch id ' + JSON.stringify(bad) + ' is refused, nothing applied', rBad.applied === false && /unsafe --batch-id/.test(rBad.error || ''));
+    }
+    t('81e the file was NEVER touched by any of the refused attempts', fs.existsSync(path.join(dashDir, 'panels.js')) && sync.sha256(path.join(dashDir, 'panels.js')) === panelsHash);
+    t('81e no backup directory was ever created for any refused batch', !fs.existsSync(path.join(p, '.claude', 'forge-backups')));
+  }
+
+  console.log('\n81f) SYNC-4: a symlinked/junctioned retired-prune batch backup dir is refused, with the file still present');
+  {
+    const p = makeProject(freshDir('t81f-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'styles.css'), '/* legacy styles.css */\n');
+    const stylesHash = sync.sha256(path.join(dashDir, 'styles.css'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/styles.css': stylesHash } });
+    const outside = freshDir('t81f-outside');
+    const bdir = path.join(p, '.claude', 'forge-backups', 'b81f');
+    fs.mkdirSync(path.dirname(bdir), { recursive: true });
+    let junctionOk = false;
+    try { fs.symlinkSync(outside, bdir, 'junction'); junctionOk = true; }
+    catch (e) { console.log('     (81f evidence: could not create a junction in this environment — ' + e.message + ' — skipping honestly)'); }
+    if (junctionOk) {
+      const rp = sync.pruneRetiredFiles(p, { batchId: 'b81f' });
+      t('81f a junctioned batch backup dir is refused, never applied', rp.applied === false && /symlink\/junction/.test(rp.error || ''));
+      t('81f the file was NEVER touched', fs.existsSync(path.join(dashDir, 'styles.css')) && sync.sha256(path.join(dashDir, 'styles.css')) === stylesHash);
+      t('81f nothing was written into the junction target', !fs.existsSync(path.join(outside, 'retired-prune')));
+    } else {
+      t('(81f skipped honestly — junction creation unavailable in this sandbox)', true);
+    }
+  }
+
+  console.log('\n81g) SYNC-5: a forged ledger entry naming a path outside the known retired-file list is ignored (never restored) and reported; the legit entry still restores');
+  {
+    const p = makeProject(freshDir('t81g-root'), 'proj', null);
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'graph.js'), '// legacy graph.js\n');
+    const graphHash = sync.sha256(path.join(dashDir, 'graph.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/graph.js': graphHash } });
+    sync.pruneRetiredFiles(p, { batchId: 'b81g' });
+    t('81g precondition: graph.js is really gone', !fs.existsSync(path.join(dashDir, 'graph.js')));
+    // tamper: append a forged entry naming a path that is NOT in RETIRED_TEMPLATE_FILES/RETIRED_STATE_FILES
+    const ledgerPath = path.join(sync.backupDirFor(p, 'b81g'), 'retired-prune-manifest.json');
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+    ledger.files.push({ rel: 'forge-bin/forge-sync.cjs', oldHash: 'deadbeef'.repeat(8) }); // a totally unrelated, sensitive real file
+    fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+    const restore = sync.restoreRetiredPruneLedger(p, 'b81g');
+    t('81g the legit entry still restores fine', restore.restored.includes('forge-dashboard/graph.js') && fs.existsSync(path.join(dashDir, 'graph.js')) && sync.sha256(path.join(dashDir, 'graph.js')) === graphHash);
+    t('81g nothing was ever written at the forged path', !fs.existsSync(path.join(p, '.claude', 'forge-bin', 'forge-sync.cjs')));
+    t('81g the forged entry is reported (never silently vanished), not restored', restore.failed.some((f) => f.rel === 'forge-bin/forge-sync.cjs' && /not a known retired-file path/.test(f.reason)));
+    t('81g overall ok is false (a forged entry taints the result honestly)', restore.ok === false);
+  }
+
+  console.log('\n81h) SYNC-5: a missing/corrupt backup payload for a ledgered entry makes the restore — and the whole rollback — not ok');
+  {
+    const tpl = freshDir('t81h-tpl');
+    fs.mkdirSync(path.join(tpl, 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(tpl, 'forge-bin', 'tool.cjs'), 'V2-CONTENT');
+    const p = makeProject(freshDir('t81h-root'), 'proj', 0);
+    fs.mkdirSync(path.join(p, '.claude', 'forge-bin'), { recursive: true });
+    fs.writeFileSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs'), 'V1-CONTENT');
+    const v1Hash = sync.sha256(path.join(p, '.claude', 'forge-bin', 'tool.cjs'));
+    const dashDir = path.join(p, '.claude', 'forge-dashboard');
+    fs.mkdirSync(dashDir, { recursive: true });
+    fs.writeFileSync(path.join(dashDir, 'app.js'), '// legacy app.js\n');
+    const appHash = sync.sha256(path.join(dashDir, 'app.js'));
+    sync.writeReceipt(p, { knownHashes: { 'forge-bin/tool.cjs': v1Hash, 'forge-dashboard/app.js': appHash } });
+    const r = sync.safeSyncProject(tpl, p, { batchId: 'b81h', nowIso: '2026-01-01T00:00:00.000Z' });
+    t('81h precondition: sync succeeded and pruned app.js', r.ok === true && r.retiredPrune.removed.includes('forge-dashboard/app.js'));
+    // corrupt/lose the backup payload itself (simulate a lost/corrupted backup file)
+    const backupPath = path.join(sync.backupDirFor(p, 'b81h'), 'retired-prune', 'forge-dashboard', 'app.js');
+    fs.rmSync(backupPath, { force: true });
+    const rb = sync.rollbackProject(p, 'b81h', {});
+    t('81h rollback reports ok:false — the main files rolled back fine but the retired-file restore did not', rb.ok === false);
+    t('81h the reason names the retired-file restore problem', /restoring retired legacy file/.test(rb.reason || ''));
+    t('81h retiredPruneRestore itself is not ok', rb.retiredPruneRestore && rb.retiredPruneRestore.ok === false);
+    t('81h retiredPruneRestore names app.js as failed (missing backup payload)', rb.retiredPruneRestore.failed.some((f) => f.rel === 'forge-dashboard/app.js'));
+    t('81h the main (unrelated) file STILL rolled back fine (additive failure, not total)', fs.existsSync(path.join(p, '.claude', 'forge-bin', 'tool.cjs')) && sync.sha256(path.join(p, '.claude', 'forge-bin', 'tool.cjs')) === v1Hash);
+  }
+}
+
+// =====================================================================================
+// 82) v2.9.0 WP-9B-SRC — SYNC-6 (independent Codex adversarial review, round 2, MEDIUM): the default
+// rollback (`forge-sync rollback <project>`, no explicit --batch) used to skip a ledger-only batch (see
+// rollbackProject's own "SYNC-1" doc comment for the full model) that is the TRUE latest, because
+// latestBatchId() only ever considered a batch directory that has a main manifest.json.
+// =====================================================================================
+console.log('\n82) v2.9.0 WP-9B-SRC — SYNC-6: latestBatchId()/rollback (no --batch) no longer skips a ledger-only batch that is the true latest');
+{
+  const p = makeProject(freshDir('t82a-root'), 'proj', null);
+  const dashDir = path.join(p, '.claude', 'forge-dashboard');
+  fs.mkdirSync(dashDir, { recursive: true });
+
+  // An ORDINARY, manifest-bearing OLDER batch — just the fields batchRecency()/latestBatchId() read.
+  const oldBatchDir = sync.backupDirFor(p, 'zzz-manifest-older');
+  fs.mkdirSync(oldBatchDir, { recursive: true });
+  fs.writeFileSync(path.join(oldBatchDir, 'manifest.json'), JSON.stringify({ batchId: 'zzz-manifest-older', ts: '2020-01-01T00:00:00.000Z' }), 'utf8');
+  t('82a precondition: the older manifest-bearing batch alone is (unsurprisingly) "the latest" before the newer ledger-only batch exists', sync.latestBatchId(p) === 'zzz-manifest-older');
+
+  // A LEDGER-ONLY NEWER batch (SYNC-6's exact scenario): pruneRetiredFiles() never calls takeBackup(), so
+  // this batch has NO manifest.json at all — only its own retired-prune-manifest.json.
+  fs.writeFileSync(path.join(dashDir, 'app.js'), '// old app.js\n');
+  const appHash = sync.sha256(path.join(dashDir, 'app.js'));
+  sync.writeReceipt(p, { knownHashes: { 'forge-dashboard/app.js': appHash } });
+  const rp = sync.pruneRetiredFiles(p, { batchId: 'aaa-ledger-only-newest' });
+  t('82a precondition: app.js was really pruned into a ledger-only batch', rp.applied === true && rp.removed.includes('forge-dashboard/app.js'));
+  const newBatchDir = sync.backupDirFor(p, 'aaa-ledger-only-newest');
+  t('82a precondition: that batch really has no manifest.json (ledger-only)', !fs.existsSync(path.join(newBatchDir, 'manifest.json')));
+  const future = new Date(Date.now() + 3600000);
+  fs.utimesSync(path.join(newBatchDir, 'retired-prune-manifest.json'), future, future); // force it unambiguously newest by mtime
+
+  t('82a batchRecency() reads a real epoch-millis number for BOTH shapes', typeof sync.batchRecency(path.dirname(oldBatchDir), 'zzz-manifest-older') === 'number' && typeof sync.batchRecency(path.dirname(newBatchDir), 'aaa-ledger-only-newest') === 'number');
+  t('82a latestBatchId() now returns the ledger-only batch, not the older manifest-bearing one', sync.latestBatchId(p) === 'aaa-ledger-only-newest');
+
+  const rb = sync.rollbackProject(p, undefined, {});
+  t('82a rollback with no explicit --batch resolves to the ledger-only newest batch', rb.batchId === 'aaa-ledger-only-newest');
+  t('82a rollback source is the ledger-only path', rb.source === 'retired-prune-ledger-only');
+  t('82a app.js is really restored, byte-identical', fs.existsSync(path.join(dashDir, 'app.js')) && sync.sha256(path.join(dashDir, 'app.js')) === appHash);
+
+  // Reverse-direction sanity: a genuinely NEWER manifest-bearing batch must still beat an OLDER
+  // ledger-only one — the fix must not flip the ordering, only stop EXCLUDING ledger-only batches.
+  const newerManifestDir = sync.backupDirFor(p, 'bbb-manifest-newest');
+  fs.mkdirSync(newerManifestDir, { recursive: true });
+  fs.writeFileSync(path.join(newerManifestDir, 'manifest.json'), JSON.stringify({ batchId: 'bbb-manifest-newest', ts: new Date(Date.now() + 7200000).toISOString() }), 'utf8');
+  t('82a a genuinely newer manifest-bearing batch still wins over an older ledger-only one', sync.latestBatchId(p) === 'bbb-manifest-newest');
+}
+
+console.log('\n82b) SYNC-6: batchRecency() edge cases — no regression for the pre-existing manifest-only trust model');
+{
+  const tmp = freshDir('t82b-tmp');
+  const bdir = path.join(tmp, '.claude', 'forge-backups');
+  fs.mkdirSync(bdir, { recursive: true });
+
+  // A ts far in the future relative to "now" (never a fixed calendar date — this suite must stay correct
+  // however far "today" has already moved on from when it was written; see 82b's own mtime-based
+  // ledger-only fixture below, which is genuinely stamped at real current time).
+  const farFutureIso = new Date(Date.now() + 10 * 365 * 86400000).toISOString();
+  fs.mkdirSync(path.join(bdir, 'ok-batch'), { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'ok-batch', 'manifest.json'), JSON.stringify({ ts: farFutureIso }), 'utf8');
+  t('82b a normal manifest.json with a valid ts -> a finite epoch-millis number', Number.isFinite(sync.batchRecency(bdir, 'ok-batch')));
+
+  fs.mkdirSync(path.join(bdir, 'broken-json'), { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'broken-json', 'manifest.json'), '{ not valid json', 'utf8');
+  t('82b a present-but-UNPARSEABLE manifest.json -> null (skipped, same "do not trust" posture as before the fix)', sync.batchRecency(bdir, 'broken-json') === null);
+
+  fs.mkdirSync(path.join(bdir, 'no-ts'), { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'no-ts', 'manifest.json'), JSON.stringify({ batchId: 'no-ts' }), 'utf8');
+  t('82b a manifest.json with NO ts field -> a finite (very old) number, never throws', Number.isFinite(sync.batchRecency(bdir, 'no-ts')));
+
+  fs.mkdirSync(path.join(bdir, 'ledger-only'), { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'ledger-only', 'retired-prune-manifest.json'), JSON.stringify({ batchId: 'ledger-only', files: [] }), 'utf8');
+  t('82b a ledger-only batch (no manifest.json, has retired-prune-manifest.json) -> a finite mtime-based number', Number.isFinite(sync.batchRecency(bdir, 'ledger-only')));
+
+  fs.mkdirSync(path.join(bdir, 'empty-dir'), { recursive: true });
+  t('82b a batch directory with NEITHER file -> null (not a real batch)', sync.batchRecency(bdir, 'empty-dir') === null);
+
+  t('82b latestBatchId() over this whole mixed set picks the real newest (ok-batch, 10 years out, beats no-ts=epoch-0 and the ledger-only batch created just now)', sync.latestBatchId(tmp) === 'ok-batch');
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

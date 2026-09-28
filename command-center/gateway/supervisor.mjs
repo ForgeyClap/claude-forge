@@ -63,7 +63,10 @@ export class GatewaySupervisor extends EventEmitter {
     super();
     this.childScript = options.childScript || DEFAULT_CHILD_SCRIPT;
     this.childArgs = options.childArgs || [];
-    this.logFilePath = options.logFilePath || DEFAULT_LOG_FILE;
+    // Left out means the default file; an explicit null means no log file at all (console and events
+    // only). `||` used to turn that null into the default, so in-process tests that asked for "no log
+    // file" wrote their fake pid 4242 restarts into the owner's real gateway-runtime.log.
+    this.logFilePath = options.logFilePath === undefined ? DEFAULT_LOG_FILE : options.logFilePath;
     this.initialBackoffMs = options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
     this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.backoffMultiplier = options.backoffMultiplier ?? DEFAULT_BACKOFF_MULTIPLIER;

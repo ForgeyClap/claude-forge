@@ -31,5 +31,7 @@ open_tickets, test_status, port`. `test_status` reads a run's `doctor.json` (fro
   into any scanned project. The only thing written is the global registry dir.
 - Every record is secret-redacted before writing (defense in depth) — never persists a raw key.
 - Real `DASHBOARD_STATE.json` / `run.json` data only; a missing/malformed file yields honest defaults
-  (`unknown`), never a fabricated status.
+  (`unknown`), never a fabricated status. (v2.9.0: the retired per-project server.cjs that used to write
+  `DASHBOARD_STATE.json` is removed, so a project synced since then will simply never have one — the same
+  honest-default path a project that never started that old dashboard already went through.)
 - Opt-in only: it never runs on `require`, only via the `scan` command.

@@ -47,7 +47,10 @@ test('GET /api/health returns a live, structured, truthful-state health report',
   assert.equal(res.statusCode, 200);
   assert.equal(res.json.ok, true);
   assert.ok(res.json.forge, 'has forge sub-object');
-  assert.ok(['CONNECTED', 'DISCONNECTED', 'DEGRADED'].includes(res.json.forge.control_center.state));
+  // WP-N2 (Forge 2.9.0): the retired per-project Control Center is never probed over the network
+  // any more — this is a fixed, honest note, not a live connection state.
+  assert.equal(res.json.forge.control_center.state, 'RETIRED');
+  assert.equal(typeof res.json.forge.control_center.note, 'string');
   assert.ok(res.json.forge.doctor_last && typeof res.json.forge.doctor_last.state === 'string');
   assert.equal(res.json.provenance, 'LIVE');
 });

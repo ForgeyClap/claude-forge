@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from '../src/server.mjs';
-import { PROJECT_ROOT } from '../src/paths.mjs';
+import { PROJECT_ROOT, COMMAND_CENTER_DATA_DIR } from '../src/paths.mjs';
 import {
   _resetProjectsCacheForTests,
   _setForgeSyncCjsForTests,
@@ -49,6 +49,23 @@ function makeRootWithProject(projectDirName) {
   return root;
 }
 
+// WP-CC1 (item 12): the by-PATH resolution tests below need to reach `resolveProjectByName`'s
+// SUCCESSFUL-match branch, which (unlike the ambiguity branch every other test in this file only
+// ever exercises) also runs the real `anyContainmentOk(SYNC_SCAN_ROOTS, ...)` defense-in-depth
+// check — see server.mjs's own `resolveProjectByName`. `SYNC_SCAN_ROOTS` is a fixed constant
+// (never test-overridable the way `projects.mjs`'s own scan roots are), so an `os.tmpdir()` fixture
+// fails it regardless of this fix — same reasoning as proof-cc1.test.mjs's own
+// `freshRootUnderDataDir()`. Placed under `COMMAND_CENTER_DATA_DIR` instead, which real
+// `SYNC_SCAN_ROOTS` always contains (it sits inside this project's own tree).
+const DATA_DIR_FIXTURE_PARENT = path.join(COMMAND_CENTER_DATA_DIR, 'gateway-test-tmp-ambiguous-route');
+function makeDataDirRootWithProject(projectDirName) {
+  fs.mkdirSync(DATA_DIR_FIXTURE_PARENT, { recursive: true });
+  const root = fs.mkdtempSync(path.join(DATA_DIR_FIXTURE_PARENT, 'fixture-'));
+  tempRoots.push(root);
+  fs.mkdirSync(path.join(root, projectDirName, '.claude', 'forge-dashboard'), { recursive: true });
+  return root;
+}
+
 before(async () => {
   server = createServer();
   await new Promise((resolve, reject) => {
@@ -69,6 +86,7 @@ after(async () => {
   _resetScanRootsForTests();
   _resetProjectsCacheForTests();
   for (const r of tempRoots) fs.rmSync(r, { recursive: true, force: true });
+  fs.rmSync(DATA_DIR_FIXTURE_PARENT, { recursive: true, force: true });
 });
 
 // Wires up two temp roots each holding a project folder named `my-site` and points discovery at
@@ -76,6 +94,17 @@ after(async () => {
 function setUpAmbiguousFixture() {
   const rootA = makeRootWithProject('my-site');
   const rootB = makeRootWithProject('my-site');
+  _setScanRootsForTests([rootA, rootB]);
+  _resetProjectsCacheForTests();
+  return { rootA, rootB };
+}
+
+// Same shape as setUpAmbiguousFixture(), but rooted under COMMAND_CENTER_DATA_DIR so a SUCCESSFUL
+// resolution (not just 409 ambiguity-detection) can pass the real SYNC_SCAN_ROOTS containment check
+// too — see makeDataDirRootWithProject()'s own header for why.
+function setUpAmbiguousFixtureUnderDataDir() {
+  const rootA = makeDataDirRootWithProject('my-site');
+  const rootB = makeDataDirRootWithProject('my-site');
   _setScanRootsForTests([rootA, rootB]);
   _resetProjectsCacheForTests();
   return { rootA, rootB };
@@ -102,6 +131,31 @@ test('GET /api/runs?project=<ambiguous name> answers 409, never picks either pro
   assert.equal(res.json.ok, false);
   assert.match(res.json.error, /ambiguous/);
   assert.equal(res.json.matches.length, 2);
+});
+
+// WP-CC1 (item 12): "two folders named the same make every endpoint fail for that project" — the
+// 409 above already hands back each colliding project's own real `path`; this proves a caller can
+// retry the SAME `?project=` param with that exact path and actually reach the ONE project it means,
+// rather than being permanently stuck at 409 for that name.
+test('GET /api/runs?project=<the real PATH from a 409\'s own matches> resolves that ONE project, never the other', { skip: SKIP_REASON }, async () => {
+  const { rootA, rootB } = setUpAmbiguousFixtureUnderDataDir();
+  const pathA = path.join(rootA, 'my-site');
+  const pathB = path.join(rootB, 'my-site');
+
+  const resA = await request(port, '/api/runs?project=' + encodeURIComponent(pathA));
+  assert.equal(resA.statusCode, 200, 'the exact real path must resolve, unlike the bare colliding name');
+  assert.equal(resA.json.ok, true);
+
+  const resB = await request(port, '/api/runs?project=' + encodeURIComponent(pathB));
+  assert.equal(resB.statusCode, 200);
+  assert.equal(resB.json.ok, true);
+});
+
+test('GET /api/runs?project=<a path NOT in the registry> is never trusted — falls through to the ordinary 404/409 path lookup', { skip: SKIP_REASON }, async () => {
+  setUpAmbiguousFixtureUnderDataDir();
+  const notRegistered = path.join(os.tmpdir(), 'definitely-not-a-registered-project-path-' + Date.now());
+  const res = await request(port, '/api/runs?project=' + encodeURIComponent(notRegistered));
+  assert.equal(res.statusCode, 404, 'an arbitrary filesystem path that is not already a discovered project must never be trusted');
 });
 
 // N7 wording test (WP-C4, 2026-09-26 independent security re-review): the 409 body must tell the

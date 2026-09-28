@@ -244,6 +244,42 @@ function ColumnFallbackFlag({ row }: { row: Row }) {
   );
 }
 
+// WP-CCD (item 2): the run's own verdict text (e.g. "PASS-WITH-NOTES") — reuses the existing
+// `.fw-tasks-stat` chip language exactly (no new colour/shape), renders nothing for the majority of
+// tasks that carry no verdict yet.
+function VerdictChip({ task }: { task: Task }) {
+  if (!task.verdict) return null;
+  return (
+    <span className="fw-tasks-stat" title={`Verdict: ${task.verdict}`}>
+      <Icon name="Gavel" size="xs" />
+      <Machine>{task.verdict}</Machine>
+    </span>
+  );
+}
+
+// WP-CCD (item 2): `'stalled'`/`'ended_unknown'` are real states this run reported that the closed
+// `StatusKey` union has no room for (see `Task.rawStatus`'s own doc comment) — without this, both
+// silently rendered as the generic idle/backlog bucket, indistinguishable from a task that simply
+// never started. Reuses `.is-unknown-column`'s exact dashed/secondary treatment (`is-stalled`,
+// `tasks.css`) — the same "this needs a second look" language, never a new colour.
+function StalledFlag({ task }: { task: Task }) {
+  if (task.rawStatus !== 'stalled' && task.rawStatus !== 'ended_unknown') return null;
+  const stalled = task.rawStatus === 'stalled';
+  return (
+    <span
+      className="fw-tasks-stat is-stalled"
+      title={
+        stalled
+          ? 'The agent assigned to this task has gone silent past the stale window — not proven finished, not proven still running.'
+          : 'The run ended before this task reported a real outcome — shown honestly, never as completed or idle.'
+      }
+    >
+      <Icon name="CircleAlert" size="xs" />
+      <span className="fw-tasks-stat__word">{stalled ? 'Stalled' : 'Ended unknown'}</span>
+    </span>
+  );
+}
+
 interface EntryProps {
   row: Row;
   selected: boolean;
@@ -293,6 +329,8 @@ function TaskCard({ row, selected, onSelect }: EntryProps) {
 
       <div className="fw-tasks-card__foot">
         <TaskStats task={task} />
+        <VerdictChip task={task} />
+        <StalledFlag task={task} />
         <ColumnFallbackFlag row={row} />
       </div>
     </li>
@@ -347,6 +385,8 @@ function TaskRow({ row, selected, onSelect }: RowProps) {
       </span>
 
       <TaskStats task={task} />
+      <VerdictChip task={task} />
+      <StalledFlag task={task} />
       <ColumnFallbackFlag row={row} />
     </li>
   );
@@ -660,9 +700,11 @@ export default function TasksView() {
                           >
                             {task.title}
                           </button>
+                          <VerdictChip task={task} />
                         </td>
                         <td data-label="Status">
                           <StatusBadge status={task.status} size="sm" />
+                          <StalledFlag task={task} />
                         </td>
                         <td data-label="Column">
                           <Machine muted>{COLUMN_META[row.column].label.toUpperCase()}</Machine>

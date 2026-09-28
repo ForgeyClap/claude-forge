@@ -371,6 +371,15 @@
   color: var(--forge-color-text-secondary);
 }
 
+/* WP-CCD (item 2): a task the run itself reported as 'stalled'/'ended_unknown' — the SAME
+   dashed, secondary "needs a second look" treatment `.is-unknown-column`/`.is-repair` already use,
+   never a new colour. */
+.fw-tasks-stat.is-stalled {
+  border-color: var(--forge-color-line-strong);
+  border-style: dashed;
+  color: var(--forge-color-text-secondary);
+}
+
 /* =========================================================================
    Task row — used by the work-package and phase layouts
    ========================================================================= */

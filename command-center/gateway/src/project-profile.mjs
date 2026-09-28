@@ -106,6 +106,23 @@ function readVersion(versionPath) {
   try { return JSON.parse(fs.readFileSync(versionPath, 'utf8')); } catch { return null; }
 }
 
+// WP-CC1 (item 15): `FORGE_VERSION.json`'s own `forge_version` is a SYNC-TIME COMMIT HASH (e.g.
+// "66a10b6aec4c"), stamped once at whatever moment the project last ran the template sync — on
+// this project's own real file, that is 2026-07-13, over two months stale relative to the ACTUAL
+// running system today. `.claude/config/orchestration/forge-canon.json`'s own `version.forge`
+// field (e.g. "v10") is the real, current, machine-readable Forge version this project's own
+// CLAUDE.md names as "THE machine-readable source for version/...". Read as a best-effort EXTRA
+// field, never replacing `forge_version`/`synced_at` above (kept exactly as before) — a project
+// without a forge-canon.json (an older/simpler install) honestly reports `canon_version: null`,
+// never a guess.
+function readCanonVersion(claudeDir) {
+  const canonPath = path.join(claudeDir, 'config', 'orchestration', 'forge-canon.json');
+  if (!containmentOk(claudeDir, canonPath)) return null;
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(canonPath, 'utf8')); } catch { return null; }
+  return parsed && parsed.version && typeof parsed.version.forge === 'string' ? parsed.version.forge : null;
+}
+
 export function buildProjectProfile(projectPath) {
   const claudeDir = path.join(projectPath, '.claude');
   const profilePath = path.join(claudeDir, 'FORGE_PROJECT_PROFILE.md');
@@ -117,6 +134,7 @@ export function buildProjectProfile(projectPath) {
 
   const profile = readProfile(profilePath);
   const version = readVersion(versionPath);
+  const canonVersion = readCanonVersion(claudeDir);
 
   return {
     ok: true,
@@ -133,6 +151,9 @@ export function buildProjectProfile(projectPath) {
     version_present: version !== null,
     forge_version: version ? (version.forge_version || null) : null,
     synced_at: version ? (version.synced_at || null) : null,
+    // WP-CC1 (item 15) addition — see readCanonVersion() above for why this is a SEPARATE, more
+    // current field rather than a replacement of forge_version/synced_at.
+    canon_version: canonVersion,
     captured_at: new Date().toISOString(),
     age_ms: 0,
     provenance: 'DERIVED',

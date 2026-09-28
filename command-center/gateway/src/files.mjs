@@ -9,7 +9,7 @@
 //
 // Containment model (defense in depth, same shape as runs.mjs/proof.mjs/events.mjs):
 //   1. `projectPath` must already be a value from the trusted project registry (checked again here
-//      via anyContainmentOk(SYNC_SCAN_ROOTS, projectPath) — never trust a single check point).
+//      via anyContainmentOk(getContainmentRoots(), projectPath) — never trust a single check point).
 //   2. The caller-supplied `relPath` is rejected outright if it LOOKS absolute (drive letter, UNC,
 //      POSIX leading slash) — belt-and-suspenders on top of point 3, since path.join() alone already
 //      cannot be redirected by an absolute-looking later segment (that is path.resolve()'s behavior,
@@ -38,7 +38,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { containmentOk, anyContainmentOk } from './security.mjs';
-import { SYNC_SCAN_ROOTS } from './paths.mjs';
+// Codex run B F-12: the DYNAMIC admitted-roots boundary — see admitted-roots.mjs's own header.
+import { getContainmentRoots } from './admitted-roots.mjs';
 
 // 256KB cap on any single file preview read — bounded regardless of the real file size.
 export const MAX_PREVIEW_BYTES = 256 * 1024;
@@ -118,7 +119,7 @@ function denylistedReason(targetPath, projectPath) {
 
 // GET /api/files: one directory level. `relPathRaw` empty/undefined means the project root.
 export function listDirectory(projectPath, relPathRaw) {
-  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
+  if (!anyContainmentOk(getContainmentRoots(), projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const resolved = resolveSafePath(projectPath, relPathRaw);
@@ -173,7 +174,7 @@ export function listDirectory(projectPath, relPathRaw) {
 // GET /api/files/read: a single text file preview, capped at MAX_PREVIEW_BYTES, with binary
 // detection and the denylist described in this file's header.
 export function readFilePreview(projectPath, relPathRaw) {
-  if (!anyContainmentOk(SYNC_SCAN_ROOTS, projectPath)) {
+  if (!anyContainmentOk(getContainmentRoots(), projectPath)) {
     return { ok: false, error: 'project path outside allowed scan root' };
   }
   const resolved = resolveSafePath(projectPath, relPathRaw);

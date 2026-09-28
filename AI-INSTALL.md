@@ -306,18 +306,17 @@ Tell them, in their own language, this:
 The Command Center is a local web UI on `http://127.0.0.1:4100` that shows runs, agents and
 artifacts per project. **It is optional — Forge works fully without it.**
 
-It ships as source and needs a one-time build, which is the *only* step in this repo that uses npm:
+Both installers put it next to Forge's global files (`~/.claude/forge/template/command-center/`)
+with the web page already built, so there is nothing to build. Start it from the project folder:
 
 ```bash
-cd command-center/dashboard
-npm install
-npm run build
-cd ../..
-node command-center/gateway/supervisor.mjs      # then open http://127.0.0.1:4100
+node .claude/forge-bin/forge-cc-launch.cjs      # what `forge dashboard` runs; then open http://127.0.0.1:4100
 ```
 
-If the user does not want npm involved, skip this entirely and say so plainly. Never start the
-gateway and then claim the dashboard is running without checking `GET /api/health` first.
+It reuses a Command Center that is already running, and it only builds the web page itself
+(`npm ci`, then `npm run build`, in `command-center/dashboard`) when that page is missing, which a
+normal install never is. Never start the gateway and then claim the dashboard is running without
+checking `GET /api/health` first.
 
 ---
 

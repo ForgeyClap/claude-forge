@@ -18,41 +18,60 @@
  */
 
 import { Eyebrow, Icon, Machine } from '@/components/primitives';
-import { useGatewayAgentDispatches } from '@/prototype/state/gateway-agent-dispatches';
+import { dispatchGroupKey, dispatchLabel, useGatewayAgentDispatches } from '@/prototype/state/gateway-agent-dispatches';
 import type { AgentDispatchRow } from '@/prototype/state/gateway-agent-dispatches';
 
 interface DispatchGroup {
-  readonly subagentType: string;
+  /** The real display label — a run-log row's own agent name (a Forge Boss), or the pre-existing
+   *  chat-tool-use `subagentType` — see `dispatchGroupKey`'s own doc comment (WP-CCD, item 3). */
+  readonly label: string;
   readonly count: number;
   readonly runningCount: number;
+  /** WP-CCD (item 3): a real-log dispatch the gateway itself reports as stalled (an agent gone
+   *  silent past the stale window) — never conflated with "running" or "finished". */
+  readonly stalledCount: number;
 }
 
-function groupBySubagentType(rows: readonly AgentDispatchRow[]): readonly DispatchGroup[] {
-  const byType = new Map<string, DispatchGroup>();
+function groupByDispatchIdentity(rows: readonly AgentDispatchRow[]): readonly DispatchGroup[] {
+  const byKey = new Map<string, DispatchGroup>();
   for (const row of rows) {
-    const existing = byType.get(row.subagentType);
+    const key = dispatchGroupKey(row);
+    const existing = byKey.get(key);
     if (existing === undefined) {
-      byType.set(row.subagentType, { subagentType: row.subagentType, count: 1, runningCount: row.running ? 1 : 0 });
+      byKey.set(key, {
+        label: dispatchLabel(row),
+        count: 1,
+        runningCount: row.running ? 1 : 0,
+        stalledCount: row.stalled ? 1 : 0,
+      });
     } else {
-      byType.set(row.subagentType, {
-        subagentType: row.subagentType,
+      byKey.set(key, {
+        label: existing.label,
         count: existing.count + 1,
         runningCount: existing.runningCount + (row.running ? 1 : 0),
+        stalledCount: existing.stalledCount + (row.stalled ? 1 : 0),
       });
     }
   }
-  return [...byType.values()].sort((a, b) => a.subagentType.localeCompare(b.subagentType));
+  return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function DispatchChip({ group }: { group: DispatchGroup }) {
   const isRunning = group.runningCount > 0;
+  // WP-CCD (item 3): stalled is a real, distinct state — never shown as "running" (it is
+  // explicitly not proven alive) and never silently folded into "dispatched" (a plain finished
+  // dispatch), which would hide a genuinely silent agent.
+  const isStalled = !isRunning && group.stalledCount > 0;
+  const liveState = isRunning ? 'running' : isStalled ? 'stalled' : 'dispatched';
   const title = isRunning
-    ? `${group.subagentType}: ${group.runningCount} dispatch${group.runningCount === 1 ? '' : 'es'} running right now (${group.count} recorded in total)`
-    : `${group.subagentType}: ${group.count} dispatch${group.count === 1 ? '' : 'es'} recorded — none currently running`;
+    ? `${group.label}: ${group.runningCount} dispatch${group.runningCount === 1 ? '' : 'es'} running right now (${group.count} recorded in total)`
+    : isStalled
+      ? `${group.label}: ${group.stalledCount} of ${group.count} recorded dispatch${group.count === 1 ? '' : 'es'} went silent past the stale window — not proven finished, not proven still running`
+      : `${group.label}: ${group.count} dispatch${group.count === 1 ? '' : 'es'} recorded — none currently running`;
   return (
-    <span className="fw-agents-chip" data-live={isRunning ? 'running' : 'dispatched'} title={title}>
-      <Icon name={isRunning ? 'Loader' : 'Clock'} size="xs" spin={isRunning} />
-      <Machine>{group.subagentType}</Machine>
+    <span className="fw-agents-chip" data-live={liveState} title={title}>
+      <Icon name={isRunning ? 'Loader' : isStalled ? 'CircleAlert' : 'Clock'} size="xs" spin={isRunning} />
+      <Machine>{group.label}</Machine>
       <span className="fw-agents-chip__count">{group.count}</span>
     </span>
   );
@@ -105,8 +124,9 @@ export function LiveAgentsStrip({ agentCount, projectId }: LiveAgentsStripProps)
     );
   }
 
-  const groups = groupBySubagentType(dispatches);
+  const groups = groupByDispatchIdentity(dispatches);
   const anyRunning = groups.some((g) => g.runningCount > 0);
+  const anyStalled = groups.some((g) => g.runningCount === 0 && g.stalledCount > 0);
 
   return (
     <div className="fw-agents__live" role="status">
@@ -116,7 +136,7 @@ export function LiveAgentsStrip({ agentCount, projectId }: LiveAgentsStripProps)
       </span>
       <ul className="fw-agents__live-chips">
         {groups.map((group) => (
-          <li key={group.subagentType}>
+          <li key={group.label}>
             <DispatchChip group={group} />
           </li>
         ))}
@@ -125,6 +145,9 @@ export function LiveAgentsStrip({ agentCount, projectId }: LiveAgentsStripProps)
         {anyRunning
           ? 'A running count is only ever shown when the conversation that dispatched it is genuinely still executing right now — everything else recorded here is a past dispatch.'
           : 'None of these are currently running — every dispatch above already finished (or its conversation is no longer executing).'}
+        {anyStalled
+          ? ' A stalled mark means the run went silent past the stale window — not proven finished, and not shown as still running.'
+          : ''}
         {agentCount === 0
           ? ' This project has no Forge agent registry, so the roster below is empty — these are subagents the Claude Code session dispatched on its own.'
           : ''}

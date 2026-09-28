@@ -2,18 +2,15 @@
 'use strict';
 /** forge-v9-events.test.cjs — V9-INTEGRATE (2026-07-22) real end-to-end proof that the 7 new event types
  *  declared by P1 (forge-runcontract.cjs), P2 (forge-capabilities.cjs), P4 (forge-projectbrain.cjs), and
- *  P5 (forge-scout.cjs) are genuinely registered in all 3 required places (the "3-place event-registration
- *  discipline" CLAUDE.md's invariant #6 requires):
+ *  P5 (forge-scout.cjs) are genuinely registered in both required places (the event-registration discipline
+ *  CLAUDE.md's invariant #6 requires — a 3rd place, forge-dashboard/app.js, existed at the time this file
+ *  was written but was REMOVED in v2.9.0 along with the rest of the retired per-project Control Center;
+ *  see forge-event-wiring.test.cjs's own header comment for the same removal):
  *    1. forge-dashboard/log-event.cjs KNOWN_EVENT_TYPES — proven by REALLY spawning the CLI (a made-up
  *       event_type must still be STRICT-REJECTED; every one of the 7 new types must be ACCEPTED and land in
  *       a real events.jsonl line).
  *    2. forge-bin/forge-verify.cjs's TERMINAL_TYPES/FAILED_TYPES mirror — proven by direct membership checks
  *       against the exported Sets (no re-implemented classification logic).
- *    3. forge-dashboard/app.js's taskStatus()/SYNTH mirror — proven via a static source-text check (app.js
- *       is browser JS with no Node-loadable module boundary Node can exercise headlessly the way panels.js's
- *       vm-sandbox tests do for pure render functions; a literal string-membership check on the real shipped
- *       source is still a genuine regression guard, not a fabricated pass — see forge-doctor.test.cjs's own
- *       identical convention for cross-file drift proofs).
  *  Writes ONLY into a real throwaway run directory (deleted at the end, success or failure) — never touches
  *  any real/historical run. */
 const fs = require('fs');
@@ -28,7 +25,7 @@ function t(name, fn) {
   catch (e) { failed++; console.log('  FAIL ' + name + ' — ' + e.message); }
 }
 
-console.log('forge-v9-events tests (log-event.cjs + forge-verify.cjs + app.js 3-place registration proof)');
+console.log('forge-v9-events tests (log-event.cjs + forge-verify.cjs 2-place registration proof)');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const LOG_EVENT = path.join(ROOT, '.claude', 'forge-dashboard', 'log-event.cjs');
@@ -92,27 +89,9 @@ try {
   }
 
   // -----------------------------------------------------------------------------------------------------
-  // 3) app.js taskStatus()/SYNTH mirror — real shipped source, static membership proof
+  // 3) unregisteredEvent() (forge-doctor.cjs) never flags the new types as unregistered
   // -----------------------------------------------------------------------------------------------------
-  console.log('\n3) forge-dashboard/app.js classification mirror (static source proof)');
-  const appSrc = fs.readFileSync(path.join(ROOT, '.claude', 'forge-dashboard', 'app.js'), 'utf8');
-  for (const [type, want] of NEW_TYPES) {
-    t('app.js taskStatus() includes "' + type + '" in its ' + want + ' list', () => {
-      const re = new RegExp("(^|[,\\s])'" + type + "'(,|\\])");
-      assert.ok(re.test(appSrc), type + ' literal not found in app.js source at all');
-    });
-  }
-  for (const [type] of NEW_TYPES) {
-    t('app.js SYNTH map has a fallback entry for "' + type + '"', () => {
-      const synthRe = new RegExp(type + ":\\s*'[a-z-]+'");
-      assert.ok(synthRe.test(appSrc), type + ' not found in the SYNTH fallback map');
-    });
-  }
-
-  // -----------------------------------------------------------------------------------------------------
-  // 4) unregisteredEvent() (forge-doctor.cjs) never flags the new types as unregistered
-  // -----------------------------------------------------------------------------------------------------
-  console.log('\n4) forge-doctor.cjs cross-check (no false "unregistered" flag)');
+  console.log('\n3) forge-doctor.cjs cross-check (no false "unregistered" flag)');
   const doctor = require('./forge-doctor.cjs');
   const known = doctor.extractKnownEventTypesFromSource(fs.readFileSync(LOG_EVENT, 'utf8'));
   t('extractKnownEventTypesFromSource() sees all 7 new literal types', () => {

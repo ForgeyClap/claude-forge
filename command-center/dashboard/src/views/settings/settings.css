@@ -474,7 +474,183 @@
   color: var(--forge-color-text-muted);
   font-size: var(--forge-text-xs);
   line-height: var(--forge-leading-snug);
-  max-inline-size: 16rem;
+  max-inline-size: 26rem;
+}
+
+/* ------------------------------------- WP-S2: plain-language Forge rows */
+/*
+ * Replaces the old <table> per group (Status/Setting/Value/From/What it
+ * does — narrow enough on the owner's screen for words to break mid-way,
+ * see this work package's screenshot) with one row per setting: a plain
+ * name, the technical key and a source badge on one line, the description
+ * under it, a collapsed "for the command line" detail, and the same
+ * ForgeSettingControl as before on the side. At >620px this sits beside its
+ * control like every other settings row in this file; at <=620px it becomes
+ * a stacked card, matching the "no sideways-scrolling table on a phone"
+ * requirement without a second, table-shaped codepath.
+ */
+
+.fw-fsettings-search {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  block-size: var(--fw-control-h);
+  padding-inline: var(--forge-space-3);
+  border: var(--forge-border-hair) solid var(--forge-color-line);
+  border-radius: var(--forge-radius-md);
+  background: var(--forge-color-surface-2);
+  color: var(--forge-color-text-muted);
+  max-inline-size: 26rem;
+}
+
+.fw-fsettings-search:focus-within {
+  border-color: var(--forge-color-line-loud);
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-fsettings-search__icon {
+  flex: none;
+}
+
+.fw-fsettings-search__input {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  color: var(--forge-color-text);
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-none);
+  outline: none;
+}
+
+.fw-fsettings-search__input::placeholder {
+  color: var(--forge-color-text-faint);
+}
+
+.fw-fsettings-search__input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.fw-fsettings-search__clear {
+  flex: none;
+}
+
+.fw-fsetting-list {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.fw-fsetting {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--forge-space-4);
+  padding-block: var(--forge-space-3);
+  min-inline-size: 0;
+}
+
+.fw-fsetting + .fw-fsetting {
+  border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+}
+
+.fw-fsetting__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--forge-space-1);
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.fw-fsetting__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--forge-space-2);
+  row-gap: var(--forge-space-1);
+}
+
+.fw-fsetting__name {
+  font-size: var(--forge-text-base);
+  font-weight: var(--forge-weight-medium);
+  color: var(--forge-color-text);
+  overflow-wrap: break-word;
+}
+
+.fw-fsetting__key {
+  font-size: var(--forge-text-2xs);
+}
+
+.fw-fsetting__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--forge-space-1);
+  font-size: var(--forge-text-2xs);
+  line-height: var(--forge-leading-snug);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-fsetting__badge.is-changed {
+  color: var(--forge-color-text-secondary);
+}
+
+.fw-fsetting__badge-dot {
+  flex: none;
+  inline-size: var(--forge-space-2);
+  block-size: var(--forge-space-2);
+  border-radius: var(--forge-radius-xs);
+  background: var(--forge-color-text-secondary);
+}
+
+.fw-fsetting__desc {
+  font-size: var(--forge-text-sm);
+  line-height: var(--forge-leading-normal);
+  color: var(--forge-color-text-secondary);
+  overflow-wrap: break-word;
+}
+
+.fw-fsetting__cli {
+  font-size: var(--forge-text-2xs);
+  color: var(--forge-color-text-faint);
+}
+
+.fw-fsetting__cli > summary {
+  cursor: pointer;
+  color: var(--forge-color-text-muted);
+  list-style: none;
+}
+
+.fw-fsetting__cli > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fw-fsetting__cli > summary::before {
+  content: '▸ ';
+}
+
+.fw-fsetting__cli[open] > summary::before {
+  content: '▾ ';
+}
+
+.fw-fsetting__cli-command {
+  display: block;
+  margin-block-start: var(--forge-space-1);
+  overflow-wrap: break-word;
+}
+
+.fw-fsetting__control {
+  display: flex;
+  align-items: center;
+  gap: var(--forge-space-2);
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  /* A long enum (autonomy's three long option names is the real case this caught in the WP-S2
+   * screenshot loop: "full-auto-within-mission" ran past the panel's right edge) scrolls inside
+   * its own column instead of overflowing past the panel — same containment
+   * `.fw-settings__row-control` already uses elsewhere in this same file. */
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 /* --------------------------------------------- local Claude Code section */
@@ -728,5 +904,33 @@
   .fw-settings__row-control {
     justify-content: flex-start;
     inline-size: 100%;
+  }
+
+  /* WP-S2: a phone gets a stacked card per Forge setting, not a narrower
+   * version of the same row — text on top, the control full-width below,
+   * a real card boundary instead of a hairline so each setting reads as
+   * its own tappable unit. */
+  .fw-fsetting {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--forge-space-3);
+    padding: var(--forge-space-3);
+    border: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+    border-radius: var(--forge-radius-md);
+    background: var(--forge-color-surface-2);
+  }
+
+  .fw-fsetting + .fw-fsetting {
+    border-block-start: var(--forge-border-hair) solid var(--forge-color-line-subtle);
+    margin-block-start: var(--forge-space-3);
+  }
+
+  .fw-fsetting__control {
+    justify-content: flex-start;
+    inline-size: 100%;
+  }
+
+  .fw-fsettings-search {
+    max-inline-size: 100%;
   }
 }

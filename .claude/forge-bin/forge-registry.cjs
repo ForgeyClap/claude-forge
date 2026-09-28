@@ -100,7 +100,14 @@ function testStatus(projDir, runId) {
   return 'unknown';
 }
 
-/** readProject(dir) — guarded, READ-ONLY. Returns one registry record; never throws, defaults on missing data. */
+/** readProject(dir) — guarded, READ-ONLY. Returns one registry record; never throws, defaults on missing data.
+ *  v2.9.0 note: DASHBOARD_STATE.json/PORT were written by the retired per-project server.cjs (removed from
+ *  the template; forge-sync's pruneRetiredFiles() cleans them out of an already-synced project too) — a
+ *  project synced after that upgrade will simply never have either file, so `state` here is honestly `{}`
+ *  and `status`/`port` below fall through to their existing 'unknown'/null defaults. This was ALREADY the
+ *  exact degrade path for any project that had forge-sync installed but had never once started the old
+ *  dashboard, so no behavior change was needed here — a project's live status now lives in the shared
+ *  Command Center (http://127.0.0.1:4100), not in a per-project file this registry tool would read. */
 function readProject(dir) {
   try {
     const dash = path.join(dir, '.claude', 'forge-dashboard');

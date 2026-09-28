@@ -1,34 +1,32 @@
-// Unit tests for the R3 fix (5s micro-cache on the Control Center health probe) in health.mjs.
+// Unit tests for gateway/src/health.mjs's forge.control_center field.
+//
+// WP-N2 (Forge 2.9.0): this file used to test the R3 fix — a 5s micro-cache on a real network
+// probe of the (now-removed) per-project Control Center. That server was retired from Forge
+// entirely, so the probe and its cache went with it: `forge.control_center` is now a fixed,
+// honest RETIRED note, never a network call, never stale, never anything to expire. These tests
+// verify that fixed shape instead, plus the still-real `execution` field this file always tested
+// alongside it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHealth, _resetHealthCacheForTests, _expireHealthCacheForTests, _getControlCenterProbeCallCountForTests } from '../src/health.mjs';
+import { buildHealth } from '../src/health.mjs';
 
-test('a burst of buildHealth() calls within the TTL performs exactly ONE real Control Center probe', async () => {
-  _resetHealthCacheForTests();
-  const first = await buildHealth(Date.now());
-  assert.equal(_getControlCenterProbeCallCountForTests(), 1);
-  const second = await buildHealth(Date.now());
-  const third = await buildHealth(Date.now());
-  assert.equal(_getControlCenterProbeCallCountForTests(), 1, 'the second and third calls must reuse the cached probe, not fire new network calls');
-  assert.ok(['CONNECTED', 'DISCONNECTED', 'DEGRADED'].includes(second.forge.control_center.state));
-  assert.ok(['CONNECTED', 'DISCONNECTED', 'DEGRADED'].includes(third.forge.control_center.state));
-  assert.equal(typeof third.forge.control_center.age_ms, 'number');
-  assert.ok(third.forge.control_center.age_ms >= second.forge.control_center.age_ms, 'age_ms must grow across cached calls');
+test('forge.control_center reports a fixed RETIRED state with no network probe', async () => {
+  const result = await buildHealth(Date.now());
+  assert.equal(result.forge.control_center.state, 'RETIRED');
+  assert.equal(typeof result.forge.control_center.note, 'string');
+  assert.ok(result.forge.control_center.note.length > 0, 'the note must actually explain what RETIRED means');
 });
 
-test('once the 5s micro-cache expires, the next call performs a fresh probe', async () => {
-  const before = _getControlCenterProbeCallCountForTests();
-  _expireHealthCacheForTests();
-  const result = await buildHealth(Date.now());
-  assert.equal(_getControlCenterProbeCallCountForTests(), before + 1);
-  assert.equal(result.forge.control_center.age_ms, 0, 'a genuinely fresh probe reports age_ms 0');
+test('forge.control_center is stable across repeated calls (no cache, no drift — it is a constant)', async () => {
+  const first = await buildHealth(Date.now());
+  const second = await buildHealth(Date.now());
+  assert.deepEqual(first.forge.control_center, second.forge.control_center);
 });
 
 // P2-12 fix, part (a): /api/health now carries the SAME `execution` shape GET /api/conversations
 // already returns, so a caller that only needs execution availability never has to pay
 // conversations.mjs's full listConversations() cost just to read one small object.
 test('buildHealth() exposes a real execution field with the same shape as GET /api/conversations', async () => {
-  _resetHealthCacheForTests();
   const result = await buildHealth(Date.now());
   assert.equal(typeof result.execution, 'object');
   assert.equal(typeof result.execution.available, 'boolean');

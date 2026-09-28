@@ -200,6 +200,21 @@ export default function ConnectWizard({
               <span>{service.loginError}</span>
             </p>
           ) : null}
+          {/* WP-P1: an honest status for the ONE-TIME automatic install of the bot's own
+              software — polled independently of this step's own "Connecting…" button label, so
+              it shows even while a slow first install is still running in the background. */}
+          {service.depsInstallPhase === 'installing' ? (
+            <p className="fw-wizard__copy fw-wizard__copy--muted">
+              Installing the Discord bot&apos;s software — this only happens once, and can take about a
+              minute…
+            </p>
+          ) : null}
+          {service.depsInstallPhase === 'failed' ? (
+            <p className="fw-wizard__alert" role="alert">
+              <Icon name="TriangleAlert" size="sm" />
+              <span>{service.depsInstallError ?? 'The Discord bot’s software could not be installed automatically.'}</span>
+            </p>
+          ) : null}
         </WizardStep>
 
         <WizardStep number={4} title="Get the bot into your server" state={inviteStepState}>

@@ -23,7 +23,20 @@ import { useEffect, useMemo, useState } from 'react';
 import { gwEventSource, gwGet, pickArray, pickBool, pickNumber, pickString } from '@/prototype/state/gateway-client';
 
 import { PROJECT_DATA_POLL_MS, type Keyed } from './shared';
-import { parseAgentRows, parseMissionPayload, parseProjectRows, parseRunRows, type AgentRow, type MissionPayload, type ProjectRow, type RunRow } from './rows';
+import { parseAgentRows, parseCurrentRunId, parseDefaultProjectId, parseMissionPayload, parseProjectRows, parseRunRows, type AgentRow, type MissionPayload, type ProjectRow, type RunRow } from './rows';
+import {
+  EMPTY_FINALIZE_RECEIPT,
+  EMPTY_GATE_EVIDENCE,
+  EMPTY_RUN_CONTRACT,
+  parseFinalizeReceipt,
+  parseGateEvidence,
+  parseGatewayReviews,
+  parseRunContract,
+  type GatewayFinalizeReceipt,
+  type GatewayGateEvidence,
+  type GatewayReview,
+  type GatewayRunContract,
+} from './graph-and-proof';
 
 /* ========================================================================== */
 /*  8. Per-resource polling hooks                                             */
@@ -52,14 +65,25 @@ import { parseAgentRows, parseMissionPayload, parseProjectRows, parseRunRows, ty
 // cache hits server-side.
 export const PROJECTS_POLL_MS = 2500;
 
-export function useGatewayProjectRows(): readonly ProjectRow[] {
+/** WP-P1: `rows` (unchanged shape/contract) plus `defaultProjectId` — the wrapper-designated
+ *  default project (`FORGE_CC_DEFAULT_PROJECT`), when the gateway resolved it to one of `rows`;
+ *  `null` otherwise. A plain object return (not a tuple) since `dataset.ts`'s one call site reads
+ *  both by name, not by position. */
+export interface ProjectRowsResult {
+  readonly rows: readonly ProjectRow[];
+  readonly defaultProjectId: string | null;
+}
+
+export function useGatewayProjectRows(): ProjectRowsResult {
   const [rows, setRows] = useState<readonly ProjectRow[]>([]);
+  const [defaultProjectId, setDefaultProjectId] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     async function tick(): Promise<void> {
       const result = await gwGet('/api/projects');
       if (cancelled || !result.ok) return;
       setRows(parseProjectRows(result.data));
+      setDefaultProjectId(parseDefaultProjectId(result.data));
     }
     void tick();
     const id = setInterval(() => void tick(), PROJECTS_POLL_MS);
@@ -68,22 +92,130 @@ export function useGatewayProjectRows(): readonly ProjectRow[] {
       clearInterval(id);
     };
   }, []);
-  return rows;
+  return { rows, defaultProjectId };
 }
 
 const EMPTY_RUN_ROWS: readonly RunRow[] = [];
 const EMPTY_AGENT_ROWS: readonly AgentRow[] = [];
 const EMPTY_RAW_EVENTS: readonly Record<string, unknown>[] = [];
 
-export function useGatewayProjectRuns(projectName: string): readonly RunRow[] {
-  const [state, setState] = useState<Keyed<readonly RunRow[]>>({ key: '', value: EMPTY_RUN_ROWS });
+/**
+ * WP-CCD (item 7): `GET /api/active-runs` — a NEW, project-agnostic route (no `?project=`, unlike
+ * every other route in this file).
+ *
+ * REVIEW FIX: the route DOES exist on the real gateway (verified live against
+ * `_scratch/wt-cc1-snap/gateway/src/active-runs.mjs` — `WP-CC1 item 3`), and its per-row shape is
+ * `{project, run_id, title, started_at, last_work_at, open_dispatches, working_agents}`, where
+ * `working_agents` is an array of `{agent, agent_slug, wp_id, task, started_at}` records (one per
+ * DISTINCT working agent, de-duplicated by slug). Read defensively regardless — the route not
+ * existing on an OLDER gateway build still reads back `{available:false, rows:[]}` so `HomeView.tsx`
+ * falls back to its own existing single-project derivation rather than showing an empty "Active
+ * missions" panel for a workspace that plainly has running work elsewhere.
+ */
+export interface ActiveRunRow {
+  readonly project: string;
+  readonly runId: string;
+  readonly title: string | null;
+  readonly startedAt: string | null;
+  readonly lastWorkAt: string | null;
+  readonly openDispatches: number | null;
+  readonly agents: readonly string[];
+}
+
+export interface ActiveRunsResult {
+  /** `false` on ANY fetch failure (404 today, a network error, a malformed body) — the honest
+   *  "this workspace-wide signal is not available", never confused with "genuinely zero active
+   *  runs" (`available: true, rows: []`). */
+  readonly available: boolean;
+  readonly rows: readonly ActiveRunRow[];
+}
+
+const EMPTY_ACTIVE_RUNS: ActiveRunsResult = { available: false, rows: [] };
+
+/**
+ * REVIEW FIX: the real field is `working_agents` (see this file's own header) — a plain `agents` key
+ * is never actually sent by the verified-live gateway, so reading it alone always returned an empty
+ * array on real data (this WP's own `HomeView.tsx` "N agents" count for a cross-project row was
+ * therefore always 0). `agents` is still tried as a fallback (an older/renamed gateway build), and
+ * each real `working_agents` record's own identity fields (`agent`/`agent_slug`) are tried before
+ * the previously-assumed, never-actually-sent `name`/`slug`.
+ */
+function readAgentsField(row: Record<string, unknown>): readonly string[] {
+  const raw = row.working_agents ?? row.agents;
+  if (!Array.isArray(raw)) return [];
+  const asStrings = raw.filter((v): v is string => typeof v === 'string');
+  if (asStrings.length > 0) return asStrings;
+  const asRecords = pickArray(row, ['working_agents', 'agents']);
+  return asRecords.map((a) => pickString(a, ['agent', 'agent_slug', 'name', 'slug']) ?? '').filter((s) => s.length > 0);
+}
+
+function toActiveRunRow(row: Record<string, unknown>): ActiveRunRow {
+  return {
+    project: pickString(row, ['project']) ?? '',
+    runId: pickString(row, ['run_id']) ?? '',
+    title: pickString(row, ['title']),
+    startedAt: pickString(row, ['started_at']),
+    lastWorkAt: pickString(row, ['last_work_at']),
+    openDispatches: pickNumber(row, ['open_dispatches']),
+    agents: readAgentsField(row),
+  };
+}
+
+/**
+ * REVIEW FIX: extracted so the real `GET /api/active-runs` array-parsing (including the
+ * `readAgentsField` fix above) is directly unit-testable without mounting the hook/mocking `fetch` —
+ * mirrors `parseAgentDispatchRows`'s own precedent in `gateway-agent-dispatches.ts` for this exact
+ * "export the pure array parser, not just the polling hook" pattern.
+ */
+export function parseActiveRunRows(data: Record<string, unknown>): readonly ActiveRunRow[] {
+  return pickArray(data, ['active_runs', 'activeRuns', 'runs']).map(toActiveRunRow);
+}
+
+export function useGatewayActiveRuns(): ActiveRunsResult {
+  const [state, setState] = useState<ActiveRunsResult>(EMPTY_ACTIVE_RUNS);
+  useEffect(() => {
+    let cancelled = false;
+    async function tick(): Promise<void> {
+      const result = await gwGet('/api/active-runs');
+      if (cancelled) return;
+      if (!result.ok) {
+        setState(EMPTY_ACTIVE_RUNS);
+        return;
+      }
+      const rows = parseActiveRunRows(result.data);
+      setState({ available: true, rows });
+    }
+    void tick();
+    const id = setInterval(() => void tick(), PROJECTS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+  return state;
+}
+
+/** WP-CCD (item 1): `rows` (unchanged shape/contract) plus `currentRunId` — the gateway's own
+ *  honest pick of "the run this project is actually on right now" (`current_run`, a sibling field
+ *  on the same `/api/runs` payload, mirroring `default_project_id`'s own sibling-field convention),
+ *  `null` when absent (an older gateway build) or when the gateway itself found none. A plain
+ *  object, not a tuple — `dataset.ts`'s one call site reads both by name. */
+export interface ProjectRunsResult {
+  readonly rows: readonly RunRow[];
+  readonly currentRunId: string | null;
+}
+
+const EMPTY_PROJECT_RUNS_RESULT: ProjectRunsResult = { rows: EMPTY_RUN_ROWS, currentRunId: null };
+
+export function useGatewayProjectRuns(projectName: string): ProjectRunsResult {
+  const [state, setState] = useState<Keyed<ProjectRunsResult>>({ key: '', value: EMPTY_PROJECT_RUNS_RESULT });
   useEffect(() => {
     if (projectName === '') return undefined;
     let cancelled = false;
     async function tick(): Promise<void> {
       const result = await gwGet(`/api/runs?project=${encodeURIComponent(projectName)}`);
       if (cancelled || !result.ok) return;
-      setState({ key: projectName, value: parseRunRows(result.data) });
+      setState({ key: projectName, value: { rows: parseRunRows(result.data), currentRunId: parseCurrentRunId(result.data) } });
     }
     void tick();
     const id = setInterval(() => void tick(), PROJECT_DATA_POLL_MS);
@@ -92,7 +224,7 @@ export function useGatewayProjectRuns(projectName: string): readonly RunRow[] {
       clearInterval(id);
     };
   }, [projectName]);
-  return state.key === projectName ? state.value : EMPTY_RUN_ROWS;
+  return state.key === projectName ? state.value : EMPTY_PROJECT_RUNS_RESULT;
 }
 
 /**
@@ -106,7 +238,7 @@ export function useGatewayProjectRuns(projectName: string): readonly RunRow[] {
  * straight from `runs.mjs`'s own P1-2 scan cache, not re-parsed from disk on every poll).
  */
 export function useGatewayRunScanErrors(projectName: string): ReadonlyMap<string, string | null> {
-  const runRows = useGatewayProjectRuns(projectName);
+  const { rows: runRows } = useGatewayProjectRuns(projectName);
   return useMemo(() => {
     const map = new Map<string, string | null>();
     for (const row of runRows) map.set(row.runId, row.eventScanError);
@@ -178,6 +310,59 @@ export function useGatewayProof(projectName: string, runId: string | null): Reco
     };
   }, [projectName, runId]);
   return state.key === missionKey(projectName, runId) ? state.value : null;
+}
+
+/**
+ * WP-CCD (item 6): `reviews`/`gate_evidence`/`finalize`/`contract` are read straight off the exact
+ * same `/api/proof` payload `useGatewayProof` above already fetches for `gates`/`proof` — this is a
+ * SECOND, independent poll of that route (mirrors `useGatewayRunScanErrors`'s own precedent of a
+ * second independent poll for a concept `PrototypeDataset` does not carry), mounted directly by
+ * `TestsView.tsx` rather than threaded through `useGatewayDataset`/`PrototypeDataset` (which stays
+ * out of this slice's concern — those four are net-new display concepts, not a widened existing
+ * field). Every one of the four parsers already degrades to an honest "not available yet" value
+ * when the gateway build serving this request predates the field.
+ */
+export interface GatewayProofExtras {
+  readonly reviews: readonly GatewayReview[];
+  readonly gateEvidence: GatewayGateEvidence;
+  readonly finalize: GatewayFinalizeReceipt;
+  readonly contract: GatewayRunContract;
+}
+
+const EMPTY_PROOF_EXTRAS: GatewayProofExtras = {
+  reviews: [],
+  gateEvidence: EMPTY_GATE_EVIDENCE,
+  finalize: EMPTY_FINALIZE_RECEIPT,
+  contract: EMPTY_RUN_CONTRACT,
+};
+
+export function useGatewayProofExtras(projectName: string, runId: string | null): GatewayProofExtras {
+  const [state, setState] = useState<Keyed<GatewayProofExtras>>({ key: '', value: EMPTY_PROOF_EXTRAS });
+  useEffect(() => {
+    if (projectName === '' || runId === null) return undefined;
+    const rid = runId;
+    let cancelled = false;
+    async function tick(): Promise<void> {
+      const result = await gwGet(`/api/proof?project=${encodeURIComponent(projectName)}&run=${encodeURIComponent(rid)}`);
+      if (cancelled || !result.ok) return;
+      setState({
+        key: missionKey(projectName, rid),
+        value: {
+          reviews: parseGatewayReviews(result.data),
+          gateEvidence: parseGateEvidence(result.data),
+          finalize: parseFinalizeReceipt(result.data),
+          contract: parseRunContract(result.data),
+        },
+      });
+    }
+    void tick();
+    const id = setInterval(() => void tick(), PROJECT_DATA_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [projectName, runId]);
+  return state.key === missionKey(projectName, runId) ? state.value : EMPTY_PROOF_EXTRAS;
 }
 
 /**
