@@ -378,6 +378,21 @@ forge_manifest_add() {
   printf '%s\t%s\n' "$rel" "$hash" >> "$MANIFEST_TMP/$scope.tsv"
 }
 
+# forge_manifest_carry <scope> <root> <abspath> <old_tsv> — a create-only-when-absent file (the project CLAUDE.md)
+# that an EARLIER Forge install wrote and this run only KEPT: its old manifest line (the path and the hash from when
+# Forge wrote it) is carried into this run's manifest. Without it the retired-file pruning read the file as "no longer
+# shipped" and moved it to backup on every re-install (found by the Linux CI of PR #4); an uninstall still spares it
+# when you edited it. A file Forge never wrote (absent from the old manifest) stays untracked, exactly as before.
+forge_manifest_carry() {
+  local scope="$1" root="$2" abspath="$3" old_tsv="$4" rel line
+  [ -n "${MANIFEST_TMP:-}" ] && [ -d "$MANIFEST_TMP" ] && [ -n "$old_tsv" ] && [ -s "$old_tsv" ] || return 0
+  rel="${abspath#"$root"/}"
+  [ "$rel" != "$abspath" ] || return 0
+  line=$(awk -F '\t' -v r="$rel" '$1 == r { print; exit }' "$old_tsv")
+  [ -n "$line" ] || return 0
+  printf '%s\n' "$line" >> "$MANIFEST_TMP/$scope.tsv"
+}
+
 # forge_write_manifest_file <scope> <dest_file> <version> — writes the accumulated manifest for
 # one scope to disk. A no-op when nothing was recorded for that scope this run (e.g. a
 # --project-only install never touches the global manifest, and must not clear one from an
@@ -425,6 +440,7 @@ forge_seed_project_root() {
 
   if [ -f "$seed_project/CLAUDE.md" ]; then
     forge_log "  kept:  $seed_project/CLAUDE.md (already exists — not touched)"
+    forge_manifest_carry "project" "$seed_project" "$seed_project/CLAUDE.md" "${OLD_PROJECT_TSV:-}"
   elif [ -f "$SOURCE_DIR/templates/project-CLAUDE.md" ]; then
     if [ "$DRY_RUN" = "1" ]; then
       forge_log "  would write: $seed_project/CLAUDE.md"

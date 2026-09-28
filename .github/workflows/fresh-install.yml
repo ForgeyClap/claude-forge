@@ -156,6 +156,8 @@ jobs:
           bash install.sh --project "$FORGE_TEST_PROJECT" --yes | grep -E "kept:|wrote:.*(CLAUDE|gitignore)" | tail -3
           gi_after=$(wc -l < "$FORGE_TEST_PROJECT/.gitignore")
           [ "$gi_before" = "$gi_after" ] || { echo "::error::.gitignore grew on a second install ($gi_before -> $gi_after)"; exit 1; }
+          # v2.9.0: a second install must never move the project CLAUDE.md away (it did, as "retired", before the fix).
+          [ -f "$FORGE_TEST_PROJECT/CLAUDE.md" ] || { echo "::error::the second install removed the project CLAUDE.md"; exit 1; }
           echo "ok   idempotent (.gitignore stayed at $gi_after lines)"
 
       # v2.9.0 (WP-P3b): a newer version prunes files it no longer ships, on the very install/upgrade
@@ -882,7 +884,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Host '::error::install.ps1 failed with a space-and-trailing-backslash -ProjectDir'; exit 1 }
           $doctorPath = Join-Path $proj '.claude\forge-bin\forge-doctor.cjs'
           if (-not (Test-Path -LiteralPath $doctorPath -PathType Leaf)) { Write-Host '::error::the payload did not land inside the correctly-named project directory'; exit 1 }
-          $strayQuoteSibling = Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Filter '*"*' -ErrorAction SilentlyContinue
+          # Check each NAME for a real quote character. -Filter '*"*' cannot be used: in Win32 name matching '"' is a
+          # wildcard (a dot or the end of a name), so it matched every entry and failed on normal folders (PR #4 CI).
+          $strayQuoteSibling = Get-ChildItem -LiteralPath $env:RUNNER_TEMP -ErrorAction SilentlyContinue | Where-Object { $_.Name.Contains([char]34) }
           if ($strayQuoteSibling) { Write-Host "::error::a wrongly-named path with a stray quote was created: $($strayQuoteSibling.FullName -join ', ')"; exit 1 }
           Write-Host 'ok   install.ps1 installed into the correctly-named space-and-trailing-backslash project directory'
           exit 0

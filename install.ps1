@@ -1527,6 +1527,13 @@ function Add-ForgeProjectRootSeed {
   $claudeTemplate = Join-Path $SourceDir 'templates\project-CLAUDE.md'
   if (Test-Path -LiteralPath $claudeMd -PathType Leaf) {
     Write-ForgeLog "  kept:  $claudeMd (already exists -- not touched)"
+    # A CLAUDE.md an EARLIER Forge install wrote, and this run only KEPT, keeps its old manifest entry (the path and
+    # the hash from when Forge wrote it). Without it the retired-file pruning read it as "no longer shipped" and
+    # moved it to backup on every re-install (found by the Linux CI of PR #4); an uninstall still spares it when you
+    # edited it. A CLAUDE.md Forge never wrote is not in the old manifest and stays untracked, as before.
+    if ($script:ForgeOldProjectEntries -and $script:ForgeOldProjectEntries.ContainsKey('CLAUDE.md')) {
+      [void] $script:ForgeManifest['project'].Add([ordered]@{ path = 'CLAUDE.md'; sha256 = [string]$script:ForgeOldProjectEntries['CLAUDE.md'] })
+    }
   } elseif (Test-Path -LiteralPath $claudeTemplate -PathType Leaf) {
     if ($IsDryRun) {
       Write-ForgeLog "  would write: $claudeMd"
@@ -1845,6 +1852,7 @@ function Main {
   # produces two differently-stamped "retired-*" folders.
   $oldGlobalEntries = Get-ForgeOldManifestEntries -ManifestPath (Join-Path $forgeHome '.claude\forge\install-manifest.json')
   $oldProjectEntries = Get-ForgeOldManifestEntries -ManifestPath (Join-Path $projectDir '.claude\.forge-install-manifest.json')
+  $script:ForgeOldProjectEntries = $oldProjectEntries
   $pruneStamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
 
   # ---------------------------------------------------------------------------
