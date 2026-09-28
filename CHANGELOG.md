@@ -141,12 +141,21 @@ default, and every setting can now also be changed from the dashboard.
 - **Event log:** a reviewer whose task text would make it count as a worker now gets a warning while it is logged.
 - **Secrets in free text** (`password=…`, quoted values, `client_secret=…`) are masked everywhere Forge writes text:
   vault, doctor, error explanations, snapshot.
+- **A finalized run whose log changed afterwards no longer shows as finalized.** The Command Center checks the
+  finalize receipt against the run log's exact size and sha256, so a run that was reopened or edited, or whose log
+  is missing, reads "not finalized" with the reason. (Codex found that a size-only check missed an edit of the same
+  length.)
+- **The Discord bot no longer crashes when Discord refuses to create a project channel** (the bot's role lacks
+  "Manage Channels"). That project is skipped, you are told once which permission to give, and the bot retries by
+  itself with a growing wait; the other projects keep working.
+- **Plain notes where the dashboard shows only part of a long list:** active runs on Home, the run picker in
+  Activity, and the Artifacts gallery (including older runs outside its 10-run window).
 
 ### How this release was verified
-- Full source doctor all green on the final source commit: 133 suites, 9,902 tests passing, 0 failing (the
+- Full source doctor all green on the final source commit: 133 suites, 9,911 tests passing, 0 failing (the
   removed Control Center's own suites are gone; 2.8.1: 136 suites, 9,198). The Command Center in its real
-  location: gateway 1,467 of 1,468 (one test needs a symlink privilege this machine lacks), Discord 242/242,
-  dashboard 1,484/1,484, and the production build. Both gates were recorded with their exact commands, exit codes
+  location: gateway 1,490 of 1,491 (one test needs a symlink privilege this machine lacks), Discord 246/246,
+  dashboard 1,501/1,501, and the production build. Both gates were recorded with their exact commands, exit codes
   and output hashes on a clean working tree.
 - Codex reviewed the whole release, read-only and adversarially, in several rounds:
   - earlier: the source and Command Center changes (20 findings, all fixed), a verification of those fixes, and
@@ -160,11 +169,15 @@ default, and every setting can now also be changed from the dashboard.
     findings). Two were rejected with reasons: the doctor's text scan of the rebinding guard is a backstop,
     because the real request path is tested end to end; and a folder that only matches the self-test debris
     shape holds nothing to lose. The rest are the limits described under Known limitations.
-  - These review runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
-    gpt-6-astra model was refused for that ChatGPT account at the time.
-- The live Command Center after a restart on the final code: healthy, the Discord bot back by itself, the usage
-  guard's watcher running, and read-only screenshots of 10 views at desktop and phone size with no overflow and no
-  console errors.
+  - a last review of the final day's changes (the weekly pause point, the receipt check, the bot fix): 3 findings
+    (2 medium), all fixed with tests. Its verification confirmed one and found the other two only partly fixed, plus
+    four small new ones; all were fixed afterwards with tests (no third round).
+  - The earlier runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
+    gpt-6-astra model was refused for that ChatGPT account at the time. The last review and its verification ran on
+    gpt-6-astra at high effort, after the maintainer changed the setting.
+- The live Command Center after a restart on the final code: healthy, the Discord bot running again, the usage
+  guard's watcher running, and read-only screenshots of 10 views at desktop and phone size with no overflow, no
+  console errors and no write requests.
 - `install.sh`: the old and new versions were compared on real installs. The installed files were identical after
   install and after uninstall; the dry-run output was identical. Both installers were run for real on this Windows
   machine with a broken rules file and with a folder path ending in a backslash. The four installer fixes have
@@ -174,7 +187,7 @@ default, and every setting can now also be changed from the dashboard.
   bits, plugin copies in sync, `node --check` on 259 tools, the retired dashboard hash table, the plugin manifests).
   The test-suite and doctor steps ran in a fresh-laptop simulation of the release commit (install into an empty
   folder with an empty home on Windows PowerShell 5.1, without bash or the claude CLI, then the doctor): all green,
-  133 suites, 9,858 passing. On that install the gate blocked a recursive delete and switching the gate off, and
+  133 suites, 9,867 passing. On that install the gate blocked a recursive delete and switching the gate off, and
   allowed ordinary commands; the Command Center started from the project's own wrapper on a test port, served the
   page and listed the fresh project.
 - Still to run before the tag: CI on Linux and Windows (Node 18 and 22) on the release commit, once it is pushed.
