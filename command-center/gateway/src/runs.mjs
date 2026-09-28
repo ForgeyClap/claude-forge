@@ -28,6 +28,7 @@ import { buildAgentNameIndex } from './agent-names.mjs';
 // Codex run B F-11: the ONE shared receipt validator, also used by proof.mjs — see its own header
 // for why "any parseable JSON object" was never enough to mean "genuinely finalized".
 import { validateFinalizeReceipt } from './receipt-validator.mjs';
+import { eventsLogFingerprint } from './events-digest.mjs';
 import { readDirBounded } from './bounded-readdir.mjs';
 
 // WP-CC1 (item 1): mirrors `.claude/forge-bin/forge-snapshot.cjs`'s own WORK_EVENT_TYPES /
@@ -565,13 +566,11 @@ function buildRunRows(projectPath, nowMs) {
     // (shared with proof.mjs) requires the exact matching run_id, a real 64-hex digest, and a
     // literal green contract before this run is honestly reported finalized.
     const finalizedReceiptRaw = readJsonSafe(path.join(runPath, 'run-finalized.json'));
-    // WP-RB-CC (M-1): eventsScan.size is this SAME loop iteration's already-stat()'d live byte size
-    // of this run's events.jsonl (scanEventsFileCached() above always stats the real current file,
-    // cache hit or not) — passing it costs nothing extra, and lets the shared validator catch a
-    // receipt whose pinned `bytes` no longer matches the real log (grew/changed after finalizing).
-    // `undefined` on the ENOENT/read-error emptyScan() branch — validateFinalizeReceipt() treats a
-    // non-finite value as "cannot verify", never as a guessed stale.
-    const receiptCheck = validateFinalizeReceipt(finalizedReceiptRaw, runId, eventsScan.size);
+    // WP-RB-CC (M-1), made strict by the Codex review of 2026-09-28 (R1): the receipt only counts while
+    // the live events.jsonl still has its exact byte size AND sha256. Only a run that HAS a receipt is
+    // fingerprinted (cached on size and mtime, see events-digest.mjs); a missing or unreadable log never
+    // counts as finalized.
+    const receiptCheck = validateFinalizeReceipt(finalizedReceiptRaw, runId, finalizedReceiptRaw === null ? null : eventsLogFingerprint(runPath));
     const hasGateEvidence = fs.existsSync(path.join(runPath, 'gate-evidence.json'));
     const finalized = receiptCheck.valid;
     runs.push({

@@ -20,26 +20,22 @@
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/i;
 
 /**
- * validateFinalizeReceipt(parsed, expectedRunId, currentEventsBytes) -> { valid: true, receipt } |
+ * validateFinalizeReceipt(parsed, expectedRunId, currentLog) -> { valid: true, receipt } |
  * { valid: false, reason }. `parsed` is whatever JSON.parse() returned for run-finalized.json, or
  * `null` when the file is absent/unreadable/unparseable — callers pass that same `null` straight
  * through here too, so there is exactly ONE place that decides "does this run count as finalized",
  * never two independently drifting checks.
  *
- * WP-RB-CC (review finding M-1): `currentEventsBytes` is optional — the caller's own already-stat()'d
- * LIVE byte size of this run's events.jsonl right now. Before this parameter existed, this validator
- * checked the receipt's SHAPE only, never compared it against the current log, so a run finalized
- * once and then re-opened (more events logged into the SAME run afterwards) still read back as a
- * fully "Finalized" run forever — the exact STALE case `check()` in `.claude/forge-bin/
- * forge-finalize.cjs` (read-only, that project's own real authority) already refuses via an exact
- * digest+bytes match against the current file. Recomputing a full sha256 digest on every dashboard
- * poll is not worth its cost here; a byte-size mismatch alone already proves the file changed (an
- * append changes the length by construction), so it is checked cheaply below instead. Omit this
- * argument (or pass `null`/`NaN`/anything non-finite) when the caller could not determine the current
- * size (no events.jsonl at all, or a read failure) — the check is then honestly skipped, never
- * guessed stale from missing information.
+ * `currentLog` is the CURRENT fingerprint of this run's events.jsonl, from events-digest.mjs:
+ * `{state:'ok', bytes, digest}`, `{state:'missing'}` or `{state:'unreadable', reason}`. The receipt
+ * pins the log exactly as forge-finalize.cjs wrote it (`digest` = sha256 of the whole file, `bytes` =
+ * its length), and it only counts while the live log still has BOTH. WP-RB-CC (review finding M-1)
+ * first compared the byte size only; the Codex review of 2026-09-28 (R1) showed that an equal-length
+ * edit (check_passed -> check_failed) kept the size, and that a missing log skipped the check — so the
+ * digest is compared too, and a log that is missing, unreadable or simply not checked never lets a run
+ * read as finalized. Only a receipt that exists is ever checked (the `absent` case returns first).
  */
-export function validateFinalizeReceipt(parsed, expectedRunId, currentEventsBytes = null) {
+export function validateFinalizeReceipt(parsed, expectedRunId, currentLog) {
   if (parsed === null) return { valid: false, reason: 'absent' };
   if (typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { valid: false, reason: 'receipt_invalid: not a plain object' };
@@ -63,11 +59,16 @@ export function validateFinalizeReceipt(parsed, expectedRunId, currentEventsByte
   if (!Number.isInteger(parsed.events) || parsed.events <= 0) {
     return { valid: false, reason: 'receipt_invalid: missing or empty events count' };
   }
-  // WP-RB-CC (M-1): the receipt's own pinned `bytes` no longer matches the CURRENT live file — the
-  // log changed (almost always grew — a follow-up logged more events into this already-finalized
-  // run) since this receipt was written. See this function's own header for why only a byte-size
-  // comparison is done here, not a full digest recompute.
-  if (Number.isFinite(currentEventsBytes) && currentEventsBytes !== parsed.bytes) {
+  if (!currentLog || typeof currentLog !== 'object') {
+    return { valid: false, reason: 'the run log was not checked against the receipt' };
+  }
+  if (currentLog.state === 'missing') {
+    return { valid: false, reason: 'the run log is missing, so the receipt cannot be checked' };
+  }
+  if (currentLog.state !== 'ok' || typeof currentLog.digest !== 'string') {
+    return { valid: false, reason: 'the run log could not be read, so the receipt cannot be checked' };
+  }
+  if (currentLog.bytes !== parsed.bytes || currentLog.digest.toLowerCase() !== parsed.digest.toLowerCase()) {
     return { valid: false, reason: 'the log changed after it was finalized' };
   }
   return { valid: true, receipt: parsed };

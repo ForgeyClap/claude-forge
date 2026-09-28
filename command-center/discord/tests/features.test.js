@@ -119,6 +119,53 @@ test('project-sync: een Discord-weigering voor één project breekt de sync niet
   assert.equal(notes().length, 1);
 });
 
+test('project-sync: een geweigerd kanaalherstel wordt ook door de periodieke sync opnieuw geprobeerd, met een verdubbelende wachttijd (Codex R2)', async () => {
+  const projectsDir = tmpStateDir();
+  fs.mkdirSync(path.join(projectsDir, 'bestaand'));
+  const { gateway } = build();
+  gateway.router.registerProject({ projectId: 'bestaand', name: 'bestaand', forumChannelId: 'chan_oud', path: path.join(projectsDir, 'bestaand'), forgeMode: false });
+  let t = 1_000_000;
+  let refuse = true;
+  const calls = [];
+  const ops = {
+    ensureTextChannel: async (name) => {
+      calls.push(name);
+      if (refuse) throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
+      return { channelId: 'chan_nieuw', created: false, migrated: false };
+    },
+  };
+  const sync = new ProjectSync({ projectsDir, router: gateway.router, audit: gateway.audit, channelOps: ops, announce: async () => {}, now: () => t });
+  await sync.syncOnce({ verifyChannels: true }); // opstart: geweigerd
+  assert.equal(calls.length, 1);
+  await sync.syncOnce(); // periodiek, nog niet aan de beurt
+  assert.equal(calls.length, 1);
+  t += 60_000; await sync.syncOnce(); // na 1 minuut opnieuw, weer geweigerd
+  assert.equal(calls.length, 2);
+  t += 60_000; await sync.syncOnce(); // de wachttijd is nu 2 minuten: nog niet
+  assert.equal(calls.length, 2);
+  refuse = false;
+  t += 60_000; await sync.syncOnce(); // 2 minuten voorbij: lukt nu
+  assert.equal(calls.length, 3);
+  assert.equal(gateway.router.projects.find((p) => p.projectId === 'bestaand').forumChannelId, 'chan_nieuw');
+  t += 60 * 60_000; await sync.syncOnce(); // hersteld: in rust geen verzoeken meer
+  assert.equal(calls.length, 3);
+});
+
+test('project-sync: de herhaalstatus van een verwijderde projectmap wordt opgeruimd (Codex-verificatie N2)', async () => {
+  const projectsDir = tmpStateDir();
+  fs.mkdirSync(path.join(projectsDir, 'weg'));
+  const { gateway } = build();
+  const ops = { ensureTextChannel: async () => { throw Object.assign(new Error('Missing Permissions'), { code: 50013 }); } };
+  const sync = new ProjectSync({ projectsDir, router: gateway.router, audit: gateway.audit, channelOps: ops, announce: async () => {} });
+  await sync.syncOnce({ verifyChannels: true });
+  assert.equal(sync.pendingRepairs.has('weg'), true);
+  assert.equal(sync.reportedFailures.size, 1);
+  fs.rmSync(path.join(projectsDir, 'weg'), { recursive: true, force: true });
+  await sync.syncOnce();
+  assert.equal(sync.pendingRepairs.has('weg'), false);
+  assert.equal(sync.reportedFailures.size, 0);
+});
+
 test('friendlyError: Discord 50013/50001 worden een concrete uitleg, geen kale API-fout', () => {
   assert.match(friendlyError(Object.assign(new Error('Missing Permissions'), { code: 50013 })), /Kanalen beheren/);
   assert.match(friendlyError(new Error('Missing Access')), /niet zien/);

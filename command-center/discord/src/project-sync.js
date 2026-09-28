@@ -9,8 +9,13 @@ import { friendlyError } from './friendly-error.js';
 export const slugify = (name) =>
   name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90);
 
+// Codex review 2026-09-28 (R2): the wait between retries of a channel Discord refused — it starts at the
+// periodic interval and doubles, never beyond a quarter of an hour, so a missing permission costs only a few calls.
+const RETRY_MIN_MS = 60_000;
+const RETRY_MAX_MS = 15 * 60_000;
+
 export class ProjectSync {
-  constructor({ projectsDir, router, audit, channelOps, announce = null }) {
+  constructor({ projectsDir, router, audit, channelOps, announce = null, now = () => Date.now() }) {
     this.projectsDir = projectsDir;
     this.router = router;
     this.audit = audit;
@@ -19,6 +24,10 @@ export class ProjectSync {
     this.timer = null;
     // project + reden die de eigenaar al gemeld kreeg: dezelfde weigering wordt niet elke minuut herhaald.
     this.reportedFailures = new Set();
+    // Projects whose channel Discord refused (a new one, or an existing channel that needed repair): the
+    // periodic sync retries them too, not only the startup verify (Codex 2026-09-28 R2). projectId -> {nextAt, delayMs}
+    this.pendingRepairs = new Map();
+    this.now = now;
   }
 
   listProjectDirs() {
@@ -49,7 +58,13 @@ export class ProjectSync {
         }
       }
     }
-    for (const dir of this.listProjectDirs()) {
+    const dirs = this.listProjectDirs();
+    // Codex verification 2026-09-28 (N2): retry state and remembered messages belong to folders that still exist;
+    // a removed project's entries are dropped after a successful listing instead of lingering forever.
+    const present = new Set(dirs.map((d) => slugify(d)).filter(Boolean));
+    for (const id of this.pendingRepairs.keys()) if (!present.has(id)) this.pendingRepairs.delete(id);
+    for (const key of this.reportedFailures) if (!present.has(key.split('\u0000')[0])) this.reportedFailures.delete(key);
+    for (const dir of dirs) {
       const projectId = slugify(dir);
       if (!projectId) continue;
       const projectPath = path.join(this.projectsDir, dir);
@@ -59,7 +74,9 @@ export class ProjectSync {
       let channelId = existing?.forumChannelId ?? null;
       let created = false;
       let migrated = false;
-      if (this.channelOps && (!channelId || verifyChannels)) {
+      const pending = this.pendingRepairs.get(projectId);
+      const retryDue = verifyChannels || !pending || this.now() >= pending.nextAt;
+      if (this.channelOps && (!channelId || verifyChannels || pending) && retryDue) {
         // knownChannelId meegeven: lookup gaat op ID (naam kan een 🔴/🟢-prefix
         // hebben), zodat er nooit een duplicaat-kanaal wordt aangemaakt.
         // Een weigering van Discord voor ÉÉN project (bv. 50013 Missing Permissions: de bot mag geen kanalen
@@ -71,8 +88,10 @@ export class ProjectSync {
           res = await this.channelOps.ensureTextChannel(projectId, { knownChannelId: channelId });
         } catch (err) {
           this.#reportFailure(projectId, dir, err);
+          this.#scheduleRetry(projectId);
           continue;
         }
+        this.pendingRepairs.delete(projectId);
         this.#clearFailures(projectId);
         ({ created } = res);
         migrated = res.migrated ?? false;
@@ -121,6 +140,12 @@ export class ProjectSync {
     this.reportedFailures.add(key);
     console.log(`[forge-discord] projectsync: kanaal voor "${dir}" niet gemaakt — ${reason}`);
     this.announce?.(`Kon geen kanaal maken voor \`${dir}\`: ${reason}`)?.catch?.(() => {});
+  }
+
+  #scheduleRetry(projectId) {
+    const prev = this.pendingRepairs.get(projectId);
+    const delayMs = prev ? Math.min(prev.delayMs * 2, RETRY_MAX_MS) : RETRY_MIN_MS;
+    this.pendingRepairs.set(projectId, { nextAt: this.now() + delayMs, delayMs });
   }
 
   #clearFailures(projectId) {

@@ -6,9 +6,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { buildProof, buildProofAll, _setRunContractCjsForTests, _resetRunContractCacheForTests } from '../src/proof.mjs';
 import { writeEventsFile, appendEventLine } from '../test-support/helpers.mjs';
 import { COMMAND_CENTER_DATA_DIR } from '../src/paths.mjs';
+
+// Codex review 2026-09-28 (R1): a receipt is checked against the log's real content, so a valid fixture
+// carries the real sha256 and byte size of the events.jsonl it describes, exactly as forge-finalize writes it.
+function realLogFields(runDir) {
+  const buf = fs.readFileSync(path.join(runDir, 'events.jsonl'));
+  return { digest: crypto.createHash('sha256').update(buf).digest('hex'), bytes: buf.length };
+}
 
 const tempRoots = [];
 function freshRoot() {
@@ -192,13 +200,15 @@ test('finalize_receipt maps run-finalized.json, and finalized:true only when it 
   // finite bytes count, alongside the fields already asserted below. The old fixture (no run_id, no
   // bytes, a non-hex digest) would now correctly read as finalized:false; updated here to prove the
   // ORDINARY, genuinely-valid case still works, not to weaken the new validation.
+  writeEventsFile(root, 'run-f', [{ event_type: 'run_started', timestamp: '2026-08-09T01:00:00.000Z' }]);
+  const log = realLogFields(runDir);
   fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-f', digest: 'e'.repeat(64), bytes: 4096, contract: 'ok', domain: 'tooling', events: 25, ruleset_sha256: 'abc', finalized_at: '2026-08-09T01:32:50.094Z',
+    run_id: 'run-f', digest: log.digest, bytes: log.bytes, contract: 'ok', domain: 'tooling', events: 25, ruleset_sha256: 'abc', finalized_at: '2026-08-09T01:32:50.094Z',
   }), 'utf8');
 
   const result = await buildProof(root, 'run-f');
   assert.equal(result.finalized, true);
-  assert.equal(result.finalize_receipt.digest, 'e'.repeat(64));
+  assert.equal(result.finalize_receipt.digest, log.digest);
   assert.equal(result.finalize_receipt.contract, 'ok');
   assert.equal(result.finalize_invalid_reason, null);
 });
@@ -240,9 +250,9 @@ test('M-1: a log that GROWS after finalizing reads finalized:false with the hone
   const eventsPath = writeEventsFile(root, 'run-grew-after-finalize', [
     { event_type: 'run_started', timestamp: '2026-09-28T00:00:00.000Z' },
   ]);
-  const bytesAtFinalize = fs.statSync(eventsPath).size;
+  assert.ok(fs.existsSync(eventsPath));
   fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-grew-after-finalize', digest: 'f'.repeat(64), bytes: bytesAtFinalize, events: 1,
+    run_id: 'run-grew-after-finalize', ...realLogFields(runDir), events: 1,
     contract: 'ok', domain: 'tooling', ruleset_sha256: 'abc', finalized_at: '2026-09-28T00:05:00.000Z',
   }), 'utf8');
 
@@ -345,4 +355,53 @@ test('WP-CC1 (Lead review, LOW): a run folder that does not exist answers "unkno
 
   _setRunContractCjsForTests(null);
   _resetRunContractCacheForTests();
+});
+
+test('Codex R1: an equal-length edit of the log after finalizing (check_passed -> check_failed) reads changed, never Finalized', async () => {
+  const root = freshRoot();
+  const runDir = path.join(root, '.claude', 'forge-runs', 'run-edited-same-length');
+  fs.mkdirSync(runDir, { recursive: true });
+  const eventsPath = writeEventsFile(root, 'run-edited-same-length', [{ event_type: 'check_passed', timestamp: '2026-09-28T00:00:00.000Z' }]);
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({ run_id: 'run-edited-same-length', ...realLogFields(runDir), events: 1, contract: 'ok' }), 'utf8');
+  assert.equal((await buildProof(root, 'run-edited-same-length')).finalized, true, 'sanity: valid before the edit');
+  const original = fs.readFileSync(eventsPath, 'utf8');
+  const edited = original.replace('check_passed', 'check_failed');
+  assert.equal(edited.length, original.length);
+  fs.writeFileSync(eventsPath, edited, 'utf8');
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(eventsPath, later, later);
+  const result = await buildProof(root, 'run-edited-same-length');
+  assert.equal(result.finalized, false);
+  assert.equal(result.finalize_invalid_reason, 'the log changed after it was finalized');
+});
+
+test('Codex R1: a receipt whose run log is missing never counts as finalized', async () => {
+  const root = freshRoot();
+  const runDir = path.join(root, '.claude', 'forge-runs', 'run-log-missing');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({ run_id: 'run-log-missing', digest: 'a'.repeat(64), bytes: 10, events: 1, contract: 'ok' }), 'utf8');
+  const result = await buildProof(root, 'run-log-missing');
+  assert.equal(result.finalized, false);
+  assert.equal(result.finalize_invalid_reason, 'the run log is missing, so the receipt cannot be checked');
+});
+
+test('Codex R3: the gallery says it is cut off when an OLDER real run beyond the window has artifacts', async () => {
+  // buildProofAll() goes through listRuns(), which only admits roots under the real scan roots.
+  const root = freshRootUnderDataDir();
+  for (let i = 0; i < 3; i++) {
+    const id = `run-art-${i}`;
+    writeEventsFile(root, id, [{ event_type: 'run_started', timestamp: `2026-09-2${i}T00:00:00.000Z` }]);
+    fs.writeFileSync(path.join(root, '.claude', 'forge-runs', id, 'final-report.md'), '# report ' + i, 'utf8');
+  }
+  assert.equal((await buildProofAll(root, 2)).artifacts_truncated, true, 'a third run with a report sits outside a 2-run window');
+  assert.equal((await buildProofAll(root, 3)).artifacts_truncated, false, 'every run fits: nothing is cut');
+});
+
+test('Codex verification N3: older runs that hold nothing for the gallery never raise the cut-off note', async () => {
+  const root = freshRootUnderDataDir();
+  for (let i = 0; i < 3; i++) {
+    writeEventsFile(root, `run-plain-${i}`, [{ event_type: 'run_started', timestamp: `2026-09-2${i}T00:00:00.000Z` }]);
+  }
+  fs.writeFileSync(path.join(root, '.claude', 'forge-runs', 'run-plain-0', 'notes.txt'), 'not a gallery item', 'utf8');
+  assert.equal((await buildProofAll(root, 1)).artifacts_truncated, false, 'two older runs without artifacts hide nothing');
 });

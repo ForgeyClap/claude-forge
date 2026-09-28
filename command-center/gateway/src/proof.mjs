@@ -18,6 +18,7 @@ import { PROJECT_ROOT } from './paths.mjs';
 import { filteredEnv } from './exec-cli.mjs';
 import { redactDeep } from './redact.mjs';
 import { validateFinalizeReceipt } from './receipt-validator.mjs';
+import { eventsLogFingerprint } from './events-digest.mjs';
 import { readDirBounded } from './bounded-readdir.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -74,6 +75,39 @@ const RUN_TOP_LEVEL_DOC_PATTERNS = [
   { re: /^(prd|PRD)[-a-z0-9._]*\.md$/i, type: 'prd' },
   { re: /^mission-blueprint[-a-z0-9._]*\.md$/i, type: 'mission-blueprint' },
 ];
+// Codex verification 2026-09-28 (N3): an existence-only check for buildProofAll()'s run window — does this
+// run hold anything the gallery would list? Reads entries one by one through fs.opendirSync, stops at the first
+// match, and draws every entry it reads from ONE per-request budget; an exhausted budget or an unreadable folder
+// sets budget.unsure ("there may be more") instead of answering "nothing there".
+const OLDER_RUNS_PROBE_BUDGET = 2000;
+function runHoldsGalleryItem(runDir, budget) {
+  const firstMatch = (dir, isItem) => {
+    if (budget.unsure) return false;
+    let d;
+    try {
+      d = fs.opendirSync(dir);
+    } catch (err) {
+      if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) budget.unsure = true;
+      return false;
+    }
+    try {
+      for (let e = d.readSync(); e; e = d.readSync()) {
+        if (budget.entries <= 0) { budget.unsure = true; return false; }
+        budget.entries -= 1;
+        if (isItem(e)) return true;
+      }
+      return false;
+    } catch {
+      budget.unsure = true;
+      return false;
+    } finally {
+      try { d.closeSync(); } catch { /* already closed */ }
+    }
+  };
+  return firstMatch(path.join(runDir, 'artifacts'), (e) => e.isFile())
+    || firstMatch(runDir, (e) => e.isFile() && RUN_TOP_LEVEL_DOC_PATTERNS.some((p) => p.re.test(e.name)));
+}
+
 function listRunTopLevelDocFiles(runDir, flags) {
   let entries;
   try { entries = listDir(runDir, flags); } catch { return []; }
@@ -327,19 +361,14 @@ function readGateEvidence(runDir) {
 // run-finalized.json genuinely exists but failed validation — an honest "this claims to be a receipt
 // but isn't a trustworthy one", never confused with the ordinary "no receipt yet" case.
 //
-// WP-RB-CC (M-1): one extra stat of THIS run's events.jsonl — mirrors runs.mjs's own (already-free,
-// reused-from-its-own-scan) eventsScan.size — so validateFinalizeReceipt() can refuse a receipt
-// whose pinned `bytes` no longer matches the real, current log (the log grew/changed after
-// finalizing). `null` when the file does not exist or cannot be stat'd — an honest "cannot verify",
-// treated by the shared validator as "skip this check", never as a guessed stale.
-function currentEventsBytes(runDir) {
-  try { return fs.statSync(path.join(runDir, 'events.jsonl')).size; } catch { return null; }
-}
+// WP-RB-CC (M-1), made strict by the Codex review of 2026-09-28 (R1): a receipt is checked against
+// the run log's real fingerprint (byte size AND sha256, see events-digest.mjs), and only when a
+// receipt exists at all; a missing or unreadable log never counts as finalized.
 
 function readFinalizeReceipt(runDir, runId) {
   let parsed;
   try { parsed = JSON.parse(fs.readFileSync(path.join(runDir, 'run-finalized.json'), 'utf8')); } catch { parsed = null; }
-  const check = validateFinalizeReceipt(parsed, runId, currentEventsBytes(runDir));
+  const check = validateFinalizeReceipt(parsed, runId, parsed === null ? null : eventsLogFingerprint(runDir));
   if (!check.valid) {
     return { receipt: null, invalidReason: check.reason === 'absent' ? null : check.reason };
   }
@@ -675,9 +704,8 @@ export function buildProofAll(projectPath, maxRuns = DEFAULT_MAX_RUNS_FOR_ALL) {
   // ones fill the remaining slots after a plain `.slice()`. Filtered out explicitly here so "the
   // last N runs" window is never partly junk regardless of how many real runs exist; an honestly
   // SMALLER real window (even zero) is always preferred over padding it with bench/doctor fixtures.
-  const candidateRunIds = runsResult.ok
-    ? runsResult.runs.filter((r) => !r.synthetic).slice(0, maxRuns).map((r) => r.run_id)
-    : [];
+  const realRuns = runsResult.ok ? runsResult.runs.filter((r) => !r.synthetic) : [];
+  const candidateRunIds = realRuns.slice(0, maxRuns).map((r) => r.run_id);
 
   const runsDir = path.join(projectPath, '.claude', 'forge-runs');
   const runArtifacts = [];
@@ -694,6 +722,19 @@ export function buildProofAll(projectPath, maxRuns = DEFAULT_MAX_RUNS_FOR_ALL) {
       runArtifacts.push({ ...doc, run_id: runId });
     }
   }
+
+  // Codex review 2026-09-28 (R3), made cheap and honest by its verification (N3): the gallery covers only the
+  // newest `maxRuns` real runs. An existence-only probe asks whether an OLDER real run holds a gallery item
+  // (the same rule as the lists above: a file in artifacts/, or a final report, gate evidence, PRD or mission
+  // blueprint), stops at the first hit and spends at most OLDER_RUNS_PROBE_BUDGET directory entries per
+  // request. Running out of budget, an unreadable folder, or a run list cut upstream all answer "there may be
+  // more", never "nothing there"; an older run that genuinely holds nothing raises nothing.
+  const probeBudget = { entries: OLDER_RUNS_PROBE_BUDGET, unsure: false };
+  const olderRunHasArtifacts = realRuns.slice(maxRuns).some((r) => {
+    const runDir = path.join(runsDir, r.run_id);
+    return containmentOk(runsDir, runDir) && runHoldsGalleryItem(runDir, probeBudget);
+  });
+  const runWindowCut = olderRunHasArtifacts || probeBudget.unsure || Boolean(runsResult.ok && runsResult.runs_truncated === true);
 
   // WP-CC1 (item 11): project-wide sources, not scoped to any one run — the solution-first
   // research ledger and the knowledge vault. Bounded scans (see listProjectLevelDocFiles()).
@@ -729,7 +770,7 @@ export function buildProofAll(projectPath, maxRuns = DEFAULT_MAX_RUNS_FOR_ALL) {
     report_present: false,
     doctor_present: false,
     // Codex run B F-06: see buildProof()'s own field comment — same meaning, same two causes.
-    artifacts_truncated: indexTruncated || docsTooLargeSkipped || allListFlags.truncated,
+    artifacts_truncated: indexTruncated || docsTooLargeSkipped || allListFlags.truncated || runWindowCut,
     captured_at: new Date().toISOString(),
     age_ms: 0,
     provenance: 'DERIVED',

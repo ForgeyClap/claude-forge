@@ -15,6 +15,7 @@ import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { listRuns } from '../src/runs.mjs';
 import { _resetToolLogCacheForTests } from '../src/toollog.mjs';
 import { COMMAND_CENTER_DATA_DIR } from '../src/paths.mjs';
@@ -54,6 +55,13 @@ function writeRegistry(root, agents) {
 }
 
 const iso = (ms) => new Date(ms).toISOString();
+
+// Codex review 2026-09-28 (R1): a receipt is checked against the log's real content, so a valid fixture
+// carries the real sha256 and byte size of the events.jsonl it describes, exactly as forge-finalize writes it.
+function realLogFields(runDir) {
+  const buf = fs.readFileSync(path.join(runDir, 'events.jsonl'));
+  return { digest: crypto.createHash('sha256').update(buf).digest('hex'), bytes: buf.length };
+}
 const NOW = Date.parse('2026-09-28T18:00:00.000Z');
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -209,14 +217,13 @@ test('finalized always wins over any liveness signal, even with an open dispatch
   // now refuses a receipt whose pinned bytes no longer match the live log as STALE, so a hand-picked
   // unrelated number here would (correctly) never validate any more.
   fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-finalized-but-open', digest: 'a'.repeat(64),
-    bytes: fs.statSync(path.join(runDir, 'events.jsonl')).size, events: 5, contract: 'ok', finalized_at: iso(NOW),
+    run_id: 'run-finalized-but-open', ...realLogFields(runDir), events: 5, contract: 'ok', finalized_at: iso(NOW),
   }), 'utf8');
   writeToolLog(root, [{ ts: iso(NOW - 30 * 1000), agent_id: 'd-fin', tool: 'Bash' }]);
   const result = listRuns(root, NOW);
   const row = result.runs.find((r) => r.run_id === 'run-finalized-but-open');
   assert.equal(row.status, 'finalized');
-  assert.equal(row.finalize_digest, 'a'.repeat(64));
+  assert.equal(row.finalize_digest, realLogFields(runDir).digest);
 });
 
 // WP-RB-CC (review finding M-1): the log grows into the SAME already-finalized run — Forge's own
@@ -229,8 +236,7 @@ test('M-1: a log that grows after finalizing is STALE, never "finalized" forever
   writeEvents(root, 'run-grew-after-finalize', [{ event_type: 'run_started', timestamp: iso(NOW - 1 * HOUR) }]);
   const eventsPath = path.join(runDir, 'events.jsonl');
   fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-grew-after-finalize', digest: 'd'.repeat(64),
-    bytes: fs.statSync(eventsPath).size, events: 1, contract: 'ok', finalized_at: iso(NOW - 1 * HOUR),
+    run_id: 'run-grew-after-finalize', ...realLogFields(runDir), events: 1, contract: 'ok', finalized_at: iso(NOW - 1 * HOUR),
   }), 'utf8');
 
   const before = listRuns(root, NOW).runs.find((r) => r.run_id === 'run-grew-after-finalize');
@@ -245,6 +251,23 @@ test('M-1: a log that grows after finalizing is STALE, never "finalized" forever
   assert.equal(after.finalized, false);
   assert.equal(after.finalize_digest, null);
   assert.equal(after.finalize_invalid_reason, 'the log changed after it was finalized');
+});
+
+test('Codex R1: an equal-length edit of the log after finalizing is never read as finalized by listRuns', () => {
+  const root = freshRoot();
+  const runDir = path.join(root, '.claude', 'forge-runs', 'run-edited-same-length');
+  fs.mkdirSync(runDir, { recursive: true });
+  writeEvents(root, 'run-edited-same-length', [{ event_type: 'check_passed', timestamp: iso(NOW - 1 * HOUR) }]);
+  const eventsPath = path.join(runDir, 'events.jsonl');
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({ run_id: 'run-edited-same-length', ...realLogFields(runDir), events: 1, contract: 'ok' }), 'utf8');
+  assert.equal(listRuns(root, NOW).runs.find((r) => r.run_id === 'run-edited-same-length').finalized, true, 'sanity: valid before the edit');
+  const original = fs.readFileSync(eventsPath, 'utf8');
+  fs.writeFileSync(eventsPath, original.replace('check_passed', 'check_failed'), 'utf8');
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(eventsPath, later, later);
+  const row = listRuns(root, NOW).runs.find((r) => r.run_id === 'run-edited-same-length');
+  assert.equal(row.finalized, false);
+  assert.equal(row.finalize_invalid_reason, 'the log changed after it was finalized');
 });
 
 // Codex run B F-11: tests for the receipt-validation fix itself, on listRuns()'s own public shape.
@@ -430,8 +453,7 @@ test('F-09: never revives a FINALIZED zero-work run, even if it is the newest "s
   // WP-RB-CC (M-1): `bytes` must be the REAL current size of events.jsonl written above — see the
   // sibling "a log that grows after finalizing" test's own comment for why.
   fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-finalized-zero-work', digest: 'c'.repeat(64),
-    bytes: fs.statSync(path.join(runDir, 'events.jsonl')).size, events: 1, contract: 'ok',
+    run_id: 'run-finalized-zero-work', ...realLogFields(runDir), events: 1, contract: 'ok',
   }), 'utf8');
   writeToolLog(root, [{ ts: iso(NOW - 10 * 1000), agent_id: null, tool: 'Read' }]);
 
