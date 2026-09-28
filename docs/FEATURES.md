@@ -348,7 +348,7 @@ These are the non-negotiables baked into every skill, agent, and dashboard view.
 - Every dashboard is local and per-project; it never reads another project's `.claude/`. The one exception — `forge-registry` — is opt-in, read-only, and writes only a global index, never into a scanned project.
 - No deploy, push, or money spent on your behalf without you asking.
 
-**Security posture — light, non-blocking, with one deliberate exception:** no mandatory security gates slow a normal build. Basic hygiene (secrets in env, `.env.example` placeholders) is guidance, not an enforced hook. The exception, new in 2.7.0 and switchable with one command, is the [gate hook](#the-safety-stop-gate-hook--secret-deny-rules): it blocks only mass deletes, killing processes by name and git commands that discard uncommitted work, plus the `.env` read-deny rules. `security-boss` and `codex-reviewer` remain **available on request** for sensitive code — optional, never a blocker.
+**Security posture — light, non-blocking, with one deliberate exception:** no mandatory security gates slow a normal build. Basic hygiene (secrets in env, `.env.example` placeholders) is guidance, not an enforced hook. The exception, new in 2.7.0 and switchable with one command, is the [gate hook](#the-safety-stop-gate-hook--secret-deny-rules): it blocks five kinds of command: recursive deletes, killing processes by name, git commands that throw away uncommitted work, commands that hide what they run (such as eval or a pipe into a shell), and printing a secret file's contents, plus the `.env` read-deny rules. `security-boss` and `codex-reviewer` remain **available on request** for sensitive code — optional, never a blocker.
 
 **Beginner promise:** Forge runs every command, script, install and build itself and never asks you to run a file or code; it does not ask "shall I continue?" between phases. It stops for the hard gates and for a real usage-limit pause — five of those gates (destructive deletes, killing processes by name, git commands that throw work away, commands that hide what they run, and commands that print out a secret file) are enforced by a real hook that is a classifier, not a proof; the others are rules checked by a text classifier, not a technical stop. Full wording and limits: the README's beginner promise and [SETTINGS.md](SETTINGS.md#what-the-gate-hook-stops-and-what-it-cannot-see).
 
@@ -356,7 +356,7 @@ These are the non-negotiables baked into every skill, agent, and dashboard view.
 
 ## Zero-dependency design
 
-Forge's own tools are plain Node `.cjs` — **nothing to `npm install`.** The only npm step anywhere is the optional dashboard's one-time build, and your AI assistant (or Forge) runs it for you; you never type it.
+Forge's own tools are plain Node `.cjs` — **nothing to `npm install`.** The Command Center dashboard ships prebuilt; only its Discord part installs its own package the first time you connect Discord, and Forge does that for you: you never type it.
 
 - Every tool in `.claude/forge-bin/` and the dashboard server is zero-dependency Node; the wrappers auto-detect Node and never modify PATH or execution policy.
 - The dashboard has **no database, no cloud, no login** — it reads the run's JSON/JSONL event logs directly and serves a static SPA.

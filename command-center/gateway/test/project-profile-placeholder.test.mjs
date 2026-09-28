@@ -115,7 +115,7 @@ test('a missing bullet (field never in the file at all) is reported as absent an
   assert.deepEqual(result.profile_unfilled_fields, []);
 });
 
-test('a sentence containing the word "TODO" (an already-honest generated disclosure, like the real demo-sandbox-automation profile) is left untouched, not nulled', () => {
+test('a sentence containing the word "TODO" (an already-honest generated disclosure, like a real generated automation-project profile) is left untouched, not nulled', () => {
   const goal = '`unknown` — PROJECT.md "Business purpose" is TODO. Needs verification from owner.';
   const root = makeProjectWithProfile(`- **Project goal:** ${goal}\n`);
   const result = buildProjectProfile(root);

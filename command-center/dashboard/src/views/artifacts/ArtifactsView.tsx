@@ -441,7 +441,7 @@ export default function ArtifactsView() {
               paragraph, a plain standalone rule — see primitives.css) rather than adding a new one. */}
           {artifactsTruncated ? (
             <p className="fw-field__hint">
-              Showing part of this project&apos;s artifacts — there are more than this gallery can show.
+              Showing part of this project&apos;s artifacts — there may be more than this gallery shows.
             </p>
           ) : null}
         </div>

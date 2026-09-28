@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Nothing yet. Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## [2.9.0] - 2026-09-27
+## [2.9.0] - 2026-09-29
 
 Easier for people who are new to computers, safer by default, and lighter on usage. Everything new is switched on by
 default, and every setting can now also be changed from the dashboard.
@@ -171,7 +171,7 @@ default, and every setting can now also be changed from the dashboard.
     shape holds nothing to lose. The rest are the limits described under Known limitations.
   - a last review of the final day's changes (the weekly pause point, the receipt check, the bot fix): 3 findings
     (2 medium), all fixed with tests. Its verification confirmed one and found the other two only partly fixed, plus
-    four small new ones; all were fixed afterwards with tests (no third round).
+    four new ones (one medium, three low); all were fixed afterwards with tests (no third round).
   - The earlier runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
     gpt-6-astra model was refused for that ChatGPT account at the time. The last review and its verification ran on
     gpt-6-astra at high effort, after the maintainer changed the setting.

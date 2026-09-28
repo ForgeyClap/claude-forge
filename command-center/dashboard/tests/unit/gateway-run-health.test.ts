@@ -109,6 +109,12 @@ describe('parseFinalizeReceipt — the REAL top-level key is finalize_receipt, n
   it('no finalize_receipt/finalize field at all (a run genuinely not finalized) is the honest empty state', () => {
     expect(parseFinalizeReceipt({})).toEqual(EMPTY_FINALIZE_RECEIPT);
   });
+
+  it('RB2-M1: a receipt that exists but no longer counts keeps the gateway reason, not the plain empty state', () => {
+    const receipt = parseFinalizeReceipt({ finalize_receipt: null, finalize_invalid_reason: 'the run log is missing, so the receipt cannot be checked' });
+    expect(receipt.present).toBe(false);
+    expect(receipt.invalidReason).toBe('the run log is missing, so the receipt cannot be checked');
+  });
 });
 
 describe('parseRunContract — the REAL nested run_contract.{available,result} envelope (review fix)', () => {

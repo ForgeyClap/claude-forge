@@ -568,7 +568,7 @@ function buildRunRows(projectPath, nowMs) {
     const finalizedReceiptRaw = readJsonSafe(path.join(runPath, 'run-finalized.json'));
     // WP-RB-CC (M-1), made strict by the Codex review of 2026-09-28 (R1): the receipt only counts while
     // the live events.jsonl still has its exact byte size AND sha256. Only a run that HAS a receipt is
-    // fingerprinted (cached on size and mtime, see events-digest.mjs); a missing or unreadable log never
+    // fingerprinted (a provisional cache: same file identity and metadata, at most 60 s, see events-digest.mjs); a missing or unreadable log never
     // counts as finalized.
     const receiptCheck = validateFinalizeReceipt(finalizedReceiptRaw, runId, finalizedReceiptRaw === null ? null : eventsLogFingerprint(runPath));
     const hasGateEvidence = fs.existsSync(path.join(runPath, 'gate-evidence.json'));

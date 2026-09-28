@@ -43,7 +43,7 @@ function extractBulletValue(lines, label) {
 // AutoWeb's, "an accounting desktop app progamma"'s, etc.) never start with `<`, so the anchor can never
 // truncate legitimate prose that merely happens to contain a `<` character mid-sentence. A
 // candidate substring/contains rule was deliberately rejected for the same reason: it would have
-// wrongly nulled "demo-sandbox-automation"'s honest `project_goal` ("`unknown` — PROJECT.md
+// wrongly nulled a real automation project's honest `project_goal` ("`unknown` — PROJECT.md
 // \"Business purpose\" is TODO. Needs verification from owner.") — a real, already-honest
 // generated sentence that happens to contain the word "TODO", not a raw template leak. No
 // TODO/TBD/"..." bare-token variant was found as a WHOLE field value anywhere in the current

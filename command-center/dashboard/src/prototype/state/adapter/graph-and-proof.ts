@@ -597,9 +597,12 @@ export interface GatewayFinalizeReceipt {
   readonly finalizedAt: string | null;
   readonly digest: string | null;
   readonly note: string | null;
+  /** Review Boss RB2-M1: a receipt file EXISTS but no longer counts (the gateway's finalize_invalid_reason, e.g.
+   *  "the log changed after it was finalized"); null when there is simply no receipt, or a valid one. */
+  readonly invalidReason: string | null;
 }
 
-export const EMPTY_FINALIZE_RECEIPT: GatewayFinalizeReceipt = { present: false, finalizedAt: null, digest: null, note: null };
+export const EMPTY_FINALIZE_RECEIPT: GatewayFinalizeReceipt = { present: false, finalizedAt: null, digest: null, note: null, invalidReason: null };
 
 /**
  * REVIEW FIX: the real top-level `/api/proof` key is `finalize_receipt`, NOT `finalize` (verified
@@ -610,12 +613,18 @@ export const EMPTY_FINALIZE_RECEIPT: GatewayFinalizeReceipt = { present: false, 
 export function parseFinalizeReceipt(proofPayload: Record<string, unknown> | null): GatewayFinalizeReceipt {
   if (proofPayload === null) return EMPTY_FINALIZE_RECEIPT;
   const obj = pickRecord(proofPayload, ['finalize_receipt', 'finalize']);
-  if (obj === null) return EMPTY_FINALIZE_RECEIPT;
+  if (obj === null) {
+    // RB2-M1: the gateway returns finalize_receipt:null AND a reason when a receipt exists but no longer counts —
+    // keep that reason, so the panel never claims the receipt file does not exist.
+    const invalidReason = pickString(proofPayload, ['finalize_invalid_reason']);
+    return invalidReason === null ? EMPTY_FINALIZE_RECEIPT : { ...EMPTY_FINALIZE_RECEIPT, invalidReason };
+  }
   return {
     present: true,
     finalizedAt: pickString(obj, ['finalized_at', 'generated_at']),
     digest: pickString(obj, ['digest', 'receipt_hash']),
     note: pickString(obj, ['note']),
+    invalidReason: null,
   };
 }
 

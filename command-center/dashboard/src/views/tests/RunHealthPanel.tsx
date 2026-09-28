@@ -108,6 +108,9 @@ function FinalizeSection({ finalize }: { finalize: GatewayProofExtras['finalize'
             </div>
           ) : null}
         </dl>
+      ) : finalize.invalidReason !== null ? (
+        // RB2-M1: a receipt exists but no longer counts — say why, never that the file does not exist.
+        <p className="fw-run-health__note">A finalize receipt exists but no longer counts: {finalize.invalidReason}.</p>
       ) : (
         <p className="fw-run-health__empty">This run has not been finalized yet — no `run-finalized.json` receipt exists.</p>
       )}
