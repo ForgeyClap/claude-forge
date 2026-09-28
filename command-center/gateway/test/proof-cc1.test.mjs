@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildProof, buildProofAll, _setRunContractCjsForTests, _resetRunContractCacheForTests } from '../src/proof.mjs';
-import { writeEventsFile } from '../test-support/helpers.mjs';
+import { writeEventsFile, appendEventLine } from '../test-support/helpers.mjs';
 import { COMMAND_CENTER_DATA_DIR } from '../src/paths.mjs';
 
 const tempRoots = [];
@@ -227,6 +227,35 @@ test('F-11: an empty object {} run-finalized.json never counts as finalized (the
   assert.equal(result.finalized, false);
   assert.equal(result.finalize_receipt, null);
   assert.ok(result.finalize_invalid_reason);
+});
+
+// WP-RB-CC (review finding M-1): a stale receipt must never still read as "Finalized". Before this
+// fix, buildProof() (like listRuns()) only checked the receipt's SHAPE, never compared its pinned
+// `bytes` against the CURRENT events.jsonl — a run finalized once and then re-opened (a follow-up
+// logs more events into the SAME run) still showed finalized:true with the old digest in Tests & proof.
+test('M-1: a log that GROWS after finalizing reads finalized:false with the honest reason, never a stale "Finalized"', async () => {
+  const root = freshRoot();
+  const runDir = path.join(root, '.claude', 'forge-runs', 'run-grew-after-finalize');
+  fs.mkdirSync(runDir, { recursive: true });
+  const eventsPath = writeEventsFile(root, 'run-grew-after-finalize', [
+    { event_type: 'run_started', timestamp: '2026-09-28T00:00:00.000Z' },
+  ]);
+  const bytesAtFinalize = fs.statSync(eventsPath).size;
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
+    run_id: 'run-grew-after-finalize', digest: 'f'.repeat(64), bytes: bytesAtFinalize, events: 1,
+    contract: 'ok', domain: 'tooling', ruleset_sha256: 'abc', finalized_at: '2026-09-28T00:05:00.000Z',
+  }), 'utf8');
+
+  const beforeAppend = await buildProof(root, 'run-grew-after-finalize');
+  assert.equal(beforeAppend.finalized, true, 'sanity: the receipt is genuinely valid before the log changes');
+
+  // A follow-up logs one more real event into the SAME already-finalized run.
+  appendEventLine(eventsPath, { event_type: 'agent_started', agent: 'Build Boss', timestamp: '2026-09-28T00:10:00.000Z' });
+
+  const afterAppend = await buildProof(root, 'run-grew-after-finalize');
+  assert.equal(afterAppend.finalized, false, 'a log that grew after finalizing must never still read as Finalized');
+  assert.equal(afterAppend.finalize_receipt, null);
+  assert.equal(afterAppend.finalize_invalid_reason, 'the log changed after it was finalized');
 });
 
 test('run_contract is read-only through a fixture script, and the result is cached', async () => {

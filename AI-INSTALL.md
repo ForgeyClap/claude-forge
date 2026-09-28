@@ -35,7 +35,8 @@ ever calls out):
 - **Codex review** (setting `codex-review`, `auto`) sends code to OpenAI only when the `codex` CLI is installed and
   logged in on this machine — otherwise it never runs and never calls out;
 - the Command Center's optional **Discord service** reads the same local credentials file and sends the token only
-  to `api.anthropic.com`, and only if you start it.
+  to `api.anthropic.com`. Once Discord is connected, it starts by itself whenever the Command Center starts
+  (setting `discord-autostart`, on by default); switch the bot off in the dashboard and it stays off.
 
 Nothing else phones home.
 
@@ -212,7 +213,7 @@ be reserialized losslessly, is a directory or a link, or changed under the tool.
 exact stamped file it wrote.
 
 **Everything is on by default, and `/forge config` shows and changes it.** `/forge config list` (in a terminal:
-`node .claude/forge-bin/forge-config.cjs list --all`) lists all 37 settings with value, source and a plain
+`node .claude/forge-bin/forge-config.cjs list --all`) lists all 39 settings with value, source and a plain
 explanation. Choices are saved in `.claude/FORGE_CONFIG.json` (this project) and `~/.claude/FORGE_CONFIG.json`
 (machine-wide); a fresh install has neither file, so the built-in defaults apply. Mention this command in the
 handover — the user never has to edit a settings file.
@@ -229,9 +230,12 @@ the test suite the doctor runs (its test isolates a temporary home). **Tell the 
 what it reads and where it sends it, and that `/forge config set usage-guard off` switches it off (the tool then
 refuses to start); `node .claude/forge-bin/usage-guard.cjs stop` stops a watcher that is already running.
 
-One more token reader, also opt-in: the Command Center's **Discord service** (`command-center/discord/`) reads the
+One more token reader: the Command Center's **Discord service** (`command-center/discord/`) reads the
 same `~/.claude/.credentials.json` to show subscription usage, and sends the token only to `api.anthropic.com`. It is
-never installed into a project and never starts on its own.
+never installed into a project. Once Discord is connected, it starts by itself whenever the Command Center starts,
+runs requests unattended and uses Claude usage (setting `discord-autostart`, on by default in the "when needed"
+group). **Tell the user in one line** that it does this, and that switching the bot off in the dashboard keeps it off,
+while `/forge config set discord-autostart off` (Forge runs it) switches the automatic start off entirely.
 
 ---
 

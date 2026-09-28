@@ -67,3 +67,37 @@ test('Codex verification F-11: an empty receipt (bytes 0, events 0) is never pro
   assert.equal(validateFinalizeReceipt({ ...REAL_RECEIPT, events: 2.5 }, 'run-x').valid, false);
   assert.equal(validateFinalizeReceipt(REAL_RECEIPT, 'run-x').valid, true, 'the real shape still validates');
 });
+
+// WP-RB-CC (review finding M-1): the third, optional `currentEventsBytes` argument — a receipt whose
+// pinned `bytes` no longer matches the CURRENT live events.jsonl size must never validate as finalized.
+test('M-1: a receipt is refused once the CURRENT events.jsonl size no longer matches the pinned bytes (the log grew after finalizing)', () => {
+  const result = validateFinalizeReceipt(REAL_RECEIPT, 'run-x', REAL_RECEIPT.bytes + 40);
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'the log changed after it was finalized');
+});
+
+test('M-1: a SHRUNK current size (a truncated/replaced log) is refused too, not only a grown one', () => {
+  const result = validateFinalizeReceipt(REAL_RECEIPT, 'run-x', REAL_RECEIPT.bytes - 40);
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'the log changed after it was finalized');
+});
+
+test('M-1: the SAME current size as the pinned receipt still validates — nothing changed', () => {
+  const result = validateFinalizeReceipt(REAL_RECEIPT, 'run-x', REAL_RECEIPT.bytes);
+  assert.equal(result.valid, true);
+});
+
+test('M-1: no third argument at all, or a non-finite one, skips the check — an unknown current size is never guessed stale', () => {
+  assert.equal(validateFinalizeReceipt(REAL_RECEIPT, 'run-x').valid, true, 'omitted entirely — the pre-existing 2-arg call sites (e.g. unit tests) still work');
+  assert.equal(validateFinalizeReceipt(REAL_RECEIPT, 'run-x', null).valid, true);
+  assert.equal(validateFinalizeReceipt(REAL_RECEIPT, 'run-x', undefined).valid, true);
+  assert.equal(validateFinalizeReceipt(REAL_RECEIPT, 'run-x', NaN).valid, true);
+});
+
+test('M-1: an otherwise-forged receipt is still refused for its ORIGINAL reason, never masked by the size check', () => {
+  // A digest that fails validation must report the digest problem, not silently be reinterpreted as
+  // a size mismatch just because a (mismatched) currentEventsBytes was also passed.
+  const result = validateFinalizeReceipt({ ...REAL_RECEIPT, digest: 'not-hex' }, 'run-x', REAL_RECEIPT.bytes + 999);
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /digest/);
+});

@@ -163,7 +163,7 @@ The plugin is **LITE**; the installer is **FULL**. This split is architectural, 
 | **Files written by the install** | None (read-only plugin cache); its agents edit your project only when you ask them to build | `./.claude` + `~/.claude` core |
 | **Live dashboard** | No | ✅ Yes, localhost:4100 |
 | **Key & `.env` setup** | No | ✅ Yes, via `/setup-forge` |
-| **Settings (`/forge config`)** | No | ✅ Yes, 37 settings, everything on by default |
+| **Settings (`/forge config`)** | No | ✅ Yes, 39 settings, everything on by default |
 | **Safety stop + `.env` deny rules** | No | ✅ Yes, in the shipped `.claude/settings.json` |
 | **Commands** | Namespaced `/forge:forge` | Bare `/forge` |
 | **Best for** | Quick trial, prototyping | Real projects, long-term |
@@ -199,7 +199,7 @@ Honest and non-adversarial — only rows that actually ship.
 | 📊 **Command Center dashboard** | one localhost app on `127.0.0.1:4100` that auto-discovers your projects and shows *real* activity per project |
 | ⌨️ **`/forge` + `/setup-forge`** | one command to work, one to onboard — see [COMMANDS-QUICK-REF.md](COMMANDS-QUICK-REF.md) |
 | ✅ **Honest agent ledger** | every run records which agents *actually* ran, with evidence |
-| 🪶 **Zero dependencies** | Forge's own tools are plain Node `.cjs` — nothing to `npm install`. The optional dashboard's one-time build is the only npm step, and it is run for you (see [The dashboard](#-the-dashboard)). |
+| 🪶 **Zero dependencies** | Forge's own tools are plain Node `.cjs` — nothing to `npm install`. The Command Center dashboard is prebuilt and included (see [The dashboard](#-the-dashboard)). |
 
 > [!NOTE]
 > Forge ships **19 agents** in the full install (12 permanent Bosses + 7 specialists); the LITE plugin carries **18 agents** (all Bosses + 6 specialists, missing verify-boss). Both are driven as real Claude Code Agent-tool subagents. Forge can also **route to your wider agent ecosystem** (any ECC / Claude Code agent types you have installed) when a task calls for it — but only Forge's own agents are claimed as "shipped".
@@ -301,10 +301,10 @@ ON      prompt-doctor                on                       default          C
                                                                                (vague goal, no definition of done, no
                                                                                context) and fills the gaps itself or
                                                                                asks the one targeted question.
-... (8 of the 37 settings; the full list, with the where-from column and every group: /forge config list --all)
+... (8 of the 39 settings; the full list, with the where-from column and every group: /forge config list --all)
 ```
 
-The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %** before your limit), **`gate-hook`** (on, the safety stop below), **`git-checkpoint`** (on, a local safety point before a bigger build), **`intake`** (`silent`: at most one question) and **`explain-mode`** (on: one plain sentence per phase). The full list of all 37 settings (core, when-needed and advanced) with every default, the 7 locked rules that can never be switched off, and where your choices are saved: **[docs/SETTINGS.md](docs/SETTINGS.md)**.
+The most important ones for a beginner: **`usage-guard`** (on, pauses at **98 %** before your limit), **`gate-hook`** (on, the safety stop below), **`git-checkpoint`** (on, a local safety point before a bigger build), **`intake`** (`silent`: at most one question) and **`explain-mode`** (on: one plain sentence per phase). The full list of all 39 settings (core, when-needed and advanced) with every default, the 7 locked rules that can never be switched off, and where your choices are saved: **[docs/SETTINGS.md](docs/SETTINGS.md)**.
 
 ---
 
@@ -438,7 +438,7 @@ The gateway is zero-dependency Node and is the **only** layer allowed to spawn t
 
 ## ❓ FAQ
 
-**Do I need to install dependencies?** No. Forge's tools are plain Node `.cjs` — nothing to `npm install`. The only npm step is the optional dashboard's one-time build, and it is run for you.
+**Do I need to install dependencies?** No. Forge's tools are plain Node `.cjs` — nothing to `npm install`. The Command Center dashboard is prebuilt and included.
 
 **Do I have to type commands or run scripts?** No. Forge runs every command, install and build itself. The one thing it cannot do is install Claude Code, because Forge runs inside it — see [docs/CLAUDE-CODE-BASICS.md](docs/CLAUDE-CODE-BASICS.md).
 

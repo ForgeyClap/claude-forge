@@ -334,6 +334,9 @@ export interface GatewayGuardState {
    */
   readonly watcher: string | null;
   readonly watcherStaleSec: number | null;
+  /** The separate weekly pause point (usage-guard.week-pause-at) when the owner set one; null = the weekly limit
+   *  follows `pauseAt`. Real value from the guard state only (2026-09-28). */
+  readonly weekPauseAt: number | null;
 }
 
 /** The account-wide usage-pressure snapshot the new strip renders. Every field mirrors
@@ -369,6 +372,7 @@ const EMPTY_GUARD_STATE: GatewayGuardState = {
   lastError: null,
   watcher: null,
   watcherStaleSec: null,
+  weekPauseAt: null,
 };
 
 const EMPTY_ACCOUNT_USAGE: GatewayAccountUsage = {
@@ -419,6 +423,7 @@ export function parseAccountUsage(data: Record<string, unknown>): GatewayAccount
             lastError: pickString(guardRaw, ['last_error', 'lastError']),
             watcher: pickString(guardRaw, ['watcher']),
             watcherStaleSec: pickNumber(guardRaw, ['watcher_stale_sec']),
+            weekPauseAt: pickNumber(guardRaw, ['week_pause_at']),
           };
         })();
 

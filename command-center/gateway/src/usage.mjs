@@ -104,6 +104,9 @@ function readGuardState(nowMs, intervalSec) {
     mode: typeof data.mode === 'string' ? data.mode : null,
     pause_at: data.pauseAt != null ? data.pauseAt : null,
     resume_at: data.resumeAt != null ? data.resumeAt : null,
+    // The separate WEEKLY pause point (usage-guard.week-pause-at, 2026-09-28) — written by the guard only when it
+    // is set; null means the weekly limit follows pause_at, so the dashboard never shows a point that is not in force.
+    week_pause_at: data.weekPauseAt != null ? data.weekPauseAt : null,
     // Only a real array counts; anything else (absent field in the current 'ok' state) is
     // honestly null rather than presented as "0 paused".
     paused_agent_count: Array.isArray(data.pausedAgents) ? data.pausedAgents.length : null,

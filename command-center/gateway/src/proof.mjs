@@ -326,10 +326,20 @@ function readGateEvidence(runDir) {
 // public shape (null when absent OR invalid), `invalidReason` is non-null ONLY when a
 // run-finalized.json genuinely exists but failed validation — an honest "this claims to be a receipt
 // but isn't a trustworthy one", never confused with the ordinary "no receipt yet" case.
+//
+// WP-RB-CC (M-1): one extra stat of THIS run's events.jsonl — mirrors runs.mjs's own (already-free,
+// reused-from-its-own-scan) eventsScan.size — so validateFinalizeReceipt() can refuse a receipt
+// whose pinned `bytes` no longer matches the real, current log (the log grew/changed after
+// finalizing). `null` when the file does not exist or cannot be stat'd — an honest "cannot verify",
+// treated by the shared validator as "skip this check", never as a guessed stale.
+function currentEventsBytes(runDir) {
+  try { return fs.statSync(path.join(runDir, 'events.jsonl')).size; } catch { return null; }
+}
+
 function readFinalizeReceipt(runDir, runId) {
   let parsed;
   try { parsed = JSON.parse(fs.readFileSync(path.join(runDir, 'run-finalized.json'), 'utf8')); } catch { parsed = null; }
-  const check = validateFinalizeReceipt(parsed, runId);
+  const check = validateFinalizeReceipt(parsed, runId, currentEventsBytes(runDir));
   if (!check.valid) {
     return { receipt: null, invalidReason: check.reason === 'absent' ? null : check.reason };
   }

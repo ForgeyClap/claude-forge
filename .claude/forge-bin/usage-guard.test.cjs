@@ -3591,7 +3591,7 @@ test('GUARD-CORRUPT: a corrupt state that IS over the pause threshold on the fre
   // or fractional threshold is still rejected even when the real schema file cannot be read at all.
   t5('V19: guardBounds() falls back to the hard-coded bounds (never {}) when the schema file does not exist', () => {
     const b = G5.guardBounds(path.join(os.tmpdir(), 'this-schema-does-not-exist-' + Date.now() + '.json'));
-    assert.deepStrictEqual(b, { 'pause-at': { min: 50, max: 99 }, 'resume-at': { min: 0, max: 98 }, interval: { min: 30, max: 900 }, 'nvidia-shift-at': { min: 50, max: 99 } });
+    assert.deepStrictEqual(b, { 'pause-at': { min: 50, max: 99 }, 'resume-at': { min: 0, max: 98 }, interval: { min: 30, max: 900 }, 'nvidia-shift-at': { min: 50, max: 99 }, 'week-pause-at': { min: 0, max: 99 } });
     const s = G5.resolveGuardSettings(['--pause-at', '150'], null, { bounds: b });
     assert.deepStrictEqual([s['pause-at'].value, s['pause-at'].source], [98, 'standaard'], 'a missing schema must still REFUSE an out-of-range flag — never fail open to "no bounds"');
     assert.strictEqual(s.warnings.length, 1);
@@ -4094,6 +4094,61 @@ test('N1 integration: doPause\'s notice names the paused window and adds the "sw
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- WP-WEEK-GUARD (owner directive 2026-09-28, "zet de weekly usage guard op 85%"): a separate pause point for
+// the WEEKLY windows (usage-guard.week-pause-at, 0 = the same as pause-at). Every other window keeps pause-at.
+{
+  const SCHEMA_W = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json'), 'utf8'));
+  const tw = (name, fn) => test('WEEK ' + name, fn);
+  tw('thresholdFor: a weekly window gets the weekly point, every other window pause-at', () => {
+    assert.strictEqual(G.thresholdFor({ kind: 'weekly_all' }, 98, 85), 85);
+    assert.strictEqual(G.thresholdFor({ kind: 'weekly_scoped' }, 98, 85), 85);
+    assert.strictEqual(G.thresholdFor({ kind: 'session' }, 98, 85), 98);
+    assert.strictEqual(G.thresholdFor({ kind: 'daily' }, 98, 85), 98);
+  });
+  tw('thresholdFor: week-pause-at 0, missing or NaN means the weekly windows follow pause-at, as before', () => {
+    assert.strictEqual(G.thresholdFor({ kind: 'weekly_all' }, 98, 0), 98);
+    assert.strictEqual(G.thresholdFor({ kind: 'weekly_all' }, 98, undefined), 98);
+    assert.strictEqual(G.thresholdFor({ kind: 'weekly_all' }, 98, NaN), 98);
+    assert.strictEqual(G.thresholdFor(null, 98, 85), 98);
+  });
+  tw('crossedWindows: a weekly window at 86% crosses 85 while a 90% session window stays under 98', () => {
+    const c = G.crossedWindows([{ kind: 'weekly_all', pct: 86 }, { kind: 'session', pct: 90 }], 98, 85);
+    assert.deepStrictEqual(c.map((x) => x.kind), ['weekly_all']);
+  });
+  tw('crossedWindows: under the weekly point nothing crosses; the old two-argument call is unchanged', () => {
+    assert.strictEqual(G.crossedWindows([{ kind: 'weekly_all', pct: 84 }], 98, 85).length, 0);
+    assert.strictEqual(G.crossedWindows([{ kind: 'weekly_all', pct: 86 }], 98).length, 0, 'without a weekly point 86% is under 98');
+    assert.strictEqual(G.crossedWindows([{ kind: 'weekly_all', pct: 98 }], 98).length, 1);
+  });
+  tw('crossedWindows: the weekly point is inclusive (85% crosses 85)', () => {
+    assert.strictEqual(G.crossedWindows([{ kind: 'weekly_scoped', pct: 85 }], 98, 85).length, 1);
+  });
+  tw('resolveGuardSettings: default 0 (standaard), config 85 (instelling), a flag wins (vlag)', () => {
+    const d = G.resolveGuardSettings([], null);
+    assert.deepStrictEqual([d['week-pause-at'].value, d['week-pause-at'].source], [0, 'standaard']);
+    const s = G.resolveGuardSettings([], { 'usage-guard.week-pause-at': { value: 85, source: 'global' } });
+    assert.deepStrictEqual([s['week-pause-at'].value, s['week-pause-at'].source], [85, 'instelling']);
+    const f = G.resolveGuardSettings(['--week-pause-at', '80'], { 'usage-guard.week-pause-at': { value: 85, source: 'global' } });
+    assert.deepStrictEqual([f['week-pause-at'].value, f['week-pause-at'].source], [80, 'vlag']);
+  });
+  tw('resolveGuardSettings: an out-of-range --week-pause-at is refused with a warning (bounds 0-99)', () => {
+    const s = G.resolveGuardSettings(['--week-pause-at', '150'], null);
+    assert.deepStrictEqual([s['week-pause-at'].value, s['week-pause-at'].source], [0, 'standaard']);
+    assert.strictEqual(s.warnings.length, 1);
+    assert.match(s.warnings[0], /--week-pause-at 150/);
+  });
+  tw('the hard default, the fallback bounds and the schema agree (no drift)', () => {
+    const spec = SCHEMA_W.settings['usage-guard.week-pause-at'];
+    assert.ok(spec, 'the schema carries usage-guard.week-pause-at');
+    assert.strictEqual(G.GUARD_DEFAULTS['week-pause-at'], spec.default);
+    assert.deepStrictEqual(G.GUARD_BOUNDS_FALLBACK['week-pause-at'], { min: spec.min, max: spec.max });
+  });
+  tw('settingsLine names week-pause-at only when it is set', () => {
+    assert.ok(!/week-pause-at/.test(G.settingsLine(G.resolveGuardSettings([], null))));
+    assert.match(G.settingsLine(G.resolveGuardSettings([], { 'usage-guard.week-pause-at': { value: 85, source: 'global' } })), /week-pause-at 85% \(bron: instelling\)/);
+  });
+}
 
 Promise.all(asyncQueue).then(() => {
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

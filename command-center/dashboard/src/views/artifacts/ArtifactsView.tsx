@@ -40,6 +40,7 @@ import {
 import { usePrototype } from '@/prototype/state/prototype-store';
 import type { Artifact, ArtifactKind } from '@/prototype/types/prototype-types';
 import { GATEWAY_ORIGIN } from '@/prototype/state/gateway-client';
+import { useGatewayArtifactsTruncated } from '@/prototype/state/gateway-adapter';
 
 import './artifacts.css';
 
@@ -387,6 +388,11 @@ const LAYOUT_OPTIONS = [
 export default function ArtifactsView() {
   const { state, dispatch } = usePrototype();
   const artifacts = state.data.artifacts;
+  // WP-RB-CC (review finding L-1): `artifacts_truncated` — true once the gateway's own scan of this
+  // project's artifacts (the forge-artifacts index and/or a run's own artifacts/ directory) hit its
+  // own bound, meaning this gallery honestly does not cover every real artifact this project has
+  // produced. See useGatewayArtifactsTruncated's own doc comment.
+  const artifactsTruncated = useGatewayArtifactsTruncated(state.activeProjectId);
 
   const [kind, setKind] = useState<KindFilter>('all');
   const [layout, setLayout] = useState<GalleryLayout>('grid');
@@ -431,6 +437,13 @@ export default function ArtifactsView() {
           <p className="fw-artifacts__subtitle">
             Everything this run recorded as evidence — reports, captures, logs and the proof ledger.
           </p>
+          {/* WP-RB-CC (L-1): reuses the existing `fw-field__hint` note style (Field's own hint
+              paragraph, a plain standalone rule — see primitives.css) rather than adding a new one. */}
+          {artifactsTruncated ? (
+            <p className="fw-field__hint">
+              Showing part of this project&apos;s artifacts — there are more than this gallery can show.
+            </p>
+          ) : null}
         </div>
 
         <Toolbar label="Artifact gallery controls" className="fw-artifacts__toolbar">

@@ -20,13 +20,26 @@
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/i;
 
 /**
- * validateFinalizeReceipt(parsed, expectedRunId) -> { valid: true, receipt } | { valid: false, reason }.
- * `parsed` is whatever JSON.parse() returned for run-finalized.json, or `null` when the file is
- * absent/unreadable/unparseable — callers pass that same `null` straight through here too, so there
- * is exactly ONE place that decides "does this run count as finalized", never two independently
- * drifting checks.
+ * validateFinalizeReceipt(parsed, expectedRunId, currentEventsBytes) -> { valid: true, receipt } |
+ * { valid: false, reason }. `parsed` is whatever JSON.parse() returned for run-finalized.json, or
+ * `null` when the file is absent/unreadable/unparseable — callers pass that same `null` straight
+ * through here too, so there is exactly ONE place that decides "does this run count as finalized",
+ * never two independently drifting checks.
+ *
+ * WP-RB-CC (review finding M-1): `currentEventsBytes` is optional — the caller's own already-stat()'d
+ * LIVE byte size of this run's events.jsonl right now. Before this parameter existed, this validator
+ * checked the receipt's SHAPE only, never compared it against the current log, so a run finalized
+ * once and then re-opened (more events logged into the SAME run afterwards) still read back as a
+ * fully "Finalized" run forever — the exact STALE case `check()` in `.claude/forge-bin/
+ * forge-finalize.cjs` (read-only, that project's own real authority) already refuses via an exact
+ * digest+bytes match against the current file. Recomputing a full sha256 digest on every dashboard
+ * poll is not worth its cost here; a byte-size mismatch alone already proves the file changed (an
+ * append changes the length by construction), so it is checked cheaply below instead. Omit this
+ * argument (or pass `null`/`NaN`/anything non-finite) when the caller could not determine the current
+ * size (no events.jsonl at all, or a read failure) — the check is then honestly skipped, never
+ * guessed stale from missing information.
  */
-export function validateFinalizeReceipt(parsed, expectedRunId) {
+export function validateFinalizeReceipt(parsed, expectedRunId, currentEventsBytes = null) {
   if (parsed === null) return { valid: false, reason: 'absent' };
   if (typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { valid: false, reason: 'receipt_invalid: not a plain object' };
@@ -49,6 +62,13 @@ export function validateFinalizeReceipt(parsed, expectedRunId) {
   }
   if (!Number.isInteger(parsed.events) || parsed.events <= 0) {
     return { valid: false, reason: 'receipt_invalid: missing or empty events count' };
+  }
+  // WP-RB-CC (M-1): the receipt's own pinned `bytes` no longer matches the CURRENT live file — the
+  // log changed (almost always grew — a follow-up logged more events into this already-finalized
+  // run) since this receipt was written. See this function's own header for why only a byte-size
+  // comparison is done here, not a full digest recompute.
+  if (Number.isFinite(currentEventsBytes) && currentEventsBytes !== parsed.bytes) {
+    return { valid: false, reason: 'the log changed after it was finalized' };
   }
   return { valid: true, receipt: parsed };
 }

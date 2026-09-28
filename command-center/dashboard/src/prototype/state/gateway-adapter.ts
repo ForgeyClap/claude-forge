@@ -293,6 +293,8 @@ export { toGatewayGate, toGatewayArtifact, parseDoctorHealth } from './adapter/g
 export type { GatewayProjectProfile, GatewayEventsState, ActiveRunRow, ActiveRunsResult, GatewayProofExtras } from './adapter/polling-hooks';
 export {
   useGatewayRunScanErrors,
+  useGatewayRunsTruncated,
+  useGatewayArtifactsTruncated,
   EMPTY_PROJECT_PROFILE,
   parseProjectProfile,
   PROJECTS_POLL_MS,
@@ -315,7 +317,7 @@ export type {
 } from './adapter/graph-and-proof';
 export { dedupeLatestVerdictRows } from './adapter/graph-and-proof';
 
-export { buildAgentNameIndex, normalizeAgentKey, resolveAgentSlug, toRunStatusKey, parseCurrentRunId } from './adapter/rows';
+export { buildAgentNameIndex, normalizeAgentKey, resolveAgentSlug, toRunStatusKey, parseCurrentRunId, parseRunsTruncated } from './adapter/rows';
 
 export type {
   ChatRunTodoRow,

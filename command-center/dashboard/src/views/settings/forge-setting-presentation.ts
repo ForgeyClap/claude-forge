@@ -31,6 +31,7 @@ import type { GatewayForgeSetting } from '@/prototype/state/gateway-capabilities
 const FORGE_SETTING_LABELS: Readonly<Record<string, string>> = {
   'usage-guard': 'Usage guard',
   'usage-guard.pause-at': 'Pause at (% of your limit)',
+  'usage-guard.week-pause-at': 'Weekly pause at (% of your weekly limit)',
   'usage-guard.resume-at': 'Resume at (% of your limit)',
   'usage-guard.interval': 'Check interval (seconds)',
   'usage-guard.nvidia-shift-at': 'Shift bulk work to NVIDIA at (%)',
@@ -66,6 +67,7 @@ const FORGE_SETTING_LABELS: Readonly<Record<string, string>> = {
   cleanup: 'Old file cleanup',
   'ecc-full-test': 'Full diagnostic test mode',
   'budget-usd': 'Spending limit per run',
+  vault: 'Write readable notes after each run',
 };
 
 /** `usage-guard.pause-at` -> `Usage Guard Pause At`. Only ever reached for a
@@ -134,6 +136,7 @@ export const FORGE_SETTING_CATEGORIES: readonly ForgeSettingCategory[] = [
 const FORGE_CATEGORY_BY_KEY: Readonly<Record<string, string>> = {
   'usage-guard': 'usage',
   'usage-guard.pause-at': 'usage',
+  'usage-guard.week-pause-at': 'usage',
   'usage-guard.resume-at': 'usage',
   'usage-guard.interval': 'usage',
   'usage-guard.nvidia-shift-at': 'usage',
@@ -166,6 +169,7 @@ const FORGE_CATEGORY_BY_KEY: Readonly<Record<string, string>> = {
   portfolio: 'tools',
   'agent-memory': 'tools',
   snapshots: 'tools',
+  vault: 'tools',
   'tool-log': 'tools',
   paperclip: 'advanced',
   'ecc-full-test': 'advanced',

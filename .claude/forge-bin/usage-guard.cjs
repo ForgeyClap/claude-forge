@@ -18,7 +18,7 @@
  * Usage:
  *   node .claude/forge-bin/usage-guard.cjs check                    # one-shot: print real usage %
  *   node .claude/forge-bin/usage-guard.cjs status                   # settings (+ where each came from), guard state, live %
- *   node .claude/forge-bin/usage-guard.cjs watch [--interval 120] [--pause-at 98] [--resume-at 0]
+ *   node .claude/forge-bin/usage-guard.cjs watch [--interval 120] [--pause-at 98] [--week-pause-at 0] [--resume-at 0]
  *                                          [--nvidia-shift-at 80] [--grace-min 5] [--companies a,b]
  *                                          [--once] [--state <file>] [--dry-run]
  *   node .claude/forge-bin/usage-guard.cjs start [--force]          # detached watch (single instance); exit 3 when the
@@ -63,8 +63,9 @@
  *
  * SETTINGS (v2.7.0, 2026-09-24): every threshold resolves as CLI flag > the owner's `/forge config` value
  * (forge-config.cjs, soft-required; absent = the schema's own defaults) > the hard default in GUARD_DEFAULTS
- * (pause-at 98, resume-at 0, interval 120, nvidia-shift-at 80 — equal to FORGE_CONFIG_SCHEMA.json, pinned by a
- * test). The pause default used to drift between 93, 95 and 98; 98 is now the only pause literal. `status` and the
+ * (pause-at 98, resume-at 0, interval 120, nvidia-shift-at 80, week-pause-at 0 — equal to FORGE_CONFIG_SCHEMA.json,
+ * pinned by a test). The pause default used to drift between 93, 95 and 98; 98 is now the only pause literal.
+ * week-pause-at (2026-09-28) is a separate pause point for the WEEKLY windows only; 0 means they follow pause-at. `status` and the
  * watch log print each value with its source (bron: vlag|instelling|standaard). The config key `usage-guard` is the
  * owner's on/off switch: when it is off, `start` prints one plain line and exits 3 without spawning anything
  * (`--force` overrides once). A REAL start (not "already running") prints the schema's disclosure text — what the
@@ -165,7 +166,9 @@ function argv(name, dflt) { const a = process.argv.slice(2); const i = a.indexOf
 const has = (f) => args.includes('--' + f);
 
 // ---- SETTINGS (v2.7.0, 2026-09-24): CLI flag > /forge config value > hard default — see the header ----
-const GUARD_DEFAULTS = { 'pause-at': 98, 'resume-at': 0, interval: 120, 'nvidia-shift-at': 80 };
+// week-pause-at (owner directive 2026-09-28, "zet de weekly usage guard op 85%"): a separate pause point for the
+// WEEKLY windows only; 0 = the same as pause-at (the behaviour before it existed).
+const GUARD_DEFAULTS = { 'pause-at': 98, 'resume-at': 0, interval: 120, 'nvidia-shift-at': 80, 'week-pause-at': 0 };
 const GUARD_SWITCH_KEY = 'usage-guard';
 const GUARD_SCHEMA_PATH = path.join(__dirname, '..', 'config', 'orchestration', 'FORGE_CONFIG_SCHEMA.json');
 const SOURCE_WORD = { flag: 'vlag', config: 'instelling', dflt: 'standaard' };
@@ -184,6 +187,7 @@ const GUARD_BOUNDS_FALLBACK = {
   'resume-at': { min: 0, max: 98 },
   interval: { min: 30, max: 900 },
   'nvidia-shift-at': { min: 50, max: 99 },
+  'week-pause-at': { min: 0, max: 99 },
 };
 /** guardBounds(schemaPath) -> { [flag]: {min, max} } for pause-at/resume-at/interval/nvidia-shift-at, read
  *  directly from FORGE_CONFIG_SCHEMA.json (CFG-05, 2026-09-24) — this file must never touch
@@ -336,11 +340,18 @@ const RESUME_AT = GUARD['resume-at'].value;
 // purely advisory (see NVIDIA-SHIFT SOFT THRESHOLD doc above). Same settings mechanism as PAUSE_AT
 // (never itself read back from state — only recorded there for observability).
 const NVIDIA_SHIFT_AT = GUARD['nvidia-shift-at'].value;
+const WEEK_PAUSE_AT = GUARD['week-pause-at'].value; // 0 = same as PAUSE_AT
+/** thresholdText() -> the pause point(s) in words for log and pause messages; names the weekly one only when it differs. */
+function thresholdText() {
+  return WEEK_PAUSE_AT > 0 && WEEK_PAUSE_AT !== PAUSE_AT ? PAUSE_AT + '%, week ' + WEEK_PAUSE_AT + '%' : PAUSE_AT + '%';
+}
 const INTERVAL = Math.max(30, GUARD.interval.value);
 /** settingsLine(S) — one line with every value and its source, e.g. "pause-at 98% (bron: standaard) · …". */
 function settingsLine(S) {
   const part = (k, v, unit) => k + ' ' + v + unit + ' (bron: ' + S[k].source + ')';
-  return [part('pause-at', S['pause-at'].value, '%'), part('resume-at', S['resume-at'].value, '%'),
+  return [part('pause-at', S['pause-at'].value, '%'),
+    ...(S['week-pause-at'] && S['week-pause-at'].value > 0 ? [part('week-pause-at', S['week-pause-at'].value, '%')] : []),
+    part('resume-at', S['resume-at'].value, '%'),
     part('nvidia-shift-at', S['nvidia-shift-at'].value, '%'), part('interval', Math.max(30, S.interval.value), 's'),
     'usage-guard ' + (S.enabled.value ? 'aan' : 'uit') + ' (bron: ' + S.enabled.source + ')'].join(' · ');
 }
@@ -940,10 +951,18 @@ function stillHighTrigger(triggers, windows, resumeAt, legacy) {
   };
   return (Array.isArray(triggers) ? triggers : []).some((t) => curPct(t) > resumeAt);
 }
-/** crossedWindows(windows, pauseAt) -> the windows at/over the pause threshold, ANY kind. */
-function crossedWindows(windows, pauseAt) {
+/** thresholdFor(w, pauseAt, weekPauseAt) -> the pause threshold for ONE window: a weekly window (every kind that
+ *  starts with "weekly": weekly_all, weekly_scoped, and any later weekly kind) uses weekPauseAt when it is set
+ *  (> 0); every other window, and a weekly one without its own threshold, uses pauseAt. Pure. */
+function thresholdFor(w, pauseAt, weekPauseAt) {
+  const weekly = !!(w && typeof w.kind === 'string' && w.kind.startsWith('weekly'));
+  return weekly && Number.isFinite(weekPauseAt) && weekPauseAt > 0 ? weekPauseAt : pauseAt;
+}
+/** crossedWindows(windows, pauseAt, weekPauseAt) -> the windows at/over their OWN pause threshold, ANY kind
+ *  (a weekly window against weekPauseAt when that is set, see thresholdFor). */
+function crossedWindows(windows, pauseAt, weekPauseAt) {
   if (!Number.isFinite(pauseAt)) return [];
-  return (Array.isArray(windows) ? windows : []).filter((w) => Number.isFinite(w.pct) && w.pct >= pauseAt);
+  return (Array.isArray(windows) ? windows : []).filter((w) => Number.isFinite(w.pct) && w.pct >= thresholdFor(w, pauseAt, weekPauseAt));
 }
 /** triggerCanResumeByModelSwitch(triggers, windows, modelHint) -> boolean — N1's second half: "switching
  *  models is enough" to resume a pause that was caused SOLELY by per-model window(s). Requires BOTH: (1)
@@ -1504,7 +1523,7 @@ async function doPause(u, crossed, ident, opts) {
   const switchNote = !allPerModel ? '' : pickLang(lang,
     ' Wisselen naar een ander model is voldoende om Forge weer te laten werken.',
     ' Switching to a different model is enough to resume Forge.');
-  const reason = 'USAGE GUARD: ' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' >= ' + PAUSE_AT + '% — auto-paused. Auto-resume when back to <= ' + RESUME_AT + '%.' + switchNote;
+  const reason = 'USAGE GUARD: ' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' >= ' + thresholdText() + ' — auto-paused. Auto-resume when back to <= ' + RESUME_AT + '%.' + switchNote;
   if (DRY) { log('[dry-run] WOULD pause ' + toPause.length + ' agents (' + reason + ')'); return; }
   const paused = [];
   // r4 #15: een pauzeronde heeft een eigen pauseId en het journal is WRITE-AHEAD — de intent staat er
@@ -1576,7 +1595,7 @@ async function doPause(u, crossed, ident, opts) {
     if (fence && !fence()) return { fenced: true };
     try {
     writeState({
-      mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, resumeAt: RESUME_AT,
+      mode: 'paused', trigger: crossed, pauseAt: PAUSE_AT, weekPauseAt: WEEK_PAUSE_AT > 0 ? WEEK_PAUSE_AT : null, resumeAt: RESUME_AT,
       ...accountStamp(ident),
       // NEVER silently drop the owner's paid-credits override / last credit snapshot on a pause — the hook
       // reads ownerOverride to keep working; a fresh object without it defeated that (an accounting desktop app flapping).
@@ -1599,13 +1618,13 @@ async function doPause(u, crossed, ident, opts) {
       // resolveGuardLanguage/pickLang), and — N1 — names which window paused Forge and, only when every
       // trigger window is per-model, that switching models is enough (switchNote, built above).
       notice: pickLang(lang,
-        '⛔ USAGE GUARD — PAUZEER (' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + '). Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + PAUSE_AT + '%). '
+        '⛔ USAGE GUARD — PAUZEER (' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + '). Gemeten (echt): sessie ' + u.session.pct + '% · week ' + u.week.pct + '% (drempel ' + thresholdText() + '). '
           + 'Geen nieuwe subagents/workflows starten. Rond lopend werk minimaal af en meld de pauze. '
           + 'Auto-hervat bij <= ' + RESUME_AT + '% (sessie-reset: ' + fmtReset(u.session.resetsAt) + ')'
           + (Number.isFinite(resumeAtEpoch) ? ', of ritme-hervat rond ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min marge)' : '') + '. '
           + (agents === null ? '(Paperclip runtime onbereikbaar — geen agents te pauzeren; subagent-stop geldt wel.)' : paused.length + ' Paperclip agents gepauzeerd (dashboard blijft UP).')
           + switchNote,
-        '⛔ USAGE GUARD — PAUSED (' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + '). Measured (real): session ' + u.session.pct + '% · week ' + u.week.pct + '% (threshold ' + PAUSE_AT + '%). '
+        '⛔ USAGE GUARD — PAUSED (' + crossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + '). Measured (real): session ' + u.session.pct + '% · week ' + u.week.pct + '% (threshold ' + thresholdText() + '). '
           + 'Do not start new subagents/workflows. Wrap up running work minimally and report the pause. '
           + 'Auto-resumes at <= ' + RESUME_AT + '% (session reset: ' + fmtReset(u.session.resetsAt) + ')'
           + (Number.isFinite(resumeAtEpoch) ? ', or rhythm-resume around ' + fmtReset(new Date(resumeAtEpoch).toISOString()) + ' (reset + ' + GRACE_MIN + ' min margin)' : '') + '. '
@@ -2019,13 +2038,13 @@ async function tick(deps, opts) {
     // per-model window, only when it is the model in use or the endpoint's own is_active says so) — a
     // full per-model window while a DIFFERENT model is running is reported as advisory, never silently
     // dropped, but never blocks a session that is not the one at its limit either.
-    const allCrossed = crossedWindows(u.windows, PAUSE_AT);
+    const allCrossed = crossedWindows(u.windows, PAUSE_AT, WEEK_PAUSE_AT);
     const crossed = allCrossed.filter((w) => windowAppliesNow(w, modelHint))
       .map((w) => ({ id: w.id, name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt, model: w.model }));
     const advisory = allCrossed.filter((w) => !windowAppliesNow(w, modelHint));
     if (advisory.length) {
-      D.log('ADVISORY — ' + advisory.map((w) => w.label + ' ' + w.pct + '%').join(' + ') + ' at/over pause-at ' + PAUSE_AT
-        + '% but not the model currently in use (and the endpoint does not say it is active) — NOT pausing; using that model would trip it');
+      D.log('ADVISORY — ' + advisory.map((w) => w.label + ' ' + w.pct + '%').join(' + ') + ' at/over pause-at ' + thresholdText()
+        + ' but not the model currently in use (and the endpoint does not say it is active) — NOT pausing; using that model would trip it');
     }
     if (crossed.length) { await D.doPause(u, crossed, ident, { signal: tickOpts.signal, lang }); return; }
     // keep pauseAt/resumeAt fresh on every tick (fix 2026-07-08) — otherwise a running watchdog started
@@ -2042,7 +2061,7 @@ async function tick(deps, opts) {
       // stateForAccount() returns the SAME object (mutated fresh) when nothing changed, or a genuinely NEW
       // reset object on a real switch — either way it is the correct base for the ok-mode fields below.
       const reconciled = stateForAccount(fresh, ident, lang);
-      reconciled.mode = 'ok'; reconciled.pauseAt = PAUSE_AT; reconciled.resumeAt = RESUME_AT; reconciled.nvidiaShiftAt = NVIDIA_SHIFT_AT;
+      reconciled.mode = 'ok'; reconciled.pauseAt = PAUSE_AT; reconciled.weekPauseAt = WEEK_PAUSE_AT > 0 ? WEEK_PAUSE_AT : null; reconciled.resumeAt = RESUME_AT; reconciled.nvidiaShiftAt = NVIDIA_SHIFT_AT;
       reconciled.percents = { session: u.session.pct, week: u.week.pct }; reconciled.lastCheckAt = new Date().toISOString();
       delete reconciled.lastError; delete reconciled.corruptAt; delete reconciled.corruptReason;
       return reconciled;
@@ -2061,7 +2080,7 @@ async function tick(deps, opts) {
     }
     // log EVERY window, not just the legacy pair — otherwise a daily/scoped limit climbing toward 100%
     // is invisible in the log as well as in the decision (fix 2026-08-03).
-    D.log('ok — ' + (u.windows || []).map((w) => w.label + ' ' + w.pct + '%').join(' · ') + ' (pause-at ' + PAUSE_AT + '%)');
+    D.log('ok — ' + (u.windows || []).map((w) => w.label + ' ' + w.pct + '%').join(' · ') + ' (pause-at ' + thresholdText() + ')');
   } else {
     // AUDIT #15 (2026-08-05): the old lookup was `find(x.kind === t.metric)` — the FIRST window with the
     // same bare kind decided the resume, so with two weekly_scoped windows the guard could resume off the
@@ -2089,11 +2108,11 @@ async function tick(deps, opts) {
     if (!stillHigh || rhythmDue || modelSwitchedAway) {
       // N1: the same applicability filter as the "ok" branch above — a DIFFERENT model's window sitting
       // at/over pause-at must never force a re-pause on behalf of a model this session is not using.
-      const nowAllCrossed = crossedWindows(u.windows, PAUSE_AT);
+      const nowAllCrossed = crossedWindows(u.windows, PAUSE_AT, WEEK_PAUSE_AT);
       const nowCrossed = nowAllCrossed.filter((w) => windowAppliesNow(w, modelHint))
         .map((w) => ({ id: w.id, name: w.label, metric: w.kind, pct: w.pct, resetsAt: w.resetsAt, model: w.model }));
       if (nowCrossed.length) {
-        D.log('trigger cleared/rhythm due, but ' + nowCrossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' is at/over pause-at ' + PAUSE_AT + '% — staying paused on the CURRENT window instead of resume-then-repause flapping');
+        D.log('trigger cleared/rhythm due, but ' + nowCrossed.map((c) => c.name + ' ' + c.pct + '%').join(' + ') + ' is at/over pause-at ' + thresholdText() + ' — staying paused on the CURRENT window instead of resume-then-repause flapping');
         await D.doPause(u, nowCrossed, ident, { signal: tickOpts.signal, lang });
         return;
       }
@@ -2829,7 +2848,7 @@ if (require.main === module) {
 module.exports = {
   writeStateTo,
   fingerprintAccount, readAccountIdentity, detectAccountSwitch, stateForAccount,
-  normalizeWindows, crossedWindows, windowLabel, watcherHealth, fmtReset, stillHighTrigger,
+  normalizeWindows, crossedWindows, thresholdFor, windowLabel, watcherHealth, fmtReset, stillHighTrigger,
   sameModel, normalizeModelToken, ALL_MODELS_KINDS, resolveActiveModelHint, windowAppliesNow, triggerCanResumeByModelSwitch,
   resolveGuardLanguage, pickLang,
   tick, doPause, doResume, accountStamp, ownsPid, readPosixCmdline, verdictFromCmdline, pidAlive, readCredentialFp,

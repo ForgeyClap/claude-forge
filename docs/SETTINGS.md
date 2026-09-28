@@ -6,7 +6,7 @@
 > ("zet de usage guard op 97%", "vraag me niet meer bij elke fase"). Forge voert het commando zelf uit en zegt
 > in één zin wat er veranderd is. Je hoeft nooit zelf een bestand te openen of een commando te typen.
 
-Forge has **37 settings** in three groups, plus **7 locked rules** that are always on. Everything is **on by
+Forge has **39 settings** in three groups, plus **7 locked rules** that are always on. Everything is **on by
 default**. You can see and change any setting with one command, or by simply saying it in chat.
 
 > [!TIP]
@@ -84,6 +84,10 @@ ON      usage-guard                  on                       default          P
                                                                                guaranteed instant block. [1]
 ON      usage-guard.pause-at         98 %                     default          Forge pauses at this percentage of your
                                                                                usage limit.
+ON      usage-guard.week-pause-at    0 %                      default          Forge pauses at this percentage of your
+                                                                               WEEKLY limit (0 = the same as the normal
+                                                                               pause point). The session limit keeps
+                                                                               following usage-guard.pause-at.
 ON      autonomy                     continue-within-mission  product-default  Keeps working across phases without
                                                                                asking 'continue?' each time. STOP always
                                                                                works; deploy/push/spend/DNS/production
@@ -252,6 +256,7 @@ Change: /forge config set <setting> <value> - Explain: /forge config explain <se
 |---|---|---|---|---|---|
 | `usage-guard` | on | this computer | Pauses Forge automatically when your Claude usage nears the limit. It measures on an interval (2 minutes by default), so this is a pause before the limit, not a guaranteed instant block. | Forge does not measure your usage and never pauses by itself. | C N U |
 | `usage-guard.pause-at` | 98 % | this computer | Forge pauses at this percentage of your usage limit (50–99). | — | |
+| `usage-guard.week-pause-at` | 0 % | this computer | Forge pauses at this percentage of your **weekly** limit (0–99). The 5-hour session limit keeps following `usage-guard.pause-at`. Example: `/forge config set usage-guard.week-pause-at 85` pauses at 85 % of the week while a session can still run to 98 %. | 0: the weekly limit follows `usage-guard.pause-at`, as before. | |
 | `autonomy` | continue-within-mission | this project | Keeps working across phases without asking "continue?" each time. STOP always works; deploy, push, spend, DNS and production always ask first. | `ask-each-phase`: Forge stops at every phase boundary and waits for you. (`full-auto-within-mission` is also allowed.) | |
 | `start-gate` | off | this project | Does not wait for a START before building: the plan is posted and work continues immediately (say STOP to pause). | `l4-only`: only large phased missions wait for START. `always`: every run waits for START. | |
 | `gate-hook` | on | this project | A real stop (not advice) on dangerous commands: recursive deletes, killing processes by name, git commands that throw away uncommitted work, commands that hide what they run (eval, a pipe into a shell), and printing a secret file's contents (`.env`, keys). Forge asks first. | The hard gates still exist as classifier and rule, but the hook no longer enforces them. | |
@@ -285,6 +290,7 @@ Change: /forge config set <setting> <value> - Explain: /forge config explain <se
 | `skill-proposals` | on | this project | Forge may propose a new skill when it sees a real gap; activating it always stays your decision. | No skill proposals. | |
 | `nightshift` | on | this project | May resume an interrupted run itself and write a morning briefing; never schedules itself. | No automatic resume or briefing. | |
 | `mcp` | on | this project | May use external tools (MCP servers) you enabled yourself; never installs or activates one on its own. | No external MCP tools. | N |
+| `discord-autostart` | on | this computer | Starts your Discord bot by itself whenever the Command Center starts, also after a reboot, so you can keep controlling Forge from Discord. Only when you connected Discord and did not switch the bot off yourself; switch it off in the dashboard and it stays off. | The bot only starts when you switch it on yourself in the dashboard (Discord tab). | N U $ |
 | `paperclip` | **off** | this project | A local agent runtime (127.0.0.1:3100) with agents that keep working unattended. Off by default: unattended agents run only on an explicit request (maintainer decision, 2026-07-04). | `on`: this project opts in. | U $ |
 | `cleanup` | **report** | this project | Old backups and logs: report only (default), or clean up automatically. | `auto`: deletes files older than 14 days and keeps the last 5. | D |
 
@@ -407,6 +413,6 @@ current in `HOOKS_OPT_IN.md` (section 6, "Honest limits") in the project's `.cla
 
 ---
 
-<sub>Source of truth: `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` (37 settings, 7 locked rules),
+<sub>Source of truth: `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` (39 settings, 7 locked rules),
 read only through `.claude/forge-bin/forge-config.cjs`. Back to the [README](../README.md) ·
 [Commands](../COMMANDS-QUICK-REF.md) · [Claude Code basics](CLAUDE-CODE-BASICS.md).</sub>

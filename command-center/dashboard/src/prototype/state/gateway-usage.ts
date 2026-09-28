@@ -501,6 +501,9 @@ export function formatGuardTooltip(usage: GatewayAccountUsage): string {
     `pressure ${usage.level ?? 'n/a'}`,
     usage.nvidiaShiftAt !== null ? `NVIDIA-shift at ${usage.nvidiaShiftAt}%` : null,
     usage.pauseAt !== null ? `pause at ${usage.pauseAt}%` : null,
+    // The weekly limit can pause earlier than the session (usage-guard.week-pause-at): name it, or the pill would
+    // suggest the week also runs to the normal pause point (2026-09-28).
+    usage.guard.available && usage.guard.weekPauseAt !== null ? `week pause at ${usage.guard.weekPauseAt}%` : null,
     // A dead or hanging watcher is named as such, never "guard ok" (found live 2026-09-28).
     !usage.guard.available
       ? 'guard n/a'

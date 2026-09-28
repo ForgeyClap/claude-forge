@@ -34,7 +34,7 @@ import type { ProjectType, StatusKey } from '@/prototype/types/prototype-types';
 import { isProductionMode } from '@/config/mode';
 import { NewProjectDialog } from '@/components/shell/NewProjectDialog';
 import { useGatewayActiveRuns } from '@/prototype/state/gateway-adapter';
-import type { ActiveRunRow } from '@/prototype/state/gateway-adapter';
+import type { ActiveRunRow, ActiveRunsResult } from '@/prototype/state/gateway-adapter';
 
 /* ------------------------------------------------------------------ local helpers */
 
@@ -195,6 +195,24 @@ interface HomeActiveMission {
    *  what is and is not a verified per-task status. */
   readonly crossProject: boolean;
   readonly status: StatusKey;
+}
+
+/**
+ * WP-RB-CC (review finding L-1): the "Active missions" panel used to claim "Real active runs across
+ * every project in the workspace" with no honest caveat, even when the gateway's own fleet-wide
+ * sweep (`GET /api/active-runs`) hit its own project-count/run-count budget and truncated the real
+ * result — every count shown (the overview strip's "active runs" cell, this panel's own list) was
+ * quietly PART of the workspace, not all of it, with nothing on screen saying so. One plain sentence
+ * added only when `truncated` is genuinely true — no new component, no new style.
+ */
+function activeMissionsSubtitle(production: boolean, activeRunsAcrossWorkspace: ActiveRunsResult): string {
+  if (!production) return 'Example runs across the workspace.';
+  if (!activeRunsAcrossWorkspace.available) {
+    return 'Active runs for this project. (Workspace-wide active-run reporting is not available from this gateway yet.)';
+  }
+  return activeRunsAcrossWorkspace.truncated
+    ? 'Real active runs across every project in the workspace — showing part of your projects and runs, there are more than this list can show right now.'
+    : 'Real active runs across every project in the workspace.';
 }
 
 function activeRunRowToMission(row: ActiveRunRow): HomeActiveMission {
@@ -698,13 +716,7 @@ export default function HomeView() {
             flush
             padded={false}
             title="Active missions"
-            subtitle={
-              production
-                ? activeRunsAcrossWorkspace.available
-                  ? 'Real active runs across every project in the workspace.'
-                  : 'Active runs for this project. (Workspace-wide active-run reporting is not available from this gateway yet.)'
-                : 'Example runs across the workspace.'
-            }
+            subtitle={activeMissionsSubtitle(production, activeRunsAcrossWorkspace)}
             actions={
               <Button variant="quiet" size="sm" iconRight="ArrowRight" onClick={() => navigate('/mission')}>
                 Mission control

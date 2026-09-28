@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { gwEventSource, gwGet, pickArray, pickBool, pickNumber, pickString } from '@/prototype/state/gateway-client';
 
 import { PROJECT_DATA_POLL_MS, type Keyed } from './shared';
-import { parseAgentRows, parseCurrentRunId, parseDefaultProjectId, parseMissionPayload, parseProjectRows, parseRunRows, type AgentRow, type MissionPayload, type ProjectRow, type RunRow } from './rows';
+import { parseAgentRows, parseCurrentRunId, parseDefaultProjectId, parseMissionPayload, parseProjectRows, parseRunRows, parseRunsTruncated, type AgentRow, type MissionPayload, type ProjectRow, type RunRow } from './rows';
 import {
   EMPTY_FINALIZE_RECEIPT,
   EMPTY_GATE_EVIDENCE,
@@ -128,9 +128,15 @@ export interface ActiveRunsResult {
    *  runs" (`available: true, rows: []`). */
   readonly available: boolean;
   readonly rows: readonly ActiveRunRow[];
+  /** WP-RB-CC (review finding L-1): the gateway's own `truncated` field on this same response —
+   *  true once this fleet-wide sweep hit its own project-count or cumulative-run-count budget
+   *  (`active-runs.mjs`'s `computeActiveRuns()`), meaning `rows` honestly does not cover every real
+   *  active run in the workspace. Always `false` when `available` is `false` — an unavailable signal
+   *  has no truncation state of its own to report. */
+  readonly truncated: boolean;
 }
 
-const EMPTY_ACTIVE_RUNS: ActiveRunsResult = { available: false, rows: [] };
+const EMPTY_ACTIVE_RUNS: ActiveRunsResult = { available: false, rows: [], truncated: false };
 
 /**
  * REVIEW FIX: the real field is `working_agents` (see this file's own header) — a plain `agents` key
@@ -183,7 +189,7 @@ export function useGatewayActiveRuns(): ActiveRunsResult {
         return;
       }
       const rows = parseActiveRunRows(result.data);
-      setState({ available: true, rows });
+      setState({ available: true, rows, truncated: pickBool(result.data, ['truncated']) ?? false });
     }
     void tick();
     const id = setInterval(() => void tick(), PROJECTS_POLL_MS);
@@ -203,9 +209,12 @@ export function useGatewayActiveRuns(): ActiveRunsResult {
 export interface ProjectRunsResult {
   readonly rows: readonly RunRow[];
   readonly currentRunId: string | null;
+  /** WP-RB-CC (review finding L-1): see `parseRunsTruncated`'s own doc comment — true once this
+   *  project has more run directories than the gateway's own per-request scan bound. */
+  readonly runsTruncated: boolean;
 }
 
-const EMPTY_PROJECT_RUNS_RESULT: ProjectRunsResult = { rows: EMPTY_RUN_ROWS, currentRunId: null };
+const EMPTY_PROJECT_RUNS_RESULT: ProjectRunsResult = { rows: EMPTY_RUN_ROWS, currentRunId: null, runsTruncated: false };
 
 export function useGatewayProjectRuns(projectName: string): ProjectRunsResult {
   const [state, setState] = useState<Keyed<ProjectRunsResult>>({ key: '', value: EMPTY_PROJECT_RUNS_RESULT });
@@ -215,7 +224,10 @@ export function useGatewayProjectRuns(projectName: string): ProjectRunsResult {
     async function tick(): Promise<void> {
       const result = await gwGet(`/api/runs?project=${encodeURIComponent(projectName)}`);
       if (cancelled || !result.ok) return;
-      setState({ key: projectName, value: { rows: parseRunRows(result.data), currentRunId: parseCurrentRunId(result.data) } });
+      setState({
+        key: projectName,
+        value: { rows: parseRunRows(result.data), currentRunId: parseCurrentRunId(result.data), runsTruncated: parseRunsTruncated(result.data) },
+      });
     }
     void tick();
     const id = setInterval(() => void tick(), PROJECT_DATA_POLL_MS);
@@ -244,6 +256,19 @@ export function useGatewayRunScanErrors(projectName: string): ReadonlyMap<string
     for (const row of runRows) map.set(row.runId, row.eventScanError);
     return map;
   }, [runRows]);
+}
+
+/**
+ * WP-RB-CC (review finding L-1): `runs_truncated` — real, honest signal that this project's own runs
+ * list (`ActivityView`'s "Run" picker, backed by `state.data.runs`) does not cover every run this
+ * project actually has. Mirrors `useGatewayRunScanErrors`'s own precedent exactly: a small dedicated
+ * hook the consuming view mounts directly, a second independent poll of `/api/runs` alongside
+ * `useGatewayDataset`'s own internal `useGatewayProjectRuns` call for the same project (same named
+ * tradeoff — real extra traffic, cheap because an unchanged project is served from cache).
+ */
+export function useGatewayRunsTruncated(projectName: string): boolean {
+  const { runsTruncated } = useGatewayProjectRuns(projectName);
+  return runsTruncated;
 }
 
 export function useGatewayProjectAgents(projectName: string): readonly AgentRow[] {
@@ -394,6 +419,19 @@ export function useGatewayProofAll(projectName: string): Record<string, unknown>
     };
   }, [projectName]);
   return state.key === projectName ? state.value : null;
+}
+
+/**
+ * WP-RB-CC (review finding L-1): `artifacts_truncated` on this SAME `GET /api/proof?run=all`
+ * payload (`proof.mjs`'s `buildProofAll()`) — true whenever the forge-artifacts index read, or any
+ * run-artifacts-dir listing, hit its own bound, meaning `ArtifactsView`'s gallery does not cover
+ * every real artifact this project has produced. Mirrors `useGatewayRunScanErrors`'s own precedent:
+ * a small dedicated hook the consuming view mounts directly — a second independent poll of the same
+ * route `useGatewayDataset` already polls internally to build `state.data.artifacts`.
+ */
+export function useGatewayArtifactsTruncated(projectName: string): boolean {
+  const payload = useGatewayProofAll(projectName);
+  return payload !== null && (pickBool(payload, ['artifacts_truncated']) ?? false);
 }
 
 /* ========================================================================== */

@@ -14,6 +14,7 @@ import { computeInvitePermissions } from './invite.js';
 import { resolveGuild, resolveOwner } from './guild-autodetect.js';
 import { writeEnvValues } from './env-store.js';
 import { classifyLoginError } from './login-error.js';
+import { friendlyError } from './friendly-error.js';
 import path from 'node:path';
 
 const config = loadConfig();
@@ -243,7 +244,15 @@ if (config.transport === 'discord' && config.guildId && !loginError) {
     announce: (text) => transport.send(info.channelId, text),
   });
   gateway.projectSync = sync;
-  const added = await sync.syncOnce({ verifyChannels: true, archiveOrphans: true });
+  // Een onverwachte fout in de eerste sync mag de bot nooit laten crashen (live gevonden 2026-09-28); de
+  // periodieke sync hieronder probeert het gewoon opnieuw.
+  let added = [];
+  try {
+    added = await sync.syncOnce({ verifyChannels: true, archiveOrphans: true });
+  } catch (err) {
+    console.log(`[forge-discord] projectsync bij het opstarten mislukt: ${friendlyError(err)}`);
+    gateway.audit?.record('project_sync_error', { error: friendlyError(err) });
+  }
   if (added.length) console.log(`[forge-discord] projectsync: ${added.length} kanaal/kanalen bijgewerkt`);
   sync.start(60_000);
 

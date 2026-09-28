@@ -188,6 +188,30 @@ describe('DiscordView — "Starts automatically" row', () => {
     expect(screen.getByText(/Turned off in Settings \("discord-autostart"\)/)).toBeInTheDocument();
   });
 
+  // WP-RB-CC (review finding L-2): the gateway's own last-boot detail (`discord-autostart.mjs`'s
+  // real "setting is off" text, copied here verbatim — a drift between the two would fail this test)
+  // used to end in "turn it on with /forge config set discord-autostart on", landing right after this
+  // same view's own "Turn it on there" — two different instructions for the same action, one of them
+  // a command a beginner should never be told to type. Both halves must now agree: "in Settings".
+  it("L-2: the full sentence (this view + the gateway's own last-boot detail) never tells a beginner to type a command, and both halves agree on Settings", async () => {
+    stubStatus(
+      serviceWith(
+        autostartBlock({
+          setting: false,
+          effective: false,
+          last: { at: '2026-09-28T09:00:00.000Z', outcome: 'skipped', detail: 'the discord-autostart setting is off (turn on "Start the Discord bot automatically" in Settings)' },
+        }),
+      ),
+    );
+    render(createElement(DiscordView));
+    await rowValue();
+    expect(screen.getByText('NO')).toBeInTheDocument();
+    const hint = screen.getByText(/Turned off in Settings \("discord-autostart"\)/);
+    expect(hint.textContent).toMatch(/Turn it on there/);
+    expect(hint.textContent).toMatch(/Start the Discord bot automatically" in Settings/);
+    expect(hint.textContent).not.toMatch(/\/forge config/);
+  });
+
   it('NO when the settings could not be read (the safe choice), said in plain words', async () => {
     stubStatus(serviceWith(autostartBlock({ setting: null, effective: false })));
     render(createElement(DiscordView));

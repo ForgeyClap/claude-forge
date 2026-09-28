@@ -26,6 +26,12 @@
       "consumers": [".claude/forge-bin/usage-guard.cjs (--pause-at)"],
       "aliases": { "nl": ["usage guard op", "pauzeer bij", "drempel"], "en": ["pause at", "threshold"] }
     },
+    "usage-guard.week-pause-at": {
+      "type": "int", "min": 0, "max": 99, "default": 0, "unit": "%", "scope": "global", "group": "core",
+      "desc": { "nl": "Bij dit percentage van je weeklimiet pauzeert Forge (0 = hetzelfde als de gewone pauzegrens). De sessielimiet volgt gewoon usage-guard.pause-at.", "en": "Forge pauses at this percentage of your WEEKLY limit (0 = the same as the normal pause point). The session limit keeps following usage-guard.pause-at." },
+      "consumers": [".claude/forge-bin/usage-guard.cjs (--week-pause-at)"],
+      "aliases": { "nl": ["weekly usage guard", "week usage guard", "weekgrens", "pauzeer bij week"], "en": ["weekly pause", "week pause at", "weekly limit"] }
+    },
     "usage-guard.resume-at": {
       "type": "int", "min": 0, "max": 98, "default": 0, "unit": "%", "scope": "global", "group": "advanced",
       "desc": { "nl": "Forge gaat vanzelf weer verder als je gebruik onder dit percentage komt (0 = pas na de reset van je limiet).", "en": "Forge resumes on its own once usage drops to this percentage (0 = only after your limit resets)." },

@@ -345,6 +345,22 @@ describe('Settings ▸ Forge settings (wp12 GET /api/config + WP-A POST /api/con
     expect(text).toContain('or just say it in chat');
   });
 
+  // WP-RB-CC (review finding L-2): the "Forge settings" nav entry's own section-sub line (a
+  // SEPARATE text region from the in-panel Note above — see SettingsView.tsx's `SECTIONS`
+  // array / `fw-settings__section-sub`) used to say "Change it in chat or with /forge config",
+  // which reads as the ONLY two ways in — but this same section's own panel (asserted just above)
+  // edits a setting right in place. Both texts must describe the same real capability.
+  it('L-2: the section-sub line names editing right in this view, not only chat/the command line', async () => {
+    installFetchMock(CONFIG_PAYLOAD);
+    await openForgeSettings();
+
+    const sectionSub = document.querySelector('.fw-settings__section-sub');
+    expect(sectionSub).not.toBeNull();
+    const subText = sectionSub?.textContent ?? '';
+    expect(subText).toMatch(/change a setting right in this view/i);
+    expect(subText).not.toMatch(/change it in chat or with \/forge config/i);
+  });
+
   it('WP-S2: groups settings by topic instead of the tool\'s own core/when-needed/advanced buckets', async () => {
     installFetchMock(CONFIG_PAYLOAD);
     const panels = await openForgeSettings();

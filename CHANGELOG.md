@@ -18,7 +18,7 @@ default, and every setting can now also be changed from the dashboard.
 - **The Command Center works right after installing.** The installer puts it in one central place next to Forge's
   global files (`~/.claude/forge/template/command-center/`), with the dashboard already built, so nothing needs npm
   or a build step. Every project you install Forge into is recorded in `~/.claude/forge/projects.json`, so the
-  dashboard finds it wherever it is on your computer. `forge dashboard` (or double-clicking
+  dashboard finds it wherever it is on your computer. `/forge dashboard` inside Claude Code (or double-clicking
   `start-forge-dashboard.bat` in your project's `.claude\forge-dashboard` folder) finds the Command Center, uses the
   one that is already running, and opens on the project you started from. The Discord part installs its own package
   the first time you connect Discord. An install, upgrade or uninstall never touches your Discord token, chats or
@@ -94,6 +94,10 @@ default, and every setting can now also be changed from the dashboard.
 - **The doctor names failing tests**, so a one-off failure can be identified from the evidence.
 - **A richer snapshot before compaction:** the current error (shown as quoted data, never as instructions), the
   last decisions and the mission. Everything in it is masked for secrets.
+- **A separate weekly pause point.** New setting `usage-guard.week-pause-at` (0–99, default 0 = the same as
+  `usage-guard.pause-at`): Forge can pause at a lower percentage of the weekly limit than of the 5-hour session, for
+  example `/forge config set usage-guard.week-pause-at 85`. A pause on the weekly window holds until that window
+  resets, and the guard's messages name both points ("98%, week 85%").
 
 ### Changed
 - **`install.sh` is much faster under Git Bash on Windows:** a dry run takes 4 s instead of 147 s, and a full install
@@ -148,13 +152,16 @@ default, and every setting can now also be changed from the dashboard.
   - earlier: the source and Command Center changes (20 findings, all fixed), a verification of those fixes, and
     its stop-time review of the secret gate (fixed, together with one more case a Forge probe found);
   - a recheck of the whole project (10 findings, all fixed);
-  - run A, the source tools and both installers (9 findings, 3 of them high, all fixed with tests);
-  - run B, the Command Center gateway (12 findings, 1 high, all fixed with tests);
+  - run A, the source tools and both installers (9 findings, 3 of them high), and run B, the Command Center
+    gateway (12 findings, 1 high): all fixed with tests, except the remaining limits described under Known
+    limitations;
   - its stop-time review of the Discord autostart and the prune tool (4 findings, all fixed);
-  - a final verification of every fix: 10 confirmed as fixed, 7 more closed right after it (including two new
-    findings), and the remaining ones are the limits described under Known limitations.
-  - Codex ran on its default model (gpt-6-luna at effort xhigh), because the pinned gpt-6-astra model is refused
-    for a ChatGPT account.
+  - a final verification of every fix: 10 confirmed as fixed and 6 more closed right after it (including two new
+    findings). Two were rejected with reasons: the doctor's text scan of the rebinding guard is a backstop,
+    because the real request path is tested end to end; and a folder that only matches the self-test debris
+    shape holds nothing to lose. The rest are the limits described under Known limitations.
+  - These review runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
+    gpt-6-astra model was refused for that ChatGPT account at the time.
 - The live Command Center after a restart on the final code: healthy, the Discord bot back by itself, the usage
   guard's watcher running, and read-only screenshots of 10 views at desktop and phone size with no overflow and no
   console errors.
@@ -196,6 +203,10 @@ default, and every setting can now also be changed from the dashboard.
   action, swap a folder for a link during an install, an uninstall or the creation of a projects folder. Forge
   closes the ways a downloaded project could set this up (planted links, a forged install manifest); the race that
   remains needs a program that could change those files directly anyway.
+- Two installs running at the very same moment share one lock on the project list
+  (`~/.claude/forge/projects.json`). When the other install holds it for more than 5 seconds, the installer goes on
+  without the lock and says so; in that rare case one of the two projects may be missing from the list until you
+  install into it again.
 - A mapped network drive letter (for example `Z:`) is not recognised as a network location in the projects-folder
   picker; opening it talks to the server you mapped yourself. Network paths (`\\server\share`) and links to them
   are refused.

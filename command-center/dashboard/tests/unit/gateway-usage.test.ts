@@ -184,6 +184,7 @@ function accountUsage(overrides: Partial<GatewayAccountUsage> = {}): GatewayAcco
       lastError: null,
       watcher: 'running',
       watcherStaleSec: 30,
+      weekPauseAt: null,
     },
     ...overrides,
   };
@@ -197,6 +198,13 @@ describe('formatGuardTooltip — real values only, never a plausible-looking num
     expect(text).toContain('NVIDIA-shift at 80%');
     expect(text).toContain('pause at 98%');
     expect(text).toContain('guard ok');
+  });
+
+  it('a weekly pause point is named next to the pause point, and only when it is set (2026-09-28)', () => {
+    expect(formatGuardTooltip(accountUsage())).not.toContain('week pause at');
+    const text = formatGuardTooltip(accountUsage({ guard: { ...accountUsage().guard, weekPauseAt: 85 } }));
+    expect(text).toContain('pause at 98%');
+    expect(text).toContain('week pause at 85%');
   });
 
   it('a paused guard reflects the real mode, never a silent "ok"', () => {
@@ -229,6 +237,7 @@ describe('formatGuardTooltip — real values only, never a plausible-looking num
           lastError: null,
           watcher: null,
           watcherStaleSec: null,
+          weekPauseAt: null,
         },
       }),
     );

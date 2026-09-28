@@ -299,6 +299,18 @@ export function parseCurrentRunId(data: Record<string, unknown>): string | null 
   return nested !== null ? pickString(nested, ['run_id']) : null;
 }
 
+/**
+ * WP-RB-CC (review finding L-1): `runs_truncated` is another SIBLING field on the same `GET
+ * /api/runs` payload (`runs.mjs`'s `listRuns()`) — true once this project has more run directories
+ * than the gateway's own per-request scan bound (`MAX_RUNS_SCANNED_PER_PROJECT`), meaning the oldest
+ * ones were honestly left out of `runs`. No dashboard code read this before this fix, so a cut-off
+ * runs list looked exactly like a complete one. Absent/wrong-type reads back `false` — the honest
+ * default for a gateway build that predates this field, never a false alarm.
+ */
+export function parseRunsTruncated(data: Record<string, unknown>): boolean {
+  return pickBool(data, ['runs_truncated']) ?? false;
+}
+
 export function parseRunRows(data: Record<string, unknown>): readonly RunRow[] {
   return pickArray(data, ['runs']).map((row) => ({
     runId: pickString(row, ['run_id']) ?? '',

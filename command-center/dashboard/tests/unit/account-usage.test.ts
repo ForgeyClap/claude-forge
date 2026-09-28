@@ -167,6 +167,7 @@ describe('parseAccountUsage — guard session_pct/week_pct (WP-CCD item 10, revi
     expect(result.guard.lastError).toBeNull();
     expect(result.guard.watcher).toBeNull();
     expect(result.guard.watcherStaleSec).toBeNull();
+    expect(result.guard.weekPauseAt).toBeNull();
   });
 
   it('reads the watcher health the gateway reports (2026-09-28)', () => {
@@ -182,6 +183,12 @@ describe('parseAccountUsage — guard session_pct/week_pct (WP-CCD item 10, revi
       guard: { available: true, mode: 'ok', watcher: 'stale', watcher_stale_sec: 1200 },
     });
     expect(stale.guard.watcherStaleSec).toBe(1200);
+  });
+
+  it('reads the weekly pause point the gateway reports (2026-09-28)', () => {
+    const r = parseAccountUsage({ ok: true, provenance: 'REPORTED', guard: { available: true, mode: 'ok', pause_at: 98, week_pause_at: 85 } });
+    expect(r.guard.pauseAt).toBe(98);
+    expect(r.guard.weekPauseAt).toBe(85);
   });
 
   it('FALLBACK: the old speculative nested percents/resets shape still parses, for a differently-shaped build', () => {

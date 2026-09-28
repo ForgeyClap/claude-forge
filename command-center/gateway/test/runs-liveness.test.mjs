@@ -200,19 +200,51 @@ test('finalized always wins over any liveness signal, even with an open dispatch
   const root = freshRoot();
   const runDir = path.join(root, '.claude', 'forge-runs', 'run-finalized-but-open');
   fs.mkdirSync(runDir, { recursive: true });
-  // Codex run B F-11: a real, VALID receipt shape (matching_run_id + a real digest + a green
-  // contract + bytes/events) — a fake `{digest:'abc'}` no longer counts as finalized at all.
-  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-finalized-but-open', digest: 'a'.repeat(64), bytes: 100, events: 5, contract: 'ok', finalized_at: iso(NOW),
-  }), 'utf8');
   writeEvents(root, 'run-finalized-but-open', [
     { event_type: 'subagent_started', agent: 'Build Boss', dispatch_id: 'd-fin', timestamp: iso(NOW - 1 * MIN) },
   ]);
+  // Codex run B F-11: a real, VALID receipt shape (matching_run_id + a real digest + a green
+  // contract + bytes/events) — a fake `{digest:'abc'}` no longer counts as finalized at all.
+  // WP-RB-CC (M-1): `bytes` must be the REAL current size of events.jsonl (written above) — listRuns()
+  // now refuses a receipt whose pinned bytes no longer match the live log as STALE, so a hand-picked
+  // unrelated number here would (correctly) never validate any more.
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
+    run_id: 'run-finalized-but-open', digest: 'a'.repeat(64),
+    bytes: fs.statSync(path.join(runDir, 'events.jsonl')).size, events: 5, contract: 'ok', finalized_at: iso(NOW),
+  }), 'utf8');
   writeToolLog(root, [{ ts: iso(NOW - 30 * 1000), agent_id: 'd-fin', tool: 'Bash' }]);
   const result = listRuns(root, NOW);
   const row = result.runs.find((r) => r.run_id === 'run-finalized-but-open');
   assert.equal(row.status, 'finalized');
   assert.equal(row.finalize_digest, 'a'.repeat(64));
+});
+
+// WP-RB-CC (review finding M-1): the log grows into the SAME already-finalized run — Forge's own
+// authority (`check()` in `.claude/forge-bin/forge-finalize.cjs`) calls this STALE the moment the
+// live events.jsonl no longer digest/byte-matches the pinned receipt; the dashboard must agree.
+test('M-1: a log that grows after finalizing is STALE, never "finalized" forever', () => {
+  const root = freshRoot();
+  const runDir = path.join(root, '.claude', 'forge-runs', 'run-grew-after-finalize');
+  fs.mkdirSync(runDir, { recursive: true });
+  writeEvents(root, 'run-grew-after-finalize', [{ event_type: 'run_started', timestamp: iso(NOW - 1 * HOUR) }]);
+  const eventsPath = path.join(runDir, 'events.jsonl');
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
+    run_id: 'run-grew-after-finalize', digest: 'd'.repeat(64),
+    bytes: fs.statSync(eventsPath).size, events: 1, contract: 'ok', finalized_at: iso(NOW - 1 * HOUR),
+  }), 'utf8');
+
+  const before = listRuns(root, NOW).runs.find((r) => r.run_id === 'run-grew-after-finalize');
+  assert.equal(before.status, 'finalized', 'sanity: the receipt is genuinely valid before the log changes');
+  assert.equal(before.finalized, true);
+
+  // A follow-up logs one more event into the SAME already-finalized run.
+  fs.appendFileSync(eventsPath, JSON.stringify({ event_type: 'agent_started', agent: 'Build Boss', timestamp: iso(NOW - 5 * MIN) }) + '\n', 'utf8');
+
+  const after = listRuns(root, NOW).runs.find((r) => r.run_id === 'run-grew-after-finalize');
+  assert.notEqual(after.status, 'finalized', 'a log that grew after finalizing must never still read as finalized');
+  assert.equal(after.finalized, false);
+  assert.equal(after.finalize_digest, null);
+  assert.equal(after.finalize_invalid_reason, 'the log changed after it was finalized');
 });
 
 // Codex run B F-11: tests for the receipt-validation fix itself, on listRuns()'s own public shape.
@@ -393,11 +425,14 @@ test('F-09: never revives a FINALIZED zero-work run, even if it is the newest "s
   const root = freshRoot();
   const runDir = path.join(root, '.claude', 'forge-runs', 'run-finalized-zero-work');
   fs.mkdirSync(runDir, { recursive: true });
-  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
-    run_id: 'run-finalized-zero-work', digest: 'c'.repeat(64), bytes: 1, events: 1, contract: 'ok',
-  }), 'utf8');
   writeRunJson(root, 'run-finalized-zero-work', { run_id: 'run-finalized-zero-work', status: 'running', started_at: iso(NOW - 1 * MIN) });
   writeEvents(root, 'run-finalized-zero-work', [{ event_type: 'run_started', timestamp: iso(NOW - 1 * MIN) }]);
+  // WP-RB-CC (M-1): `bytes` must be the REAL current size of events.jsonl written above — see the
+  // sibling "a log that grows after finalizing" test's own comment for why.
+  fs.writeFileSync(path.join(runDir, 'run-finalized.json'), JSON.stringify({
+    run_id: 'run-finalized-zero-work', digest: 'c'.repeat(64),
+    bytes: fs.statSync(path.join(runDir, 'events.jsonl')).size, events: 1, contract: 'ok',
+  }), 'utf8');
   writeToolLog(root, [{ ts: iso(NOW - 10 * 1000), agent_id: null, tool: 'Read' }]);
 
   const result = listRuns(root, NOW);

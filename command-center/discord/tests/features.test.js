@@ -8,6 +8,7 @@ import { createFakeRunner } from '../src/runner-fake.js';
 import { SessionStore } from '../src/session-store.js';
 import { buildArgs, buildPrompt, parseClaudeJson } from '../src/runner-claude.js';
 import { ProjectSync, slugify } from '../src/project-sync.js';
+import { friendlyError } from '../src/friendly-error.js';
 import { tmpStateDir, baseConfig } from './helpers.js';
 
 function build({ runner } = {}) {
@@ -92,6 +93,36 @@ test('project-sync: nieuwe map → kanaal + mapping met forge-detectie', async (
   assert.equal(fp.forgeMode, true); // .claude/commands/forge.md gedetecteerd
   // tweede sync: idempotent, niets nieuws
   assert.equal((await sync.syncOnce()).length, 0);
+});
+
+test('project-sync: een Discord-weigering voor één project breekt de sync niet af en wordt één keer gemeld (live 2026-09-28)', async () => {
+  const projectsDir = tmpStateDir();
+  fs.mkdirSync(path.join(projectsDir, 'geweigerd'));
+  fs.mkdirSync(path.join(projectsDir, 'gewoon'));
+  const { gateway } = build();
+  const announced = [];
+  const denied = Object.assign(new Error('Missing Permissions'), { code: 50013, status: 403 });
+  const ops = {
+    ensureTextChannel: async (name) => {
+      if (name === 'geweigerd') throw denied;
+      return { channelId: `chan_${name}`, created: true, migrated: false };
+    },
+  };
+  const sync = new ProjectSync({ projectsDir, router: gateway.router, audit: gateway.audit, channelOps: ops, announce: async (t) => { announced.push(t); } });
+  const added = await sync.syncOnce({ verifyChannels: true });
+  assert.deepEqual(added.map((a) => a.projectId), ['gewoon']);
+  assert.equal(gateway.router.projects.find((p) => p.projectId === 'geweigerd'), undefined);
+  const notes = () => announced.filter((t) => t.includes('geweigerd'));
+  assert.equal(notes().length, 1);
+  assert.match(notes()[0], /Kanalen beheren/);
+  await sync.syncOnce({ verifyChannels: true }); // dezelfde weigering: geen tweede melding
+  assert.equal(notes().length, 1);
+});
+
+test('friendlyError: Discord 50013/50001 worden een concrete uitleg, geen kale API-fout', () => {
+  assert.match(friendlyError(Object.assign(new Error('Missing Permissions'), { code: 50013 })), /Kanalen beheren/);
+  assert.match(friendlyError(new Error('Missing Access')), /niet zien/);
+  assert.match(friendlyError(new Error('permission denied')), /geen rechten op een bestand/); // bestaande regel ongewijzigd
 });
 
 test('commando: /forge newproject maakt map + kanaal aan', async () => {

@@ -149,4 +149,36 @@ describe('useGatewayActiveRuns', () => {
     expect(result.current.rows[0].project).toBe('forge-v2');
     expect(result.current.rows[0].agents).toEqual(['UI Boss']);
   });
+
+  // WP-RB-CC (review finding L-1): the gateway's own `truncated` flag — carried through so a
+  // consuming view (HomeView's "Active missions" panel) can show an honest cut-off note.
+  it('L-1: carries the real truncated:true flag through, never silently dropping it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true, active_runs: [], truncated: true })),
+    );
+    const { result } = renderHook(() => useGatewayActiveRuns());
+    await waitFor(() => expect(result.current.available).toBe(true));
+    expect(result.current.truncated).toBe(true);
+  });
+
+  it('L-1: an ordinary, non-truncated response reads back truncated:false', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true, active_runs: [], truncated: false })),
+    );
+    const { result } = renderHook(() => useGatewayActiveRuns());
+    await waitFor(() => expect(result.current.available).toBe(true));
+    expect(result.current.truncated).toBe(false);
+  });
+
+  it('L-1: a response with no truncated field at all (an older gateway build) reads back false, never a false alarm', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ ok: true, active_runs: [] })),
+    );
+    const { result } = renderHook(() => useGatewayActiveRuns());
+    await waitFor(() => expect(result.current.available).toBe(true));
+    expect(result.current.truncated).toBe(false);
+  });
 });

@@ -127,7 +127,12 @@ const SECTIONS: readonly SectionDef[] = [
     icon: 'Wrench',
     wired: true,
     summary:
-      'Every Forge setting of the active project — value, where it comes from, what it does — read from GET /api/config. Change it in chat or with /forge config.',
+      // WP-RB-CC (review finding L-2): this used to say "Change it in chat or with /forge config",
+      // which implied the command line/chat were the only ways in — but this same view's own "Forge
+      // settings" panel (renderForgeSettings()'s Note, below) edits a setting right in place: flip a
+      // switch, pick an option, or type a number. The command line/chat are the secondary, exact-
+      // syntax route it also shows, not the primary one — the two must say the same thing.
+      'Every Forge setting of the active project — value, where it comes from, what it does — read from GET /api/config. Change a setting right in this view; the exact command is also there for the command line or chat.',
   },
   {
     id: 'agents',

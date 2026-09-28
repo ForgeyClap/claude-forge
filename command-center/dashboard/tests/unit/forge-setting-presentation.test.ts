@@ -30,6 +30,7 @@ import type { GatewayForgeSetting } from '@/prototype/state/gateway-capabilities
 const REAL_SCHEMA_KEYS = [
   'usage-guard',
   'usage-guard.pause-at',
+  'usage-guard.week-pause-at',
   'usage-guard.resume-at',
   'usage-guard.interval',
   'usage-guard.nvidia-shift-at',
@@ -41,11 +42,13 @@ const REAL_SCHEMA_KEYS = [
   'prompt-doctor',
   'explain-mode',
   'dashboard',
+  'discord-autostart',
   'codex-review',
   'model-tiering',
   'nvidia',
   'agent-memory',
   'snapshots',
+  'vault',
   'tool-log',
   'ui-quality',
   'real-file-testing',
@@ -99,6 +102,7 @@ describe('labelForSetting / humanizeSettingKey', () => {
     // The owner's own four worked examples for this work package, verbatim.
     expect(labelForSetting('usage-guard')).toBe('Usage guard');
     expect(labelForSetting('usage-guard.pause-at')).toBe('Pause at (% of your limit)');
+    expect(labelForSetting('usage-guard.week-pause-at')).toBe('Weekly pause at (% of your weekly limit)');
     expect(labelForSetting('autonomy')).toBe('Autonomy');
     expect(labelForSetting('start-gate')).toBe('Ask before starting');
   });

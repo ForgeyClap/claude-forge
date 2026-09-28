@@ -2286,7 +2286,7 @@ main() {
   # (DO_GLOBAL) -- a --project-only run against a machine that never ran a full install would
   # otherwise point at a dashboard that is not there yet.
   if [ "$DO_GLOBAL" = "1" ]; then
-    forge_log "Dashboard: open http://127.0.0.1:4100 (run \"forge dashboard\" in a project, or double-click start-forge-dashboard.bat in a project's .claude/forge-dashboard folder)"
+    forge_log "Dashboard: open http://127.0.0.1:4100 (type \`/forge dashboard\` inside Claude Code in a project, or double-click start-forge-dashboard.bat in a project's .claude/forge-dashboard folder)"
     forge_log ""
   fi
   forge_log "Docs: https://github.com/${REPO_OWNER}/${REPO_NAME}#readme"

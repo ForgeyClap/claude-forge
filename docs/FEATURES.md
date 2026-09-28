@@ -73,7 +73,7 @@ Parallel work happens only for **independent** subtasks, isolated in git worktre
 
 ## Settings: `/forge config`
 
-*New in 2.7.0.* Every user-facing Forge switch lives in one catalogue, `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` — **37 settings** in three groups (on by default · available when needed · advanced), each with a Dutch and English explanation, plus **7 locked rules** that are shown but can never be switched off. One tool, `forge-config.cjs`, is the only code that resolves, validates or writes them.
+*New in 2.7.0.* Every user-facing Forge switch lives in one catalogue, `.claude/config/orchestration/FORGE_CONFIG_SCHEMA.json` — **39 settings** in three groups (on by default · available when needed · advanced), each with a Dutch and English explanation, plus **7 locked rules** that are shown but can never be switched off. One tool, `forge-config.cjs`, is the only code that resolves, validates or writes them.
 
 - **Everything is on by default.** Three deliberate exceptions: `paperclip` (unattended agents, only on request), `cleanup` (`report`, because `auto` deletes files) and `ecc-full-test` (heavy diagnostics).
 - **One command to see and change it all:** `/forge config list [--all] · get · set [--global] · unset · reset · explain · diff · parse "<sentence>"` — or just say it in chat; Forge maps the sentence to a setting and runs the command itself.

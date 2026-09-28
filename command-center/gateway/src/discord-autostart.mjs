@@ -188,7 +188,14 @@ export async function autostartDiscordOnBoot(deps = {}) {
     if (optOut) return finish('skipped', optOut);
     const setting = await readSetting();
     if (setting.value === false) {
-      return finish('skipped', 'the discord-autostart setting is off (turn it on with /forge config set discord-autostart on)');
+      // WP-RB-CC (review finding L-2): a beginner must never be told to type a command — this used
+      // to say "turn it on with /forge config set discord-autostart on". Named after the exact real
+      // setting label (`forge-setting-presentation.ts`'s own `'discord-autostart': 'Start the
+      // Discord bot automatically'`) and phrased the same way `saveWarningFor()` above already names
+      // this same setting ("in Settings") — DiscordView.tsx's own hint text already says "Turn it on
+      // there" right before this detail, so both halves of that sentence must point at the same
+      // place, in the same words.
+      return finish('skipped', 'the discord-autostart setting is off (turn on "Start the Discord bot automatically" in Settings)');
     }
     if (setting.value !== true) {
       return finish('skipped', (setting.note || 'the discord-autostart setting could not be read') +

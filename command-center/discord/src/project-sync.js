@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { friendlyError } from './friendly-error.js';
 
 // Houdt projectmappen en Discord-kanalen in sync, twee kanten op:
 //  - nieuwe map in projectsDir → kanaal + mapping (automatisch, periodiek)
@@ -16,6 +17,8 @@ export class ProjectSync {
     this.channelOps = channelOps;
     this.announce = announce;
     this.timer = null;
+    // project + reden die de eigenaar al gemeld kreeg: dezelfde weigering wordt niet elke minuut herhaald.
+    this.reportedFailures = new Set();
   }
 
   listProjectDirs() {
@@ -59,7 +62,18 @@ export class ProjectSync {
       if (this.channelOps && (!channelId || verifyChannels)) {
         // knownChannelId meegeven: lookup gaat op ID (naam kan een 🔴/🟢-prefix
         // hebben), zodat er nooit een duplicaat-kanaal wordt aangemaakt.
-        const res = await this.channelOps.ensureTextChannel(projectId, { knownChannelId: channelId });
+        // Een weigering van Discord voor ÉÉN project (bv. 50013 Missing Permissions: de bot mag geen kanalen
+        // maken) mag de sync van de andere projecten niet afbreken en de bot nooit laten crashen (live gevonden
+        // 2026-09-28: een niet-opgevangen 403 bij het opstarten legde de hele bot plat). Het project wordt
+        // overgeslagen; de volgende sync probeert het stil opnieuw, zodat het vanzelf lukt zodra het recht er is.
+        let res;
+        try {
+          res = await this.channelOps.ensureTextChannel(projectId, { knownChannelId: channelId });
+        } catch (err) {
+          this.#reportFailure(projectId, dir, err);
+          continue;
+        }
+        this.#clearFailures(projectId);
         ({ created } = res);
         migrated = res.migrated ?? false;
         channelId = res.channelId;
@@ -96,6 +110,21 @@ export class ProjectSync {
     const project = this.router.projects.find((p) => p.projectId === projectId);
     if (!project) throw new Error('Sync na aanmaken mislukt — kanaal niet geregistreerd');
     return project;
+  }
+
+  // Eén keer per project en reden melden (log + #forge-info); een latere, andere reden wordt wel weer gemeld.
+  #reportFailure(projectId, dir, err) {
+    const reason = friendlyError(err);
+    this.audit?.record('project_sync_failed', { projectId, error: reason });
+    const key = `${projectId}\u0000${reason}`;
+    if (this.reportedFailures.has(key)) return;
+    this.reportedFailures.add(key);
+    console.log(`[forge-discord] projectsync: kanaal voor "${dir}" niet gemaakt — ${reason}`);
+    this.announce?.(`Kon geen kanaal maken voor \`${dir}\`: ${reason}`)?.catch?.(() => {});
+  }
+
+  #clearFailures(projectId) {
+    for (const key of this.reportedFailures) if (key.startsWith(`${projectId}\u0000`)) this.reportedFailures.delete(key);
   }
 
   start(intervalMs = 60_000) {

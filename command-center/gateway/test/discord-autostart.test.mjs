@@ -157,12 +157,13 @@ test('autostart: a recognisable test gateway never starts the real bot, even wit
   assert.equal(info.effective, false);
 });
 
-test('autostart: the discord-autostart setting off means no start, and says how to turn it on', async () => {
+test('autostart: the discord-autostart setting off means no start, and says how to turn it on (WP-RB-CC L-2: in Settings, never a command to type)', async () => {
   const d = deps({ setting: { value: false, note: null } });
   const r = await autostartDiscordOnBoot(d);
   assert.equal(r.outcome, 'skipped');
   assert.match(r.detail, /discord-autostart setting is off/);
-  assert.match(r.detail, /\/forge config set discord-autostart on/);
+  assert.match(r.detail, /Start the Discord bot automatically" in Settings/);
+  assert.doesNotMatch(r.detail, /\/forge config/, 'a beginner must never be told to type a command here');
   assert.equal(d.calls.start, 0);
 });
 

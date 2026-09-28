@@ -31,7 +31,7 @@ import {
   ToolbarGroup,
 } from '@/components/primitives';
 import { usePrototype } from '@/prototype/state/prototype-store';
-import { useGatewayEvents, useGatewayEventsMeta, useGatewayRunScanErrors } from '@/prototype/state/gateway-adapter';
+import { useGatewayEvents, useGatewayEventsMeta, useGatewayRunScanErrors, useGatewayRunsTruncated } from '@/prototype/state/gateway-adapter';
 import { toGatewayActivityEvent } from '@/prototype/state/adapter/mappers';
 import { isProductionMode } from '@/config/mode';
 import { STATUS_KEYS } from '@/prototype/types/prototype-types';
@@ -208,6 +208,10 @@ export default function ActivityView() {
   // `eventsMeta` above (scoped to the one run `/api/events` is polled for), this covers every run
   // this project has, so a group header can show it regardless of which run is "current".
   const eventScanErrors = useGatewayRunScanErrors(state.activeProjectId);
+  // WP-RB-CC (review finding L-1): `runs_truncated` — true once this project has more run
+  // directories than the gateway's own per-request scan bound, meaning the "Run" picker below does
+  // not list every run this project has. See useGatewayRunsTruncated's own doc comment.
+  const runsTruncated = useGatewayRunsTruncated(state.activeProjectId);
 
   const [agentFilter, setAgentFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -351,8 +355,15 @@ export default function ActivityView() {
 
       <div className="fw-activity__filters">
         {/* WP-CCD (item 5): a real way to pick another run — every run this project has, newest
-            first (the same order `state.data.runs` already sorts in), never just the current one. */}
-        <Field label="Run" htmlFor="fw-activity-run" className="fw-activity__filter">
+            first (the same order `state.data.runs` already sorts in), never just the current one.
+            WP-RB-CC (L-1): `hint` shows a plain note when the gateway's own scan is cut off — this
+            list is then honestly missing its oldest runs, not necessarily complete. */}
+        <Field
+          label="Run"
+          htmlFor="fw-activity-run"
+          className="fw-activity__filter"
+          hint={runsTruncated ? "Showing part of this project's runs — there are more than this list can show." : undefined}
+        >
           <select
             id="fw-activity-run"
             className="fw-activity__select fg-machine"

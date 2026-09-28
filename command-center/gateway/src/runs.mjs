@@ -565,7 +565,13 @@ function buildRunRows(projectPath, nowMs) {
     // (shared with proof.mjs) requires the exact matching run_id, a real 64-hex digest, and a
     // literal green contract before this run is honestly reported finalized.
     const finalizedReceiptRaw = readJsonSafe(path.join(runPath, 'run-finalized.json'));
-    const receiptCheck = validateFinalizeReceipt(finalizedReceiptRaw, runId);
+    // WP-RB-CC (M-1): eventsScan.size is this SAME loop iteration's already-stat()'d live byte size
+    // of this run's events.jsonl (scanEventsFileCached() above always stats the real current file,
+    // cache hit or not) — passing it costs nothing extra, and lets the shared validator catch a
+    // receipt whose pinned `bytes` no longer matches the real log (grew/changed after finalizing).
+    // `undefined` on the ENOENT/read-error emptyScan() branch — validateFinalizeReceipt() treats a
+    // non-finite value as "cannot verify", never as a guessed stale.
+    const receiptCheck = validateFinalizeReceipt(finalizedReceiptRaw, runId, eventsScan.size);
     const hasGateEvidence = fs.existsSync(path.join(runPath, 'gate-evidence.json'));
     const finalized = receiptCheck.valid;
     runs.push({

@@ -106,9 +106,24 @@ test('buildUsage: guard-state file PRESENT -> guard.available true with the exac
   assert.equal(result.guard.available, true);
   assert.equal(result.guard.mode, 'ok');
   assert.equal(result.guard.pause_at, null);
+  assert.equal(result.guard.week_pause_at, null, 'no weekly pause point in the state file -> honest null');
   assert.equal(result.guard.paused_agent_count, 2);
   assert.equal(typeof result.guard.age_ms, 'number');
   assert.ok(result.guard.age_ms >= 0);
+});
+
+test('buildUsage passes the guard\'s weekly pause point through as week_pause_at (2026-09-28)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-usage-week-'));
+  const p = path.join(dir, 'state.json');
+  fs.writeFileSync(p, JSON.stringify({ mode: 'ok', pauseAt: 98, weekPauseAt: 85, resumeAt: 0, lastCheckAt: new Date().toISOString() }), 'utf8');
+  _setUsageGuardStateFileForTests(p);
+  try {
+    const result = buildUsage();
+    assert.equal(result.guard.pause_at, 98);
+    assert.equal(result.guard.week_pause_at, 85);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('buildUsage: guard-state file ABSENT -> honest guard.available false with a real note, never a guessed mode', () => {
