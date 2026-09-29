@@ -152,10 +152,10 @@ default, and every setting can now also be changed from the dashboard.
   Activity, and the Artifacts gallery (including older runs outside its 10-run window).
 
 ### How this release was verified
-- Full source doctor all green on the final source commit: 133 suites, 9,911 tests passing, 0 failing (the
+- Full source doctor all green on the final source commit: 133 suites, 9,912 tests passing, 0 failing (the
   removed Control Center's own suites are gone; 2.8.1: 136 suites, 9,198). The Command Center in its real
   location: gateway 1,490 of 1,491 (one test needs a symlink privilege this machine lacks), Discord 246/246,
-  dashboard 1,501/1,501, and the production build. Both gates were recorded with their exact commands, exit codes
+  dashboard 1,504/1,504, and the production build. Both gates were recorded with their exact commands, exit codes
   and output hashes on a clean working tree.
 - Codex reviewed the whole release, read-only and adversarially, in several rounds:
   - earlier: the source and Command Center changes (20 findings, all fixed), a verification of those fixes, and
@@ -172,9 +172,15 @@ default, and every setting can now also be changed from the dashboard.
   - a last review of the final day's changes (the weekly pause point, the receipt check, the bot fix): 3 findings
     (2 medium), all fixed with tests. Its verification confirmed one and found the other two only partly fixed, plus
     four new ones (one medium, three low); all were fixed afterwards with tests (no third round).
+  - release-gate reviews of the finished release. The first found one wording point in this changelog (fixed).
+    The second, after the first CI fixes, found one high: a forged install manifest in a downloaded project could
+    add an entry of its own to the new manifest through the carry-over of a kept `CLAUDE.md`. That carry-over was
+    added during this release's CI fixes and never shipped. It now takes only a real sha256, the manifest writer
+    skips anything else, and a test shows a forged manifest adds nothing. The tag was set only after Codex's
+    verification of that fix passed.
   - The earlier runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
-    gpt-6-astra model was refused for that ChatGPT account at the time. The last review and its verification ran on
-    gpt-6-astra at high effort, after the maintainer changed the setting.
+    gpt-6-astra model was refused for that ChatGPT account at the time. The last review, its verification and the
+    release-gate reviews ran on gpt-6-astra at high effort, after the maintainer changed the setting.
 - The live Command Center after a restart on the final code: healthy, the Discord bot running again, the usage
   guard's watcher running, and read-only screenshots of 10 views at desktop and phone size with no overflow, no
   console errors and no write requests.
@@ -187,10 +193,15 @@ default, and every setting can now also be changed from the dashboard.
   bits, plugin copies in sync, `node --check` on 259 tools, the retired dashboard hash table, the plugin manifests).
   The test-suite and doctor steps ran in a fresh-laptop simulation of the release commit (install into an empty
   folder with an empty home on Windows PowerShell 5.1, without bash or the claude CLI, then the doctor): all green,
-  133 suites, 9,867 passing. On that install the gate blocked a recursive delete and switching the gate off, and
+  133 suites, 0 failing. On that install the gate blocked a recursive delete and switching the gate off, and
   allowed ordinary commands; the Command Center started from the project's own wrapper on a test port, served the
   page and listed the fresh project.
-- Still to run before the tag: CI on Linux and Windows (Node 18 and 22) on the release commit, once it is pushed.
+- CI on the pull request (Linux and Windows, Node 18 and 22) found two real bugs before release, both fixed with
+  tests. The run tool refused a project at the root of a drive (`/` or `C:\`). And a second install moved the
+  project `CLAUDE.md` into a backup as "retired", a side effect of this release's clean-up of retired files. The
+  other failures were in the checks themselves: a shallow checkout, Windows-only test assumptions, and a quote
+  filter that PowerShell read as a wildcard. The tag was set only after every check passed on the exact published
+  commit.
 
 ### Known limitations
 - On a phone, the settings tables scroll sideways and the last column is only visible after scrolling. This is the

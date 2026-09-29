@@ -170,11 +170,25 @@ jobs:
         if: runner.os != 'Windows'
         run: bash tests/installer/retired-dashboard-prune.sh
 
+      # v2.9.0 (Codex release gate RG-02): a forged old manifest cannot inject entries through the CLAUDE.md carry,
+      # and a genuine carry keeps CLAUDE.md across a re-install. Self-contained (its own temp HOME/projects); the
+      # Windows twin (manifest-carry-injection.ps1) runs below.
+      - name: A forged old manifest cannot inject entries through the CLAUDE.md carry (POSIX)
+        if: runner.os != 'Windows'
+        run: bash tests/installer/manifest-carry-injection.sh
+
       - name: Retired files are pruned on upgrade, not left behind forever (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           powershell -ExecutionPolicy Bypass -File .\tests\installer\retired-dashboard-prune.ps1
+          exit $LASTEXITCODE
+
+      - name: A forged old manifest cannot inject entries through the CLAUDE.md carry (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\tests\installer\manifest-carry-injection.ps1
           exit $LASTEXITCODE
 
       # The one check that matters: the tool's own full self-test, on the fresh install, with the empty

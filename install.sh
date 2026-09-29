@@ -388,9 +388,13 @@ forge_manifest_carry() {
   [ -n "${MANIFEST_TMP:-}" ] && [ -d "$MANIFEST_TMP" ] && [ -n "$old_tsv" ] && [ -s "$old_tsv" ] || return 0
   rel="${abspath#"$root"/}"
   [ "$rel" != "$abspath" ] || return 0
-  line=$(awk -F '\t' -v r="$rel" '$1 == r { print; exit }' "$old_tsv")
-  [ -n "$line" ] || return 0
-  printf '%s\n' "$line" >> "$MANIFEST_TMP/$scope.tsv"
+  # Codex release gate RG-02: the old manifest is attacker-influenced input (a cloned or shared project). Only its
+  # hash FIELD is taken, only when it is a real sha256 (exactly 64 hex characters), and the line is rebuilt here, so a
+  # forged value can never break out of its JSON string later or add an entry of its own.
+  line=$(awk -F '\t' -v r="$rel" '$1 == r { print $2; exit }' "$old_tsv")
+  case "$line" in ''|*[!0-9a-fA-F]*) return 0 ;; esac
+  [ "${#line}" -eq 64 ] || return 0
+  printf '%s\t%s\n' "$rel" "$line" >> "$MANIFEST_TMP/$scope.tsv"
 }
 
 # forge_write_manifest_file <scope> <dest_file> <version> — writes the accumulated manifest for
@@ -409,8 +413,13 @@ forge_write_manifest_file() {
     printf '  "_doc": "Every file this installer wrote for this scope, with its sha256 at write time. --uninstall deletes a listed file only when its CURRENT hash still matches -- a file you edited yourself is left in place and reported as kept.",\n'
     printf '  "files": [\n'
     local first=1 rel hash esc_rel
+    count=0
     while IFS=$'\t' read -r rel hash; do
       [ -n "$rel" ] || continue
+      # Codex release gate RG-02: only a real sha256 (64 hex characters) is ever written, so no hash from anywhere
+      # can break out of its JSON string. Checked before the separator, so a skipped entry leaves no stray comma.
+      case "$hash" in ''|*[!0-9a-fA-F]*) continue ;; esac
+      [ "${#hash}" -eq 64 ] || continue
       if [ "$first" = "1" ]; then first=0; else printf ',\n'; fi
       # v2.9.0 (WP speed pass — install.sh is slow under Git Bash on Windows, CHANGELOG 2.8.1): was
       # `printf '%s' "$rel" | sed 's/\\/\\\\/g; s/"/\\"/g'` -- a subshell + a forked `sed`, once per
@@ -424,10 +433,11 @@ forge_write_manifest_file() {
       esc_rel="${rel//\\/\\\\}"
       esc_rel="${esc_rel//\"/\\\"}"
       printf '    { "path": "%s", "sha256": "%s" }' "$esc_rel" "$hash"
+      count=$((count + 1))
     done < <(sort -- "$tsv")
     printf '\n  ]\n}\n'
   } > "$dest"
-  count=$(wc -l < "$tsv" | tr -d '[:space:]')
+  # Counts the entries actually written (a skipped RG-02 entry is not one), not the accumulator's lines.
   forge_log "  wrote: $dest ($count file(s) recorded for uninstall)"
 }
 

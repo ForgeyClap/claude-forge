@@ -1531,8 +1531,12 @@ function Add-ForgeProjectRootSeed {
     # the hash from when Forge wrote it). Without it the retired-file pruning read it as "no longer shipped" and
     # moved it to backup on every re-install (found by the Linux CI of PR #4); an uninstall still spares it when you
     # edited it. A CLAUDE.md Forge never wrote is not in the old manifest and stays untracked, as before.
+    # Codex release gate RG-02: carried only when the old hash is a real sha256 (64 hex characters).
     if ($script:ForgeOldProjectEntries -and $script:ForgeOldProjectEntries.ContainsKey('CLAUDE.md')) {
-      [void] $script:ForgeManifest['project'].Add([ordered]@{ path = 'CLAUDE.md'; sha256 = [string]$script:ForgeOldProjectEntries['CLAUDE.md'] })
+      $oldClaudeHash = [string]$script:ForgeOldProjectEntries['CLAUDE.md']
+      if ($oldClaudeHash -match '^[0-9a-fA-F]{64}$') {
+        [void] $script:ForgeManifest['project'].Add([ordered]@{ path = 'CLAUDE.md'; sha256 = $oldClaudeHash })
+      }
     }
   } elseif (Test-Path -LiteralPath $claudeTemplate -PathType Leaf) {
     if ($IsDryRun) {
