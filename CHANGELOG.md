@@ -177,10 +177,11 @@ default, and every setting can now also be changed from the dashboard.
     add an entry of its own to the new manifest through the carry-over of a kept `CLAUDE.md`. That carry-over was
     added during this release's CI fixes and never shipped. Codex's verification of the fix found the same weakness
     one step earlier (a field with a tab or line break in a tampered manifest in your home folder could reach the
-    new manifest through the Command Center's carry-over; one medium) and two small points. Now both installers
-    read an old manifest entry only when its path is plain and its hash is a real sha256, the manifest writer skips
-    anything else, and tests in both shells show that a forged manifest adds nothing. An independent review
-    checked those last fixes before the tag.
+    new manifest through the Command Center's carry-over; one medium) and two small points. Now an old manifest
+    entry counts only when its hash is a real sha256 and its path has no tab, line break or other control
+    character. What the installers carry into the new manifest must also be a safe relative path, and the manifest
+    writer skips anything else. Tests in both shells show that a forged field cannot add an entry of its own. An
+    independent review checked these fixes before the tag; its three small notes were applied and checked too.
   - The earlier runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
     gpt-6-astra model was refused for that ChatGPT account at the time. The last review, its verification and the
     release-gate reviews ran on gpt-6-astra at high effort, after the maintainer changed the setting.
@@ -230,6 +231,11 @@ default, and every setting can now also be changed from the dashboard.
   action, swap a folder for a link during an install, an uninstall or the creation of a projects folder. Forge
   closes the ways a downloaded project could set this up (planted links, a forged install manifest); the race that
   remains needs a program that could change those files directly anyway.
+- An install manifest is trusted for the entries it lists with a real sha256. One that someone else put in a
+  project (for example in a downloaded project) can name one of that project's own files. A re-install then moves
+  that file into `.claude/forge-backups/`, and `--uninstall` deletes it, but only while its content is still
+  exactly what the manifest lists. A file you changed is never touched; an unchanged one can be restored from that
+  backup folder, from git or from the original download.
 - Two installs running at the very same moment share one lock on the project list
   (`~/.claude/forge/projects.json`). When the other install holds it for more than 5 seconds, the installer goes on
   without the lock and says so; in that rare case one of the two projects may be missing from the list until you

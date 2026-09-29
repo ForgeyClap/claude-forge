@@ -1042,7 +1042,7 @@ forge_cc_should_skip() {
 # own previous shipped code on every single release.
 forge_copy_command_center_tree() {
   local src_dir="$1" dst_dir="$2" manifest_root="$3" old_tsv="${4:-}"
-  local file rel status=0 skipped=0 dst_file manifest_rel old_hash cur_dst_hash user_modified cc_prefix
+  local file rel status=0 skipped=0 dst_file manifest_rel old_hash cur_dst_hash user_modified cc_prefix cc_rel cc_hash
 
   if [ ! -d "$src_dir" ]; then
     forge_err "source directory missing: $src_dir"
@@ -1074,7 +1074,14 @@ forge_copy_command_center_tree() {
       if [ -n "$manifest_root" ] && [ -s "$old_tsv" ] && [ -n "${MANIFEST_TMP:-}" ] && [ -d "$MANIFEST_TMP" ]; then
         cc_prefix="${dst_dir#"$manifest_root"/}"
         if [ "$cc_prefix" != "$dst_dir" ] && [ -n "$cc_prefix" ]; then
-          awk -F'\t' -v prefix="$cc_prefix/" 'index($1, prefix) == 1' "$old_tsv" >> "$MANIFEST_TMP/global.tsv"
+          # Verify Boss VB-02: a row is carried only when its path is a safe relative path, the same check the
+          # pruning and the uninstall apply (and install.ps1 applies when it reads the old manifest), so no odd
+          # path is copied into the new manifest. forge_manifest_to_tsv already guarantees a real sha256 and a
+          # path without control characters.
+          while IFS=$'\t' read -r cc_rel cc_hash; do
+            forge_is_safe_manifest_rel_path "$cc_rel" || continue
+            printf '%s\t%s\n' "$cc_rel" "$cc_hash" >> "$MANIFEST_TMP/global.tsv"
+          done < <(awk -F'\t' -v prefix="$cc_prefix/" 'index($1, prefix) == 1' "$old_tsv")
         fi
       fi
       forge_err "refusing to install the Command Center: a symlink or junction was found on the way to '$rel' under $dst_dir — remove that link, then re-run the installer"
@@ -1259,7 +1266,9 @@ forge_manifest_to_tsv() {
   # real consumer of out_tsv (forge_prune_retired_manifest_files, and forge_remove_manifest_files via
   # its own call to this same function) re-validates each path with forge_manifest_path_is_contained --
   # a real root_dir AND a real forge_log/forge_err are both available there, where an unsafe path can
-  # actually be rejected with a warning the user sees, not silently dropped.
+  # actually be rejected with a warning the user sees, not silently dropped. The two carries into the NEW
+  # manifest act on no file: the CLAUDE.md carry rebuilds its line from its own path, and the Command
+  # Center carry keeps only rows that pass forge_is_safe_manifest_rel_path (Verify Boss VB-02).
   # Codex release gate RG-02-A: out_tsv is tab-separated and line-based, so an entry is written only when its
   # path holds no tab, newline or other control character and its hash is a real sha256 (exactly 64 hex).
   # Otherwise one forged field could split into extra rows -- rows the Command Center carry and the

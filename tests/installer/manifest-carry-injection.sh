@@ -6,6 +6,8 @@
 # RG-02-A (the verification round): the old-manifest parser must drop any entry whose path holds a tab, newline or
 # control character or whose hash is not a real sha256, so no forged field can split into extra rows that the
 # Command Center carry copies into the new GLOBAL manifest. RG-02-C: "untouched" means the same content.
+# Verify Boss VB-02/VB-03: that carry also skips a row whose path is not a safe relative path, and part 4 proves the
+# carry really ran (a genuine entry is still listed).
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK=$(mktemp -d)
@@ -108,6 +110,7 @@ if [ -f "$GM" ] && [ -f "$CC/gateway/bin.mjs" ]; then
     const cc = ".claude/forge/template/command-center/";
     const j = JSON.parse(fs.readFileSync(m, "utf8"));
     j.files.push({ path: cc + "zz.txt", sha256: "a".repeat(64) + "\n" + cc + "notes.txt\t" + notesHash });
+    j.files.push({ path: cc + "../../../../victim.txt", sha256: "b".repeat(64) });
     fs.writeFileSync(m, JSON.stringify(j, null, 2));
   ' "$GM" "$NOTES_H"
   OUTSIDE="$WORK/outside"; mkdir -p "$OUTSIDE"
@@ -122,9 +125,13 @@ if [ -f "$GM" ] && [ -f "$CC/gateway/bin.mjs" ]; then
     set +e
     out4=$(HOME="$H4" bash "$FAKE/install.sh" --project "$P4" --yes 2>&1)
     set -e
-    case "$out4" in *"symlink or junction"*) ok "4: the Command Center install was refused, so the carry ran" ;; *) bad "4: the refusal branch did not run (fixture problem)" ;; esac
+    case "$out4" in *"symlink or junction"*) ok "4: the Command Center install was refused" ;; *) bad "4: the refusal branch did not run (fixture problem)" ;; esac
     if node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$GM" 2>/dev/null; then ok "4: the new global manifest is valid JSON"; else bad "4: the new global manifest is not valid JSON"; fi
+    # Verify Boss VB-03: prove the carry really ran -- a genuine Command Center entry is still listed and in place
+    if has_entry "$GM" ".claude/forge/template/command-center/dashboard/dist/index.html" && [ -f "$CC/dashboard/dist/index.html" ]; then ok "4: a genuine Command Center entry was carried (the carry ran)"; else bad "4: the genuine Command Center entry was not carried, so the carry did not run"; fi
     if has_entry "$GM" ".claude/forge/template/command-center/notes.txt"; then bad "4: a smuggled Command Center row reached the new global manifest"; else ok "4: no smuggled Command Center row reached the new global manifest"; fi
+    # Verify Boss VB-02: a well-formed row whose path is not a safe relative path is not carried either
+    if has_entry "$GM" ".claude/forge/template/command-center/../../../../victim.txt"; then bad "4: a path with .. was carried into the new global manifest"; else ok "4: a path with .. was not carried"; fi
     same_content "$CC/notes.txt" "$NOTES_H" && ok "4: the user's notes.txt is untouched (same content)" || bad "4: notes.txt was changed or moved"
   else
     echo "SKIP 4: no link could be created under the Command Center here, and the carry branch needs one"
