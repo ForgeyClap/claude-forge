@@ -417,9 +417,11 @@ forge_write_manifest_file() {
     while IFS=$'\t' read -r rel hash; do
       [ -n "$rel" ] || continue
       # Codex release gate RG-02: only a real sha256 (64 hex characters) is ever written, so no hash from anywhere
-      # can break out of its JSON string. Checked before the separator, so a skipped entry leaves no stray comma.
+      # can break out of its JSON string, and no path with a control character (RG-02-A), which JSON cannot hold
+      # raw. Checked before the separator, so a skipped entry leaves no stray comma.
       case "$hash" in ''|*[!0-9a-fA-F]*) continue ;; esac
       [ "${#hash}" -eq 64 ] || continue
+      case "$rel" in *[[:cntrl:]]*) continue ;; esac
       if [ "$first" = "1" ]; then first=0; else printf ',\n'; fi
       # v2.9.0 (WP speed pass — install.sh is slow under Git Bash on Windows, CHANGELOG 2.8.1): was
       # `printf '%s' "$rel" | sed 's/\\/\\\\/g; s/"/\\"/g'` -- a subshell + a forked `sed`, once per
@@ -1258,12 +1260,23 @@ forge_manifest_to_tsv() {
   # its own call to this same function) re-validates each path with forge_manifest_path_is_contained --
   # a real root_dir AND a real forge_log/forge_err are both available there, where an unsafe path can
   # actually be rejected with a warning the user sees, not silently dropped.
+  # Codex release gate RG-02-A: out_tsv is tab-separated and line-based, so an entry is written only when its
+  # path holds no tab, newline or other control character and its hash is a real sha256 (exactly 64 hex).
+  # Otherwise one forged field could split into extra rows -- rows the Command Center carry and the
+  # CLAUDE.md carry would copy into the NEW manifest. A skipped entry is simply not trusted: nothing is
+  # pruned, removed or carried on its account.
   node -e '
     const fs = require("fs");
     let j;
     try { j = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
     const files = Array.isArray(j.files) ? j.files : [];
-    for (const f of files) { if (f && f.path && f.sha256) process.stdout.write(f.path + "\t" + f.sha256 + "\n"); }
+    const CONTROL = /[\u0000-\u001f\u007f]/;
+    const SHA256 = /^[0-9a-fA-F]{64}$/;
+    for (const f of files) {
+      if (!f || typeof f.path !== "string" || typeof f.sha256 !== "string") continue;
+      if (f.path === "" || CONTROL.test(f.path) || !SHA256.test(f.sha256)) continue;
+      process.stdout.write(f.path + "\t" + f.sha256 + "\n");
+    }
   ' "$manifest_json" > "$out_tsv" 2>/dev/null || : > "$out_tsv"
   return 0
 }

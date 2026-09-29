@@ -175,9 +175,12 @@ default, and every setting can now also be changed from the dashboard.
   - release-gate reviews of the finished release. The first found one wording point in this changelog (fixed).
     The second, after the first CI fixes, found one high: a forged install manifest in a downloaded project could
     add an entry of its own to the new manifest through the carry-over of a kept `CLAUDE.md`. That carry-over was
-    added during this release's CI fixes and never shipped. It now takes only a real sha256, the manifest writer
-    skips anything else, and a test shows a forged manifest adds nothing. The tag was set only after Codex's
-    verification of that fix passed.
+    added during this release's CI fixes and never shipped. Codex's verification of the fix found the same weakness
+    one step earlier (a field with a tab or line break in a tampered manifest in your home folder could reach the
+    new manifest through the Command Center's carry-over; one medium) and two small points. Now both installers
+    read an old manifest entry only when its path is plain and its hash is a real sha256, the manifest writer skips
+    anything else, and tests in both shells show that a forged manifest adds nothing. An independent review
+    checked those last fixes before the tag.
   - The earlier runs used Codex's default model (gpt-6-luna at effort xhigh), because the maintainer's pinned
     gpt-6-astra model was refused for that ChatGPT account at the time. The last review, its verification and the
     release-gate reviews ran on gpt-6-astra at high effort, after the maintainer changed the setting.

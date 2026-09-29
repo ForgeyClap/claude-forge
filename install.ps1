@@ -947,7 +947,8 @@ function Test-ForgeSafeManifestRelPath {
   foreach ($part in $parts) {
     if ($part.Length -eq 0) { return $false }
     if ($part -eq '.' -or $part -eq '..') { return $false }
-    if ($part -notmatch '^[A-Za-z0-9._ -]+$') { return $false }
+    # \A and \z (Codex release gate RG-02-B): '^...$' would also accept a part ending in a newline.
+    if ($part -notmatch '\A[A-Za-z0-9._ -]+\z') { return $false }
   }
   return $true
 }
@@ -1000,7 +1001,15 @@ function Get-ForgeOldManifestEntries {
         Write-ForgeLog "  ignoring unsafe path in $ManifestPath -- '$p' is not a normal relative path"
         continue
       }
-      $map[$p] = [string]$f.sha256
+      # Codex release gate RG-02-B: only a real sha256 (exactly 64 hex characters) is taken from an old
+      # manifest, so every value a carry copies forward (the CLAUDE.md carry, the Command Center carry) is
+      # one. \A and \z, because '^...$' would also accept a trailing newline.
+      $h = [string]$f.sha256
+      if ($h -notmatch '\A[0-9a-fA-F]{64}\z') {
+        Write-ForgeLog "  ignoring an entry with a malformed hash in $ManifestPath -- '$p'"
+        continue
+      }
+      $map[$p] = $h
     }
   }
   return $map
@@ -1531,10 +1540,11 @@ function Add-ForgeProjectRootSeed {
     # the hash from when Forge wrote it). Without it the retired-file pruning read it as "no longer shipped" and
     # moved it to backup on every re-install (found by the Linux CI of PR #4); an uninstall still spares it when you
     # edited it. A CLAUDE.md Forge never wrote is not in the old manifest and stays untracked, as before.
-    # Codex release gate RG-02: carried only when the old hash is a real sha256 (64 hex characters).
+    # Codex release gate RG-02: carried only when the old hash is a real sha256 (64 hex characters). Get-ForgeOldManifestEntries already drops any other entry;
+    # this is the second line of defence.
     if ($script:ForgeOldProjectEntries -and $script:ForgeOldProjectEntries.ContainsKey('CLAUDE.md')) {
       $oldClaudeHash = [string]$script:ForgeOldProjectEntries['CLAUDE.md']
-      if ($oldClaudeHash -match '^[0-9a-fA-F]{64}$') {
+      if ($oldClaudeHash -match '\A[0-9a-fA-F]{64}\z') {
         [void] $script:ForgeManifest['project'].Add([ordered]@{ path = 'CLAUDE.md'; sha256 = $oldClaudeHash })
       }
     }
@@ -1768,7 +1778,8 @@ function Copy-ForgeCommandCenterTree {
       # one to backup, even though every real file is still sitting there untouched. Carrying every OLD
       # entry under this Command Center's own manifest prefix forward into THIS run's manifest (with
       # its unchanged hash -- the file itself was never touched) tells that step "still shipped, leave
-      # it alone" instead, without pretending a copy that did not happen actually happened.
+      # it alone" instead, without pretending a copy that did not happen actually happened. Every carried hash
+      # is a real sha256: Get-ForgeOldManifestEntries drops any other entry (Codex release gate RG-02-B).
       if ($ManifestRoot -and $OldHashByRel -and $OldHashByRel.Count -gt 0) {
         $ccPrefix = Get-ForgeManifestRel -RootDir $ManifestRoot -AbsPath $DestDir
         if ($ccPrefix) {
